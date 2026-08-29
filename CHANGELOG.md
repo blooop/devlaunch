@@ -154,6 +154,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for every ASCII character at once, which says the same thing in the other
   direction too: nothing in `' '..'~'` is escaped that Python leaves bare.
 
+- **`--force`'s placement rule is now held over the whole argument space rather
+  than over the lines somebody thought to list.** The grammar decides whether a
+  `--force` is the modifier or a word in the workspace slot by counting its
+  position, and that reading was covered by hand-written examples that between
+  them never once named `rm` or `rme`, which are the only two verbs a misplaced
+  `--force` could actually destroy something with. A single test now walks every ordering
+  of every subset of `{workspace, rm, rme, --force, --rm}` through the grammar and
+  checks each one against the rule as Python stated it, so an ordering nobody
+  thought of is covered by construction.
+  **The slot is now counted over the words of the line rather than over its
+  tokens**, which is the one behaviour change and closes the leading half of the
+  same defect. A flag clap has consumed is gone from the words and still sitting in
+  argv, so counting tokens shifted every slot up by one: `dl <flag> ws --force rm`
+  read the verb-slot `--force` as trailing and force-deleted `ws`, where
+  `dl ws --force rm` refuses. No spelling of `<flag>` existed, but only because five
+  unrelated rules each happened to refuse or strip one first, and `aid` hands `dl`
+  every leading `-` word it is given without knowing what any of them mean. A slot
+  is a place a word goes, so it is words that are counted. Every line anybody can
+  type today reads exactly as it did.
+  It turned up one thing that was believed and is not true: clap's two-word cap on
+  the positionals holds only while the words are contiguous. `dl a b c` is refused,
+  but `dl a b --force c` opens a second occurrence and hands the grammar three
+  words. Nothing forced escapes through it, because the third word is refused
+  first, but it is that refusal doing the work and not the cap.
+
 ## [0.25.0] - 2026-08-28
 
 ### Fixed

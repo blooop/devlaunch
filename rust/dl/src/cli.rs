@@ -781,8 +781,8 @@ pub(crate) fn resolve(cli: Cli, argv: &[String]) -> Result<Command, GrammarError
 /// a `--force` in the workspace slot became an unknown workspace, and one in the
 /// verb slot an unknown command — both refusals (exit 1), where clap-parsed Rust
 /// silently accepted the flag and *deleted*. This recovers the position clap threw
-/// away, from the same word stream `argv_without_devcontainer` builds (the command
-/// tail after `--` is not `dl`'s to read).
+/// away, counting the words of the line rather than its tokens (the command tail
+/// after `--` is not `dl`'s to read).
 enum ForcePlace {
     /// `--force` in `args[0]`: the workspace name is `--force`.
     WorkspaceSlot,
@@ -793,30 +793,44 @@ enum ForcePlace {
     Trailing,
 }
 
+/// The slot is counted over the **words**, and every flag before `--force` is
+/// skipped rather than counted.
+///
+/// This used to count raw argv tokens, which is the same number only while no flag
+/// can sit ahead of the words: a token before `--force` shifted its index up, so
+/// `dl <flag> ws --force rm` read the verb-slot `--force` as trailing and
+/// force-deleted `ws` where `dl ws --force rm` refuses. No spelling of `<flag>`
+/// existed, but only because five unrelated rules each happened to refuse or strip
+/// one first, and `aid` hands dl every leading `-` word it is given without knowing
+/// what any of them mean. A slot is a place a *word* goes, so counting words is the
+/// rule and counting tokens was a coincidence that held.
 fn force_placement(argv: &[String]) -> Option<ForcePlace> {
-    let mut stream = Vec::new();
+    let mut words: Vec<&str> = Vec::new();
     let mut rest = argv.iter();
     while let Some(argument) = rest.next() {
         if argument == "--" {
             break;
         }
-        if argument.starts_with("--devcontainer=") {
-            continue;
+        if argument == "--force" {
+            return Some(match words.as_slice() {
+                [] => ForcePlace::WorkspaceSlot,
+                [target] => ForcePlace::VerbSlot {
+                    target: (*target).to_owned(),
+                },
+                _ => ForcePlace::Trailing,
+            });
         }
         if argument == "--devcontainer" {
+            // Its value, which is not a word either.
             rest.next();
             continue;
         }
-        stream.push(argument.as_str());
+        if argument.starts_with('-') {
+            continue;
+        }
+        words.push(argument.as_str());
     }
-    match stream.iter().position(|word| *word == "--force") {
-        None => None,
-        Some(0) => Some(ForcePlace::WorkspaceSlot),
-        Some(1) => Some(ForcePlace::VerbSlot {
-            target: stream[0].to_owned(),
-        }),
-        Some(_) => Some(ForcePlace::Trailing),
-    }
+    None
 }
 
 /// A command that opens no workspace: no target, no `--`, no `--devcontainer`.
@@ -999,7 +1013,13 @@ fn workspace_command(cli: Cli, argv: &[String]) -> Result<Command, GrammarError>
                 });
             }
         },
-        // clap caps the positionals at two, so a third word never arrives here.
+        // A third word, which clap's `num_args = 0..=2` stops only while the words
+        // are contiguous: `dl a b c` is `TooManyValues` at exit 2, but a flag
+        // between them (`dl a b --force c`) opens a second occurrence and all three
+        // arrive. So this arm is reached, and it is what keeps `force_placement`'s
+        // "index 2 or later is the modifier" honest — a `--force` at index 2 with a
+        // name still after it is refused here rather than honoured. Pinned by
+        // `a_third_word_still_arrives_when_a_flag_splits_it`.
         _ => {
             return Err(GrammarError::UnknownVerb {
                 target: cli.words[0].clone(),
@@ -1095,12 +1115,36 @@ mod tests {
 
     use super::*;
 
-    /// The command a line resolves to.
+    /// The command a line resolves to, for a line clap accepts.
     fn parse(argv: &[&str]) -> Result<Command, GrammarError> {
-        let cli = Cli::try_parse_from(std::iter::once("dl").chain(argv.iter().copied()))
-            .unwrap_or_else(|error| panic!("clap refused {argv:?}: {error}"));
+        resolved(argv).unwrap_or_else(|| panic!("clap refused {argv:?}"))
+    }
+
+    /// The same, or `None` for a line clap itself refuses.
+    ///
+    /// [`parse`] is the one every other test wants, because a line written out in a
+    /// test is one clap accepts. A walk of the argv space is the exception: it hands
+    /// over lines clap refuses too, and those are refusals rather than failures.
+    fn resolved(argv: &[&str]) -> Option<Result<Command, GrammarError>> {
+        let cli = Cli::try_parse_from(std::iter::once("dl").chain(argv.iter().copied())).ok()?;
         let raw: Vec<String> = argv.iter().map(|word| (*word).to_owned()).collect();
-        resolve(cli, &raw)
+        Some(resolve(cli, &raw))
+    }
+
+    /// A line's command with `prefix` sitting in argv ahead of everything, as a flag
+    /// clap consumed would.
+    ///
+    /// The `Cli` is parsed from the line *without* it, which is what a flag that
+    /// names no workspace looks like by the time `resolve` sees it: gone from the
+    /// words, still present in argv. So this is the shape of every future flag at
+    /// once, rather than of whichever one somebody adds next.
+    fn resolved_behind(prefix: &str, argv: &[&str]) -> Option<Result<Command, GrammarError>> {
+        let cli = Cli::try_parse_from(std::iter::once("dl").chain(argv.iter().copied())).ok()?;
+        let raw: Vec<String> = std::iter::once(prefix)
+            .chain(argv.iter().copied())
+            .map(|word| word.to_owned())
+            .collect();
+        Some(resolve(cli, &raw))
     }
 
     fn refused(argv: &[&str]) -> clap::error::ErrorKind {
@@ -1751,6 +1795,26 @@ mod tests {
         );
     }
 
+    /// The cap holds only while the words are contiguous, and the grammar has to
+    /// refuse the third word itself.
+    ///
+    /// `num_args = 0..=2` counts values per occurrence, so a flag between two words
+    /// opens a second one and clap hands `resolve` three positionals it was widely
+    /// assumed never to see. Nothing forced leaks through it — the refusal comes
+    /// first — but it is the refusal doing the work, not the cap, and
+    /// `force_placement`'s absolute-index reading rests on exactly that.
+    #[test]
+    fn a_third_word_still_arrives_when_a_flag_splits_it() {
+        assert_eq!(
+            parse(&["ws", "rm", "--force", "rme"]),
+            Err(GrammarError::UnknownVerb {
+                target: "ws".to_owned(),
+                word: "rme".to_owned()
+            }),
+            "clap let three words through and the grammar honoured the --force"
+        );
+    }
+
     // ============================================ the cache-refresh argv stripping
 
     // ============================================ a stale word beside the --rm flag
@@ -1930,29 +1994,274 @@ mod tests {
         );
     }
 
+    /// A flag ahead of the words does not move the slots, and the line it would have
+    /// moved them for is a forced delete.
+    ///
+    /// `dl <flag> ws --force rm` leaves `cli.words = ["ws", "rm"]`, so the third-word
+    /// arm never sees it, and counting argv *tokens* put `--force` at index 2: the
+    /// trailing reading, a force-delete of `ws`, where `dl ws --force rm` is refused
+    /// as an unknown verb. Counting words is what makes the two lines agree.
+    ///
+    /// The flag is synthetic because no real one reaches here today. That is the
+    /// point rather than a weakness in the test: it was true only because
+    /// `--json`/`--size` need `--ls`, `--yes` and the retired spellings and the
+    /// `--rm` pair are each refused above, and `--devcontainer` is skipped by hand.
+    /// Five unrelated rules are not an invariant, and `aid` hands dl every leading
+    /// `-` word it is given.
     #[test]
-    fn the_pair_is_refused_wherever_force_sits_in_the_line() {
-        // `--force`'s meaning is recovered from its position, and `--rm` is a word
-        // in the stream that position is counted in — so without this the same pair
-        // gets three different answers depending on where it was typed, two of them
-        // describing the wrong problem: `Unknown command '--force'` about a workspace
-        // called `--rm`, and `Unknown workspace '--force'`.
-        for line in [
-            vec!["ws", "--rm", "--force"],
-            vec!["--rm", "--force", "ws"],
-            vec!["--force", "--rm", "ws"],
-            vec!["--rm", "ws", "--force"],
-            // No workspace at all: the selector's line, refused the same way rather
-            // than opening a picker whose choice cannot be honoured.
-            vec!["--force", "--rm"],
-        ] {
+    fn a_flag_before_the_words_does_not_move_the_slots() {
+        assert_eq!(
+            resolved_behind("--some-later-flag", &["ws", "--force", "rm"]),
+            Some(Err(GrammarError::UnknownVerb {
+                target: "ws".to_owned(),
+                word: "--force".to_owned()
+            })),
+            "a flag ahead of the words turned the verb slot into a forced delete"
+        );
+    }
+
+    /// `aid` emits the pair *leading*, which is the one spelling no dl test wrote
+    /// out and the one aid actually produces.
+    ///
+    /// aid pushes every leading `-` word into the options it puts ahead of the spec,
+    /// without knowing what any of them mean, so `aid --rm --force <ws> <prompt>`
+    /// reaches dl as `--rm --force <ws> -- <agent command>`. Nothing on aid's side
+    /// decides that is safe: what makes it safe is that the pair is answered here
+    /// before the placement of `--force` is read at all. `rust/aid`'s
+    /// `a_leading_pair_reaches_dl_as_the_pair_it_is` pins the other half, that this
+    /// really is the line aid emits.
+    #[test]
+    fn the_pair_aid_emits_is_refused_ahead_of_where_force_sits() {
+        assert_eq!(
+            parse(&["--rm", "--force", "ws", "--", "claude -p 'fix it'"]),
+            Err(GrammarError::RmForced)
+        );
+    }
+
+    /// Every line the delete verbs and the two flags can be spelled as, using each
+    /// word at most once: all orderings of every subset, shortest first.
+    ///
+    /// The point of walking the whole space rather than listing the interesting
+    /// lines is that the *uninteresting* ones are where a placement rule leaks. A
+    /// hand-written list only ever holds the orderings somebody thought of, and
+    /// `--force`'s meaning is a function of the whole stream, so the ordering that
+    /// breaks it is by construction the one nobody wrote down.
+    fn every_ordering(alphabet: &[&'static str]) -> Vec<Vec<&'static str>> {
+        fn walk(
+            alphabet: &[&'static str],
+            used: &mut [bool],
+            line: &mut Vec<&'static str>,
+            lines: &mut Vec<Vec<&'static str>>,
+        ) {
+            if !line.is_empty() {
+                lines.push(line.clone());
+            }
+            for (index, word) in alphabet.iter().enumerate() {
+                if used[index] {
+                    continue;
+                }
+                used[index] = true;
+                line.push(word);
+                walk(alphabet, used, line, lines);
+                line.pop();
+                used[index] = false;
+            }
+        }
+        let mut lines = Vec::new();
+        walk(
+            alphabet,
+            &mut vec![false; alphabet.len()],
+            &mut Vec::new(),
+            &mut lines,
+        );
+        lines
+    }
+
+    /// Whether this outcome deletes a workspace despite work that is nowhere else.
+    fn deletes_by_force(outcome: &Result<Command, GrammarError>) -> bool {
+        matches!(
+            outcome,
+            Ok(Command::Workspace {
+                verb: Verb::Remove { force: true, .. },
+                ..
+            } | Command::Select {
+                verb: Verb::Remove { force: true, .. },
+                ..
+            })
+        )
+    }
+
+    /// The whole argv space of the forced delete, walked, against the rule read off
+    /// Python rather than off [`force_placement`].
+    ///
+    /// **The alphabet carries `rm` and `rme`, and that is the whole reason this test
+    /// is worth its length.** They are the only words in the grammar that can turn
+    /// `cli.force` into a destroyed workspace — every other verb drops it on the
+    /// floor — so a matrix without them proves that `--force` is *placed* correctly
+    /// and nothing at all about what a misplacement would cost. With them in, each
+    /// ordering is a live question about whether that line deletes.
+    ///
+    /// The expectation is written from dl.py:4726 (`"--force" in args[2:]`, with
+    /// `args[0]` the workspace and `args[1]` the verb) plus the verb table, so it is
+    /// a second statement of the rule and not a paraphrase of the implementation.
+    ///
+    /// **An index into a line can be wrong in two directions, and the walk holds
+    /// both.** A name *after* the `--force` would make a trailing reading wrong, and
+    /// what refuses that is the third-word arm rather than clap's positional cap,
+    /// which `a_third_word_still_arrives_when_a_flag_splits_it` shows does not stop
+    /// it. A flag *before* the words would shift every slot up, and what stops that
+    /// is [`force_placement`] counting words instead of tokens — asserted here
+    /// against a synthetic flag, because the day a real one exists is the day the
+    /// guard has to already be standing.
+    #[test]
+    fn force_deletes_only_where_it_follows_both_the_name_and_the_verb() {
+        /// Python's reading, as a predicate over the line's *words*.
+        ///
+        /// Stated over the words rather than over the raw tokens because a slot is a
+        /// place a word goes. Python could count tokens and mean the same thing, for
+        /// the reason it had no flags here at all.
+        fn force_is_earned(line: &[&str]) -> bool {
+            let words = || line.iter().filter(|word| !word.starts_with('-'));
+            // The words ahead of `--force`, which is the slot it occupies.
+            let slot = line
+                .iter()
+                .take_while(|word| **word != "--force")
+                .filter(|word| !word.starts_with('-'))
+                .count();
+            // The pair is refused outright, wherever either half sits.
+            !line.contains(&"--rm")
+                && line.contains(&"--force")
+                // In `args[2:]`: past the workspace slot and past the verb slot.
+                && slot >= 2
+                // A line naming a third workspace is refused before any of that, and
+                // `a_third_word_still_arrives_when_a_flag_splits_it` is why this
+                // clause is here rather than assumed away.
+                && words().count() <= 2
+                // And with something to force: only the two delete verbs read it.
+                && words().any(|word| *word == "rm" || *word == "rme")
+        }
+
+        let mut forced = Vec::new();
+        let mut walked = 0;
+        for line in every_ordering(&["ws", "rm", "rme", "--force", "--rm"]) {
+            let Some(outcome) = resolved(&line) else {
+                continue;
+            };
+            walked += 1;
             assert_eq!(
-                parse(&line),
-                Err(GrammarError::RmForced),
-                "dl {}",
+                deletes_by_force(&outcome),
+                force_is_earned(&line),
+                "dl {} resolved to {outcome:?}",
                 line.join(" ")
             );
+            // **The leading direction, over the same space.** A flag clap consumed is
+            // gone from the words and still sitting in argv, so a rule that counted
+            // tokens shifted every slot up by one and read a verb-slot `--force` as
+            // trailing. There is no dl flag that reaches here today, which is exactly
+            // why this is asserted against a synthetic one: the guard has to outlive
+            // the five unrelated refusals that are currently standing in for it.
+            assert_eq!(
+                resolved_behind("--some-later-flag", &line),
+                Some(outcome.clone()),
+                "dl {} read differently with a flag ahead of it",
+                line.join(" ")
+            );
+            // The pair, over the same space: refused by name from every ordering,
+            // ahead of the verb and ahead of the placement reading. This is where
+            // `aid --rm --force <ws> <prompt>` lands, which aid emits as a *leading*
+            // pair (`a_leading_pair_reaches_dl_as_the_pair_it_is` is its half).
+            if line.contains(&"--rm") && line.contains(&"--force") {
+                assert_eq!(
+                    outcome,
+                    Err(GrammarError::RmForced),
+                    "dl {} answered something other than the pair",
+                    line.join(" ")
+                );
+            }
+            if deletes_by_force(&outcome) {
+                forced.push(line.join(" "));
+            }
         }
+
+        // And the lines that do delete, named — so that a rule which quietly stops
+        // forcing anything at all cannot pass the assertion above by agreeing with a
+        // predicate that has also stopped saying yes.
+        assert_eq!(
+            forced,
+            [
+                "ws rm --force",
+                "ws rme --force",
+                "rm ws --force",
+                "rm rme --force",
+                "rme ws --force",
+                "rme rm --force",
+            ],
+            "the set of lines that force-delete moved"
+        );
+        // The whole space, pinned by count rather than by a floor. Every forced line
+        // above is three words long, so a walk that quietly stopped generating the
+        // long orderings would still match that list: the five-word orderings are
+        // half the space and the half this test exists for.
+        assert_eq!(
+            every_ordering(&["ws", "rm", "rme", "--force", "--rm"]).len(),
+            325,
+            "the generator is no longer every ordering of every subset of five"
+        );
+        assert_eq!(walked, 259, "the walk stopped covering the argv space");
+    }
+
+    /// The globals have no placement rule, and that is a decision rather than the
+    /// same gap left unfixed.
+    ///
+    /// `--force`'s position is read at all because a workspace line has slots it
+    /// could be mistaken for a *word* in. A global line has none: `global_command`
+    /// refuses a target outright, and the one command that does take a word
+    /// (`--install`, whose word is a path) is not one of the two that accept
+    /// `--force`. So there is nothing for a leading `--force` to be confused with,
+    /// and `dl --force --prune` may mean force without anybody counting positions.
+    ///
+    /// What this pins is the premise, not the conclusion: give a force-accepting
+    /// command a word to take, and the two orderings stop agreeing and this fails.
+    #[test]
+    fn a_globals_force_reads_the_same_wherever_it_sits() {
+        for flag in [
+            "--ls",
+            "--refresh",
+            "--install",
+            "--prune",
+            "--reconcile",
+            "--purge",
+            "--version",
+            "--repos",
+            "--completion-data",
+            "--update-cache",
+        ] {
+            assert_eq!(
+                resolved(&["--force", flag]),
+                resolved(&[flag, "--force"]),
+                "dl --force {flag} and dl {flag} --force disagree"
+            );
+        }
+        // The two that accept it, and they take no word for it to be read as.
+        assert_eq!(
+            resolved(&["--force", "--prune"]),
+            Some(Ok(Command::Prune {
+                yes: false,
+                force: true
+            }))
+        );
+        assert_eq!(
+            resolved(&["--force", "--update-cache"]),
+            Some(Ok(Command::UpdateCache { force: true }))
+        );
+        assert_eq!(
+            resolved(&["--install", "--force", "rc"]),
+            Some(Err(GrammarError::ModifierNotAllowed {
+                modifier: "--force",
+                command: "--install"
+            })),
+            "the one global that takes a word must not also take --force"
+        );
     }
 
     #[test]
