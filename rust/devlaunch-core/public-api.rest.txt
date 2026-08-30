@@ -1010,17 +1010,6 @@ pub fn devlaunch_core::flows::agent_worktrees::StandingSite::eq(&self, &devlaunc
 impl core::fmt::Debug for devlaunch_core::flows::agent_worktrees::StandingSite
 pub fn devlaunch_core::flows::agent_worktrees::StandingSite::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::agent_worktrees::StandingSite
-pub struct devlaunch_core::flows::agent_worktrees::WithheldWorktree
-pub devlaunch_core::flows::agent_worktrees::WithheldWorktree::because: devlaunch_core::flows::agent_worktrees::Standing
-pub devlaunch_core::flows::agent_worktrees::WithheldWorktree::path: std::path::PathBuf
-impl core::clone::Clone for devlaunch_core::flows::agent_worktrees::WithheldWorktree
-pub fn devlaunch_core::flows::agent_worktrees::WithheldWorktree::clone(&self) -> devlaunch_core::flows::agent_worktrees::WithheldWorktree
-impl core::cmp::Eq for devlaunch_core::flows::agent_worktrees::WithheldWorktree
-impl core::cmp::PartialEq for devlaunch_core::flows::agent_worktrees::WithheldWorktree
-pub fn devlaunch_core::flows::agent_worktrees::WithheldWorktree::eq(&self, &devlaunch_core::flows::agent_worktrees::WithheldWorktree) -> bool
-impl core::fmt::Debug for devlaunch_core::flows::agent_worktrees::WithheldWorktree
-pub fn devlaunch_core::flows::agent_worktrees::WithheldWorktree::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for devlaunch_core::flows::agent_worktrees::WithheldWorktree
 pub struct devlaunch_core::flows::agent_worktrees::WithheldDerivative
 pub devlaunch_core::flows::agent_worktrees::WithheldDerivative::because: devlaunch_core::flows::agent_worktrees::NotDerivableNow
 pub devlaunch_core::flows::agent_worktrees::WithheldDerivative::path: std::path::PathBuf
@@ -1032,6 +1021,17 @@ pub fn devlaunch_core::flows::agent_worktrees::WithheldDerivative::eq(&self, &de
 impl core::fmt::Debug for devlaunch_core::flows::agent_worktrees::WithheldDerivative
 pub fn devlaunch_core::flows::agent_worktrees::WithheldDerivative::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::agent_worktrees::WithheldDerivative
+pub struct devlaunch_core::flows::agent_worktrees::WithheldWorktree
+pub devlaunch_core::flows::agent_worktrees::WithheldWorktree::because: devlaunch_core::flows::agent_worktrees::Standing
+pub devlaunch_core::flows::agent_worktrees::WithheldWorktree::path: std::path::PathBuf
+impl core::clone::Clone for devlaunch_core::flows::agent_worktrees::WithheldWorktree
+pub fn devlaunch_core::flows::agent_worktrees::WithheldWorktree::clone(&self) -> devlaunch_core::flows::agent_worktrees::WithheldWorktree
+impl core::cmp::Eq for devlaunch_core::flows::agent_worktrees::WithheldWorktree
+impl core::cmp::PartialEq for devlaunch_core::flows::agent_worktrees::WithheldWorktree
+pub fn devlaunch_core::flows::agent_worktrees::WithheldWorktree::eq(&self, &devlaunch_core::flows::agent_worktrees::WithheldWorktree) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::agent_worktrees::WithheldWorktree
+pub fn devlaunch_core::flows::agent_worktrees::WithheldWorktree::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::agent_worktrees::WithheldWorktree
 pub struct devlaunch_core::flows::agent_worktrees::WorktreeReport
 pub devlaunch_core::flows::agent_worktrees::WorktreeReport::forget_refused: alloc::vec::Vec<devlaunch_core::flows::agent_worktrees::ForgetRefused>
 pub devlaunch_core::flows::agent_worktrees::WorktreeReport::forgotten: usize
