@@ -1008,9 +1008,11 @@ pub struct ListedWorkspace {
 ///
 /// Costs one `devpod list` (the command's snapshot) plus one `devpod status` per
 /// listed workspace — including the ones devlaunch did not make, which Python asks
-/// about too. Under [`Sizes::Measure`] it also walks each of dl's own clones,
-/// which is O(files) with no ceiling and the reason `--size` is asked for rather
-/// than always answered.
+/// about too. The status trips are asked concurrently ([`container_states`]);
+/// everything else about a row is local work and stays sequential. Under
+/// [`Sizes::Measure`] it also walks each of dl's own clones, which is O(files)
+/// with no ceiling and the reason `--size` is asked for rather than always
+/// answered.
 pub fn enriched_listing(
     context: &mut CommandContext<'_>,
     view: &DlView<'_>,
@@ -1019,18 +1021,108 @@ pub fn enriched_listing(
     let workspaces = context.workspaces()?;
     let git = context.git();
     let runner = context.runner();
+    // Every status trip first, together, because they are the only part of a row
+    // that leaves this machine and they do not depend on each other.
+    let states = container_states(runner, &workspaces);
     Ok(workspaces
         .iter()
-        .map(|workspace| enriched_row(runner, &git, view, sizes, workspace))
+        .zip(states)
+        .map(|(workspace, state)| enriched_row(&git, view, sizes, workspace, state))
         .collect())
 }
 
+/// How many `devpod status` trips are in flight at once.
+///
+/// Not unbounded: a row costs a devpod process, and a machine with sixty
+/// workspaces would otherwise fork sixty at once and spend more on the contention
+/// than the serial version spent waiting. Eight is chosen for the shape of the
+/// wait rather than for the core count — the trip is one process blocking on
+/// devpod's own work, not arithmetic, so the useful width is set by how many of
+/// those the machine will schedule rather than by how many can compute at once.
+const STATUS_TRIPS_AT_ONCE: usize = 8;
+
+/// The container state of each workspace, in the order they were given.
+///
+/// One `devpod status` per workspace, which is the cost this listing has always
+/// paid; what changed is that the waiting overlaps. The trips are independent —
+/// each asks devpod about one id and nothing it learns changes what another
+/// asks — so the only thing serialising them was the loop they were written in,
+/// and at a measured 0.454s each (`docs/performance.md`) a machine with forty
+/// workspaces waited about eighteen seconds for a command whose answer was ready
+/// in two.
+///
+/// It is staged at all because Python stages `get_workspace_state` itself
+/// (`@timing.staged("devpod-up")`) and the JSON timing document reports spans
+/// *inside* the stage that was open: unstaged, these round trips would appear in
+/// the prose summary and be missing from the document, which is the shape a
+/// listing reports the most of. Python marks the stage `ok` for a devpod that ran
+/// and refused, gave non-JSON, or omitted `state`, and `failed` only where devpod
+/// could not be run at all, which is the distinction `never_ran` carries here.
+///
+/// **The stage is opened once, here, rather than once per trip.** Every worker
+/// would otherwise race to open and close the same [`timing::Stage::DevpodUp`],
+/// and the registry admits one owner per stage: whichever thread opened it would
+/// close it while the others were still running, and the spans they then recorded
+/// would land outside any stage. Opening it on this thread, around the whole
+/// batch, is what keeps the timing document reporting the same shape it did when
+/// the trips were serial. The stage fails if devpod could not be run at all, for
+/// exactly the reason the serial version failed it: a stage must not report `ok`
+/// for a step devpod never ran (P12).
+fn container_states(runner: &dyn Runner, workspaces: &[Workspace]) -> Vec<Option<ContainerState>> {
+    // Before the stage, not inside it: a listing with nothing to ask about opened
+    // no `devpod-up` stage when the trips were made one at a time, because the
+    // function that opened one was never reached. Opening it here regardless would
+    // put an empty stage in the timing document of every `dl --ls` on a machine
+    // with no workspaces, which is a reported step that never happened.
+    if workspaces.is_empty() {
+        return Vec::new();
+    }
+
+    let mut stage = timing::stage(timing::Stage::DevpodUp);
+    let mut answers: Vec<Option<ContainerState>> = Vec::with_capacity(workspaces.len());
+    let mut never_ran = false;
+
+    for batch in workspaces.chunks(STATUS_TRIPS_AT_ONCE) {
+        // Scoped threads so the runner is borrowed rather than shared by
+        // reference count: the batch is joined before this loop turns over, so
+        // nothing outlives the borrow and there is no `Arc` to explain.
+        let batched: Vec<_> = std::thread::scope(|scope| {
+            let handles: Vec<_> = batch
+                .iter()
+                .map(|workspace| {
+                    scope.spawn(|| devpod::status(runner, &workspace.id, Patience::AsLongAsItTakes))
+                })
+                .collect();
+            handles
+                .into_iter()
+                // Carry a worker's panic rather than replacing it: the serial
+                // version unwound with whatever `devpod::status` said, and a
+                // listing that panics should still say why.
+                .map(|handle| {
+                    handle
+                        .join()
+                        .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+                })
+                .collect()
+        });
+        for answer in batched {
+            never_ran |= matches!(answer, Err(devpod::StatusUnreadable::NotRun(_)));
+            answers.push(answer.ok());
+        }
+    }
+
+    if never_ran {
+        stage.fail();
+    }
+    answers
+}
+
 fn enriched_row(
-    runner: &dyn Runner,
     git: &Git<'_>,
     view: &DlView<'_>,
     sizes: Sizes,
     workspace: &Workspace,
+    state: Option<ContainerState>,
 ) -> ListedWorkspace {
     // One question asked once. Whether this workspace is dl's, which directory the
     // row is about, and what is in it all read this answer, rather than each
@@ -1071,7 +1163,7 @@ fn enriched_row(
     ListedWorkspace {
         id: workspace.id.clone(),
         last_used: workspace.last_used.clone(),
-        state: container_state(runner, &workspace.id),
+        state,
         clone,
         disk: DiskField::of(sizes, measurable.as_deref()),
         sweep,
@@ -1130,25 +1222,6 @@ impl SweptRepoNote {
 /// and JSON with no `state` in it. The distinctions exist one layer down
 /// ([`devpod::StatusUnreadable`]) for a caller that has something different to do
 /// about each; this one does not.
-fn container_state(runner: &dyn Runner, workspace_id: &str) -> Option<ContainerState> {
-    // Staged, because Python stages `get_workspace_state` itself
-    // (`@timing.staged("devpod-up")`), and the JSON timing document reports spans
-    // *inside* the stage that was open. Unstaged, the `devpod status` round trips
-    // this makes are in the prose summary and missing from the document — which is
-    // the shape a listing of five workspaces reports the most of.
-    let mut stage = timing::stage(timing::Stage::DevpodUp);
-    let answer = devpod::status(runner, workspace_id, Patience::AsLongAsItTakes);
-    // Python stages `get_workspace_state`, which returns `None` (stage `ok`) for a
-    // devpod that ran and refused, gave non-JSON, or omitted `state`, and only
-    // marks the stage `failed` when devpod could not be run at all — the spawn
-    // that raises `DevpodNotInstalled`. Mirror that: a `NotRun` fails the stage so
-    // the timing document does not report `ok` for a step devpod never ran (P12).
-    if matches!(answer, Err(devpod::StatusUnreadable::NotRun(_))) {
-        stage.fail();
-    }
-    answer.ok()
-}
-
 /// What deleting *workspace_id* would destroy, as far as dl can establish.
 ///
 /// The `dl <ws> rm` guard's reader. Answers [`Unsaved::NothingToLose`] for a
@@ -1432,6 +1505,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
     use std::process::Command;
+    use std::sync::{Condvar, Mutex};
 
     use devlaunch_runner::{
         CapturedText, DetachOutcome, Invocation, Outcome, ProcessRunner, SpawnSpec,
@@ -2765,6 +2839,158 @@ mod tests {
             fake.args_to("devpod"),
             [["list", "--output", "json"]],
             "no workspaces means no status round trips"
+        );
+    }
+
+    /// A runner that answers `devpod status` and reports how many answers it was
+    /// producing at the same moment.
+    ///
+    /// The instrument is a rendezvous rather than a sleep: every trip announces
+    /// itself and then waits for the rest of its batch to arrive. If the trips
+    /// overlap they all arrive and every one returns at once; if they are serial
+    /// the first waits alone, times out, and the high-water mark stays at one. So
+    /// a pass is quick and a regression is a clean assertion failure after the
+    /// timeout rather than a hang.
+    struct Overlapping {
+        state: Mutex<Overlap>,
+        arrived: Condvar,
+        /// How many this test expects to be in flight together.
+        want: usize,
+    }
+
+    #[derive(Default)]
+    struct Overlap {
+        in_flight: usize,
+        high_water: usize,
+        /// Arrivals ever, which only goes up. The rendezvous waits on this and
+        /// not on `in_flight`: a thread that has already been released decrements
+        /// `in_flight` on its way out, so waiting on that count lets the last
+        /// arrival free itself and leave the earlier ones waiting for a number
+        /// that has just gone back down. That was a ten second timeout per run.
+        arrivals: usize,
+    }
+
+    impl Overlapping {
+        fn expecting(want: usize) -> Self {
+            Self {
+                state: Mutex::new(Overlap::default()),
+                arrived: Condvar::new(),
+                want,
+            }
+        }
+
+        fn high_water(&self) -> usize {
+            self.state.lock().expect("the overlap").high_water
+        }
+    }
+
+    impl Runner for Overlapping {
+        fn capture(&self, spec: &SpawnSpec) -> Outcome<CapturedText> {
+            let argv = spec.invocation.argv();
+            assert_eq!(
+                argv[1], "status",
+                "this fake answers status and nothing else"
+            );
+
+            let mut state = self.state.lock().expect("the overlap");
+            state.in_flight += 1;
+            state.arrivals += 1;
+            state.high_water = state.high_water.max(state.in_flight);
+            self.arrived.notify_all();
+            while state.arrivals < self.want {
+                let (guard, timed_out) = self
+                    .arrived
+                    .wait_timeout(state, std::time::Duration::from_secs(10))
+                    .expect("the overlap");
+                state = guard;
+                if timed_out.timed_out() {
+                    break;
+                }
+            }
+            state.in_flight -= 1;
+            drop(state);
+
+            Outcome::Ran {
+                exit: devlaunch_runner::Exit::Code(0),
+                io: CapturedText {
+                    // The id is echoed *as the state*, which `ContainerState`
+                    // keeps whole as `Unknown`. That is what lets the ordering
+                    // test read the returned vector and see which answer landed
+                    // where, without the fake having to record anything.
+                    stdout: format!(r#"{{"state":"{}"}}"#, argv[2]),
+                    stderr: String::new(),
+                },
+            }
+        }
+
+        fn passthrough(&self, _spec: &SpawnSpec) -> Outcome {
+            unreachable!("a listing captures")
+        }
+
+        fn session(&self, _spec: &SpawnSpec, _on_stderr_line: &mut dyn FnMut(&str)) -> Outcome {
+            unreachable!("a listing opens no session")
+        }
+
+        fn detach(&self, _what: &Invocation) -> DetachOutcome {
+            unreachable!("a listing detaches nothing")
+        }
+    }
+
+    #[test]
+    fn the_status_trips_of_one_listing_overlap() {
+        // The whole point of the change: the trips are independent, so the waiting
+        // is shared rather than added up. Serial, the high-water mark is 1.
+        //
+        // Two, as a literal, and not `STATUS_TRIPS_AT_ONCE`: expressing the
+        // expectation in terms of the width under test is how this test passed
+        // against a deliberately serialised build, since setting the width to 1
+        // moved the bar down with it. Overlap at all is the property; how wide the
+        // pool is is a tuning decision the other test covers.
+        const TOGETHER: usize = 2;
+        let workspaces: Vec<_> = (0..4)
+            .map(|n| workspace(&format!("ws-{n}"), local(Path::new("/tmp"))))
+            .collect();
+        let runner = Overlapping::expecting(TOGETHER);
+
+        let states = container_states(&runner, &workspaces);
+
+        assert!(
+            runner.high_water() >= TOGETHER,
+            "the trips ran one at a time: high water {}",
+            runner.high_water()
+        );
+        assert_eq!(states.len(), workspaces.len(), "one answer per workspace");
+    }
+
+    #[test]
+    fn a_batch_larger_than_the_width_still_answers_for_every_workspace_in_order() {
+        // The chunking is the part that could silently drop or reorder a row: the
+        // answers come back per batch and are appended, so a listing wider than
+        // the pool has to read the same as one narrower than it. Nine against a
+        // width of eight is the smallest case with a short second chunk.
+        let ids: Vec<String> = (0..STATUS_TRIPS_AT_ONCE + 1)
+            .map(|n| format!("ws-{n}"))
+            .collect();
+        let workspaces: Vec<_> = ids
+            .iter()
+            .map(|id| workspace(id, local(Path::new("/tmp"))))
+            .collect();
+        // Only the first chunk can rendezvous; the short one must not wait for a
+        // full batch that will never arrive.
+        let runner = Overlapping::expecting(1);
+
+        let states = container_states(&runner, &workspaces);
+
+        let answered: Vec<String> = states
+            .iter()
+            .map(|state| match state {
+                Some(ContainerState::Unknown(word)) => word.clone(),
+                other => panic!("the fake answers its own id as the state: {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            answered, ids,
+            "every workspace answered for, in the order it was given"
         );
     }
 

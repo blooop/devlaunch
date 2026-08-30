@@ -426,7 +426,24 @@ pub enum DetachOutcome {
 ///   is not a fake devpod at all: it plays back a list the test handed it and
 ///   keeps the argv for the assertions to read. `flows::provision`'s `Trips` is
 ///   the example, and its doc says why a recorder cannot join the corpus.
-pub trait Runner {
+/// # `Sync`, because one command's round trips are not one conversation
+///
+/// A listing asks devpod about every workspace it lists, and those questions are
+/// independent: nothing devpod says about one changes what is asked about
+/// another. `flows::listing` therefore asks them together, which means handing
+/// the same `&dyn Runner` to several threads at once, which means this trait has
+/// to promise it can be shared.
+///
+/// The promise costs the production implementation nothing ([`ProcessRunner`] is
+/// a unit struct) and cost the fakes only the change from `RefCell` to `Mutex`
+/// that any shared recorder needs anyway. What it does do is bind every future
+/// implementation: a runner that wants `RefCell` inside it is no longer writable,
+/// and that is the deliberate half of the trade. A seam that can only be driven
+/// from one thread makes every concurrent flow above it impossible, and the
+/// alternative spelling, a `Sync` bound at each call site that needs it, puts the
+/// requirement in the callers rather than in the contract and lets an
+/// implementation exist that satisfies some callers and not others.
+pub trait Runner: Sync {
     /// Run to completion, reading both streams as text.
     fn capture(&self, spec: &SpawnSpec) -> Outcome<CapturedText>;
 

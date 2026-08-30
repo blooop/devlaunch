@@ -20,6 +20,31 @@ naming it and then the tools probe, rides a single setup pass. So an
 interactive `dl <ws>` and a one-shot
 `dl <ws> -- <cmd>` cost the same trips.
 
+## The listing's questions are asked together
+
+`dl --ls` is the one command whose cost grows with the machine. It reads the
+workspace list once, and then asks `devpod status` about every workspace in it,
+including the ones devlaunch did not make, because the `STATE` column is reported
+for every row. That is one round trip per workspace and there is no way around it:
+`devpod list` does not carry a state, so a listing of forty workspaces asks forty
+questions.
+
+What it no longer does is wait for each one before asking the next. The questions
+are independent, so they go out in batches of eight and the waiting overlaps: at
+the 0.45s above, forty workspaces cost about five rounds of a single trip rather
+than forty trips end to end. The trips themselves are unchanged in number, which
+is why `the_listing_costs_one_list_and_one_status_per_workspace` still reads the
+same; what changed is only how much of the waiting happens at once.
+
+Eight is chosen for the shape of the wait rather than for the core count. A trip
+is one process blocking on devpod's own work rather than arithmetic, so the useful
+width is set by how many of those the machine will schedule; and it is bounded
+rather than unlimited because a row costs a devpod process, and sixty at once
+would spend more on contention than the serial version spent waiting.
+
+This is also why the listing is a command somebody runs rather than something on
+the launch path. A launch asks about one workspace, and pays one trip for it.
+
 ## One connection per workspace
 
 The trip that carries `dl <ws> -- <cmd>` at a terminal is OpenSSH, over the host

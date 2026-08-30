@@ -1835,7 +1835,10 @@ pub(crate) mod tests {
     }
 
     /// Something a test wants to happen when a given argv is spawned.
-    type Effect = Box<dyn Fn(&[String])>;
+    /// `Send + Sync` because [`Runner`] is: the listing fans its `devpod status`
+    /// round trips out across threads, so anything a test hangs off a spawn has to
+    /// be shareable too.
+    type Effect = Box<dyn Fn(&[String]) + Send + Sync>;
 
     impl FakeGit {
         pub(crate) fn new() -> Self {
@@ -1869,7 +1872,10 @@ pub(crate) mod tests {
         /// Do this as well, whenever a call is made. For the effect a test needs
         /// that git would have had — a pull that materializes a pointer file.
         #[must_use]
-        pub(crate) fn and_then(mut self, effect: impl Fn(&[String]) + 'static) -> Self {
+        pub(crate) fn and_then(
+            mut self,
+            effect: impl Fn(&[String]) + Send + Sync + 'static,
+        ) -> Self {
             self.extra.push(Box::new(effect));
             self
         }
