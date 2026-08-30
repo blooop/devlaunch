@@ -167,19 +167,6 @@ too: `dl <ws> rm` deletes now, `dl <ws> --rm` deletes after, and neither has to 
 twice to work out which was meant. `--force` follows docker as well. It belongs to
 `dl <ws> rm --force`, never to `--rm`.
 
-**On a workspace verb `--force` is positional, and on a global command it is not.**
-It has to follow both the workspace and the verb, which is the position every example
-here writes it in. Put it in the verb slot and it is read as the verb, so
-`dl <ws> --force rm` answers `Unknown command '--force'`; put it in the workspace slot
-and it is read as the workspace, so `dl --force <ws> rm` answers
-`Unknown workspace '--force'`. Both exit 1 and delete nothing, which is the point: a
-flag that has landed somewhere it cannot mean what you meant refuses rather than
-being dropped. A global command has no slot for it to fall into, so there the
-placement stops mattering and `dl --force --prune` and `dl --prune --force` are one
-line. Pinned by `force_after_the_verb_still_deletes` and its two neighbours in
-`rust/dl/tests/grammar.rs`, and by `a_globals_force_reads_the_same_wherever_it_sits`
-in `rust/dl/src/cli.rs`.
-
 **It stops at work that is nowhere else.** The removal is `dl <ws> rm`'s, guard included,
 so a clone holding uncommitted or unpushed work, or one git could not read to find out,
 refuses, says which, and leaves the workspace standing:
@@ -415,6 +402,44 @@ is never read as a workspace name. `dl prune <ws>` says what moved instead of
 reporting an unknown workspace called `prune`, and a workspace that really is called
 `prune` is still reachable as `dl stop prune`. Use `dl <ws> rm` from now on.
 
+
+### Where `--force` may sit
+
+`--force` is read in one position only: after both the workspace and the verb, which
+is where every example on this page writes it. The two slots ahead of it are already
+spoken for, so a `--force` that lands in either is read as the word that belongs
+there and refused:
+
+```
+dl <ws> --force rm   ->  Unknown command '--force'.        (exit 1, nothing deleted)
+dl --force <ws> rm   ->  Unknown workspace '--force'.      (exit 1, nothing deleted)
+```
+
+**Past the verb it is read, but only `rm` and `rme` do anything with it.** Every
+other verb takes the flag and drops it: `dl <ws> up --force`, `dl <ws> stop --force`
+and `dl <ws> recreate --force` all run exactly as they would without it, silently.
+That is the one place this grammar discards a word rather than refusing it, and it is
+worth knowing because the two halves of the rule read as though they were one: a
+misplaced `--force` refuses, a meaningless one does not. `kill` is the case to
+remember, since it is the verb whose whole point is going ahead anyway. It has no
+`--force` to type and ignores one offered.
+
+**The selector form cannot be forced at all.** `dl rm` with no workspace opens the
+picker, which leaves no slot after the verb, so `dl rm --force` is the verb-slot
+refusal above. There is no spelling of "pick some workspaces and force the removal";
+name the workspace, or answer the refusal the guard prints. The diagnostic's
+suggestion (`dl rm -- --force`) is the generic one for an unknown verb word and would
+run `--force` as a shell command, which is not what anybody typing that meant.
+
+**A global command has no slots, so placement stops mattering there.**
+`dl --force --prune` and `dl --prune --force` are one line, and the same holds for
+every other global. Note this is about the literal word `--force`: `--devcontainer`,
+`--force-worktrees` and `-y` have rules of their own.
+
+Pinned by `force_deletes_only_where_it_follows_both_the_name_and_the_verb` and
+`a_globals_force_reads_the_same_wherever_it_sits` in `rust/dl/src/cli.rs`, and by
+`force_after_the_verb_still_deletes` with its two neighbours in
+`rust/dl/tests/grammar.rs`.
 
 ## Remote Control: every `aid` session, on your phone too
 

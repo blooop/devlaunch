@@ -2237,6 +2237,12 @@ pub(crate) fn dotfiles_update(
 /// devpod, the hostname and the `WORKSPACE` column of `dl --ls` all say
 /// `devlaunch-main-3j1t`.
 ///
+/// That sentence is also written in `README.md` and `docs/workspace-tools.md`, and
+/// `test_title_claim_agrees.py` diffs both of them against this one: the prose is
+/// held against the module that computes the title rather than against itself,
+/// because two pages can agree and both be wrong. Changing the name here means
+/// changing it there in the same commit.
+///
 /// **It is the id, not a second derivation of the spec.** The slugs and the
 /// truncation are [`WorkspaceId::label`]'s, which are [`WorkspaceId::value`]'s, so a
 /// tab and a listing row still match by eye: one is the other with a suffix removed
