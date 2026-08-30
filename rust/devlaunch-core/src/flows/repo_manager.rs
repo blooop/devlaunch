@@ -1835,9 +1835,11 @@ pub(crate) mod tests {
     }
 
     /// Something a test wants to happen when a given argv is spawned.
-    /// `Send + Sync` because [`Runner`] is: the listing fans its `devpod status`
-    /// round trips out across threads, so anything a test hangs off a spawn has to
-    /// be shareable too.
+    /// `Send + Sync` because a `FakeGit` has to be `Sync`, and it can only be that
+    /// if what it holds is. [`Runner`] itself requires `Sync` alone, which is what
+    /// lets the listing fan its `devpod status` round trips out across threads; the
+    /// `Send` here is the ordinary companion bound on a boxed closure rather than
+    /// anything the trait asks for.
     type Effect = Box<dyn Fn(&[String]) + Send + Sync>;
 
     impl FakeGit {

@@ -30,17 +30,33 @@ for every row. That is one round trip per workspace and there is no way around i
 questions.
 
 What it no longer does is wait for each one before asking the next. The questions
-are independent, so they go out in batches of eight and the waiting overlaps: at
-the 0.45s above, forty workspaces cost about five rounds of a single trip rather
-than forty trips end to end. The trips themselves are unchanged in number, which
-is why `the_listing_costs_one_list_and_one_status_per_workspace` still reads the
-same; what changed is only how much of the waiting happens at once.
+are independent, so they go out in batches of eight and the waiting overlaps:
+forty workspaces cost five batches rather than forty trips end to end. The trips
+themselves are unchanged in number, which is why
+`the_listing_costs_one_list_and_one_status_per_workspace` still reads the same;
+what changed is only how much of the waiting happens at once.
+
+**A batch costs the slowest trip in it, not the average.** The eight are started
+together and all eight are waited for before the next eight begin, so this is a
+barrier rather than a pool of eight permits: one slow answer leaves seven threads
+idle until it lands. Five batches of 0.45s is therefore the figure to expect when
+the trips are alike, and the honest floor rather than a promise. It is never worse
+than asking serially, which is what it replaced, but a work queue that started the
+ninth trip the moment any of the first eight returned would be better on a machine
+where one workspace is much slower to answer than the rest. Worth knowing before
+reading a slow `--ls` as something else.
 
 Eight is chosen for the shape of the wait rather than for the core count. A trip
 is one process blocking on devpod's own work rather than arithmetic, so the useful
-width is set by how many of those the machine will schedule; and it is bounded
-rather than unlimited because a row costs a devpod process, and sixty at once
-would spend more on contention than the serial version spent waiting.
+width is set by how many of those the machine will schedule. It is bounded rather
+than unlimited because a row costs a devpod process, and the cost of starting
+sixty at once is a real one; how that trades against the extra overlap has not
+been measured here, and eight is a conservative pick rather than a tuned one.
+
+One thing the change does move: the `devpod-up` **stage** seconds a timing
+document reports for `dl --ls` used to be the sum of the per-row status times and
+are now the wall time of the batch loop, which is smaller. The span count, and
+every individual span, are unchanged.
 
 This is also why the listing is a command somebody runs rather than something on
 the launch path. A launch asks about one workspace, and pays one trip for it.

@@ -1024,6 +1024,16 @@ pub fn enriched_listing(
     // Every status trip first, together, because they are the only part of a row
     // that leaves this machine and they do not depend on each other.
     let states = container_states(runner, &workspaces);
+    // `zip` stops at the shorter side, so a `container_states` that ever came back
+    // short would drop workspaces off the end of `dl --ls` rather than fail. It
+    // cannot today (one answer is pushed per workspace, and the empty case returns
+    // an empty vector), which is exactly why the invariant is worth stating where
+    // it is relied on.
+    debug_assert_eq!(
+        states.len(),
+        workspaces.len(),
+        "one state per workspace, or the listing loses rows"
+    );
     Ok(workspaces
         .iter()
         .zip(states)
@@ -1042,6 +1052,14 @@ pub fn enriched_listing(
 const STATUS_TRIPS_AT_ONCE: usize = 8;
 
 /// The container state of each workspace, in the order they were given.
+///
+/// An answer devpod would not give reads as `None`, whichever way it would not
+/// give it: Python collapses every unreadable answer to `None` and the wire field
+/// is `null` for all of them, so a devpod that refused the question, output that
+/// was not JSON, and JSON with no `state` in it are one row here. The distinctions
+/// exist one layer down ([`devpod::StatusUnreadable`]) for a caller that has
+/// something different to do about each; this one only tells `NotRun` apart, and
+/// only to fail the stage.
 ///
 /// One `devpod status` per workspace, which is the cost this listing has always
 /// paid; what changed is that the waiting overlaps. The trips are independent —
@@ -1215,13 +1233,6 @@ impl SweptRepoNote {
     }
 }
 
-/// devpod's state for one workspace, or nothing when it would not answer.
-///
-/// Python collapses every unreadable answer to `None` and the wire field is `null`
-/// for all of them: a devpod that refused the question, output that was not JSON,
-/// and JSON with no `state` in it. The distinctions exist one layer down
-/// ([`devpod::StatusUnreadable`]) for a caller that has something different to do
-/// about each; this one does not.
 /// What deleting *workspace_id* would destroy, as far as dl can establish.
 ///
 /// The `dl <ws> rm` guard's reader. Answers [`Unsaved::NothingToLose`] for a
@@ -1537,9 +1548,10 @@ mod tests {
     impl FakeDevpodRealGit {
         /// The runner, and the timing exclusion for as long as it lives.
         ///
-        /// [`container_state`] opens the `devpod-up` stage on the **process-global**
-        /// registry, once per row — so an enriched listing built without the guard
-        /// writes into whatever document a concurrent measured test installed, and
+        /// [`container_states`] opens the `devpod-up` stage on the **process-global**
+        /// registry, once per listing — so an enriched listing built without the
+        /// guard writes into whatever document a concurrent measured test installed,
+        /// and
         /// its stage guard closes a stage that test opened rather than one of its
         /// own. In the fixture rather than per test, as `lifecycle`'s `Devpod` and
         /// `launch`'s `Scene` do it, so a new test cannot forget.
@@ -2856,6 +2868,21 @@ mod tests {
         arrived: Condvar,
         /// How many this test expects to be in flight together.
         want: usize,
+        /// The timing exclusion, for the same reason [`FakeDevpodRealGit`] holds
+        /// one: [`container_states`] opens the `devpod-up` stage on the
+        /// **process-global** registry and every worker records a span into it, so
+        /// a listing built without the guard writes into whatever document a
+        /// concurrent measured test installed, and its stage guard closes a stage
+        /// that test opened rather than one of its own. Measured rather than
+        /// feared: without this field, running these two tests beside
+        /// `launch`'s `a_warm_launch_reports_the_devpod_probe_and_the_attach_and_nothing_else`
+        /// failed 12 runs in 15.
+        ///
+        /// Safe against the reentrancy note on [`repo_manager`]'s `FakeGit`, which
+        /// deliberately holds no guard because it is built inside worker threads:
+        /// this one is built on the calling thread, before any worker exists, and
+        /// the workers never ask for a guard of their own.
+        _serialized: timing::Exclusive,
     }
 
     #[derive(Default)]
@@ -2876,6 +2903,7 @@ mod tests {
                 state: Mutex::new(Overlap::default()),
                 arrived: Condvar::new(),
                 want,
+                _serialized: timing::exclusive(),
             }
         }
 
@@ -2937,6 +2965,25 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_listing_asks_nothing_and_opens_no_stage() {
+        // The early return is about the timing document rather than about the
+        // round trips: a machine with no workspaces reported no `devpod-up` stage
+        // when the trips were serial, because the function that opened one was
+        // never reached. Opening one unconditionally would put a step that never
+        // happened into every `dl --ls` on an empty machine.
+        let runner = Overlapping::expecting(1);
+
+        let states = container_states(&runner, &[]);
+
+        assert!(states.is_empty(), "no workspaces, no answers");
+        assert_eq!(
+            runner.high_water(),
+            0,
+            "an empty listing asks devpod nothing"
+        );
+    }
+
+    #[test]
     fn the_status_trips_of_one_listing_overlap() {
         // The whole point of the change: the trips are independent, so the waiting
         // is shared rather than added up. Serial, the high-water mark is 1.
@@ -2966,18 +3013,24 @@ mod tests {
     fn a_batch_larger_than_the_width_still_answers_for_every_workspace_in_order() {
         // The chunking is the part that could silently drop or reorder a row: the
         // answers come back per batch and are appended, so a listing wider than
-        // the pool has to read the same as one narrower than it. Nine against a
-        // width of eight is the smallest case with a short second chunk.
-        let ids: Vec<String> = (0..STATUS_TRIPS_AT_ONCE + 1)
+        // the pool has to read the same as one narrower than it.
+        //
+        // Two full chunks rather than a full one and a short one, and a rendezvous
+        // of the full width rather than of one, because the defect this test names
+        // is *reordering* and a trip that never overlaps another cannot reorder
+        // anything. Collecting in completion order instead of input order was
+        // measured against the earlier shape of this test (nine ids, a rendezvous
+        // of one) and went unnoticed in about four runs in five. Held to the width,
+        // every trip in a chunk is released together, so a collector that reads
+        // completion order sees a shuffled chunk on essentially every run.
+        let ids: Vec<String> = (0..STATUS_TRIPS_AT_ONCE * 2)
             .map(|n| format!("ws-{n}"))
             .collect();
         let workspaces: Vec<_> = ids
             .iter()
             .map(|id| workspace(id, local(Path::new("/tmp"))))
             .collect();
-        // Only the first chunk can rendezvous; the short one must not wait for a
-        // full batch that will never arrive.
-        let runner = Overlapping::expecting(1);
+        let runner = Overlapping::expecting(STATUS_TRIPS_AT_ONCE);
 
         let states = container_states(&runner, &workspaces);
 

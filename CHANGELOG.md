@@ -148,6 +148,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`dl --ls` asks its `devpod status` round trips together, and `Runner` now
+  requires `Sync`.** A listing reads the workspace list once and then asks devpod
+  about every workspace in it, because the `STATE` column is reported for every
+  row and `devpod list` carries no state. Those trips are required and none has
+  been removed. What the listing no longer does is wait for each answer before
+  asking the next question: nothing devpod says about one workspace changes what
+  is asked about another. They go out in batches of eight, so a forty workspace
+  machine pays five batches rather than forty trips end to end, at a measured
+  0.45s a trip. The number of trips is unchanged, which is why the test that pins
+  that cost reads exactly as before.
+
+  **The seam change is the part with consequences beyond this repository.**
+  `devlaunch_runner::Runner` gains `Sync` as a supertrait, which is what lets one
+  `&dyn Runner` be handed to several threads. Any out-of-tree implementation
+  holding a `RefCell`, `Rc` or `Cell` no longer compiles. In tree it cost
+  nothing: `ProcessRunner` is a unit struct, and three test wrappers took the
+  change from `RefCell` to `Mutex` that a shared recorder wants anyway. The
+  alternative, a `Sync` bound written at each call site that needs one, was
+  rejected because it puts the requirement in the callers rather than in the
+  contract and so permits an implementation that satisfies some callers and not
+  others. One row of `devlaunch-runner/public-api.txt` moves; the promised `api`
+  tier is untouched.
+
+  A timing document for `dl --ls` reports smaller `devpod-up` **stage** seconds as
+  a result, since that stage is now the wall time of the batch loop rather than
+  the sum of the per-row status times. The spans themselves, and their count, are
+  unchanged.
+
 - **A workspace id is derived once, and the three signatures that had a triple in
   hand stopped flattening it into loose strings.** `WorkspaceId::value()` ran the
   whole derivation on every call — a SHA-256 over the triple, three slug passes
