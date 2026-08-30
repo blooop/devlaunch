@@ -167,6 +167,19 @@ too: `dl <ws> rm` deletes now, `dl <ws> --rm` deletes after, and neither has to 
 twice to work out which was meant. `--force` follows docker as well. It belongs to
 `dl <ws> rm --force`, never to `--rm`.
 
+**On a workspace verb `--force` is positional, and on a global command it is not.**
+It has to follow both the workspace and the verb, which is the position every example
+here writes it in. Put it in the verb slot and it is read as the verb, so
+`dl <ws> --force rm` answers `Unknown command '--force'`; put it in the workspace slot
+and it is read as the workspace, so `dl --force <ws> rm` answers
+`Unknown workspace '--force'`. Both exit 1 and delete nothing, which is the point: a
+flag that has landed somewhere it cannot mean what you meant refuses rather than
+being dropped. A global command has no slot for it to fall into, so there the
+placement stops mattering and `dl --force --prune` and `dl --prune --force` are one
+line. Pinned by `force_after_the_verb_still_deletes` and its two neighbours in
+`rust/dl/tests/grammar.rs`, and by `a_globals_force_reads_the_same_wherever_it_sits`
+in `rust/dl/src/cli.rs`.
+
 **It stops at work that is nowhere else.** The removal is `dl <ws> rm`'s, guard included,
 so a clone holding uncommitted or unpushed work, or one git could not read to find out,
 refuses, says which, and leaves the workspace standing:
