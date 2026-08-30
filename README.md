@@ -355,8 +355,9 @@ anything to its `devcontainer.json`.
   `DEVLAUNCH_ZELLIJ=1` is the ask, once in a shell profile or per launch; it costs 2.2s to 3.5s
   of a cold launch, which is why it waits to be asked.
 - **A terminal named after the workspace.** `dl blooop/devlaunch` names the pane
-  `devlaunch-main-3j1t` in zellij, tmux, or a plain terminal window: the workspace id,
-  the same string `dl --ls` prints and the container's hostname carries.
+  `devlaunch@main` in zellij, tmux, or a plain terminal window: the workspace id read for
+  a person, with the hashed suffix off, where `dl --ls` and the container's hostname both
+  say `devlaunch-main-3j1t`.
 - **A shared pixi package cache**, bound in from the host, so dotfiles that provision tools with
   `pixi global sync` download each package once per machine instead of once per container. On one
   measured profile that is 18s to 28s instead of 62s to 113s and 1.2 GB.
