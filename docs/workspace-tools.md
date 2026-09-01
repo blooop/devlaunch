@@ -511,8 +511,11 @@ session; this one writes an escape sequence and two lines into a profile.
 `<repo>@<branch>`, with the hashed suffix off.** `dl blooop/devlaunch` names the pane
 `devlaunch@main` where devpod, the container's hostname and the `WORKSPACE` column of
 `dl --ls` all say `devlaunch-main-3j1t`. One string with two characters changed, so a
-tab and a listing row still match by eye. The same sentence is in `README.md` and in
-`flows/launch.rs`, and `test_title_claim_agrees.py` holds all three to one answer.
+tab and a listing row still match by eye. `README.md`, `docs/workspaces.md` and
+`rust/devlaunch-core/src/flows/launch.rs` name the pane too, and
+`test_title_claim_agrees.py` holds the name all four write against the `label()`
+assertion in `rust/devlaunch-core/src/domain/workspace_id.rs`, which `cargo test`
+checks against what `label()` returns.
 
 Two characters, and they are the two a glance cannot use. The suffix carries the
 workspace's identity and none of its meaning: it is what keeps two branches whose

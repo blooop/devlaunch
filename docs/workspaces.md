@@ -62,6 +62,9 @@ The other two are renderings of that same id, cut to what their surface is for:
 They are renderings and not separate derivations, which is what keeps them
 matchable: the tab is the id with the suffix off and one dash spelled `@`, so
 `devlaunch@main` and `devlaunch-main-3j1t` are recognisably the same workspace.
+The tab's name in that table is one of four copies, and
+`test_title_claim_agrees.py` holds them to the `label()` assertion in
+`rust/devlaunch-core/src/domain/workspace_id.rs`.
 
 Which dash the `@` replaces is not readable off the id, since a repo slug holds
 dashes of its own, so the tab's name travels with the launch that resolved it rather

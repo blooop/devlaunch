@@ -1415,6 +1415,14 @@ mod tests {
         assert_eq!(parsed.value(), "devlaunch-feature-auth-np10");
         assert_eq!(parsed.label(), "devlaunch@feature-auth");
 
+        // The example the README, `docs/workspaces.md`, `docs/workspace-tools.md`
+        // and `flows::launch`'s doc comment all name. `test_title_claim_agrees.py`
+        // reads this literal as the answer it holds those four to, so it is here
+        // rather than there: a separator that moves fails this line first, and the
+        // prose follows it. Written as its own assertion, and not folded into the
+        // table below, because that is what the guard's regex anchors on.
+        assert_eq!(id("blooop", "devlaunch", "main").label(), "devlaunch@main");
+
         // Stated as a *difference*, not as a reconstruction, because which dash the
         // `@` replaces cannot be read off the id: a repo slug holds dashes of its
         // own, so `my-repo@main` and `my@repo-main` are the same id read two ways.
