@@ -2269,6 +2269,25 @@ fn worktree_report_lines(report: &WorktreeReport) -> Vec<String> {
             &by_hand,
         ));
     }
+    if !report.refused_derivatives.is_empty() {
+        let by_hand: Vec<std::path::PathBuf> = report
+            .refused_derivatives
+            .iter()
+            .map(|refusal| refusal.path.clone())
+            .collect();
+        // Its own heading, because the worktree holding each of these is
+        // standing and was never being removed: filed under the one above, the
+        // report would name a worktree that did come away, or one nobody
+        // touched. What is left is a part-removed subtree, so the sentence says
+        // the one command that puts it back.
+        lines.extend(report_refusals(
+            report.refused_derivatives.iter(),
+            "Some regenerable subtrees would not come away. The worktrees holding them \
+             are untouched, and a subtree left part-removed is restored by re-running \
+             its own install. These refused:",
+            &by_hand,
+        ));
+    }
     lines
 }
 

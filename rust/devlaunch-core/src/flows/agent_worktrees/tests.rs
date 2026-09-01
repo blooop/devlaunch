@@ -1889,3 +1889,47 @@ fn a_derivative_the_plan_named_is_named_again_when_the_clone_will_not_answer() {
         "a run that was told to reclaim and reclaimed nothing has something to say"
     );
 }
+
+#[test]
+fn a_subtree_that_would_not_come_away_is_not_reported_as_a_worktree() {
+    // The environment refuses part-way: a directory inside it cannot be
+    // unlinked from. What refused is a path inside a site that is standing
+    // untouched, and `report.refused` is rendered under "Some agent worktrees
+    // would not come away" -- a heading naming a thing this run never tried to
+    // remove, over a path that is not one.
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let world = Clone::new();
+    let worktree = world.worktree("agent-one");
+    let env = installed_env(&worktree, "default");
+    commit_the_project(&world, &worktree, "agent-one");
+    std::fs::write(worktree.join("NOTES.md"), "unsaved\n").expect("the human's own file");
+    world.containerise();
+
+    let plan = world.plan();
+
+    assert!(going_dirs(&plan).is_empty(), "the site must stand");
+    assert_eq!(reclaiming(&plan).len(), 1, "the plan named one");
+
+    let shut = env.join("lib");
+    std::fs::set_permissions(&shut, std::fs::Permissions::from_mode(0o500)).expect("chmod");
+    let (report, _) = world.act(&plan);
+    std::fs::set_permissions(&shut, std::fs::Permissions::from_mode(0o700)).expect("chmod back");
+
+    assert!(report.reclaimed.is_empty(), "it did not come away");
+    assert!(
+        report.refused.is_empty(),
+        "no agent worktree refused: the site was never being removed, so a refusal \
+         filed here is printed under a heading that names the wrong thing"
+    );
+    assert_eq!(
+        report
+            .refused_derivatives
+            .iter()
+            .map(|it| it.path.clone())
+            .collect::<Vec<_>>(),
+        vec![shut],
+        "the subtree is what refused, and it is what has to be named"
+    );
+    assert!(!report.nothing_to_say());
+}

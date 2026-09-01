@@ -1848,7 +1848,13 @@ fn weigh(
     }
 }
 
-/// The tagged derivatives inside one standing site's own directory.
+/// The tagged derivatives inside the directory of one site this run is leaving.
+///
+/// *Leaving*, not *standing*: [`weigh`] calls this on every site of a subtree
+/// something in stands, and a site whose own verdict is `Collectable` is one of
+/// them when a nested site is what stands. That site is in neither `going` nor
+/// `standing` — nothing above a standing site can go — so it is staying, and
+/// what is inside it is this pass's to answer for.
 ///
 /// Two arms take none. A registration with nothing at its place has no
 /// directory to walk. And a **symlink** in the worktrees place is never walked:
@@ -2069,6 +2075,12 @@ pub struct WorktreeReport {
     pub reclaimed: Vec<ReclaimedDerivative>,
     /// The ones the plan named that the re-read would not hand back.
     pub withheld_derivatives: Vec<WithheldDerivative>,
+    /// Paths inside a derivative that would not come away. Its own list rather
+    /// than [`Self::refused`]'s, because that one is reported as *agent
+    /// worktrees that would not come away* and none of these is a worktree:
+    /// every one sits inside a site this run has just said it is leaving, and
+    /// the site itself was never being removed.
+    pub refused_derivatives: Vec<Refusal>,
 }
 
 impl WorktreeReport {
@@ -2092,6 +2104,7 @@ impl WorktreeReport {
             && self.forget_refused.is_empty()
             && self.reclaimed.is_empty()
             && self.withheld_derivatives.is_empty()
+            && self.refused_derivatives.is_empty()
     }
 }
 
@@ -2267,7 +2280,7 @@ fn reclaim_derivatives(
                 usage: derivative.usage().clone(),
             }),
             TreeSweep::WhatItCould(refused) | TreeSweep::Nothing(refused) => {
-                report.refused.extend(refused.iter().cloned());
+                report.refused_derivatives.extend(refused.iter().cloned());
             }
         }
     }

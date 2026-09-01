@@ -77,7 +77,9 @@ pub enum PruneOutcome {
     /// A live workspace's source could not be followed, so nothing was removed:
     /// no clone is unreferenced while a workspace is unaccounted for.
     Unlocatable(NonEmpty<Unlocatable>),
-    Acted(PruneReport),
+    /// Boxed because the report is an order of magnitude the larger arm and
+    /// this enum is returned by value: `clippy::large_enum_variant`.
+    Acted(Box<PruneReport>),
 }
 
 /// Carry out `plan`: remove the directories, then forget them.
@@ -216,7 +218,7 @@ pub fn prune_clones(
         forget_clone(storage, record, notices);
     }
     extend_with_cache(notices, cache_notices);
-    Ok(PruneOutcome::Acted(report))
+    Ok(PruneOutcome::Acted(Box::new(report)))
 }
 
 /// Remove the volumes the plan named, and drop the copies the removal made
