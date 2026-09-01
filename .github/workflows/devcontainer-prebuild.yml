@@ -115,7 +115,7 @@ jobs:
       # repository is written against -- so the tag this job publishes is
       # computed by the same devpod that will later look for it. That agreement
       # is the whole point of not installing devpod some other way here.
-      - uses: prefix-dev/setup-pixi@v0.9.6
+      - uses: prefix-dev/setup-pixi@v0.10.2
         with:
           cache: true
           frozen: true

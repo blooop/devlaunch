@@ -86,7 +86,7 @@ jobs:
       # No devpod install step: devpod is a pixi dependency, already in the
       # lockfile setup-pixi restores, and it is the version this tree is pinned
       # against rather than whatever a runner image happens to carry.
-      - uses: prefix-dev/setup-pixi@v0.9.6
+      - uses: prefix-dev/setup-pixi@v0.10.2
         with:
           cache: true
           frozen: true
