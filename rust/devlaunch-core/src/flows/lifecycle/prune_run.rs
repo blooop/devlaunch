@@ -67,6 +67,11 @@ impl PruneReport {
     pub fn finished(&self) -> bool {
         self.refused.is_empty()
             && self.worktrees.refused.is_empty()
+            // A part-removed environment is a directory the user was told would
+            // go and which is still there, in pieces. `withheld` is absent from
+            // this list deliberately -- a changed mind leaves nothing half done
+            // -- and a refusal is the opposite of that.
+            && self.worktrees.refused_derivatives.is_empty()
             && self.worktrees.forget_refused.is_empty()
     }
 }

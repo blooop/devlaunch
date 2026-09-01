@@ -5490,3 +5490,36 @@ fn a_repair_that_cannot_be_made_is_not_half_made() {
         "the id is written only once devpod's record says the same thing"
     );
 }
+
+#[test]
+fn a_subtree_that_would_not_come_away_leaves_the_run_unfinished() {
+    use crate::flows::agent_worktrees::WorktreeReport;
+    use crate::flows::repo_manager::{Refusal, RefusalReason};
+
+    // The exit contract. `finished()` decides `Ending::Done` against
+    // `Ending::Unfinished`, and its own caller says why: a directory the user
+    // was told would go is still on disk. A derivative that refused leaves an
+    // environment part-removed, which is more than "still on disk" -- and it
+    // is the ordinary case for a container-written tree, not the exotic one.
+    let mut report = PruneReport {
+        removed: Vec::new(),
+        withheld: Vec::new(),
+        refused: Vec::new(),
+        reclaimed: Vec::new(),
+        volumes_kept: Vec::new(),
+        worktrees: WorktreeReport::default(),
+    };
+
+    assert!(report.finished(), "nothing was refused");
+
+    report.worktrees.refused_derivatives.push(Refusal {
+        path: PathBuf::from("/c/.claude/worktrees/agent-one/.pixi/envs/default/lib"),
+        reason: RefusalReason::System("Permission denied (os error 13)".to_owned()),
+    });
+
+    assert!(
+        !report.finished(),
+        "a part-removed environment is not a finished run, and exiting 0 tells \
+         every script that called dl that it was"
+    );
+}
