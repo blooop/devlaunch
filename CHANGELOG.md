@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`aid` now tells a session manager which agent it started.** Every `aid` launch
+  exports `HERDR_AGENT=<agent>` for the session it opens, naming whichever agent
+  it picked, so [herdr](https://herdr.dev) reports a workspace agent as idle,
+  working or blocked instead of showing nothing at all.
+
+  The gap was narrower than it looked, which is why the fix is this small. A
+  manager first decides *which* agent a pane holds, usually from the pane's
+  foreground process, and only then matches that agent's rules against the pane's
+  screen. Under `aid` the foreground processes are `aid`, `ssh` and two `devpod`s
+  with no `claude` anywhere, so the first step failed and took the second with it.
+  The second step was never broken: `dl <ws> -- <agent>` pipes the agent's own TUI
+  through the pane, so the pane holds the real screen. Only the name was missing.
+
+  Measured on hardware before it was built and again after (blooop/devlaunch#549).
+  The variable reaches a manager through the **ssh child**, not through `aid`
+  itself: a `setenv` after start does not rewrite `/proc/<pid>/environ`, which the
+  kernel fixes at exec, so `aid`'s own row carries nothing and the `ssh` it spawns
+  carries `HERDR_AGENT=claude`. herdr walks the pane's foreground processes, which
+  is what makes the child enough. The plausible-looking version of this change is
+  a silent no-op, so it was checked that way round rather than reasoned about.
+
+  Written on every launch that starts an agent, over whatever the environment
+  already held, and without checking whether a manager is running. `aid` is what
+  *decides* which agent starts, so a `HERDR_AGENT=codex` left in a profile is
+  wrong the moment `aid --claude` runs, and detecting herdr first would be a second
+  thing to be wrong about that fails silently. A line that starts no agent, a
+  retired spelling `dl` is about to refuse included, writes nothing. Plain `dl`
+  writes nothing either: `dl <ws> -- claude` typed by hand is your command, and
+  reading an agent back out of a command tail would be a guess.
+
+  `HERDR_AGENT` is herdr's name and the one manager-specific word in either
+  binary. Nothing is forwarded into the container: the variable is set on the host,
+  for the host process a manager inspects.
+
 ## [0.26.0] - 2026-09-01
 
 ### Added

@@ -651,6 +651,76 @@ names the pane instead. The window title zellij then publishes to the outer
 terminal is `<session> | <pane title>`, so the workspace id is what shows up in a
 kitty tab bar.
 
+## Telling a session manager which agent is running
+
+Session managers like [herdr](https://herdr.dev), and the tmux-and-worktree family
+generally, put each agent in a pane and tell you which ones are working and which
+are stopped waiting for you. Under `dl` they used to tell you nothing, and the
+reason is narrower than it looks.
+
+A manager learns what an agent is doing in two steps. First it decides *which*
+agent a pane holds, usually from the pane's foreground process. Then it matches
+that agent's rules against the pane's screen. Under `aid` the first step fails and
+takes the second with it: the foreground processes are `aid`, `ssh` and two
+`devpod`s, with no `claude` anywhere, so no agent is identified and no rules are
+ever run.
+
+The second step was never broken. `dl <ws> -- <agent>` pipes the agent's own TUI
+through the pane, so the pane holds the real screen, prompt box and permission
+dialogs included. Only the name was missing.
+
+So `aid` supplies it. Every `aid` launch that starts an agent exports
+`HERDR_AGENT=<agent>` for the session, naming whichever agent it picked:
+
+```bash
+aid blooop/devlaunch@fix/42        # exports HERDR_AGENT=claude
+aid --codex blooop/devlaunch       # exports HERDR_AGENT=codex
+```
+
+Nothing else changes and nothing has to be turned on. A herdr pane running the
+line above reports the workspace's agent as idle, working and blocked, tracking
+Claude's own screen through the container. Together with the pane title from the
+section above, which is already the workspace id, a manager can say both which
+workspace a pane is and what its agent is doing.
+
+### Why it is written every time
+
+`aid` writes the variable on every launch that starts an agent, over whatever the
+environment already held, and without checking whether a manager is running.
+
+Writing over is the point. `aid` is the thing that *decides* which agent starts, so
+it is the only thing that can be right about it. A `HERDR_AGENT=codex` left in a
+shell profile for some other wrapper is wrong the moment `aid --claude` runs, and a
+manager that believed it would match codex's rules against Claude's screen, which
+classifies nothing and says nothing about why.
+
+Not checking first is the same argument. Detecting herdr would be a second thing to
+be wrong about, and being wrong about it fails silently, which is the failure this
+whole section exists to remove. A machine with no session manager pays one `setenv`
+for a name nothing reads.
+
+A line that starts no agent writes nothing, and that includes a retired spelling
+`dl` is about to refuse. There is no session there for anyone to classify.
+
+### What this does not do
+
+**It is one manager's variable.** `HERDR_AGENT` is herdr's name, and it is the only
+manager-specific word in either binary. A manager with an equivalent override needs
+that override set some other way; a manager with none is still blind, and no
+amount of cooperation from `dl` would change that.
+
+**Plain `dl` sets nothing**, because plain `dl` has no agent to name. `dl <ws> --
+claude` typed out by hand is your command, and reading an agent back out of a
+command tail would be a guess. Export the variable yourself on a line like that:
+
+```bash
+HERDR_AGENT=claude dl blooop/devlaunch -- claude
+```
+
+**Nothing is forwarded into the container.** The variable is set on the host, for
+the host process a manager inspects. It is not in the workspace's `SendEnv` permit
+list and no agent inside sees it.
+
 ## The shared pixi package cache
 
 Every container `dl` creates gets one host directory bound into it, and
