@@ -2899,12 +2899,20 @@ mod tests {
     struct Overlap {
         in_flight: usize,
         high_water: usize,
-        /// Arrivals ever, which only goes up. The rendezvous waits on this and
-        /// not on `in_flight`: a thread that has already been released decrements
-        /// `in_flight` on its way out, so waiting on that count lets the last
-        /// arrival free itself and leave the earlier ones waiting for a number
-        /// that has just gone back down. That was a ten second timeout per run.
-        arrivals: usize,
+        /// Arrivals at the barrier that has not tripped yet, reset each time one
+        /// does. Not `in_flight`, because a thread already released decrements
+        /// that on its way out, so waiting on it lets the last arrival free
+        /// itself and leave the earlier ones waiting for a number that has just
+        /// gone back down -- a ten second timeout per run. And not a cumulative
+        /// count of arrivals ever, because `chunks` releases one batch and then
+        /// starts another: a total that only goes up is already past `want` when
+        /// the second batch arrives, so every batch after the first sails through
+        /// without waiting for anything and never overlaps.
+        waiting: usize,
+        /// Barriers tripped, one per batch that actually rendezvoused. What lets
+        /// a test assert the overlap it is claiming coverage of happened in
+        /// *every* batch rather than only the first.
+        released: usize,
     }
 
     impl Overlapping {
@@ -2920,6 +2928,11 @@ mod tests {
         fn high_water(&self) -> usize {
             self.state.lock().expect("the overlap").high_water
         }
+
+        /// How many batches rendezvoused, rather than sailing past the barrier.
+        fn released(&self) -> usize {
+            self.state.lock().expect("the overlap").released
+        }
     }
 
     impl Runner for Overlapping {
@@ -2932,17 +2945,26 @@ mod tests {
 
             let mut state = self.state.lock().expect("the overlap");
             state.in_flight += 1;
-            state.arrivals += 1;
             state.high_water = state.high_water.max(state.in_flight);
-            self.arrived.notify_all();
-            while state.arrivals < self.want {
-                let (guard, timed_out) = self
-                    .arrived
-                    .wait_timeout(state, std::time::Duration::from_secs(10))
-                    .expect("the overlap");
-                state = guard;
-                if timed_out.timed_out() {
-                    break;
+            state.waiting += 1;
+            if state.waiting >= self.want {
+                // The last arrival trips the barrier and re-arms it for the next
+                // batch. Re-arming is the whole difference from a cumulative
+                // count, and it is what makes the second chunk overlap too.
+                state.waiting = 0;
+                state.released += 1;
+                self.arrived.notify_all();
+            } else {
+                let mine = state.released;
+                while state.released == mine {
+                    let (guard, timed_out) = self
+                        .arrived
+                        .wait_timeout(state, std::time::Duration::from_secs(10))
+                        .expect("the overlap");
+                    state = guard;
+                    if timed_out.timed_out() {
+                        break;
+                    }
                 }
             }
             state.in_flight -= 1;
@@ -3052,6 +3074,12 @@ mod tests {
         // of one) and went unnoticed in about four runs in five. Held to the width,
         // every trip in a chunk is released together, so a collector that reads
         // completion order sees a shuffled chunk on essentially every run.
+        //
+        // `released` is asserted rather than trusted, because the claim above was
+        // false for half the input until the barrier learned to re-arm: with a
+        // cumulative arrival count the second chunk was already past `want` when
+        // it arrived and never waited for anything, so it contributed no overlap
+        // and no reordering coverage at all.
         let ids: Vec<String> = (0..STATUS_TRIPS_AT_ONCE * 2)
             .map(|n| format!("ws-{n}"))
             .collect();
@@ -3083,6 +3111,16 @@ mod tests {
         assert_eq!(
             answered, ids,
             "every workspace answered for, in the order it was given"
+        );
+        assert_eq!(
+            runner.released(),
+            2,
+            "both chunks have to rendezvous, or the second one covers no reordering"
+        );
+        assert_eq!(
+            runner.high_water(),
+            STATUS_TRIPS_AT_ONCE,
+            "a whole chunk is in flight at once, and never more than one chunk"
         );
     }
 
