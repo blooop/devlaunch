@@ -114,7 +114,7 @@ jobs:
           exit 1
 
       - name: Build conda package
-        uses: prefix-dev/rattler-build-action@v0.2.38
+        uses: prefix-dev/rattler-build-action@v0.2.39
         with:
           recipe-path: conda.recipe/recipe.yaml
           # `--experimental` is what enables the recipe's `load_from_file`, which
