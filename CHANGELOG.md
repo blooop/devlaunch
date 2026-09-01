@@ -168,8 +168,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   alternative, a `Sync` bound written at each call site that needs one, was
   rejected because it puts the requirement in the callers rather than in the
   contract and so permits an implementation that satisfies some callers and not
-  others. One row of `devlaunch-runner/public-api.txt` moves; the promised `api`
-  tier is untouched.
+  others. One row of `devlaunch-runner/public-api.txt` moves.
+
+  `devlaunch-core/public-api.api.txt` does not move at all, and that is the part
+  to read twice rather than the reassurance it looks like. The promised tier hands
+  out `CommandContext::new(&'r dyn Runner)`, `ColdPath::new`, `Refresh::ask` and
+  `Provision::provision_tools`, and every one of them names a `dyn Runner` that
+  has just narrowed to `dyn Runner + Sync`. They render exactly as before, so the
+  promised contract tightened without a single row changing. The snapshot guards
+  compare rendered rows and cannot see a supertrait reach the promised surface
+  through a `dyn` it names, which is why this paragraph is the migration note and
+  the diff is not.
 
   A timing document for `dl --ls` reports smaller `devpod-up` **stage** seconds as
   a result, since that stage is now the wall time of the batch loop rather than
