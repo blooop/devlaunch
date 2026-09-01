@@ -359,12 +359,17 @@ mod tests {
         }
     }
 
-    /// The agent aid picked is in the environment dl's ssh child will inherit.
+    /// Every name in the table reaches the environment **verbatim**.
     ///
-    /// The name and not merely "something": herdr matches the value against a
-    /// manifest id, so `claude` classifies and `Claude` or `claude-code` does not.
-    /// Every name in aid's own table is one of herdr's ids, and this is what holds
-    /// that true as agents are added (devlaunch#549).
+    /// Verbatim is the whole of what this pins, and it is worth pinning: herdr
+    /// matches the value against a manifest id, so `claude` classifies a pane
+    /// where `Claude` or `claude-code` identifies nothing and runs no rules. A
+    /// transformation applied here would therefore fail at the far end, in
+    /// silence, which is the failure devlaunch#548 is about.
+    ///
+    /// What this cannot check is that the names *are* ids herdr knows: that list
+    /// lives in herdr and not in this tree. The convention is stated on
+    /// [`rewrite`]'s agent table instead, where a new row is written.
     #[test]
     fn aid_names_the_agent_it_starts() {
         for name in rewrite::agent_names() {

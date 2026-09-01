@@ -85,6 +85,16 @@ pub(crate) const AGENT_ENV_VAR: &str = "DEVLAUNCH_AID_AGENT";
 ///
 /// In the order Python's dict is written, which is the order `--help` lists the
 /// flags in after sorting.
+///
+/// **A name here doubles as a session manager's id**, because it is what aid
+/// exports as `HERDR_AGENT` (`main.rs`'s `SESSION_MANAGER_AGENT_VAR`). herdr keeps
+/// a detection manifest per agent, keyed by exactly these strings, so `claude`
+/// classifies a pane where `claude-code` or `Claude` would identify nothing and
+/// silently run no rules at all. Adding a row means checking the manager knows the
+/// name: herdr publishes one manifest per agent and covers most of these CLIs
+/// already. No test can hold this, because the list of ids lives in herdr and not
+/// in this tree, which is the honest reason it is written here rather than
+/// asserted somewhere.
 const AGENTS: &[(&str, Agent)] = &[
     (
         "claude",
