@@ -669,8 +669,8 @@ The second step was never broken. `dl <ws> -- <agent>` pipes the agent's own TUI
 through the pane, so the pane holds the real screen, prompt box and permission
 dialogs included. Only the name was missing.
 
-So `aid` supplies it. Every `aid` launch exports `HERDR_AGENT=<agent>` for the
-session it starts, naming whichever agent it picked:
+So `aid` supplies it. Every `aid` launch that starts an agent exports
+`HERDR_AGENT=<agent>` for the session, naming whichever agent it picked:
 
 ```bash
 aid blooop/devlaunch@fix/42        # exports HERDR_AGENT=claude
