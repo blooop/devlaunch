@@ -1380,8 +1380,76 @@ mod tests {
 
         let document = document_of(registry);
 
+        assert!(
+            stages_within_total(&document),
+            "stages exceed the total: {document:?}"
+        );
+    }
+
+    /// Whether the document's stages account for no more than its total.
+    ///
+    /// Asked with slack, and the slack is not a fudge factor: every number in a
+    /// document went through `round6` on its own, so this compares a sum of
+    /// rounded parts against a separately rounded whole. That sum can exceed
+    /// that whole by arithmetic rather than by double-charging -- each part may
+    /// have been rounded up by as much as half a microsecond while the total was
+    /// rounded down by as much. An exact `<=` calls that a decomposition bug
+    /// when it is the reporting precision, which is how this test spent a while
+    /// failing on one run in some number of runs.
+    ///
+    /// So the bound is that precision, not a number lowered until the test
+    /// passed: one half-microsecond per stage, plus one for the total. Binary
+    /// addition error is orders of magnitude below that and needs no room of its
+    /// own. A stage genuinely charged twice overshoots by a sleep, so the check
+    /// still catches what it is here for.
+    ///
+    /// Separate from the test that uses it so the boundary can be exercised
+    /// without waiting on a sleep to land on the wrong side of a microsecond.
+    fn stages_within_total(document: &Document) -> bool {
         let stages: f64 = document.stages.iter().map(|stage| stage.seconds).sum();
-        assert!(stages <= document.total, "{stages} against {document:?}");
+        let slack = (document.stages.len() + 1) as f64 * 0.5e-6;
+        stages <= document.total + slack
+    }
+
+    /// A document assembled by hand rather than measured, holding the numbers a
+    /// real run reported.
+    fn reported(total: f64, stages: &[f64]) -> Document {
+        Document {
+            total,
+            total_epoch: TOTAL_EPOCH,
+            stages: stages
+                .iter()
+                .map(|seconds| StageReport {
+                    stage: "devpod-up",
+                    seconds: *seconds,
+                    outcome: "ok",
+                    spans: vec![],
+                })
+                .collect(),
+            prewarm: None,
+        }
+    }
+
+    #[test]
+    fn rounding_alone_does_not_read_as_stages_exceeding_the_total() {
+        // The exact numbers from the run that failed: two stages whose rounded
+        // seconds sum to 0.060256000000000004 against a total rounded to
+        // 0.060256. Nothing was charged twice; the sixth decimal place moved.
+        assert!(stages_within_total(&reported(
+            0.060256,
+            &[0.030157, 0.030099]
+        )));
+    }
+
+    #[test]
+    fn a_stage_charged_twice_still_reads_as_exceeding_the_total() {
+        // The failure the check exists for, at the scale it actually occurs:
+        // a whole stage counted against a total that never held it. Far outside
+        // any slack a rounding argument can buy.
+        assert!(!stages_within_total(&reported(
+            0.060256,
+            &[0.030157, 0.030099, 0.030157]
+        )));
     }
 
     // --- the handoff stamp --------------------------------------------------
