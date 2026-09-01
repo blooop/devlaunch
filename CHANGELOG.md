@@ -148,13 +148,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **`dl --ls` asks its `devpod status` round trips together, and `Runner` now
-  requires `Sync`.** A listing reads the workspace list once and then asks devpod
-  about every workspace in it, because the `STATE` column is reported for every
-  row and `devpod list` carries no state. Those trips are required and none has
-  been removed. What the listing no longer does is wait for each answer before
-  asking the next question: nothing devpod says about one workspace changes what
-  is asked about another. They go out in batches of eight, so a forty workspace
+- **`dl --ls --json` asks its `devpod status` round trips together, and `Runner`
+  now requires `Sync`.** The `--json` is the whole of which command this is about:
+  the human table `dl --ls` prints has no state column and costs one `devpod list`
+  and nothing per row. The document is the surface carrying a `state` for every
+  workspace, and `devpod list` does not answer that, so the document asks devpod
+  about every workspace in it, including the ones devlaunch did not make. Those
+  trips are required and none has been removed. What the document no longer does
+  is wait for each answer before asking the next question: nothing devpod says
+  about one workspace changes what is asked about another. They go out in batches
+  of eight, so a forty workspace
   machine pays five batches rather than forty trips end to end, at a measured
   0.45s a trip. The number of trips is unchanged, which is why the test that pins
   that cost reads exactly as before.
@@ -180,10 +183,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   through a `dyn` it names, which is why this paragraph is the migration note and
   the diff is not.
 
-  A timing document for `dl --ls` reports smaller `devpod-up` **stage** seconds as
-  a result, since that stage is now the wall time of the batch loop rather than
-  the sum of the per-row status times. The spans themselves, and their count, are
-  unchanged.
+  A timing document for `dl --ls --json` reports smaller `devpod-up` **stage**
+  seconds as a result, since that stage is now the wall time of the batch loop
+  rather than the sum of the per-row status times. The spans themselves, and their
+  count, are unchanged, so the stage now reports less than the spans inside it add
+  up to.
 
 - **A workspace id is derived once, and the three signatures that had a triple in
   hand stopped flattening it into loose strings.** `WorkspaceId::value()` ran the

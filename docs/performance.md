@@ -22,12 +22,15 @@ interactive `dl <ws>` and a one-shot
 
 ## The listing's questions are asked together
 
-`dl --ls` is the one command whose cost grows with the machine. It reads the
-workspace list once, and then asks `devpod status` about every workspace in it,
-including the ones devlaunch did not make, because the `STATE` column is reported
-for every row. That is one round trip per workspace and there is no way around it:
-`devpod list` does not carry a state, so a listing of forty workspaces asks forty
-questions.
+`dl --ls --json` is the one command whose cost grows with the machine, and the
+`--json` is load-bearing: the human table `dl --ls` prints has no state column, so
+it costs the single `devpod list` and nothing per row. The document is the surface
+that carries a `state` for every workspace, and a state is a question `devpod list`
+does not answer, so the document asks `devpod status` once per workspace,
+including about the ones devlaunch did not make. That is one round trip per row
+and there is no way around it: a document of forty workspaces asks forty
+questions. `the_table_asks_devpod_for_the_list_and_nothing_else` holds the two
+apart.
 
 What it no longer does is wait for each one before asking the next. The questions
 are independent, so they go out in batches of eight and the waiting overlaps:
@@ -44,7 +47,7 @@ the trips are alike, and the honest floor rather than a promise. It is never wor
 than asking serially, which is what it replaced, but a work queue that started the
 ninth trip the moment any of the first eight returned would be better on a machine
 where one workspace is much slower to answer than the rest. Worth knowing before
-reading a slow `--ls` as something else.
+reading a slow `--ls --json` as something else.
 
 Eight is chosen for the shape of the wait rather than for the core count. A trip
 is one process blocking on devpod's own work rather than arithmetic, so the useful
@@ -54,12 +57,14 @@ sixty at once is a real one; how that trades against the extra overlap has not
 been measured here, and eight is a conservative pick rather than a tuned one.
 
 One thing the change does move: the `devpod-up` **stage** seconds a timing
-document reports for `dl --ls` used to be the sum of the per-row status times and
-are now the wall time of the batch loop, which is smaller. The span count, and
-every individual span, are unchanged.
+document reports for `dl --ls --json` used to be the sum of the per-row status
+times and are now the wall time of the batch loop, which is smaller. The span
+count, and every individual span, are unchanged. So the stage now reports less
+than the spans inside it add up to, which is the one place this page's arithmetic
+stops being addition.
 
-This is also why the listing is a command somebody runs rather than something on
-the launch path. A launch asks about one workspace, and pays one trip for it.
+This is also why the document is something somebody asks for rather than something
+on the launch path. A launch asks about one workspace, and pays one trip for it.
 
 ## One connection per workspace
 

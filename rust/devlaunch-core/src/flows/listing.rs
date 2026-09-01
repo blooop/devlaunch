@@ -1062,8 +1062,10 @@ const STATUS_TRIPS_AT_ONCE: usize = 8;
 /// each asks devpod about one id and nothing it learns changes what another
 /// asks — so the only thing serialising them was the loop they were written in,
 /// and at a measured 0.454s each (`docs/performance.md`) a machine with forty
-/// workspaces waited about eighteen seconds for a command whose answer was ready
-/// in two.
+/// workspaces waited about eighteen seconds for a document whose answer was
+/// ready in two. Only `--json` pays this: the human table has no state column
+/// and asks devpod nothing per row
+/// (`the_table_asks_devpod_for_the_list_and_nothing_else`).
 ///
 /// It is staged at all because Python stages `get_workspace_state` itself
 /// (`@timing.staged("devpod-up")`) and the JSON timing document reports spans
@@ -1089,8 +1091,8 @@ fn container_states<'w>(
     // Before the stage, not inside it: a listing with nothing to ask about opened
     // no `devpod-up` stage when the trips were made one at a time, because the
     // function that opened one was never reached. Opening it here regardless would
-    // put an empty stage in the timing document of every `dl --ls` on a machine
-    // with no workspaces, which is a reported step that never happened.
+    // put an empty stage in the timing document of every `dl --ls --json` on a
+    // machine with no workspaces, which is a reported step that never happened.
     if workspaces.is_empty() {
         return Vec::new();
     }
