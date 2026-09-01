@@ -33,6 +33,28 @@ use std::io::Write as _;
 
 use rewrite::UsageError;
 
+/// The variable a session manager reads to learn which agent is behind a wrapper.
+///
+/// herdr's name for it, and the one manager-specific word in either binary. It is
+/// here because of what devlaunch#549 measured on hardware: the *rules* half of
+/// screen detection already works through a dl workspace and only the
+/// *identification* half does not. A herdr pane running aid has `aid`, `ssh` and
+/// two `devpod`s as its foreground processes and no `claude` anywhere, so herdr
+/// never decides which agent's manifest applies and never runs the rules that
+/// would have classified the pane. The rules themselves are fine: the pane holds
+/// the agent's real screen, because `dl <ws> -- <agent>` pipes the agent's own TUI
+/// through it. Name the agent and the same pane reports idle, working and blocked
+/// correctly, with nothing else changed — which is the whole of devlaunch#548.
+///
+/// Written unconditionally, and written over a value the environment already
+/// holds. Both follow from aid being the thing that *decides* which agent starts:
+/// a `HERDR_AGENT=codex` left in a profile is wrong the moment `aid --claude`
+/// runs, and a machine with no herdr pays one `setenv` for a name nothing reads.
+/// Detecting herdr first (`HERDR_ENV=1`) was the alternative and buys nothing —
+/// the detection is a second thing to be wrong about, and being wrong about it
+/// fails in the direction this whole issue is about.
+const SESSION_MANAGER_AGENT_VAR: &str = "HERDR_AGENT";
+
 fn main() {
     dl::install_signal_handlers();
     // `args_os` and a lossy decode, not `args`: `std::env::args()` panics on an
@@ -141,7 +163,37 @@ fn run(argv: &[String]) -> i32 {
     if let Some(boot) = boot {
         boot.finish();
     }
+    name_agent_for_session_manager(parsed.agent());
     dl::run(&dl_args)
+}
+
+/// Put the agent's name in the environment dl's ssh child will inherit.
+///
+/// Here and not in dl, because dl is not what knows: `dl <ws> -- claude` somebody
+/// typed themselves is their command, and reading an agent back out of a command
+/// tail would be a guess. aid picked the agent from its own table, so aid is what
+/// can say so — the same reasoning that puts `IS_SANDBOX` in that table rather
+/// than in dl.
+///
+/// **It reaches a session manager through the ssh child, not through this
+/// process.** A `setenv` after start does not rewrite `/proc/<pid>/environ`, which
+/// the kernel fixes at exec, so aid's own row still shows no agent however early
+/// this is called. What carries it is the `ssh` that [`dl::run`] spawns below,
+/// which builds its environment from this one at its own exec; herdr walks the
+/// pane's foreground processes rather than reading only the shell, and that ssh is
+/// one of them. Measured that way round on hardware before this shipped, because
+/// the plausible-looking version of it is a silent no-op
+/// (`aid_names_the_agent_it_starts`).
+///
+/// A line that starts no agent names none. [`AidArgs::agent`] answers `None` for a
+/// retired spelling, which dl is about to refuse, and refusals have no session for
+/// anyone to classify.
+fn name_agent_for_session_manager(agent: Option<&str>) {
+    let Some(agent) = agent else { return };
+    // Safety: `set_var` is unsound only against a concurrent reader in another
+    // thread. aid is single-threaded here — the interactive boot is a *process*,
+    // already finished above — and the reader this is for is a later `execve`.
+    unsafe { std::env::set_var(SESSION_MANAGER_AGENT_VAR, agent) };
 }
 
 /// Why the command line could not be understood.
@@ -201,6 +253,7 @@ fn help() -> String {
     let default = rewrite::DEFAULT_AGENT;
     let variable = rewrite::AGENT_ENV_VAR;
     let remote_variable = rewrite::REMOTE_CONTROL_ENV_VAR;
+    let manager_variable = SESSION_MANAGER_AGENT_VAR;
     format!(
         "\
 aid - AI Develop: start a coding agent in a devlaunch workspace
@@ -258,6 +311,10 @@ Environment:
                                      Turn the Remote Control default off for every
                                      launch. Takes 1/true/on/yes or 0/false/off/no,
                                      and refuses anything else
+    {manager_variable}=<agent>
+                                     Set, not read: every launch names its agent
+                                     here so a session manager can tell what the
+                                     pane is doing. Overwrites whatever you set
 
 Examples:
     aid blooop/devlaunch                       # Start {default} in the workspace
@@ -277,6 +334,104 @@ Everything else — listing, stopping, deleting, VS Code — is dl's job:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The process environment, and the lock that makes writing it sound.
+    ///
+    /// `HERDR_AGENT` is process-wide, so the tests that write it take this for
+    /// their whole body and put it back on the way out. Nothing else in this
+    /// binary's test run reads the variable, but two of these tests read what the
+    /// other wrote if they overlap.
+    static THE_ENVIRONMENT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Run `body` with the variable saved and restored, whatever it does.
+    fn with_the_environment(body: impl FnOnce()) {
+        let _guard = THE_ENVIRONMENT
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let before = std::env::var_os(SESSION_MANAGER_AGENT_VAR);
+        body();
+        // Safety: every reader is a test body and every test body holds the lock.
+        unsafe {
+            match before {
+                Some(value) => std::env::set_var(SESSION_MANAGER_AGENT_VAR, value),
+                None => std::env::remove_var(SESSION_MANAGER_AGENT_VAR),
+            }
+        }
+    }
+
+    /// The agent aid picked is in the environment dl's ssh child will inherit.
+    ///
+    /// The name and not merely "something": herdr matches the value against a
+    /// manifest id, so `claude` classifies and `Claude` or `claude-code` does not.
+    /// Every name in aid's own table is one of herdr's ids, and this is what holds
+    /// that true as agents are added (devlaunch#549).
+    #[test]
+    fn aid_names_the_agent_it_starts() {
+        for name in rewrite::agent_names() {
+            with_the_environment(|| {
+                name_agent_for_session_manager(Some(name));
+
+                assert_eq!(
+                    std::env::var(SESSION_MANAGER_AGENT_VAR).ok().as_deref(),
+                    Some(name),
+                    "{name} is not the name a session manager would read"
+                );
+            });
+        }
+    }
+
+    /// A stale value in somebody's profile does not survive the agent aid picked.
+    ///
+    /// This is the whole reason the write is unconditional. `HERDR_AGENT=codex`
+    /// exported for some other wrapper is *wrong* about an `aid --claude` launch,
+    /// and a session manager that believed it would run codex's rules against
+    /// Claude's screen — which classifies nothing, silently, the way everything in
+    /// devlaunch#548 fails.
+    #[test]
+    fn a_name_already_in_the_environment_is_replaced() {
+        with_the_environment(|| {
+            // Safety: the guard `with_the_environment` holds is the lock every
+            // reader in this binary takes.
+            unsafe { std::env::set_var(SESSION_MANAGER_AGENT_VAR, "codex") };
+
+            name_agent_for_session_manager(Some("claude"));
+
+            assert_eq!(
+                std::env::var(SESSION_MANAGER_AGENT_VAR).ok().as_deref(),
+                Some("claude")
+            );
+        });
+    }
+
+    /// A line that starts no agent names none, and disturbs nothing.
+    ///
+    /// A retired spelling is about to become dl's refusal. There is no session for
+    /// anyone to classify, so the environment is left exactly as it was found —
+    /// including a value somebody set themselves, which aid has no launch to
+    /// contradict.
+    #[test]
+    fn a_line_that_starts_no_agent_leaves_the_environment_alone() {
+        with_the_environment(|| {
+            // Safety: as above.
+            unsafe { std::env::set_var(SESSION_MANAGER_AGENT_VAR, "theirs") };
+
+            name_agent_for_session_manager(None);
+
+            assert_eq!(
+                std::env::var(SESSION_MANAGER_AGENT_VAR).ok().as_deref(),
+                Some("theirs")
+            );
+        });
+
+        with_the_environment(|| {
+            // Safety: as above.
+            unsafe { std::env::remove_var(SESSION_MANAGER_AGENT_VAR) };
+
+            name_agent_for_session_manager(None);
+
+            assert!(std::env::var_os(SESSION_MANAGER_AGENT_VAR).is_none());
+        });
+    }
 
     #[test]
     fn the_help_names_every_agent_and_the_default() {

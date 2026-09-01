@@ -406,15 +406,17 @@ Images are yours: `docker system df` is what shows those.
 | `DEVLAUNCH_NO_TTY=1` | Never give a workspace command a terminal |
 | `DEVLAUNCH_AID_AGENT=<agent>` | Change `aid`'s default agent |
 | `DEVLAUNCH_AID_REMOTE_CONTROL=0` | Start `aid` sessions without Claude Code's Remote Control, which is otherwise on |
+| `HERDR_AGENT=<agent>` | Written, not read: every `aid` launch names its agent here so a session manager can see it. See [docs/workspace-tools.md](docs/workspace-tools.md) |
 | `DEVLAUNCH_TIMING=1\|json` | Write a timing summary to stderr. See [docs/performance.md](docs/performance.md) |
 | `DEVPOD_SSH_CONFIG=<path>` | devpod's own, honoured rather than set: it is where `devpod up` publishes host aliases, so it is where `dl` looks for them. See [docs/cli.md](docs/cli.md) |
 
 Every switch here reads the same values: anything but empty, `0`, `false` or `no` counts as
-set. On a "no" variable that means turn it off; on an opt-in one it means turn it on. Four
+set. On a "no" variable that means turn it off; on an opt-in one it means turn it on. Five
 rows are not switches and do not follow it: `DEVLAUNCH_AID_AGENT` and `DEVPOD_SSH_CONFIG`
 take a value, `DEVLAUNCH_TIMING` counts only empty and `0` as off, so `false` and `no`
-turn it on, and `DEVLAUNCH_AID_REMOTE_CONTROL` takes `1`/`true`/`on`/`yes` or
-`0`/`false`/`off`/`no` and refuses anything else rather than guessing.
+turn it on, `DEVLAUNCH_AID_REMOTE_CONTROL` takes `1`/`true`/`on`/`yes` or
+`0`/`false`/`off`/`no` and refuses anything else rather than guessing, and `HERDR_AGENT` is
+the one `dl` writes rather than reads, so nothing you set there survives an `aid` launch.
 
 Changes to what a container gets land on `devpod up`, so a workspace that is already running
 keeps what it was given. `dl <ws> restart` is what re-decides it, and `dl <ws> recreate` is what
