@@ -217,15 +217,36 @@ fn nothing_but_a_read_mints_a_derivative() {
         rows(REST).contains(&format!("pub struct {TY}").as_str()),
         "the snapshot does not declare {TY}, so nothing below it is under test"
     );
+    // Ranged over the predicate itself before it is ranged over the file, the
+    // way the gate's own fixture rows are: an absence test that reads its
+    // subject too narrowly is an absence test that passes forever, and every
+    // shape below hands a caller a `Derivative` it did not read for.
+    for wrapped in [
+        format!("pub fn devlaunch_core::x::mint() -> {TY}"),
+        format!("pub fn devlaunch_core::x::mint() -> core::option::Option<{TY}>"),
+        format!("pub fn devlaunch_core::x::mint() -> core::result::Result<{TY}, ()>"),
+        format!("pub fn devlaunch_core::x::mint() -> alloc::vec::Vec<{TY}>"),
+    ] {
+        assert!(mints_one(&wrapped, TY), "would mint one and is not caught");
+    }
+    // And the two rows that legitimately name the type in their return: a
+    // borrow of one somebody already holds, and `clone`, which needs one in
+    // hand to make another.
+    for held in [
+        format!("pub fn devlaunch_core::x::held(&self) -> core::option::Option<&{TY}>"),
+        format!("pub fn {TY}::clone(&self) -> {TY}"),
+    ] {
+        assert!(
+            !mints_one(&held, TY),
+            "needs one in hand and is caught: {held}"
+        );
+    }
     let minting: Vec<&str> = rows(REST)
         .into_iter()
         .filter(|row| {
-            let hands_one_back = row.starts_with("pub fn ")
-                && row.ends_with(&format!("-> {TY}"))
-                && !row.contains(&format!("{TY}::clone("));
             let has_a_default = *row == format!("impl core::default::Default for {TY}");
             let has_a_public_field = row.starts_with(&format!("pub {TY}::")) && row.contains(": ");
-            hands_one_back || has_a_default || has_a_public_field
+            mints_one(row, TY) || has_a_default || has_a_public_field
         })
         .collect();
     assert!(
@@ -233,4 +254,21 @@ fn nothing_but_a_read_mints_a_derivative() {
         "a Derivative must be handed to you by a read that answered, and these would \
          build one without asking: {minting:#?}"
     );
+}
+
+/// Whether `row` is a function that hands back a `ty` the caller did not have.
+///
+/// The return type is read whole rather than matched against `-> {ty}`, because
+/// `Option<T>`, `Result<T, _>` and `Vec<T>` all hand one back and none of them
+/// ends in the bare name. A borrow does not, so `&{ty}` is struck out of the
+/// return before the question is asked, and `clone` is exempt because it needs
+/// one in hand to make another.
+fn mints_one(row: &str, ty: &str) -> bool {
+    if !row.starts_with("pub fn ") || row.contains(&format!("{ty}::clone(")) {
+        return false;
+    }
+    let Some((_, returns)) = row.rsplit_once(" -> ") else {
+        return false;
+    };
+    returns.replace(&format!("&{ty}"), "").contains(ty)
 }
