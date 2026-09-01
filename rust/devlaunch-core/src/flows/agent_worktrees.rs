@@ -2148,6 +2148,19 @@ pub(crate) fn reclaim(
                     }),
                 }),
             }));
+        // And the derivatives the plan named, for the same reason and out of
+        // the same refusal. Dropping them was silence over a directory somebody
+        // had already read a size for and said yes to, and a run whose only
+        // work was a derivative printed nothing at all.
+        report.withheld_derivatives.extend(
+            plan.derivatives
+                .iter()
+                .filter_map(Tagged::derivable)
+                .map(|derivative| WithheldDerivative {
+                    path: plan.clone.join(derivative.at().as_str()),
+                    because: NotDerivableNow::TheCloneWouldNotAnswer,
+                }),
+        );
         return;
     };
     // The same weighing as the plan, with the plan's own per-unit insistence: a

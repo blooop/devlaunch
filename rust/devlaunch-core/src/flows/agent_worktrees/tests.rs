@@ -1845,3 +1845,47 @@ fn the_listing_path_never_costs_a_derivative() {
     );
     assert_eq!(asked.going, not_asked.going);
 }
+
+#[test]
+fn a_derivative_the_plan_named_is_named_again_when_the_clone_will_not_answer() {
+    // The plan said *reclaiming this, 2.9 MiB*, somebody read it and answered
+    // `y`, and then git would not list the clone a second time. Every going
+    // worktree is named as withheld for exactly that reason. The derivative
+    // has to be named too: it is the same consent, over the same lock, and a
+    // run whose only work was a derivative otherwise prints nothing at all --
+    // which is the shape principle 2 is against, not merely an omission.
+    let world = Clone::new();
+    let worktree = world.worktree("agent-one");
+    let env = installed_env(&worktree, "default");
+    commit_the_project(&world, &worktree, "agent-one");
+    std::fs::write(worktree.join("NOTES.md"), "unsaved\n").expect("the human's own file");
+    world.containerise();
+
+    let plan = world.plan();
+
+    assert!(going_dirs(&plan).is_empty(), "the site must stand");
+    assert_eq!(reclaiming(&plan).len(), 1, "the plan named one");
+
+    // git will not answer for this clone a second time.
+    std::fs::remove_dir_all(world.clone.join(".git")).expect("the clone's admin directory");
+    std::fs::write(world.clone.join(".git"), "gitdir: /nowhere-at-all\n")
+        .expect("a broken gitfile");
+
+    let (report, _) = world.act(&plan);
+
+    assert!(report.reclaimed.is_empty(), "nothing can be reclaimed");
+    assert!(env.is_dir(), "and nothing was removed");
+    assert_eq!(
+        report
+            .withheld_derivatives
+            .iter()
+            .map(|it| it.path.clone())
+            .collect::<Vec<_>>(),
+        vec![env],
+        "a derivative the plan named and the run did not reclaim has to be named"
+    );
+    assert!(
+        !report.nothing_to_say(),
+        "a run that was told to reclaim and reclaimed nothing has something to say"
+    );
+}

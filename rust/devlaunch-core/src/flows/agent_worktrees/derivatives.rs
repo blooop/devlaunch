@@ -600,11 +600,12 @@ pub struct WithheldDerivative {
     pub because: NotDerivableNow,
 }
 
-/// What the re-read said instead of *derivable*.
+/// What the re-read said instead of *derivable*, or that it was never taken.
 ///
-/// Two arms rather than an `Option<Tagged>`: *the tag is gone* and *the tag is
-/// there and something changed about it* are different facts, and the whole
-/// discipline of this module is that they do not share a value.
+/// Three arms rather than an `Option<Tagged>`: *the tag is gone*, *the tag is
+/// there and something changed about it*, and *the clone would not answer a
+/// second time* are different facts, and the whole discipline of this module is
+/// that they do not share a value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NotDerivableNow {
     /// The re-read found no tag at that place at all — it was removed, or its
@@ -613,6 +614,12 @@ pub enum NotDerivableNow {
     /// The re-read answered, and the answer was not derivable: a claim appeared,
     /// or the lockfile stopped naming it.
     Answered(Box<Tagged>),
+    /// The re-read was never taken, because git would not list the clone a
+    /// second time — the same refusal that withholds every going worktree in it.
+    /// The plan's line is then the only account of this directory anybody has,
+    /// so it is named here rather than dropped: a run whose only work was a
+    /// derivative would otherwise answer a `y` with silence.
+    TheCloneWouldNotAnswer,
 }
 
 impl NotDerivableNow {
@@ -622,6 +629,11 @@ impl NotDerivableNow {
             Self::NoTagThere => {
                 "there is no longer a cache tag at that place, so nothing there declares \
                  itself regenerable"
+                    .to_owned()
+            }
+            Self::TheCloneWouldNotAnswer => {
+                "git would not list this clone's worktrees a second time, so what the plan \
+                 said about it could not be put again"
                     .to_owned()
             }
             Self::Answered(tagged) => tagged.standing().unwrap_or_else(|| {

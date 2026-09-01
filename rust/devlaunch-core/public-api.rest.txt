@@ -693,6 +693,7 @@ impl core::marker::StructuralPartialEq for devlaunch_core::flows::agent_worktree
 pub enum devlaunch_core::flows::agent_worktrees::NotDerivableNow
 pub devlaunch_core::flows::agent_worktrees::NotDerivableNow::Answered(alloc::boxed::Box<devlaunch_core::flows::agent_worktrees::Tagged>)
 pub devlaunch_core::flows::agent_worktrees::NotDerivableNow::NoTagThere
+pub devlaunch_core::flows::agent_worktrees::NotDerivableNow::TheCloneWouldNotAnswer
 impl devlaunch_core::flows::agent_worktrees::NotDerivableNow
 pub fn devlaunch_core::flows::agent_worktrees::NotDerivableNow::describe(&self) -> alloc::string::String
 impl core::clone::Clone for devlaunch_core::flows::agent_worktrees::NotDerivableNow
