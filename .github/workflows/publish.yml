@@ -25,7 +25,7 @@ jobs:
     permissions: # Don't forget permissions
       contents: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           # This commit and its parent: a release is a version that changed, so
           # deciding takes both. `fetch-tags` so the idempotence check below can
