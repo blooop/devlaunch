@@ -170,6 +170,10 @@ pub enum NoRecipe {
     /// manifest and reinstall — the directory survives and pixi never mentions
     /// it again.
     LockfileDoesNotNameIt { environment: String },
+    /// A record was there, it read and it named no environment. Its own arm
+    /// rather than [`Self::CouldNotRead`]'s: the read succeeded, and saying it
+    /// did not sends somebody to a file that is fine.
+    RecordNamesNoEnvironment,
     /// A record was there and would not read.
     CouldNotRead(std::io::ErrorKind),
 }
@@ -190,6 +194,11 @@ impl NoRecipe {
                 "the lockfile no longer names the environment {environment}, so nothing on \
                  disk re-derives it; `pixi clean -e {environment}` is what removes it"
             ),
+            Self::RecordNamesNoEnvironment => {
+                "the record beside it names no environment, so nothing on disk says what \
+                 would re-derive it"
+                    .to_owned()
+            }
             Self::CouldNotRead(kind) => {
                 format!("a record that would re-derive it could not be read ({kind})")
             }
@@ -502,7 +511,7 @@ fn pixi_recipe(clone: &Path, tag: &Path, site: &Path) -> Result<Recipe, NoRecipe
         Err(error) => return Err(NoRecipe::CouldNotRead(error.kind())),
     };
     let Some(environment) = environment_name(&content) else {
-        return Err(NoRecipe::CouldNotRead(std::io::ErrorKind::InvalidData));
+        return Err(NoRecipe::RecordNamesNoEnvironment);
     };
     let Some(lock) = lockfile_above(tag, site) else {
         return Err(NoRecipe::LockfileAbsent);

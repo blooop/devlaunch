@@ -557,3 +557,34 @@ fn a_site_inside_a_tag_makes_it_a_claim_the_tag_does_not_speak_for() {
         }
     ));
 }
+
+#[test]
+fn a_record_that_names_no_environment_is_not_a_record_that_would_not_read() {
+    // `conda-meta/pixi` opened, read and parsed, and it holds no
+    // `environment_name`. That is the reader saying *this is not one of mine*,
+    // and it stood the directory under `CouldNotRead(InvalidData)` -- whose
+    // words are "a record that would re-derive it could not be read (invalid
+    // data)" over a file that read perfectly well. The verdict was right and
+    // the sentence sent the reader to look at a file that is fine.
+    let world = World::new();
+    let site = world.site("agent-one");
+    let env = tagged(&site.join(".pixi").join("envs").join("default"));
+    std::fs::write(
+        dir(&env.join("conda-meta")).join("pixi"),
+        "{\"manifest_path\": \"/workspaces/devlaunch-container/pyproject.toml\"}",
+    )
+    .expect("a record that parses and names nothing");
+    lock(&site, &["default"]);
+
+    let found = world.walk(&site);
+
+    let [Tagged::CouldNotCost { why, .. }] = &found[..] else {
+        panic!("it stands either way: {found:?}");
+    };
+    assert_eq!(why, &NoRecipe::RecordNamesNoEnvironment);
+    assert!(
+        !why.describe().contains("could not be read"),
+        "the record read: {}",
+        why.describe()
+    );
+}
