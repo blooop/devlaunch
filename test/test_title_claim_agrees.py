@@ -60,9 +60,7 @@ TRUTH_CLAIM = re.compile(
 # The claim as each page happens to write it, anchored on the example command so a
 # differently-titled example cannot fail this test, and across whatever line break
 # each happens to wrap at.
-NAMES_THE_PANE = re.compile(
-    r"`dl blooop/devlaunch` names the pane\s+(?://[/!]?\s*)?`([^`]+)`"
-)
+NAMES_THE_PANE = re.compile(r"`dl blooop/devlaunch` names the pane\s+(?://[/!]?\s*)?`([^`]+)`")
 TERMINAL_TAB_ROW = re.compile(r"\[terminal tab\]\([^)]*\)\s*\|\s*`([^`]+)`")
 
 PROSE = {
