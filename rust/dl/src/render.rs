@@ -2079,11 +2079,30 @@ fn worktree_plan_lines(sweep: &WorktreeSweep) -> Vec<String> {
     if sweep.nothing_to_say() {
         return Vec::new();
     }
+    let derivable = sweep
+        .clones()
+        .iter()
+        .flat_map(|found| found.derivatives())
+        .filter(|it| it.derivable().is_some())
+        .count();
     let mut lines = vec![
-        format!(
-            "Agent git worktrees inside the clones above -- {}:",
-            describe_usage(&sweep.freed())
-        ),
+        if derivable == 0 {
+            format!(
+                "Agent git worktrees inside the clones above -- {}:",
+                describe_usage(&sweep.freed())
+            )
+        } else {
+            // Two figures because they are two claims about two disjoint sets
+            // of directories, and each says which set it is about. One number
+            // covering both would describe neither, and an unlabelled pair
+            // reads as a total and a part of it.
+            format!(
+                "Agent git worktrees inside the clones above -- {} in worktrees that go, and \
+                 {} in regenerable subtrees inside the ones that stay:",
+                describe_usage(&sweep.freed()),
+                describe_usage(&sweep.derivatives_freed())
+            )
+        },
         String::new(),
     ];
     for found in sweep.clones() {
@@ -2117,6 +2136,30 @@ fn worktree_plan_lines(sweep: &WorktreeSweep) -> Vec<String> {
                 standing.reasons().describe()
             ));
         }
+        // Each derivative by name and by size, before the question is asked.
+        // These sit inside worktrees the run has just said it is leaving, so
+        // the line has to say which directory it means and what it costs, or
+        // the y/N is answering a total nobody can decompose.
+        for tagged in found.derivatives() {
+            let at = found.clone_path().join(tagged.at().as_str());
+            lines.push(match tagged.standing() {
+                None => format!(
+                    "    - reclaiming {} ({}): {}",
+                    at.display(),
+                    describe_usage(tagged.usage()),
+                    tagged
+                        .derivable()
+                        .map(|it| it.recipe().describe())
+                        .unwrap_or_default()
+                ),
+                Some(why) => format!(
+                    "    - leaving {} ({}): {}",
+                    at.display(),
+                    describe_usage(tagged.usage()),
+                    why
+                ),
+            });
+        }
     }
     lines.push(String::new());
     // Said once, rather than implied by every line above it. `--prune` is a
@@ -2128,6 +2171,18 @@ fn worktree_plan_lines(sweep: &WorktreeSweep) -> Vec<String> {
          repository cache; --prune does not fetch."
             .to_owned(),
     );
+    if derivable > 0 {
+        // What is being consented to, said once. The bytes come back the moment
+        // a person runs the command in the line above their own directory, and
+        // the tag is the creating program's own declaration rather than
+        // anything dl inferred from a directory name.
+        lines.push(
+            "A regenerable subtree is one whose creator wrote a CACHEDIR.TAG into it and \
+             whose lockfile is still beside it; putting one back is one command and no \
+             network beyond the shared package cache."
+                .to_owned(),
+        );
+    }
     lines.push(String::new());
     lines
 }
@@ -2172,6 +2227,20 @@ fn worktree_report_lines(report: &WorktreeReport) -> Vec<String> {
             report.forgotten
         ));
     }
+    if !report.reclaimed.is_empty() {
+        lines.push(format!(
+            "Reclaimed {} regenerable subtree(s) inside the worktrees that stayed -- {}.",
+            report.reclaimed.len(),
+            describe_usage(&report.derivatives_freed())
+        ));
+    }
+    for withheld in &report.withheld_derivatives {
+        lines.push(format!(
+            "Left {}: {}. That was not so when the plan above was printed.",
+            withheld.path.display(),
+            withheld.because.describe()
+        ));
+    }
     for withheld in &report.withheld {
         lines.push(format!(
             "Left {}: {} -- add --force-worktrees to remove it anyway. That was not so when \
@@ -2197,6 +2266,25 @@ fn worktree_report_lines(report: &WorktreeReport) -> Vec<String> {
         lines.extend(report_refusals(
             report.refused.iter(),
             "Some agent worktrees would not come away. These refused:",
+            &by_hand,
+        ));
+    }
+    if !report.refused_derivatives.is_empty() {
+        let by_hand: Vec<std::path::PathBuf> = report
+            .refused_derivatives
+            .iter()
+            .map(|refusal| refusal.path.clone())
+            .collect();
+        // Its own heading, because the worktree holding each of these is
+        // standing and was never being removed: filed under the one above, the
+        // report would name a worktree that did come away, or one nobody
+        // touched. What is left is a part-removed subtree, so the sentence says
+        // the one command that puts it back.
+        lines.extend(report_refusals(
+            report.refused_derivatives.iter(),
+            "Some regenerable subtrees would not come away. The worktrees holding them \
+             are untouched, and a subtree left part-removed is restored by re-running \
+             its own install. These refused:",
             &by_hand,
         ));
     }

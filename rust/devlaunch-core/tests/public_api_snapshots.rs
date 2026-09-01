@@ -195,3 +195,80 @@ fn each_file_is_anchored_on_a_row_every_generation_produces() {
         "the rest file does not contain the crate root's row"
     );
 }
+
+#[test]
+fn nothing_but_a_read_mints_a_derivative() {
+    // devlaunch#472's asserted **absence**, in the file that would show it
+    // arriving. `Derivative` says *this directory's creator declared it
+    // regenerable and its recipe is on disk*, and the only thing entitled to
+    // say that is a read that answered -- so the type has private fields, no
+    // `Default`, and no constructor at all. The failure this pins is not a
+    // wrong value, it is a value that can be built without asking, which is
+    // `Proof`'s discipline one artifact over and the reason `Option<Derivative>`
+    // is refused as well.
+    //
+    // `clone` is exempt and only `clone`: it needs one in hand to make another,
+    // so it mints nothing.
+    const TY: &str = "devlaunch_core::flows::agent_worktrees::Derivative";
+    // Anchored first, because an assertion about the absence of rows passes
+    // loudest when the type is absent too -- which is what a rename, a moved
+    // module or a truncated regeneration all look like from in here.
+    assert!(
+        rows(REST).contains(&format!("pub struct {TY}").as_str()),
+        "the snapshot does not declare {TY}, so nothing below it is under test"
+    );
+    // Ranged over the predicate itself before it is ranged over the file, the
+    // way the gate's own fixture rows are: an absence test that reads its
+    // subject too narrowly is an absence test that passes forever, and every
+    // shape below hands a caller a `Derivative` it did not read for.
+    for wrapped in [
+        format!("pub fn devlaunch_core::x::mint() -> {TY}"),
+        format!("pub fn devlaunch_core::x::mint() -> core::option::Option<{TY}>"),
+        format!("pub fn devlaunch_core::x::mint() -> core::result::Result<{TY}, ()>"),
+        format!("pub fn devlaunch_core::x::mint() -> alloc::vec::Vec<{TY}>"),
+    ] {
+        assert!(mints_one(&wrapped, TY), "would mint one and is not caught");
+    }
+    // And the two rows that legitimately name the type in their return: a
+    // borrow of one somebody already holds, and `clone`, which needs one in
+    // hand to make another.
+    for held in [
+        format!("pub fn devlaunch_core::x::held(&self) -> core::option::Option<&{TY}>"),
+        format!("pub fn {TY}::clone(&self) -> {TY}"),
+    ] {
+        assert!(
+            !mints_one(&held, TY),
+            "needs one in hand and is caught: {held}"
+        );
+    }
+    let minting: Vec<&str> = rows(REST)
+        .into_iter()
+        .filter(|row| {
+            let has_a_default = *row == format!("impl core::default::Default for {TY}");
+            let has_a_public_field = row.starts_with(&format!("pub {TY}::")) && row.contains(": ");
+            mints_one(row, TY) || has_a_default || has_a_public_field
+        })
+        .collect();
+    assert!(
+        minting.is_empty(),
+        "a Derivative must be handed to you by a read that answered, and these would \
+         build one without asking: {minting:#?}"
+    );
+}
+
+/// Whether `row` is a function that hands back a `ty` the caller did not have.
+///
+/// The return type is read whole rather than matched against `-> {ty}`, because
+/// `Option<T>`, `Result<T, _>` and `Vec<T>` all hand one back and none of them
+/// ends in the bare name. A borrow does not, so `&{ty}` is struck out of the
+/// return before the question is asked, and `clone` is exempt because it needs
+/// one in hand to make another.
+fn mints_one(row: &str, ty: &str) -> bool {
+    if !row.starts_with("pub fn ") || row.contains(&format!("{ty}::clone(")) {
+        return false;
+    }
+    let Some((_, returns)) = row.rsplit_once(" -> ") else {
+        return false;
+    };
+    returns.replace(&format!("&{ty}"), "").contains(ty)
+}

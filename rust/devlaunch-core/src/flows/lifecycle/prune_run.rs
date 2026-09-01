@@ -67,6 +67,11 @@ impl PruneReport {
     pub fn finished(&self) -> bool {
         self.refused.is_empty()
             && self.worktrees.refused.is_empty()
+            // A part-removed environment is a directory the user was told would
+            // go and which is still there, in pieces. `withheld` is absent from
+            // this list deliberately -- a changed mind leaves nothing half done
+            // -- and a refusal is the opposite of that.
+            && self.worktrees.refused_derivatives.is_empty()
             && self.worktrees.forget_refused.is_empty()
     }
 }
@@ -77,7 +82,9 @@ pub enum PruneOutcome {
     /// A live workspace's source could not be followed, so nothing was removed:
     /// no clone is unreferenced while a workspace is unaccounted for.
     Unlocatable(NonEmpty<Unlocatable>),
-    Acted(PruneReport),
+    /// Boxed because the report is an order of magnitude the larger arm and
+    /// this enum is returned by value: `clippy::large_enum_variant`.
+    Acted(Box<PruneReport>),
 }
 
 /// Carry out `plan`: remove the directories, then forget them.
@@ -216,7 +223,7 @@ pub fn prune_clones(
         forget_clone(storage, record, notices);
     }
     extend_with_cache(notices, cache_notices);
-    Ok(PruneOutcome::Acted(report))
+    Ok(PruneOutcome::Acted(Box::new(report)))
 }
 
 /// Remove the volumes the plan named, and drop the copies the removal made

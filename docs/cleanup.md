@@ -521,14 +521,17 @@ Clone directories under /home/you/.cache/devlaunch/repos:
 Leaving 1:
   - /home/you/.cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-zovo: workspace devlaunch-main-zovo still opens it
 
-Agent git worktrees inside the clones above -- 6.0 GiB:
+Agent git worktrees inside the clones above -- 6.0 GiB in worktrees that go, and 2.3 GiB in regenerable subtrees inside the ones that stay:
 
   /home/you/.cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-zovo:
     - removing .../.claude/worktrees/agent-a49a (5.8 GiB), and dropping its 1 registration(s)
     - removing .../.claude/worktrees/agent-a8da (204.0 MiB), and dropping its 2 registration(s)
     - leaving .../.claude/worktrees/agent-b120: git is holding it locked (claude session) -- add --force-worktrees to remove it anyway
+    - leaving .../.claude/worktrees/agent-c771: holds 3 uncommitted change(s) -- add --force-worktrees to remove it anyway
+    - reclaiming .../.claude/worktrees/agent-c771/.pixi/envs/default (2.3 GiB): a pixi environment, re-derived by `pixi install -e default` from .claude/worktrees/agent-c771/pixi.lock
 
 Whether a worktree's commits are anywhere else is as of the last fetch into the repository cache; --prune does not fetch.
+A regenerable subtree is one whose creator wrote a CACHEDIR.TAG into it and whose lockfile is still beside it; putting one back is one command and no network beyond the shared package cache.
 
 Are you sure? [y/N]
 ```
@@ -550,9 +553,89 @@ The 18 duplicated `.pixi/envs/default` copies are the reason the figure is 104 G
 rather than about 10, and they cannot be pointed at the shared package cache: only
 the pixi *download* cache is shared, because installed environments bake absolute
 paths (see "The shared pixi package cache" in
-[workspace-tools.md](workspace-tools.md)). Removing the worktree is the way those
-bytes come back, which is what this does: an env is gitignored content, and by
-the limit above it does not by itself keep a finished worktree standing.
+[workspace-tools.md](workspace-tools.md)). Removing the worktree is one way those
+bytes come back: an env is gitignored content, and by the limit above it does not
+by itself keep a finished worktree standing. The next section is the other way,
+and it is the one that reaches the worktrees that have to stay.
+
+#### The regenerable subtrees inside a worktree it keeps
+
+| artifact | who reclaims it | what makes that safe |
+| --- | --- | --- |
+| a directory carrying a `CACHEDIR.TAG` inside an agent worktree that is staying | `--prune`, on the same plan and the same `y/N` as everything above it | the tag plus the lockfile: the program that made the directory declared it regenerable, and a lockfile still inside the worktree names the environment it re-derives |
+
+Most of the 104.5 GB is in worktrees that have to stand. 18 of the 72 carried a
+whole `.pixi/envs/default`, and a site that is dirty, unpushed or unprovable
+keeps every byte of it. About 94.5 GB of the measured total is in there, which is
+roughly 90%.
+
+**Reaching into a standing worktree to delete part of it sounds like exactly the
+thing the rules above exist to stop, and the answer is what the standing verdict
+is a statement about.** Every reason a site stands, except a claimant's, is an
+answer about git's account of that site's content: what `git status` says through
+its admin directory, what a ref reaches, or the fact that neither could be
+obtained. Nothing under `.pixi/envs/` has ever been in that account, because pixi
+writes a `.pixi/.gitignore` of `*` and `!config.toml` and puts it outside every
+index, every status and every commit, in every clone, forever. The bytes the
+verdict is uncertain about and the bytes under the tag are disjoint sets, and a
+file the installer wrote is what separates them. The alternative was a report
+that says "this holds work that exists nowhere else, 0 bytes" and refuses to give
+back 5 GB in the same breath.
+
+**What names it is a declaration, and it never reads a directory's name.** The
+gate is the [Cache Directory Tagging Specification](https://bford.info/cachedir/):
+a file called `CACHEDIR.TAG` whose first 43 bytes are the published signature,
+written by the program that created the directory to say the contents are
+regenerable. Measured: rattler, cargo, uv and pytest write one; `python -m venv`
+writes none and npm writes none anywhere beneath `node_modules`. So a `.venv` is
+taken or left depending on which program made it, which no rule keyed on the name
+could express, and `.pixi` appears nowhere in the predicate. The walk stops at
+the outermost tag rather than descending, so a `target/` inside an environment is
+never a second line for the same bytes.
+
+**A tag says regenerable; it does not say by what.** So a tagged directory is
+reclaimed only when a reader on this side answers with the thing that re-derives
+it, and one reader is implemented. It reads pixi's own `conda-meta/pixi` for the
+environment name, then walks up inside the worktree for a `pixi.lock` whose
+`environments:` map names it. Measured: a lock that names the environment
+restores 5507 of 5507 files in 0.52 s with no network, and does it with every
+proxy variable pointed at a dead port; a *stale* lock still restores what was
+there, because the environment on disk came from that lock; a lock that is
+**absent** restores nothing; and an environment the lock **no longer names** is
+reproducible from nothing on disk. The last two stand, are named with their
+bytes, and the second gets `pixi clean -e <name>` as the pointer. A tag no reader
+recognises stands the same way.
+
+**A claim reaches the subtree; an account of content does not.** A
+`git worktree lock`, or a repository lock `dl` could not take, is somebody
+asserting a claim over the directory and drawing no line between its parts, and a
+lock may mean *running right now*. Those pin the tagged subtree along with
+everything else. Dirty, unpushed and unprovable do not, because they were never
+statements about these bytes. A worktree of **another** repository is in the
+second group and not the first: whose repository an environment belongs to was
+never part of the argument.
+
+**No new flag, and it does not ride on `--force-worktrees`.** This is a removal
+with a proof rather than a force, and `--force-worktrees` also carries past a
+lock and past another repository's worktree, so hanging this on it would make one
+flag carry two consents. It rides `--prune`'s own question: the plan names each
+directory and its size before the `y/N`, and the acting pass reads the tag, the
+record and the lockfile again under the lock before anything goes.
+
+What goes is the tagged directory alone. Never `.pixi`, which carries no tag and
+holds `config.toml`, the one file `.pixi/.gitignore` un-ignores.
+
+**One thing the tag does not promise, said out loud.** pixi does not defend its
+own declaration: a file planted by hand inside an environment survives
+`pixi install --frozen` unmentioned, so the tag is a claim about what the
+directory is *for* and not a proof about what is in it now. The case rests on the
+disjoint sets above, and anything somebody put inside an environment goes with
+it.
+
+`dl --ls` does not cost these. Weighing one is a full walk of a worktree plus a
+walk of a 12000-file environment, and the listing is a read-only command people
+run casually; a derivative is never a reason a site stands, so the listing loses
+no answer by not asking.
 
 #### The disk neither command frees
 

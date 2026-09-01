@@ -273,6 +273,102 @@ fn commit(work: &Path, message: &str) {
     run_git(work, &["commit", "-m", message]);
 }
 
+// ---------------------------------------------------------------------------
+// the tagged derivatives (devlaunch#468)
+// ---------------------------------------------------------------------------
+
+/// The Cache Directory Tagging Specification's file, as a real writer emits it.
+fn cachedir_tag(at: &Path) {
+    std::fs::write(
+        at.join("CACHEDIR.TAG"),
+        "Signature: 8a477f597d28d172789f06886806bc55\n\
+         # This file is a cache directory tag created by a build tool.\n",
+    )
+    .expect("a cache tag");
+}
+
+/// An installed pixi environment inside `site`, with the lockfile that
+/// re-derives it beside it — the shape 18 of the 72 directories on the
+/// reference host carried, and the difference between 104 GB and about 10.
+///
+/// `.pixi/config.toml` is here because it is the one path `.pixi/.gitignore`
+/// un-ignores and the one human-writable file in there: the tag sits one level
+/// below it, which is what makes the unit's edge pixi's own rather than
+/// devlaunch's.
+fn installed_env(site: &Path, environment: &str) -> PathBuf {
+    let pixi = site.join(".pixi");
+    let env = pixi.join("envs").join(environment);
+    std::fs::create_dir_all(env.join("conda-meta")).expect("an installed environment");
+    std::fs::write(pixi.join("config.toml"), "[repodata-config]\n").expect("pixi's own config");
+    std::fs::write(pixi.join(".gitignore"), "*\n!config.toml\n").expect("pixi's own ignore");
+    cachedir_tag(&env);
+    std::fs::write(
+        env.join("conda-meta").join("pixi"),
+        format!(
+            "{{\"manifest_path\": \"/workspaces/devlaunch-container/pyproject.toml\", \
+             \"environment_name\": \"{environment}\"}}"
+        ),
+    )
+    .expect("pixi's own record");
+    std::fs::create_dir_all(env.join("lib")).expect("the environment's lib");
+    std::fs::write(env.join("lib").join("libthing.so"), "a great many bytes\n")
+        .expect("environment bytes");
+    std::fs::write(
+        site.join("pixi.lock"),
+        format!("version: 7\nenvironments:\n  {environment}:\n    channels: []\npackages: []\n"),
+    )
+    .expect("the lockfile that re-derives it");
+    env
+}
+
+/// Commit and push everything in a site except the environment, and gitignore
+/// the environment the way every pixi project gitignores it.
+///
+/// The ordinary finished-task shape: the lockfile and the ignore file are on the
+/// forge, so the only bytes in the site that exist nowhere else are the ones
+/// under the tag — which is exactly the population devlaunch#468 is about.
+fn commit_the_project(world: &Clone, worktree: &Path, branch: &str) {
+    std::fs::write(worktree.join(".gitignore"), ".pixi/\n").expect("an ignore file");
+    commit(worktree, "the project and its lockfile");
+    run_git(&world.clone, &["push", "origin", branch]);
+    world.fetch();
+}
+
+/// `git worktree lock` by hand, for a registration whose recorded path no longer
+/// resolves — which is every registration a host sees, and which git's own
+/// `worktree lock` will not take as an argument.
+fn lock_by_hand(world: &Clone, leaf: &str) {
+    std::fs::write(
+        world
+            .clone
+            .join(".git")
+            .join("worktrees")
+            .join(leaf)
+            .join("locked"),
+        "",
+    )
+    .expect("the lock git's own listing reads");
+}
+
+/// The derivatives a plan will reclaim, by the place each sits at.
+fn reclaiming(found: &CloneWorktrees) -> Vec<String> {
+    found
+        .derivatives()
+        .iter()
+        .filter(|it| it.derivable().is_some())
+        .map(|it| it.at().as_str().to_owned())
+        .collect()
+}
+
+/// The derivatives a plan names and will not reclaim, with why.
+fn standing_derivatives(found: &CloneWorktrees) -> Vec<(String, String)> {
+    found
+        .derivatives()
+        .iter()
+        .filter_map(|it| Some((it.at().as_str().to_owned(), it.standing()?)))
+        .collect()
+}
+
 /// The directories a plan removes, in the order it reports them.
 fn going_dirs(found: &CloneWorktrees) -> Vec<PathBuf> {
     found
@@ -1406,4 +1502,435 @@ fn a_clean_clone_with_collectable_worktrees_reads_as_nothing_to_lose() {
     let json = clone_verdict(&git, &world.clone, BareCache::At(&world.bare)).unsaved_json();
 
     assert_eq!(json, serde_json::json!({ "nothingToLose": true }));
+}
+
+// ---------------------------------------------------------------------------
+// reclaiming the tagged derivative subtrees (devlaunch#468, devlaunch#472)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn an_environment_inside_a_standing_worktree_is_reclaimed_and_the_worktree_stands() {
+    // The fixture devlaunch#468 asks for: a site that must stand, holding both
+    // a `.pixi/envs/default` and a file a human wrote. The first goes, the
+    // second stays, and the site still stands.
+    //
+    // What makes that legitimate rather than the thin end of the wedge: the
+    // site stands on `Holds { Uncommitted }`, which is git's account of its
+    // content, and nothing under `.pixi/envs/` has ever been in that account —
+    // pixi's own `.pixi/.gitignore` puts it outside every index, every status
+    // and every commit. The two sets of bytes are disjoint by construction, and
+    // the construction is a file the installer wrote.
+    let world = Clone::new();
+    let worktree = world.worktree("agent-one");
+    let env = installed_env(&worktree, "default");
+    commit_the_project(&world, &worktree, "agent-one");
+    std::fs::write(worktree.join("NOTES.md"), "an afternoon nobody else has\n")
+        .expect("the human's own file");
+    world.containerise();
+
+    let plan = world.plan();
+
+    assert!(going_dirs(&plan).is_empty(), "the site must stand");
+    assert_eq!(
+        reclaiming(&plan),
+        vec![".claude/worktrees/agent-one/.pixi/envs/default"],
+    );
+
+    let (report, _) = world.act(&plan);
+
+    assert_eq!(
+        report
+            .reclaimed
+            .iter()
+            .map(|it| it.path.clone())
+            .collect::<Vec<_>>(),
+        vec![env.clone()],
+    );
+    assert!(!env.exists(), "the tagged directory is what goes");
+    assert!(
+        worktree.join(".pixi").join("config.toml").is_file(),
+        "`.pixi` holds config.toml and is never what goes"
+    );
+    assert!(
+        worktree.join("NOTES.md").is_file(),
+        "the site still stands, and so does what it holds"
+    );
+    assert!(worktree.is_dir(), "the site still stands");
+}
+
+#[test]
+fn reclaiming_an_environment_needs_no_flag_and_no_second_question() {
+    // devlaunch#459 refused one flag carrying two consents, and this is a
+    // removal with a proof rather than a force. It rides `--prune`'s own y/N:
+    // the plan says which directory and how big, and nothing else is typed.
+    let world = Clone::new();
+    let worktree = world.worktree("agent-one");
+    installed_env(&worktree, "default");
+    commit_the_project(&world, &worktree, "agent-one");
+    std::fs::write(worktree.join("NOTES.md"), "unsaved\n").expect("the human's own file");
+    world.containerise();
+
+    let plan = world
+        .sweep(Insistence::NotInsisted)
+        .expect("a sweep of a clone that has worktrees");
+
+    assert_eq!(reclaiming(&plan).len(), 1, "no flag was typed");
+    assert!(
+        !plan.nothing_to_do(),
+        "a run with a derivative to reclaim has something to do, so the question is asked"
+    );
+}
+
+#[test]
+fn the_plan_names_each_derivative_and_its_size_before_the_question() {
+    let world = Clone::new();
+    let worktree = world.worktree("agent-one");
+    installed_env(&worktree, "default");
+    commit_the_project(&world, &worktree, "agent-one");
+    std::fs::write(worktree.join("NOTES.md"), "unsaved\n").expect("the human's own file");
+    world.containerise();
+
+    let plan = world.plan();
+
+    let [tagged] = plan.derivatives() else {
+        panic!("one derivative: {:?}", plan.derivatives());
+    };
+    assert!(
+        tagged.usage().known_bytes() > 0,
+        "a plan line with no figure is a y/N answering a total nobody can decompose"
+    );
+    let Some(derivative) = tagged.derivable() else {
+        panic!("derivable: {tagged:?}");
+    };
+    let Recipe::PixiEnvironment { environment, lock } = derivative.recipe();
+    assert_eq!(environment, "default");
+    assert_eq!(lock.as_str(), ".claude/worktrees/agent-one/pixi.lock");
+}
+
+#[test]
+fn a_locked_worktrees_environment_is_named_and_never_reclaimed() {
+    // A lock is a claim over the directory by a party this pass cannot
+    // interrogate, and it makes no distinction between the directory's parts.
+    // It may also mean *running right now*. devlaunch#426 Ask 2 holds at the
+    // subtree level for the same reason it holds at the site.
+    let world = Clone::new();
+    let worktree = world.worktree("agent-one");
+    installed_env(&worktree, "default");
+    run_git(
+        &world.clone,
+        &["worktree", "lock", &worktree.display().to_string()],
+    );
+    world.containerise();
+
+    let plan = world.plan();
+
+    assert!(reclaiming(&plan).is_empty(), "a claim pins the subtree");
+    let [(at, why)] = &standing_derivatives(&plan)[..] else {
+        panic!("named with its bytes: {:?}", plan.derivatives());
+    };
+    assert_eq!(at, ".claude/worktrees/agent-one/.pixi/envs/default");
+    assert!(why.contains("locked"), "{why}");
+}
+
+#[test]
+fn an_environment_inside_a_worktree_that_is_going_is_not_reported_twice() {
+    // devlaunch#446 §6's two-recursions rule, extended one artifact over: the
+    // byte recursion stops at the outermost thing that goes, so a derivative
+    // inside a site that is itself going rides on the site's own figure and is
+    // never a unit of its own. Two lines for one set of bytes is the double
+    // count R3 forbids.
+    let world = Clone::new();
+    let worktree = world.worktree("agent-one");
+    installed_env(&worktree, "default");
+    commit_the_project(&world, &worktree, "agent-one");
+    world.containerise();
+
+    let plan = world.plan();
+
+    assert_eq!(going_dirs(&plan), std::slice::from_ref(&worktree));
+    assert!(
+        plan.derivatives().is_empty(),
+        "the site's own removal accounts for it: {:?}",
+        plan.derivatives()
+    );
+}
+
+#[test]
+fn a_planted_file_inside_an_environment_goes_with_it_and_the_row_says_so() {
+    // The honest row, recorded rather than hidden. pixi does not defend its own
+    // declaration: a planted `my-notes.txt` and a hand-written
+    // `site-packages/mypkg` both survived `pixi install --frozen` unmentioned.
+    // So the tag is a claim about the directory's purpose, not a proof about
+    // its current contents, and the case for removal rests on the tagged
+    // subtree being outside what the site's verdict is about.
+    let world = Clone::new();
+    let worktree = world.worktree("agent-one");
+    let env = installed_env(&worktree, "default");
+    commit_the_project(&world, &worktree, "agent-one");
+    std::fs::write(env.join("my-notes.txt"), "planted by hand\n").expect("a planted file");
+    std::fs::write(worktree.join("NOTES.md"), "unsaved\n").expect("the human's own file");
+    world.containerise();
+
+    let plan = world.plan();
+    let (report, _) = world.act(&plan);
+
+    assert_eq!(report.reclaimed.len(), 1);
+    assert!(
+        !env.join("my-notes.txt").exists(),
+        "everything under the tag goes, and the plan's own words are what warn about it"
+    );
+}
+
+#[test]
+fn a_node_modules_and_a_stdlib_venv_beside_an_environment_are_untouched() {
+    // The row that proves the predicate never reads a name, at the level a
+    // whole run decides. Both of these are shaped exactly like the population a
+    // name-matcher would take — measured, npm writes no tag anywhere beneath
+    // `node_modules` and `python -m venv` writes none at all — and the tagged
+    // environment beside them goes.
+    let world = Clone::new();
+    let worktree = world.worktree("agent-one");
+    let env = installed_env(&worktree, "default");
+    commit_the_project(&world, &worktree, "agent-one");
+    std::fs::write(worktree.join("NOTES.md"), "unsaved\n").expect("the human's own file");
+    let modules = worktree.join("node_modules").join("lodash");
+    std::fs::create_dir_all(&modules).expect("an npm install");
+    std::fs::write(modules.join("index.js"), "module.exports = {}\n").expect("a package");
+    let venv = worktree.join(".venv").join("lib");
+    std::fs::create_dir_all(&venv).expect("a stdlib venv");
+    std::fs::write(
+        worktree.join(".venv").join("pyvenv.cfg"),
+        "home = /usr/bin\n",
+    )
+    .expect("a pyvenv.cfg");
+    world.containerise();
+
+    let plan = world.plan();
+
+    assert_eq!(
+        reclaiming(&plan),
+        vec![".claude/worktrees/agent-one/.pixi/envs/default"],
+        "only the one that declared itself: {:?}",
+        plan.derivatives()
+    );
+
+    world.act(&plan);
+
+    assert!(!env.exists());
+    assert!(
+        modules.join("index.js").is_file(),
+        "npm never made the claim"
+    );
+    assert!(
+        worktree.join(".venv").join("pyvenv.cfg").is_file(),
+        "the stdlib venv never made the claim"
+    );
+}
+
+#[test]
+fn another_repositorys_environment_is_still_derivable() {
+    // Named explicitly on devlaunch#468 §6 because a reviewer will ask. A
+    // foreign worktree stands, and it stands on `NotThisClonesToAccountFor`,
+    // which is git's account of content being out of scope rather than a
+    // claimant's assertion. Whose repository the environment belongs to was
+    // never part of the argument: the tag and the lockfile beside it say what
+    // they say either way.
+    let world = Clone::new();
+    let theirs = OtherRepository::new(world.tmp());
+    let at = worktrees_dir(&world.clone).join("theirs");
+    theirs.worktree_at(&at, "their-branch");
+    installed_env(&at, "default");
+
+    let plan = world.plan();
+
+    assert!(going_dirs(&plan).is_empty(), "a foreign site always stands");
+    assert_eq!(
+        reclaiming(&plan),
+        vec![".claude/worktrees/theirs/.pixi/envs/default"],
+    );
+}
+
+#[test]
+fn an_environment_whose_lockfile_went_away_is_withheld_by_the_second_read() {
+    // The acting pass re-reads both records, and it re-reads them with the same
+    // weighing the plan ran, so the two passes cannot answer different
+    // questions. The approved set shrinks here and can never grow.
+    let world = Clone::new();
+    let worktree = world.worktree("agent-one");
+    let env = installed_env(&worktree, "default");
+    commit_the_project(&world, &worktree, "agent-one");
+    std::fs::write(worktree.join("NOTES.md"), "unsaved\n").expect("the human's own file");
+    world.containerise();
+
+    let plan = world.plan();
+    assert_eq!(reclaiming(&plan).len(), 1);
+
+    std::fs::remove_file(worktree.join("pixi.lock")).expect("the lockfile going away");
+    let (report, _) = world.act(&plan);
+
+    assert!(report.reclaimed.is_empty(), "nothing was re-derivable");
+    let [withheld] = &report.withheld_derivatives[..] else {
+        panic!("one withheld: {report:?}");
+    };
+    assert_eq!(withheld.path, env);
+    assert!(env.is_dir(), "and it is still there");
+    assert!(
+        withheld.because.describe().contains("lockfile"),
+        "{}",
+        withheld.because.describe()
+    );
+}
+
+#[test]
+fn an_environment_claimed_between_the_plan_and_the_act_is_withheld() {
+    let world = Clone::new();
+    let worktree = world.worktree("agent-one");
+    let env = installed_env(&worktree, "default");
+    commit_the_project(&world, &worktree, "agent-one");
+    std::fs::write(worktree.join("NOTES.md"), "unsaved\n").expect("the human's own file");
+    world.containerise();
+
+    let plan = world.plan();
+    assert_eq!(reclaiming(&plan).len(), 1);
+
+    lock_by_hand(&world, "agent-one");
+    let (report, _) = world.act(&plan);
+
+    assert!(report.reclaimed.is_empty());
+    assert_eq!(report.withheld_derivatives.len(), 1, "{report:?}");
+    assert!(env.is_dir());
+}
+
+#[test]
+fn the_listing_path_never_costs_a_derivative() {
+    // `dl --ls` is a read-only command people run casually, and costing one
+    // derivative is a full walk of a site plus an `exclusive_usage` over a
+    // 12000-file environment. The clone's verdict is the same either way — a
+    // derivative is not a reason a site stands — so the listing asks for none.
+    let world = Clone::new();
+    let worktree = world.worktree("agent-one");
+    installed_env(&worktree, "default");
+    commit_the_project(&world, &worktree, "agent-one");
+    std::fs::write(worktree.join("NOTES.md"), "unsaved\n").expect("the human's own file");
+    world.containerise();
+
+    let runner = ProcessRunner::new();
+    let git = Git::new(&runner);
+    let picture = ClonePicture::of(&git, &world.clone).expect("git's own listing");
+    let asked = weigh_clone(
+        &git,
+        &world.clone,
+        Some(&world.bare),
+        &picture,
+        Derivatives::Weighed,
+        |_| Insistence::NotInsisted,
+    );
+    let not_asked = weigh_clone(
+        &git,
+        &world.clone,
+        Some(&world.bare),
+        &picture,
+        Derivatives::NotAsked,
+        |_| Insistence::NotInsisted,
+    );
+
+    assert_eq!(asked.derivatives.len(), 1, "the prune path asks");
+    assert!(
+        not_asked.derivatives.is_empty(),
+        "the listing path does not"
+    );
+    assert_eq!(
+        asked.standing, not_asked.standing,
+        "and the verdict is the same either way: a derivative is never a reason a site \
+         stands, so the listing loses nothing by not costing one"
+    );
+    assert_eq!(asked.going, not_asked.going);
+}
+
+#[test]
+fn a_derivative_the_plan_named_is_named_again_when_the_clone_will_not_answer() {
+    // The plan said *reclaiming this, 2.9 MiB*, somebody read it and answered
+    // `y`, and then git would not list the clone a second time. Every going
+    // worktree is named as withheld for exactly that reason. The derivative
+    // has to be named too: it is the same consent, over the same lock, and a
+    // run whose only work was a derivative otherwise prints nothing at all --
+    // which is the shape principle 2 is against, not merely an omission.
+    let world = Clone::new();
+    let worktree = world.worktree("agent-one");
+    let env = installed_env(&worktree, "default");
+    commit_the_project(&world, &worktree, "agent-one");
+    std::fs::write(worktree.join("NOTES.md"), "unsaved\n").expect("the human's own file");
+    world.containerise();
+
+    let plan = world.plan();
+
+    assert!(going_dirs(&plan).is_empty(), "the site must stand");
+    assert_eq!(reclaiming(&plan).len(), 1, "the plan named one");
+
+    // git will not answer for this clone a second time.
+    std::fs::remove_dir_all(world.clone.join(".git")).expect("the clone's admin directory");
+    std::fs::write(world.clone.join(".git"), "gitdir: /nowhere-at-all\n")
+        .expect("a broken gitfile");
+
+    let (report, _) = world.act(&plan);
+
+    assert!(report.reclaimed.is_empty(), "nothing can be reclaimed");
+    assert!(env.is_dir(), "and nothing was removed");
+    assert_eq!(
+        report
+            .withheld_derivatives
+            .iter()
+            .map(|it| it.path.clone())
+            .collect::<Vec<_>>(),
+        vec![env],
+        "a derivative the plan named and the run did not reclaim has to be named"
+    );
+    assert!(
+        !report.nothing_to_say(),
+        "a run that was told to reclaim and reclaimed nothing has something to say"
+    );
+}
+
+#[test]
+fn a_subtree_that_would_not_come_away_is_not_reported_as_a_worktree() {
+    // The environment refuses part-way: a directory inside it cannot be
+    // unlinked from. What refused is a path inside a site that is standing
+    // untouched, and `report.refused` is rendered under "Some agent worktrees
+    // would not come away" -- a heading naming a thing this run never tried to
+    // remove, over a path that is not one.
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let world = Clone::new();
+    let worktree = world.worktree("agent-one");
+    let env = installed_env(&worktree, "default");
+    commit_the_project(&world, &worktree, "agent-one");
+    std::fs::write(worktree.join("NOTES.md"), "unsaved\n").expect("the human's own file");
+    world.containerise();
+
+    let plan = world.plan();
+
+    assert!(going_dirs(&plan).is_empty(), "the site must stand");
+    assert_eq!(reclaiming(&plan).len(), 1, "the plan named one");
+
+    let shut = env.join("lib");
+    std::fs::set_permissions(&shut, std::fs::Permissions::from_mode(0o500)).expect("chmod");
+    let (report, _) = world.act(&plan);
+    std::fs::set_permissions(&shut, std::fs::Permissions::from_mode(0o700)).expect("chmod back");
+
+    assert!(report.reclaimed.is_empty(), "it did not come away");
+    assert!(
+        report.refused.is_empty(),
+        "no agent worktree refused: the site was never being removed, so a refusal \
+         filed here is printed under a heading that names the wrong thing"
+    );
+    assert_eq!(
+        report
+            .refused_derivatives
+            .iter()
+            .map(|it| it.path.clone())
+            .collect::<Vec<_>>(),
+        vec![shut],
+        "the subtree is what refused, and it is what has to be named"
+    );
+    assert!(!report.nothing_to_say());
 }

@@ -146,6 +146,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `dl --ls --size` and `--ls --json`'s `disk` object also name the worktree share
   of a clone's figure, as a part of it and never an addition.
 
+- **`dl --prune` now reclaims the regenerable subtrees inside the agent worktrees
+  it is leaving standing.** Most of a full cache is in worktrees that have to
+  stay: 18 of the 72 measured on the reference host carried a whole
+  `.pixi/envs/default`, about 94.5 GB of the 104.5, and a site that is dirty,
+  unpushed or unprovable keeps every byte of it.
+
+  What makes reaching inside one legitimate is what the standing verdict is a
+  statement *about*. Every reason a site stands, except a claimant's, is an answer
+  about git's account of that site's content, and nothing under `.pixi/envs/` has
+  ever been in that account: pixi writes a `.pixi/.gitignore` of `*` and
+  `!config.toml`, which puts it outside every index, every status and every commit
+  in every clone. The two sets of bytes are disjoint, and a file the installer
+  wrote is what separates them. Refusing would have meant a report that says "this
+  holds work that exists nowhere else, 0 bytes" and declines to give back 5 GB in
+  the same breath.
+
+  The gate is a declaration and not a directory name. It is the Cache Directory
+  Tagging Specification's published 43 byte signature at the front of a
+  `CACHEDIR.TAG`, written by the program that made the directory. Measured:
+  rattler, cargo, uv and pytest write one; `python -m venv` writes none and npm
+  writes none anywhere beneath `node_modules`. So a `.venv` is taken or left
+  depending on which program made it, and `.pixi` appears nowhere in the
+  predicate.
+
+  A tag says regenerable and not by what, so one reader has to answer with the
+  thing that re-derives it: pixi's own `conda-meta/pixi` for the environment name,
+  then a `pixi.lock` found by walking up inside the worktree whose `environments:`
+  map names it. A lock that names the environment restores 5507 of 5507 files in
+  0.52 s with every proxy pointed at a dead port, and a stale one restores what
+  was there. A lock that is absent, one that no longer names the environment, and
+  a tag no reader recognises all stand, are named with their bytes, and the middle
+  one gets `pixi clean -e <name>` as its pointer.
+
+  A claim reaches the subtree and an account of content does not. A
+  `git worktree lock`, or a repository lock `dl` could not take, pins it; dirty,
+  unpushed and unprovable do not, because they were never about these bytes.
+
+  **No new flag.** It rides `--prune`'s own plan and its own `y/N`, which names
+  each directory and its size before the question, and the acting pass reads the
+  tag, the record and the lockfile again under the lock. Hanging it on
+  `--force-worktrees` would have made one flag carry two consents, since that flag
+  also carries past a lock and past another repository's worktree. What goes is
+  the tagged directory alone, never `.pixi`, which holds `config.toml`.
+
+  `dl --ls` does not cost these, deliberately: weighing one is a full walk of a
+  worktree plus a walk of a 12000 file environment, and a derivative is never a
+  reason a site stands. `docs/cleanup.md` carries the whole of it.
+
 ### Changed
 
 - **`dl --ls --json` asks its `devpod status` round trips together, and `Runner`
