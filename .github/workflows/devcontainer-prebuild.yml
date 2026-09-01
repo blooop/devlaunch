@@ -109,7 +109,7 @@ jobs:
     timeout-minutes: 45
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       # devpod is a pixi dependency, pinned in the lockfile to the version this
       # repository is written against -- so the tag this job publishes is

@@ -81,7 +81,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       # No devpod install step: devpod is a pixi dependency, already in the
       # lockfile setup-pixi restores, and it is the version this tree is pinned
