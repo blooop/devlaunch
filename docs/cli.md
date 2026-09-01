@@ -439,7 +439,10 @@ every other global. Note this is about the literal word `--force`: `--devcontain
 Pinned by `force_deletes_only_where_it_follows_both_the_name_and_the_verb` and
 `a_globals_force_reads_the_same_wherever_it_sits` in `rust/dl/src/cli.rs`, and by
 `force_after_the_verb_still_deletes` with its two neighbours in
-`rust/dl/tests/grammar.rs`.
+`rust/dl/tests/grammar.rs`. The two refusals quoted above are a second copy of
+strings `render.rs` and `lib.rs` own, so
+`the_force_placement_section_quotes_the_refusals_it_says_it_does` reads this
+section back and diffs them against what the binary prints.
 
 ## Remote Control: every `aid` session, on your phone too
 

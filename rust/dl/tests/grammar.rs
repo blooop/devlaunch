@@ -169,6 +169,88 @@ fn force_after_the_verb_still_deletes() {
     assert!(!world.clone_is_there(), "the clone was deleted");
 }
 
+/// The refusals `docs/cli.md` quotes, held to the ones the binary prints.
+///
+/// The "Where `--force` may sit" section writes both into a code block, cut at the
+/// end of the first sentence. That is a hand-maintained copy of a string owned by
+/// `render.rs` and `lib.rs`, and this repository allows a second copy only with a
+/// test beside it that diffs it against the first. The section names the tests that
+/// pin the *behaviour*, which is not the same promise: those would still pass with
+/// the message reworded and the page left quoting the old one.
+///
+/// Matched as a prefix, because the block drops the `Use '...'` suggestion that
+/// follows on purpose. It is quoting the refusal, not transcribing the session.
+#[test]
+fn the_force_placement_section_quotes_the_refusals_it_says_it_does() {
+    let doc = std::fs::read_to_string(repo_root().join("docs/cli.md")).expect("docs/cli.md");
+    let section = force_placement_section(&doc);
+
+    for (spelling, args) in [
+        (
+            "dl <ws> --force rm",
+            ["blooop/devlaunch@main", "--force", "rm"],
+        ),
+        (
+            "dl --force <ws> rm",
+            ["--force", "blooop/devlaunch@main", "rm"],
+        ),
+    ] {
+        let quoted = quoted_refusal(&section, spelling);
+        let world = World::full();
+        let run = world.dl(&args);
+
+        assert_eq!(run.code, Some(1), "stderr: {}", run.err);
+        assert!(
+            run.err.starts_with(&quoted),
+            "docs/cli.md says `{spelling}` prints {quoted:?}; it prints {:?}",
+            run.err
+        );
+        assert!(
+            world.clone_is_there(),
+            "`{spelling}` must not have deleted the clone"
+        );
+    }
+}
+
+/// The text under the `--force` placement heading, up to the next heading.
+///
+/// Matched on the heading rather than on a phrase under it, so the prose stays free
+/// to be rewritten while this test keeps pointing at one span. A missing heading
+/// says so rather than yielding an empty section that every assertion passes over.
+fn force_placement_section(document: &str) -> String {
+    const HEADING: &str = "### Where `--force` may sit";
+    let start = document
+        .find(HEADING)
+        .unwrap_or_else(|| panic!("docs/cli.md no longer has a '{HEADING}' section"));
+    let rest = &document[start + HEADING.len()..];
+    let end = rest
+        .find(
+            "
+## ",
+        )
+        .unwrap_or(rest.len());
+    rest[..end].to_string()
+}
+
+/// The refusal `docs/cli.md` writes for one spelling: what follows the `->` arrow,
+/// up to the run of spaces before the `(exit 1, ...)` annotation.
+fn quoted_refusal(section: &str, spelling: &str) -> String {
+    let line = section
+        .lines()
+        .find(|line| line.starts_with(spelling))
+        .unwrap_or_else(|| panic!("docs/cli.md no longer shows `{spelling}`"));
+    let (_, printed) = line
+        .split_once("->")
+        .unwrap_or_else(|| panic!("`{spelling}` in docs/cli.md no longer names what it prints"));
+    printed
+        .trim_start()
+        .split("  ")
+        .next()
+        .expect("split always yields one part")
+        .trim_end()
+        .to_string()
+}
+
 #[test]
 fn a_path_that_names_no_workspace_is_refused() {
     let world = World::full();
