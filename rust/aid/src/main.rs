@@ -181,9 +181,14 @@ fn run(argv: &[String]) -> i32 {
 /// this is called. What carries it is the `ssh` that [`dl::run`] spawns below,
 /// which builds its environment from this one at its own exec; herdr walks the
 /// pane's foreground processes rather than reading only the shell, and that ssh is
-/// one of them. Measured that way round on hardware before this shipped, because
-/// the plausible-looking version of it is a silent no-op
-/// (`aid_names_the_agent_it_starts`).
+/// one of them.
+///
+/// **No test in this tree holds that**, and none can: it is a fact about a running
+/// herdr, a pty and a container. It was measured instead, that way round and after
+/// the change rather than before it, and the `/proc` reading is posted on
+/// devlaunch#548 so the claim has a record and not just this paragraph. The
+/// plausible-looking version of this function is a silent no-op, which is why it
+/// was checked rather than argued.
 ///
 /// A line that starts no agent names none. [`AidArgs::agent`] answers `None` for a
 /// retired spelling, which dl is about to refuse, and refusals have no session for
