@@ -1416,9 +1416,9 @@ mod tests {
         assert_eq!(parsed.label(), "devlaunch@feature-auth");
 
         // The example `docs/workspaces.md` publishes in its renderings table, which
-        // is the only page that writes the tab's spelling out. Pinned here because
-        // nothing else checks that cell, and a table of three strings a reader is
-        // invited to match by eye is worth exactly as much as its being right.
+        // is where that spelling is decided. Pinned here because nothing else checks
+        // the cell, and a table of three strings a reader is invited to match by eye
+        // is worth exactly as much as its being right.
         assert_eq!(id("blooop", "devlaunch", "main").label(), "devlaunch@main");
 
         // Stated as a *difference*, not as a reconstruction, because which dash the

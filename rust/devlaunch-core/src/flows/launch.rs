@@ -2234,9 +2234,10 @@ pub(crate) fn dotfiles_update(
 /// with its two unreadable characteristics taken off: the four-character suffix,
 /// which carries identity and no meaning, and the dash between the repo and the ref,
 /// which is spelled `@`. `docs/workspaces.md` tabulates what a tab, a listing row and
-/// a selector row read for one workspace, and is the only page that writes them out;
-/// this comment deliberately does not, because a comment nothing checks is the copy
-/// that goes stale. [`WorkspaceId::label`]'s own tests carry the worked examples.
+/// a selector row read for one workspace, and is where that spelling is decided; this
+/// comment deliberately does not write it, because a comment nothing checks is the
+/// copy that goes stale. [`WorkspaceId::label`]'s own tests carry the worked
+/// examples.
 ///
 /// **It is the id, not a second derivation of the spec.** The slugs and the
 /// truncation are [`WorkspaceId::label`]'s, which are [`WorkspaceId::value`]'s, so a
