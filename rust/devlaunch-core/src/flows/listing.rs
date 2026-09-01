@@ -2980,16 +2980,35 @@ mod tests {
         // round trips: a machine with no workspaces reported no `devpod-up` stage
         // when the trips were serial, because the function that opened one was
         // never reached. Opening one unconditionally would put a step that never
-        // happened into every `dl --ls` on an empty machine.
+        // happened into every `dl --ls --json` on an empty machine.
+        //
+        // So the document is what this reads. Asserting on the round trips alone
+        // cannot fail against the defect it names: `[].chunks(8)` yields no chunks,
+        // so deleting the early return leaves `states` empty and the trip count
+        // zero either way. It also has to *install* a registry, because
+        // `timing::stage` is a no-op while `RECORDING` is false, and a test that
+        // installed none is asserting against a stage guard that does nothing.
         let runner = Overlapping::expecting(1);
 
+        timing::install(Some(timing::Registry::start(
+            timing::Mode::Document,
+            timing::Seam::default(),
+            0.0,
+        )));
         let states = container_states(&runner, &[]);
+        let report = timing::emit().expect("a report");
+        let document = report.document().expect("a document");
 
         assert!(states.is_empty(), "no workspaces, no answers");
         assert_eq!(
             runner.high_water(),
             0,
             "an empty listing asks devpod nothing"
+        );
+        let staged: Vec<&str> = document.stages.iter().map(|stage| stage.stage).collect();
+        assert!(
+            !staged.contains(&"devpod-up"),
+            "an empty listing reported a devpod-up stage it never spent: {staged:?}"
         );
     }
 
