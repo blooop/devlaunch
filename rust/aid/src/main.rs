@@ -348,20 +348,69 @@ mod tests {
     /// other wrote if they overlap.
     static THE_ENVIRONMENT: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    /// Run `body` with the variable saved and restored, whatever it does.
-    fn with_the_environment(body: impl FnOnce()) {
-        let _guard = THE_ENVIRONMENT
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let before = std::env::var_os(SESSION_MANAGER_AGENT_VAR);
-        body();
-        // Safety: every reader is a test body and every test body holds the lock.
-        unsafe {
-            match before {
-                Some(value) => std::env::set_var(SESSION_MANAGER_AGENT_VAR, value),
-                None => std::env::remove_var(SESSION_MANAGER_AGENT_VAR),
+    /// The value as it was found, put back when this leaves scope.
+    ///
+    /// A `Drop` and not a line after the body, because a failed assertion unwinds
+    /// past a line: the test that failed would leak its value into every test that
+    /// ran after it, and the second failure would be the confusing one.
+    struct Restore {
+        before: Option<std::ffi::OsString>,
+        /// Dropped after the restore above, so the lock still covers it.
+        _guard: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            // Safety: every reader is a test body, and this still holds the lock
+            // every test body takes.
+            unsafe {
+                match self.before.take() {
+                    Some(value) => std::env::set_var(SESSION_MANAGER_AGENT_VAR, value),
+                    None => std::env::remove_var(SESSION_MANAGER_AGENT_VAR),
+                }
             }
         }
+    }
+
+    /// Run `body` with the variable saved and restored, whatever it does.
+    fn with_the_environment(body: impl FnOnce()) {
+        let guard = THE_ENVIRONMENT
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _restore = Restore {
+            before: std::env::var_os(SESSION_MANAGER_AGENT_VAR),
+            _guard: guard,
+        };
+        body();
+    }
+
+    /// A body that fails still puts the environment back.
+    ///
+    /// The reason [`Restore`] is a `Drop` and not a line after the call. An
+    /// assertion that fails unwinds past a line, so the failing test would leak
+    /// its value into every test that ran after it and the *second* failure would
+    /// be the one nobody could explain.
+    #[test]
+    fn a_body_that_panics_still_restores_the_environment() {
+        const LEAKED: &str = "a-value-no-environment-holds";
+
+        let panicked = std::panic::catch_unwind(|| {
+            with_the_environment(|| {
+                name_agent_for_session_manager(Some(LEAKED));
+                panic!("as a failing assertion would");
+            });
+        });
+
+        assert!(panicked.is_err(), "the body was supposed to panic");
+        // Under the lock, which is also what shows the guard was released rather
+        // than left held for the rest of the run.
+        with_the_environment(|| {
+            assert_ne!(
+                std::env::var(SESSION_MANAGER_AGENT_VAR).ok().as_deref(),
+                Some(LEAKED),
+                "a failed test leaked its value into the tests after it"
+            );
+        });
     }
 
     /// Every name in the table reaches the environment **verbatim**.
