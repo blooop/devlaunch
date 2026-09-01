@@ -60,11 +60,12 @@ The other two are renderings of that same id, cut to what their surface is for:
 | The [selector](cli.md#the-selector) | `blooop \| devlaunch \| main` | One row at a time with the width of a terminal, so the owner comes back and the branch is spelled in full, out of the clone's `HEAD` |
 
 They are renderings and not separate derivations, which is what keeps them
-matchable: the tab is the id with the suffix off and one dash spelled `@`, so
-`devlaunch@main` and `devlaunch-main-3j1t` are recognisably the same workspace.
-The tab's name in that table is one of four copies, and
-`test_title_claim_agrees.py` holds them to the `label()` assertion in
-`rust/devlaunch-core/src/domain/workspace_id.rs`.
+matchable: the tab is the id with the suffix off and one dash spelled `@`, so the
+first two rows are recognisably the same workspace. That table is where this
+repository writes the three down; everywhere else links to it rather than copying
+it, and `a_label_is_the_id_with_the_suffix_off_and_an_at_where_the_dash_was` in
+`rust/devlaunch-core/src/domain/workspace_id.rs` pins the tab's cell against what
+`WorkspaceId::label` returns.
 
 Which dash the `@` replaces is not readable off the id, since a repo slug holds
 dashes of its own, so the tab's name travels with the launch that resolved it rather

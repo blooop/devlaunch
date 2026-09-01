@@ -2233,16 +2233,10 @@ pub(crate) fn dotfiles_update(
 /// The name is the placement's ([`Placement::title`]), and it is the workspace id
 /// with its two unreadable characteristics taken off: the four-character suffix,
 /// which carries identity and no meaning, and the dash between the repo and the ref,
-/// which is spelled `@`. `dl blooop/devlaunch` names the pane `devlaunch@main` where
-/// devpod, the hostname and the `WORKSPACE` column of `dl --ls` all say
-/// `devlaunch-main-3j1t`.
-///
-/// The pane name is written here, in `README.md`, `docs/workspaces.md` and
-/// `docs/workspace-tools.md`, and `test_title_claim_agrees.py` holds all four to one
-/// answer. The answer is not this comment, which nothing checks: it is the `label()`
-/// assertion in `rust/devlaunch-core/src/domain/workspace_id.rs`, compared against
-/// what `label()` returns every time the suite runs. A separator that moves fails
-/// there first, and these four follow it.
+/// which is spelled `@`. `docs/workspaces.md` tabulates what a tab, a listing row and
+/// a selector row read for one workspace, and is the only page that writes them out;
+/// this comment deliberately does not, because a comment nothing checks is the copy
+/// that goes stale. [`WorkspaceId::label`]'s own tests carry the worked examples.
 ///
 /// **It is the id, not a second derivation of the spec.** The slugs and the
 /// truncation are [`WorkspaceId::label`]'s, which are [`WorkspaceId::value`]'s, so a

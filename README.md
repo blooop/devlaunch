@@ -354,14 +354,11 @@ anything to its `devcontainer.json`.
   terminal beside itself in the same container, and you can attach to it from anywhere.
   `DEVLAUNCH_ZELLIJ=1` is the ask, once in a shell profile or per launch; it costs 2.2s to 3.5s
   of a cold launch, which is why it waits to be asked.
-- **A terminal named after the workspace.** `dl blooop/devlaunch` names the pane
-  `devlaunch@main` in zellij, tmux, or a plain terminal window: the workspace id read for
-  a person, with the hashed suffix off and the dash before the branch spelled `@`, where
-  `dl --ls` and the container's hostname both say `devlaunch-main-3j1t`. A workspace you
-  name by its id keeps the id.
-  <!-- The pane name is written in docs/workspaces.md, docs/workspace-tools.md and
-       rust/devlaunch-core/src/flows/launch.rs too; test_title_claim_agrees.py holds
-       all four to the label() assertion that cargo test checks. -->
+- **A terminal named after the workspace.** In zellij, tmux, or a plain terminal window
+  the pane takes the workspace id read for a person: the hashed suffix off and the dash
+  before the branch spelled `@`, so a tab and the row `dl --ls` prints still match by
+  eye. A workspace you name by its id keeps the id.
+  [The three renderings side by side](docs/workspaces.md#workspace-ids).
 - **A shared pixi package cache**, bound in from the host, so dotfiles that provision tools with
   `pixi global sync` download each package once per machine instead of once per container. On one
   measured profile that is 18s to 28s instead of 62s to 113s and 1.2 GB.

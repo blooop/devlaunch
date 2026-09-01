@@ -508,14 +508,11 @@ the same size of decision. That one installs a package into a container and star
 session; this one writes an escape sequence and two lines into a profile.
 
 **It is the [workspace id](workspaces.md#workspace-ids) read for a person:
-`<repo>@<branch>`, with the hashed suffix off.** `dl blooop/devlaunch` names the pane
-`devlaunch@main` where devpod, the container's hostname and the `WORKSPACE` column of
-`dl --ls` all say `devlaunch-main-3j1t`. One string with two characters changed, so a
-tab and a listing row still match by eye. `README.md`, `docs/workspaces.md` and
-`rust/devlaunch-core/src/flows/launch.rs` name the pane too, and
-`test_title_claim_agrees.py` holds the name all four write against the `label()`
-assertion in `rust/devlaunch-core/src/domain/workspace_id.rs`, which `cargo test`
-checks against what `label()` returns.
+`<repo>@<branch>`, with the hashed suffix off.** The [renderings
+table](workspaces.md#workspace-ids) is where the three are written down side by side
+and where the spelling is decided; the escape sequence above and the profile line
+below show it in place rather than settle it. One string with two characters changed,
+so a tab and a listing row still match by eye.
 
 Two characters, and they are the two a glance cannot use. The suffix carries the
 workspace's identity and none of its meaning: it is what keeps two branches whose
