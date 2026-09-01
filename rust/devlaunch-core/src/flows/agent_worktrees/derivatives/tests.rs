@@ -588,3 +588,92 @@ fn a_record_that_names_no_environment_is_not_a_record_that_would_not_read() {
         why.describe()
     );
 }
+
+#[test]
+fn a_lockfile_an_ancestor_owns_does_not_re_derive_a_nested_project_s_environment() {
+    // The walk up stops at the site, and between the tag and the site it takes
+    // the first `pixi.lock` it meets whatever that lock would rebuild. A
+    // vendored project with no lock of its own therefore borrows the site's,
+    // and the plan offers `pixi install -e default from <site>/pixi.lock` --
+    // which recreates `<site>/.pixi/envs/default` and never touches the
+    // directory about to be deleted. `default` is the near-universal
+    // environment name, so the two names agreeing is the ordinary case.
+    //
+    // devlaunch#472 says an absent lock re-derives nothing and the tree stands.
+    // This is that case, one directory in.
+    let world = World::new();
+    let site = world.site("agent-one");
+    let vendored = site.join("vendor").join("otherproj");
+    let env = tagged(&vendored.join(".pixi").join("envs").join("default"));
+    pixi_record(&env, "default");
+    lock(&site, &["default"]);
+
+    let found = world.walk(&site);
+
+    let [tagged] = &found[..] else {
+        panic!("one tagged directory: {found:?}");
+    };
+    assert!(
+        tagged.derivable().is_none(),
+        "nothing beside this environment re-derives it, so it stands: {tagged:?}"
+    );
+}
+
+#[test]
+fn a_record_that_will_not_parse_is_not_a_record_that_names_nothing() {
+    // An install killed part-way, a full disk: `conda-meta/pixi` is there and
+    // is not JSON. `RecordNamesNoEnvironment`'s own doc says the read
+    // succeeded and the file is fine, so filing this there sends somebody past
+    // a corrupt file. Both stand the directory; only one of them tells the
+    // truth about why.
+    let world = World::new();
+    let site = world.site("agent-one");
+    let env = tagged(&site.join(".pixi").join("envs").join("default"));
+    std::fs::write(
+        dir(&env.join("conda-meta")).join("pixi"),
+        "{\"environment_name\": \"default\"",
+    )
+    .expect("a record cut off mid-write");
+    lock(&site, &["default"]);
+
+    let found = world.walk(&site);
+
+    let [Tagged::CouldNotCost { why, .. }] = &found[..] else {
+        panic!("it stands either way: {found:?}");
+    };
+    assert_eq!(
+        why,
+        &NoRecipe::CouldNotRead(std::io::ErrorKind::InvalidData)
+    );
+}
+
+#[test]
+fn a_copied_environment_is_not_re_derived_by_the_original_s_recipe() {
+    // Somebody keeps a working environment before an upgrade:
+    // `cp -r .pixi/envs/default .pixi/envs/keepme-backup`. The copy carries the
+    // tag and the record, and the record still says `default`, so the site's
+    // own lockfile names the environment and the walk up finds it one directory
+    // away. `pixi install -e default` rebuilds `default` and never this, so a
+    // directory a person made by hand would have gone under a recipe that does
+    // not restore it.
+    let world = World::new();
+    let site = world.site("agent-one");
+    let real = tagged(&site.join(".pixi").join("envs").join("default"));
+    pixi_record(&real, "default");
+    let copy = tagged(&site.join(".pixi").join("envs").join("keepme-backup"));
+    pixi_record(&copy, "default");
+    lock(&site, &["default"]);
+
+    let found = world.walk(&site);
+
+    let reclaimed: Vec<String> = found
+        .iter()
+        .filter(|it| it.derivable().is_some())
+        .map(|it| it.at().as_str().to_owned())
+        .collect();
+    assert_eq!(
+        reclaimed,
+        vec![".claude/worktrees/agent-one/.pixi/envs/default"],
+        "only the directory the recipe actually rebuilds is a candidate: {found:?}"
+    );
+}

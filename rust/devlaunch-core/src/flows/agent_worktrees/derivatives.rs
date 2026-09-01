@@ -165,6 +165,16 @@ pub enum NoRecipe {
     /// A reader recognised it and its lockfile is not there. Measured: with the
     /// lock absent, `pixi install --frozen --offline` restores 0 files.
     LockfileAbsent,
+    /// The nearest lockfile is one an *ancestor* owns, and the environment it
+    /// would install is a different directory from this one.
+    ///
+    /// `pixi install -e <name>` writes `<the lock's own directory>/.pixi/envs/
+    /// <name>`, so a lockfile only re-derives the environment that sits at that
+    /// exact place. A vendored project with no lock of its own reaches this by
+    /// borrowing the site's, and so does a copied or renamed environment whose
+    /// record still names the original: in both, the recipe would rebuild
+    /// somewhere else and leave this directory gone.
+    LockfileRebuildsAnotherDirectory { environment: String },
     /// The lockfile is there and does not name this environment. Measured as a
     /// real population — add an environment, install it, drop it from the
     /// manifest and reinstall — the directory survives and pixi never mentions
@@ -190,6 +200,11 @@ impl NoRecipe {
             Self::LockfileAbsent => {
                 "there is no lockfile inside this worktree to re-derive it from".to_owned()
             }
+            Self::LockfileRebuildsAnotherDirectory { environment } => format!(
+                "the nearest lockfile belongs to a directory above it, and its \
+                 `pixi install -e {environment}` would rebuild that one's environment \
+                 rather than this one"
+            ),
             Self::LockfileDoesNotNameIt { environment } => format!(
                 "the lockfile no longer names the environment {environment}, so nothing on \
                  disk re-derives it; `pixi clean -e {environment}` is what removes it"
@@ -510,12 +525,37 @@ fn pixi_recipe(clone: &Path, tag: &Path, site: &Path) -> Result<Recipe, NoRecipe
         }
         Err(error) => return Err(NoRecipe::CouldNotRead(error.kind())),
     };
-    let Some(environment) = environment_name(&content) else {
+    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&content) else {
+        // The bytes are there and they are not a record. Distinct from a record
+        // that parses and names nothing, whose file is fine.
+        return Err(NoRecipe::CouldNotRead(std::io::ErrorKind::InvalidData));
+    };
+    let Some(environment) = environment_name(&parsed) else {
         return Err(NoRecipe::RecordNamesNoEnvironment);
     };
     let Some(lock) = lockfile_above(tag, site) else {
         return Err(NoRecipe::LockfileAbsent);
     };
+    // **The lock has to be the one that rebuilds *this* directory.** The walk
+    // up takes the nearest `pixi.lock`, which for a vendored project with no
+    // lock of its own is an ancestor's — and `pixi install -e <name>` beside
+    // that lock writes its own `.pixi/envs/<name>`, never this path. The plan
+    // line would offer a command that rebuilds a different directory while this
+    // one goes, which is devlaunch#472's *an absent lock re-derives nothing, so
+    // it stands* defeated one directory in. A copied or renamed environment
+    // whose record still names the original reaches it the same way.
+    //
+    // One comparison against values already in hand, and it reads no directory
+    // name as a predicate: it asks where pixi would put this environment and
+    // whether that is where this one is. `pixi.lock` sits beside the manifest
+    // and environments go to `<manifest dir>/.pixi/envs/<name>`, so the two
+    // agree exactly or the recipe is not this directory's.
+    let rebuilds = lock
+        .parent()
+        .map(|beside| beside.join(".pixi").join("envs").join(&environment));
+    if rebuilds.as_deref() != Some(tag) {
+        return Err(NoRecipe::LockfileRebuildsAnotherDirectory { environment });
+    }
     let listed = match std::fs::read_to_string(&lock) {
         Ok(listed) => listed,
         Err(error) => return Err(NoRecipe::CouldNotRead(error.kind())),
@@ -537,9 +577,8 @@ fn pixi_recipe(clone: &Path, tag: &Path, site: &Path) -> Result<Recipe, NoRecipe
 /// Deliberately not a `serde` struct: a struct would have to name the fields it
 /// ignores, and `manifest_path` is the one field this module must not be able to
 /// carry. Reading one key by name is the constructive form of not having it.
-fn environment_name(record: &str) -> Option<String> {
-    let parsed: serde_json::Value = serde_json::from_str(record).ok()?;
-    let name = parsed.get("environment_name")?.as_str()?;
+fn environment_name(record: &serde_json::Value) -> Option<String> {
+    let name = record.get("environment_name")?.as_str()?;
     (!name.is_empty()).then(|| name.to_owned())
 }
 

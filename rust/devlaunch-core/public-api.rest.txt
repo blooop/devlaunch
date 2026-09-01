@@ -679,6 +679,8 @@ pub devlaunch_core::flows::agent_worktrees::NoRecipe::CouldNotRead(core::io::err
 pub devlaunch_core::flows::agent_worktrees::NoRecipe::LockfileAbsent
 pub devlaunch_core::flows::agent_worktrees::NoRecipe::LockfileDoesNotNameIt
 pub devlaunch_core::flows::agent_worktrees::NoRecipe::LockfileDoesNotNameIt::environment: alloc::string::String
+pub devlaunch_core::flows::agent_worktrees::NoRecipe::LockfileRebuildsAnotherDirectory
+pub devlaunch_core::flows::agent_worktrees::NoRecipe::LockfileRebuildsAnotherDirectory::environment: alloc::string::String
 pub devlaunch_core::flows::agent_worktrees::NoRecipe::NoReaderRecognisedIt
 pub devlaunch_core::flows::agent_worktrees::NoRecipe::RecordNamesNoEnvironment
 impl devlaunch_core::flows::agent_worktrees::NoRecipe
