@@ -7,11 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-09-01
+
 ### Added
 
 - **`aid` now tells a session manager which agent it started.** Every `aid` launch
-  exports `HERDR_AGENT=<agent>` for the session it opens, naming whichever agent
-  it picked, so [herdr](https://herdr.dev) reports a workspace agent as idle,
+  that starts an agent exports `HERDR_AGENT=<agent>` for the session, naming
+  whichever agent it picked, so [herdr](https://herdr.dev) reports it as idle,
   working or blocked instead of showing nothing at all.
 
   The gap was narrower than it looked, which is why the fix is this small. A
