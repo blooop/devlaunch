@@ -1559,12 +1559,11 @@ mod tests {
         /// The runner, and the timing exclusion for as long as it lives.
         ///
         /// [`container_states`] opens the `devpod-up` stage on the **process-global**
-        /// registry, once per listing — so an enriched listing built without the
-        /// guard writes into whatever document a concurrent measured test installed,
-        /// and
-        /// its stage guard closes a stage that test opened rather than one of its
-        /// own. In the fixture rather than per test, as `lifecycle`'s `Devpod` and
-        /// `launch`'s `Scene` do it, so a new test cannot forget.
+        /// registry, once per listing, so a listing built without the guard writes
+        /// into whatever document a concurrent measured test installed and closes a
+        /// stage that test opened rather than one of its own. In the fixture rather
+        /// than per test, as `lifecycle`'s `Devpod` and `launch`'s `Scene` do it, so
+        /// a new test cannot forget.
         fn new() -> Self {
             Self {
                 devpod: FakeRunner::new(),
@@ -2878,15 +2877,11 @@ mod tests {
         arrived: Condvar,
         /// How many this test expects to be in flight together.
         want: usize,
-        /// The timing exclusion, for the same reason [`FakeDevpodRealGit`] holds
-        /// one: [`container_states`] opens the `devpod-up` stage on the
-        /// **process-global** registry and every worker records a span into it, so
-        /// a listing built without the guard writes into whatever document a
-        /// concurrent measured test installed, and its stage guard closes a stage
-        /// that test opened rather than one of its own. Measured rather than
-        /// feared: without this field, running these two tests beside
-        /// `launch`'s `a_warm_launch_reports_the_devpod_probe_and_the_attach_and_nothing_else`
-        /// failed 12 runs in 15.
+        /// The timing exclusion, for the reason [`FakeDevpodRealGit::new`] gives.
+        /// Measured rather than feared: without this field, running these tests
+        /// beside `launch`'s
+        /// `a_warm_launch_reports_the_devpod_probe_and_the_attach_and_nothing_else`
+        /// failed 12 runs in 15, and 0 in 25 with it.
         ///
         /// Safe against the reentrancy note on [`repo_manager`]'s `FakeGit`, which
         /// deliberately holds no guard because it is built inside worker threads:
