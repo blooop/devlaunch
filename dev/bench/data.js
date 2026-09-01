@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788264813482,
+  "lastUpdate": 1788265088207,
   "repoUrl": "https://github.com/blooop/devlaunch",
   "entries": {
     "devlaunch launch stages": [
@@ -10169,6 +10169,93 @@ window.BENCHMARK_DATA = {
             "range": "± 0.510375",
             "unit": "s",
             "extra": "runs=5/5 wall=9.345352s v0.26.1, Linux-X64"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "blooop@gmail.com",
+            "name": "Austin Gregg-Smith",
+            "username": "blooop"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c9910a150814408200b283c701a41c1dd250af47",
+          "message": "Merge pull request #545 from blooop/fix/timing-total-rounding-flake\n\nStop reading a rounded sixth decimal place as a decomposition bug",
+          "timestamp": "2026-09-01T13:15:24+01:00",
+          "tree_id": "3242c5c173d0baa172c3ce348279e29932e85e0f",
+          "url": "https://github.com/blooop/devlaunch/commit/c9910a150814408200b283c701a41c1dd250af47"
+        },
+        "date": 1788265087613,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "warm / attach",
+            "value": 1.054508,
+            "range": "± 0.082849",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / devpod-up",
+            "value": 0.25916,
+            "range": "± 0.100995",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / host-prep",
+            "value": 0.00004,
+            "range": "± 0.000009",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / total",
+            "value": 1.293129,
+            "range": "± 0.169991",
+            "unit": "s",
+            "extra": "runs=5/5 wall=1.295003s v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / attach",
+            "value": 1.040822,
+            "range": "± 0.094048",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / devpod-up",
+            "value": 3.161538,
+            "range": "± 0.44485",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / host-prep",
+            "value": 0.198276,
+            "range": "± 0.06995",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / tools",
+            "value": 3.271822,
+            "range": "± 0.080952",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / total",
+            "value": 7.858425,
+            "range": "± 0.493663",
+            "unit": "s",
+            "extra": "runs=5/5 wall=7.860239s v0.26.1, Linux-X64"
           }
         ]
       }
