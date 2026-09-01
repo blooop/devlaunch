@@ -508,10 +508,11 @@ the same size of decision. That one installs a package into a container and star
 session; this one writes an escape sequence and two lines into a profile.
 
 **It is the [workspace id](workspaces.md#workspace-ids) read for a person:
-`<repo>@<branch>`, with the hashed suffix off.** `dl blooop/devlaunch` names the pane
-`devlaunch@main` where devpod, the container's hostname and the `WORKSPACE` column of
-`dl --ls` all say `devlaunch-main-3j1t`. One string with two characters changed, so a
-tab and a listing row still match by eye.
+`<repo>@<branch>`, with the hashed suffix off.** The [renderings
+table](workspaces.md#workspace-ids) is where the three are written down side by side
+and where the spelling is decided; the escape sequence above and the profile line
+below show it in place rather than settle it. One string with two characters changed,
+so a tab and a listing row still match by eye.
 
 Two characters, and they are the two a glance cannot use. The suffix carries the
 workspace's identity and none of its meaning: it is what keeps two branches whose
@@ -545,7 +546,7 @@ no arguments is how a workspace is reopened. It hands the launch a workspace id 
 any other, but it had the triple a moment earlier: it read the owner and repo out of
 the cache layout and the branch out of the clone's `HEAD` to draw the row you picked.
 That travels with the pick, so a workspace opened from the selector is titled
-`devlaunch@main`, the same as one opened as `dl blooop/devlaunch@main`.
+exactly as one opened as `dl blooop/devlaunch@main` is.
 
 It is checked rather than trusted. `HEAD` is the branch checked out *now*, so a
 `git switch` inside the container leaves a triple that derives some other workspace,
@@ -595,7 +596,7 @@ a hash of its own text, so a second, different name for one workspace does not r
 the first, it sits after it, and the last one wins. Every launch that resolves a
 branch derives the same label, and the arms that never had one all use the id, so
 those agree among themselves. What does not agree is one workspace opened **both**
-ways: `dl blooop/devlaunch@main` installs `devlaunch@main`, a later
+ways: `dl blooop/devlaunch@main` installs the readable name, a later
 `dl devlaunch-main-3j1t` installs the id, and the tab reads as the id from then on. It
 costs one extra line in the profile and a less readable tab, in a case most workspaces
 never reach.

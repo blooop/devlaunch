@@ -60,8 +60,15 @@ The other two are renderings of that same id, cut to what their surface is for:
 | The [selector](cli.md#the-selector) | `blooop \| devlaunch \| main` | One row at a time with the width of a terminal, so the owner comes back and the branch is spelled in full, out of the clone's `HEAD` |
 
 They are renderings and not separate derivations, which is what keeps them
-matchable: the tab is the id with the suffix off and one dash spelled `@`, so
-`devlaunch@main` and `devlaunch-main-3j1t` are recognisably the same workspace.
+matchable: the tab is the id with the suffix off and one dash spelled `@`, so the
+first two rows are recognisably the same workspace. This table is where the tab's
+spelling is decided, and no other page states it as the answer to a command; where
+one appears elsewhere it is inside an example of the mechanism, like the escape
+sequence and the profile line in
+[workspace-tools.md](workspace-tools.md#naming-the-terminal-after-the-workspace).
+`a_label_is_the_id_with_the_suffix_off_and_an_at_where_the_dash_was` in
+`rust/devlaunch-core/src/domain/workspace_id.rs` pins the tab's cell against what
+`WorkspaceId::label` returns.
 
 Which dash the `@` replaces is not readable off the id, since a repo slug holds
 dashes of its own, so the tab's name travels with the launch that resolved it rather

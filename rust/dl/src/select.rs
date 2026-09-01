@@ -133,9 +133,9 @@ pub(crate) struct Offer {
     /// knows its triple: it read the owner and repo out of the cache layout and the
     /// branch out of the clone's `HEAD` to draw the row. A launch handed a bare id
     /// cannot recover any of that, so without this the tab of every workspace
-    /// opened from the picker reads as the id
-    /// (`devlaunch-main-3j1t`) where the same workspace opened as
-    /// `dl blooop/devlaunch@main` reads `devlaunch@main`.
+    /// opened from the picker reads as the id where the same workspace opened as
+    /// `dl blooop/devlaunch@main` reads the name for a person that
+    /// `docs/workspaces.md` tabulates.
     ///
     /// `None` where the row is not one of dl's clones, and **also** where the
     /// recovered triple derives some *other* id: `HEAD` is the branch checked out

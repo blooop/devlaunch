@@ -1415,6 +1415,12 @@ mod tests {
         assert_eq!(parsed.value(), "devlaunch-feature-auth-np10");
         assert_eq!(parsed.label(), "devlaunch@feature-auth");
 
+        // The example `docs/workspaces.md` publishes in its renderings table, which
+        // is where that spelling is decided. Pinned here because nothing else checks
+        // the cell, and a table of three strings a reader is invited to match by eye
+        // is worth exactly as much as its being right.
+        assert_eq!(id("blooop", "devlaunch", "main").label(), "devlaunch@main");
+
         // Stated as a *difference*, not as a reconstruction, because which dash the
         // `@` replaces cannot be read off the id: a repo slug holds dashes of its
         // own, so `my-repo@main` and `my@repo-main` are the same id read two ways.
