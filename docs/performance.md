@@ -42,19 +42,35 @@ what changed is only how much of the waiting happens at once.
 **A batch costs the slowest trip in it, not the average.** The eight are started
 together and all eight are waited for before the next eight begin, so this is a
 barrier rather than a pool of eight permits: one slow answer leaves seven threads
-idle until it lands. Five batches of 0.45s is therefore the figure to expect when
-the trips are alike, and the honest floor rather than a promise. It is never worse
-than asking serially, which is what it replaced, but a work queue that started the
-ninth trip the moment any of the first eight returned would be better on a machine
-where one workspace is much slower to answer than the rest. Worth knowing before
-reading a slow `--ls --json` as something else.
+idle until it lands. It is never worse than asking serially, which is what it
+replaced, but a work queue that started the ninth trip the moment any of the first
+eight returned would be better on a machine where one workspace is much slower to
+answer than the rest. Worth knowing before reading a slow `--ls --json` as
+something else.
+
+**A trip also costs more when eight are in flight, so the win is not the width.**
+Measured on 2026-09-01, on one host with ten workspaces on the local docker
+provider and devpod 0.26.1: asked serially the ten trips averaged 0.465s each and
+the `devpod-up` stage took 4.656s. Batched, the same ten averaged 0.641s each,
+about 38% more, and the stage took 1.724s. The command went from 5.132s to 1.395s.
+So read the win as roughly 3.7x rather than the 8x the width suggests, and read
+"forty workspaces cost five batches" as five batches whose trips are each slower
+than a lone one would be.
+
+That run shows the barrier's cost rather than describing it. The first chunk's
+eight trips landed between 0.593s and 0.656s, and the second chunk, holding the
+two rows left over, took 0.443s and 1.066s. The slower of those two is 62% of the
+whole stage, and the work queue above would have spent the faster one's thread on
+something instead of idling it.
 
 Eight is chosen for the shape of the wait rather than for the core count. A trip
 is one process blocking on devpod's own work rather than arithmetic, so the useful
 width is set by how many of those the machine will schedule. It is bounded rather
 than unlimited because a row costs a devpod process, and the cost of starting
-sixty at once is a real one; how that trades against the extra overlap has not
-been measured here, and eight is a conservative pick rather than a tuned one.
+sixty at once is a real one. What the figures above settle is that the contention
+is real rather than hypothetical and that eight still pays; what they do not
+settle is where the curve turns, since nothing has been measured at four or at
+sixteen, and eight is a conservative pick rather than a tuned one.
 
 One thing the change does move: the `devpod-up` **stage** seconds a timing
 document reports for `dl --ls --json` used to be the sum of the per-row status

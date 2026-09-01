@@ -1084,6 +1084,17 @@ const STATUS_TRIPS_AT_ONCE: usize = 8;
 /// the trips were serial. The stage fails if devpod could not be run at all, for
 /// exactly the reason the serial version failed it: a stage must not report `ok`
 /// for a step devpod never ran (P12).
+///
+/// **One path here is still unexercised.** A capture pipes stdout and stderr but
+/// not stdin, and `/dev/tty` stays reachable either way, so a provider that
+/// prompts (an ssh host-key confirmation, a passphrase, a git credential) prompts
+/// from inside one of these trips. The children stay in dl's own process group,
+/// so they are in the terminal's foreground group and SIGTTIN is not the hazard;
+/// eight of them legitimately reading one terminal is, and
+/// [`Patience::AsLongAsItTakes`] means nothing times out of it. A docker-only host
+/// cannot reach it: ten workspaces on the local provider opened `/dev/tty` zero
+/// times and took no SIGTTIN (2026-09-01, devpod 0.26.1). It needs a listing run
+/// against a remote provider to close.
 fn container_states<'w>(
     runner: &dyn Runner,
     workspaces: &'w [Workspace],

@@ -158,9 +158,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is wait for each answer before asking the next question: nothing devpod says
   about one workspace changes what is asked about another. They go out in batches
   of eight, so a forty workspace
-  machine pays five batches rather than forty trips end to end, at a measured
-  0.45s a trip. The number of trips is unchanged, which is why the test that pins
-  that cost reads exactly as before.
+  machine pays five batches rather than forty trips end to end. The number of
+  trips is unchanged, which is why the test that pins that cost reads exactly as
+  before.
+
+  Measured against real devpod on one docker host: ten workspaces went from 5.13s
+  to 1.40s. That is about 3.7x rather than the 8x the width suggests, because a
+  trip costs about 38% more when eight of them are in flight (0.465s alone against
+  0.641s in a batch). `docs/performance.md` carries the per-chunk figures.
 
   **The seam change is the part with consequences beyond this repository.**
   `devlaunch_runner::Runner` gains `Sync` as a supertrait, which is what lets one
