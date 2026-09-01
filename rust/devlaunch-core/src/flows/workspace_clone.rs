@@ -1373,9 +1373,8 @@ mod tests {
     //! Real git-lfs is used where nothing else can answer, and those tests step
     //! aside when the machine has no git-lfs (see [`lfs_is_usable`]).
 
-    use std::cell::RefCell;
     use std::process::Command;
-    use std::rc::Rc;
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
     use super::*;
@@ -2544,11 +2543,11 @@ mod tests {
         // Recorded through a shared cell rather than returned, because the hook runs
         // inside the call it is observing.
         /// One git call, and whether the repo lock was held while it ran.
-        type Observed = Rc<RefCell<Vec<(Vec<String>, bool)>>>;
-        let observed: Observed = Rc::new(RefCell::new(Vec::new()));
+        type Observed = Arc<Mutex<Vec<(Vec<String>, bool)>>>;
+        let observed: Observed = Arc::new(Mutex::new(Vec::new()));
         let fake = FakeGit::new().and_then({
             let lock_path = lock_path.clone();
-            let observed = Rc::clone(&observed);
+            let observed = Arc::clone(&observed);
             move |argv: &[String]| {
                 // A second open file description on the same path: flock is
                 // per-open-file-description, so this conflicts with the production
@@ -2557,7 +2556,10 @@ mod tests {
                 let free = locks::run_if_lock_free(&lock_path, || ())
                     .expect("no error")
                     .is_some();
-                observed.borrow_mut().push((argv.to_vec(), !free));
+                observed
+                    .lock()
+                    .expect("the observed calls")
+                    .push((argv.to_vec(), !free));
             }
         });
         let manager = a_clone_manager(&cache, Git::new(&fake), GitLfs::NotInstalled);
@@ -2573,7 +2575,7 @@ mod tests {
             )
             .expect("prepared");
 
-        let observed = observed.borrow();
+        let observed = observed.lock().expect("the observed calls");
         assert!(!observed.is_empty(), "no git call was observed at all");
         for (argv, was_held) in observed.iter() {
             assert!(
@@ -4067,7 +4069,7 @@ mod tests {
     struct StubbedLfs {
         real: ProcessRunner,
         reports: Vec<String>,
-        calls: RefCell<Vec<Vec<String>>>,
+        calls: Mutex<Vec<Vec<String>>>,
     }
 
     impl StubbedLfs {
@@ -4075,13 +4077,14 @@ mod tests {
             Self {
                 real: ProcessRunner::new(),
                 reports: names.iter().map(|name| (*name).to_string()).collect(),
-                calls: RefCell::new(Vec::new()),
+                calls: Mutex::new(Vec::new()),
             }
         }
 
         fn forked_git_lfs(&self) -> bool {
             self.calls
-                .borrow()
+                .lock()
+                .expect("the recorded calls")
                 .iter()
                 .any(|argv| argv.get(1).is_some_and(|arg| arg == "lfs"))
         }
@@ -4090,7 +4093,10 @@ mod tests {
     impl Runner for StubbedLfs {
         fn capture(&self, spec: &SpawnSpec) -> Outcome<CapturedText> {
             let argv = spec.invocation.argv();
-            self.calls.borrow_mut().push(argv.clone());
+            self.calls
+                .lock()
+                .expect("the recorded calls")
+                .push(argv.clone());
             if argv.get(1).is_some_and(|arg| arg == "lfs") {
                 return Outcome::Ran {
                     exit: Exit::Code(0),
@@ -4108,7 +4114,10 @@ mod tests {
         }
 
         fn passthrough(&self, spec: &SpawnSpec) -> Outcome {
-            self.calls.borrow_mut().push(spec.invocation.argv());
+            self.calls
+                .lock()
+                .expect("the recorded calls")
+                .push(spec.invocation.argv());
             Outcome::Ran {
                 exit: Exit::Code(0),
                 io: (),
@@ -4120,7 +4129,10 @@ mod tests {
         }
 
         fn detach(&self, what: &Invocation) -> DetachOutcome {
-            self.calls.borrow_mut().push(what.argv());
+            self.calls
+                .lock()
+                .expect("the recorded calls")
+                .push(what.argv());
             DetachOutcome::Started { pid: 900_001 }
         }
     }

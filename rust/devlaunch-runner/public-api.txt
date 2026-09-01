@@ -190,7 +190,7 @@ pub fn devlaunch_runner::SpawnSpec::default() -> devlaunch_runner::SpawnSpec
 impl core::fmt::Debug for devlaunch_runner::SpawnSpec
 pub fn devlaunch_runner::SpawnSpec::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_runner::SpawnSpec
-pub trait devlaunch_runner::Runner
+pub trait devlaunch_runner::Runner: core::marker::Sync
 pub fn devlaunch_runner::Runner::capture(&self, &devlaunch_runner::SpawnSpec) -> devlaunch_runner::Outcome<devlaunch_runner::CapturedText>
 pub fn devlaunch_runner::Runner::detach(&self, &devlaunch_runner::Invocation) -> devlaunch_runner::DetachOutcome
 pub fn devlaunch_runner::Runner::passthrough(&self, &devlaunch_runner::SpawnSpec) -> devlaunch_runner::Outcome

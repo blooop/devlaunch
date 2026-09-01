@@ -13,7 +13,7 @@
 //! the absence of a path — a plan that contains no unit for it, a spawn log that
 //! contains no invocation naming it — rather than a guard firing.
 
-use std::cell::RefCell;
+use std::sync::Mutex;
 
 use devlaunch_runner::{
     CapturedText, DetachOutcome, Invocation, Outcome, ProcessRunner, Runner, SpawnSpec,
@@ -156,7 +156,7 @@ impl Clone {
         plan: &CloneWorktrees,
         forgets_must_be_absent: bool,
     ) -> (WorktreeReport, Vec<Vec<String>>) {
-        let calls = RefCell::new(Vec::new());
+        let calls = Mutex::new(Vec::new());
         let runner = Recording {
             real: ProcessRunner::new(),
             calls: &calls,
@@ -165,7 +165,7 @@ impl Clone {
         let git = Git::new(&runner);
         let mut report = WorktreeReport::default();
         reclaim(&git, plan, Some(&self.bare), &mut report);
-        (report, calls.into_inner())
+        (report, calls.into_inner().expect("the recorded calls"))
     }
 
     fn listing(&self) -> String {
@@ -214,7 +214,7 @@ impl OtherRepository {
 /// forget is invoked, which is P2 asserted directly (devlaunch#462).
 struct Recording<'a> {
     real: ProcessRunner,
-    calls: &'a RefCell<Vec<Vec<String>>>,
+    calls: &'a Mutex<Vec<Vec<String>>>,
     /// Assert P2 at every forget: the argument must not exist when the spawn
     /// happens. Off for the one fixture whose recorded path deliberately
     /// resolves into another repository, where the point is git's refusal.
@@ -239,7 +239,7 @@ impl Runner for Recording<'_> {
                  invoked, and {target} does"
             );
         }
-        self.calls.borrow_mut().push(argv);
+        self.calls.lock().expect("the recorded calls").push(argv);
         self.real.capture(spec)
     }
 
@@ -1106,7 +1106,7 @@ fn a_foreign_leaf_colliding_with_our_admin_name_is_not_probed_through_our_index(
     let theirs = other.worktree_at(&worktrees_dir(&outer).join("agent-outer"), "agent-outer");
     world.containerise();
 
-    let calls = RefCell::new(Vec::new());
+    let calls = Mutex::new(Vec::new());
     let runner = Recording {
         real: ProcessRunner::new(),
         calls: &calls,
@@ -1139,11 +1139,12 @@ fn a_foreign_leaf_colliding_with_our_admin_name_is_not_probed_through_our_index(
     let theirs_spelled = format!("--work-tree={}", theirs.display());
     assert!(
         !calls
-            .borrow()
+            .lock()
+            .expect("the recorded calls")
             .iter()
             .any(|argv| argv.iter().any(|arg| arg == &theirs_spelled)),
         "the foreign site must never be probed: {:?}",
-        calls.borrow()
+        calls.lock().expect("the recorded calls")
     );
 }
 

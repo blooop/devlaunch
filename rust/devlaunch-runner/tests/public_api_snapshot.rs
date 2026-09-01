@@ -40,9 +40,16 @@ fn the_seam_carries_a_snapshot_of_its_own() {
 
 #[test]
 fn the_snapshot_pins_the_trait_an_implementer_writes_against() {
+    // The whole row, supertraits included, because a supertrait is a promise to
+    // whoever implements this trait exactly as a method is: `Sync` says a runner
+    // may be handed to several threads at once, which is what lets `flows::listing`
+    // ask its status round trips together, and dropping it would break every
+    // implementation that had come to rely on being shareable. So it is pinned
+    // here rather than tolerated by a prefix match, and changing it is a
+    // deliberate edit to this line.
     assert!(
-        rows(SNAPSHOT).contains(&"pub trait devlaunch_runner::Runner"),
-        "the Runner trait is missing from the snapshot"
+        rows(SNAPSHOT).contains(&"pub trait devlaunch_runner::Runner: core::marker::Sync"),
+        "the Runner trait is missing from the snapshot, or no longer requires Sync"
     );
     for method in ["capture", "passthrough", "session", "detach"] {
         assert!(

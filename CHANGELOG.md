@@ -148,6 +148,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`dl --ls --json` asks its `devpod status` round trips together, and `Runner`
+  now requires `Sync`.** The `--json` is the whole of which command this is about:
+  the human table `dl --ls` prints has no state column and costs one `devpod list`
+  and nothing per row. The document is the surface carrying a `state` for every
+  workspace, and `devpod list` does not answer that, so the document asks devpod
+  about every workspace in it, including the ones devlaunch did not make. Those
+  trips are required and none has been removed. What the document no longer does
+  is wait for each answer before asking the next question: nothing devpod says
+  about one workspace changes what is asked about another. They go out in batches
+  of eight, so a forty workspace
+  machine pays five batches rather than forty trips end to end. The number of
+  trips is unchanged, which is why the test that pins that cost reads exactly as
+  before.
+
+  Measured against real devpod on one docker host: ten workspaces went from 5.13s
+  to 1.40s. That is about 3.7x rather than the 8x the width suggests, because a
+  trip costs about 38% more when eight of them are in flight (0.465s alone against
+  0.641s in a batch). `docs/performance.md` carries the per-chunk figures.
+
+  **The seam change is the part with consequences beyond this repository.**
+  `devlaunch_runner::Runner` gains `Sync` as a supertrait, which is what lets one
+  `&dyn Runner` be handed to several threads. Any out-of-tree implementation
+  holding a `RefCell`, `Rc` or `Cell` no longer compiles. In tree it cost
+  nothing: `ProcessRunner` is a unit struct, and three test wrappers took the
+  change from `RefCell` to `Mutex` that a shared recorder wants anyway. The
+  alternative, a `Sync` bound written at each call site that needs one, was
+  rejected because it puts the requirement in the callers rather than in the
+  contract and so permits an implementation that satisfies some callers and not
+  others. One row of `devlaunch-runner/public-api.txt` moves.
+
+  `devlaunch-core/public-api.api.txt` does not move at all, and that is the part
+  to read twice rather than the reassurance it looks like. The promised tier hands
+  out `CommandContext::new(&'r dyn Runner)`, `ColdPath::new`, `Refresh::ask` and
+  `Provision::provision_tools`, and every one of them names a `dyn Runner` that
+  has just narrowed to `dyn Runner + Sync`. They render exactly as before, so the
+  promised contract tightened without a single row changing. The snapshot guards
+  compare rendered rows and cannot see a supertrait reach the promised surface
+  through a `dyn` it names, which is why this paragraph is the migration note and
+  the diff is not.
+
+  A timing document for `dl --ls --json` reports smaller `devpod-up` **stage**
+  seconds as a result, since that stage is now the wall time of the batch loop
+  rather than the sum of the per-row status times. The spans themselves, and their
+  count, are unchanged, so the stage now reports less than the spans inside it add
+  up to.
+
 - **A workspace id is derived once, and the three signatures that had a triple in
   hand stopped flattening it into loose strings.** `WorkspaceId::value()` ran the
   whole derivation on every call — a SHA-256 over the triple, three slug passes
