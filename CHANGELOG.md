@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-09-01
+
 ### Added
 
 - **CI now refuses a pull request that files a new entry inside an already
@@ -436,8 +438,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   --print-residual` lists them from the checked-in snapshots with no toolchain,
   and `test/test_public_api_snapshots_doc.py` holds the count in all three
   descriptions to what it prints, so the sentence goes red rather than stale.
-
-### Fixed
 
 ### Fixed
 
