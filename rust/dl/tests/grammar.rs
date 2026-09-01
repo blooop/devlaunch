@@ -178,8 +178,12 @@ fn force_after_the_verb_still_deletes() {
 /// pin the *behaviour*, which is not the same promise: those would still pass with
 /// the message reworded and the page left quoting the old one.
 ///
-/// Matched as a prefix, because the block drops the `Use '...'` suggestion that
-/// follows on purpose. It is quoting the refusal, not transcribing the session.
+/// Compared against the message's first sentence, because the block drops the
+/// `Use '...'` suggestion that follows on purpose. Not by prefix, which was the
+/// first shape of this test and was worth nothing: every truncation of the message
+/// satisfies a prefix test, the empty string included, and an empty quote is
+/// precisely what a code block reflowed to wrap after the arrow produces. The guard
+/// then stood there passing on any message at all.
 #[test]
 fn the_force_placement_section_quotes_the_refusals_it_says_it_does() {
     let doc = std::fs::read_to_string(repo_root().join("docs/cli.md")).expect("docs/cli.md");
@@ -200,8 +204,9 @@ fn the_force_placement_section_quotes_the_refusals_it_says_it_does() {
         let run = world.dl(&args);
 
         assert_eq!(run.code, Some(1), "stderr: {}", run.err);
-        assert!(
-            run.err.starts_with(&quoted),
+        assert_eq!(
+            quoted,
+            first_sentence(&run.err),
             "docs/cli.md says `{spelling}` prints {quoted:?}; it prints {:?}",
             run.err
         );
@@ -249,6 +254,17 @@ fn quoted_refusal(section: &str, spelling: &str) -> String {
         .expect("split always yields one part")
         .trim_end()
         .to_string()
+}
+
+/// The first sentence of a diagnostic, which is the span `docs/cli.md` quotes.
+///
+/// The rest of the message is the `Use '...'` suggestion, which the page leaves out
+/// because it names a workspace the reader did not type.
+fn first_sentence(message: &str) -> String {
+    match message.split_once(". ") {
+        Some((head, _)) => format!("{head}."),
+        None => message.trim_end().to_string(),
+    }
 }
 
 #[test]
