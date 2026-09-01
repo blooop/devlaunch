@@ -1023,20 +1023,8 @@ pub fn enriched_listing(
     let runner = context.runner();
     // Every status trip first, together, because they are the only part of a row
     // that leaves this machine and they do not depend on each other.
-    let states = container_states(runner, &workspaces);
-    // `zip` stops at the shorter side, so a `container_states` that ever came back
-    // short would drop workspaces off the end of `dl --ls` rather than fail. It
-    // cannot today (one answer is pushed per workspace, and the empty case returns
-    // an empty vector), which is exactly why the invariant is worth stating where
-    // it is relied on.
-    debug_assert_eq!(
-        states.len(),
-        workspaces.len(),
-        "one state per workspace, or the listing loses rows"
-    );
-    Ok(workspaces
-        .iter()
-        .zip(states)
+    Ok(container_states(runner, &workspaces)
+        .into_iter()
         .map(|(workspace, state)| enriched_row(&git, view, sizes, workspace, state))
         .collect())
 }
@@ -1051,7 +1039,15 @@ pub fn enriched_listing(
 /// those the machine will schedule rather than by how many can compute at once.
 const STATUS_TRIPS_AT_ONCE: usize = 8;
 
-/// The container state of each workspace, in the order they were given.
+/// Each workspace with the container state devpod reported for it.
+///
+/// The workspace is handed back beside its answer rather than the answers being
+/// returned alone in input order. A bare `Vec<Option<ContainerState>>` would have
+/// left the caller to re-pair the two by position, and position is precisely what
+/// a batched fan-out puts at risk: a `zip` truncates in silence if the vector is
+/// ever short, and a collector that read completion order rather than spawn order
+/// would give every row a plausible state belonging to a different workspace. The
+/// pair is built by the worker that made the trip, so neither is expressible.
 ///
 /// An answer devpod would not give reads as `None`, whichever way it would not
 /// give it: Python collapses every unreadable answer to `None` and the wire field
@@ -1086,7 +1082,10 @@ const STATUS_TRIPS_AT_ONCE: usize = 8;
 /// the trips were serial. The stage fails if devpod could not be run at all, for
 /// exactly the reason the serial version failed it: a stage must not report `ok`
 /// for a step devpod never ran (P12).
-fn container_states(runner: &dyn Runner, workspaces: &[Workspace]) -> Vec<Option<ContainerState>> {
+fn container_states<'w>(
+    runner: &dyn Runner,
+    workspaces: &'w [Workspace],
+) -> Vec<(&'w Workspace, Option<ContainerState>)> {
     // Before the stage, not inside it: a listing with nothing to ask about opened
     // no `devpod-up` stage when the trips were made one at a time, because the
     // function that opened one was never reached. Opening it here regardless would
@@ -1097,7 +1096,8 @@ fn container_states(runner: &dyn Runner, workspaces: &[Workspace]) -> Vec<Option
     }
 
     let mut stage = timing::stage(timing::Stage::DevpodUp);
-    let mut answers: Vec<Option<ContainerState>> = Vec::with_capacity(workspaces.len());
+    let mut answers: Vec<(&'w Workspace, Option<ContainerState>)> =
+        Vec::with_capacity(workspaces.len());
     let mut never_ran = false;
 
     for batch in workspaces.chunks(STATUS_TRIPS_AT_ONCE) {
@@ -1107,8 +1107,16 @@ fn container_states(runner: &dyn Runner, workspaces: &[Workspace]) -> Vec<Option
         let batched: Vec<_> = std::thread::scope(|scope| {
             let handles: Vec<_> = batch
                 .iter()
+                // The worker carries the workspace back out with its answer, so
+                // the two are married where the trip is made rather than re-paired
+                // by position after the fact.
                 .map(|workspace| {
-                    scope.spawn(|| devpod::status(runner, &workspace.id, Patience::AsLongAsItTakes))
+                    scope.spawn(move || {
+                        (
+                            workspace,
+                            devpod::status(runner, &workspace.id, Patience::AsLongAsItTakes),
+                        )
+                    })
                 })
                 .collect();
             handles
@@ -1123,9 +1131,9 @@ fn container_states(runner: &dyn Runner, workspaces: &[Workspace]) -> Vec<Option
                 })
                 .collect()
         });
-        for answer in batched {
+        for (workspace, answer) in batched {
             never_ran |= matches!(answer, Err(devpod::StatusUnreadable::NotRun(_)));
-            answers.push(answer.ok());
+            answers.push((workspace, answer.ok()));
         }
     }
 
@@ -3034,12 +3042,22 @@ mod tests {
 
         let states = container_states(&runner, &workspaces);
 
-        let answered: Vec<String> = states
-            .iter()
-            .map(|state| match state {
-                Some(ContainerState::Unknown(word)) => word.clone(),
+        // Each pair is checked against *itself* rather than against a second
+        // positional vector: the fake echoes the id it was asked about as the
+        // state, so a row carrying another row's answer is visible inside the pair
+        // and does not need the input order to detect.
+        for (workspace, state) in &states {
+            match state {
+                Some(ContainerState::Unknown(word)) => assert_eq!(
+                    word, &workspace.id,
+                    "this row carries another workspace's state"
+                ),
                 other => panic!("the fake answers its own id as the state: {other:?}"),
-            })
+            }
+        }
+        let answered: Vec<&str> = states
+            .iter()
+            .map(|(workspace, _)| workspace.id.as_str())
             .collect();
         assert_eq!(
             answered, ids,
