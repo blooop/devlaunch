@@ -34,9 +34,8 @@
 //! this heading" is a second thing that can drift from the document.
 
 use super::lending_contract::{CONTRACT_DOC, contract_doc, reflowed, section};
-use crate::flows::launch::{
-    HERDR_BIN_VAR, HERDR_TAB_VAR, HerdrTabRename, Host, TITLE_DISABLE_VAR, TerminalTitle,
-};
+use crate::clients::herdr;
+use crate::flows::launch::{HERDR_TAB_VAR, HerdrTabRename, Host, TITLE_DISABLE_VAR, TerminalTitle};
 
 /// The section carrying the whole of what this file guards.
 const HERDR_TAB_HEADING: &str = "### The herdr tab, which is renamed and not written to";
@@ -85,7 +84,7 @@ fn the_page_names_the_variables_the_detection_really_reads() {
     // name it prints has to be the name that is read. Asserted from the constants,
     // which is what `Host::from_process` looks up.
     let page = contract();
-    for named in [HERDR_TAB_VAR, HERDR_BIN_VAR] {
+    for named in [HERDR_TAB_VAR, herdr::BIN_VAR] {
         assert!(
             page.contains(&format!("`{named}`")),
             "{CONTRACT_DOC}'s \"{HERDR_TAB_HEADING}\" no longer names {named}, which is what \
