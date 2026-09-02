@@ -88,6 +88,7 @@ use crate::flows::provision::{
 use crate::flows::records::{self, Records, RecordsNotice, StartupError};
 use crate::flows::repo_manager::CacheNotice;
 use crate::flows::repo_manager::EnsureRepoError;
+use crate::flows::session_manager;
 use crate::flows::workspace_clone::{PrepareColdError, WorkspaceCloneManager};
 use crate::notices::{Notices, Wrapped};
 use crate::runner::{Exit, Runner};
@@ -209,6 +210,9 @@ pub struct Host {
     pub(crate) dotfiles_on_attach: Option<String>,
     /// `DEVLAUNCH_ZELLIJ`.
     pub(crate) zellij: Option<String>,
+    /// `DEVLAUNCH_HERDR`, and the four coordinates herdr exports into its own
+    /// panes. A host value like [`Host::gh`], read the same way.
+    pub(crate) herdr: herdr::HostEnv,
     /// `DEVLAUNCH_NO_TTY`.
     pub(crate) no_tty: Option<String>,
     /// `DEVLAUNCH_NO_TITLE`.
@@ -276,6 +280,7 @@ impl Host {
             claude: claude::HostEnv::from_process(),
             dotfiles_on_attach: crate::osext::env_str(DOTFILES_ON_ATTACH_VAR),
             zellij: crate::osext::env_str(ZELLIJ_VAR),
+            herdr: herdr::HostEnv::from_process(),
             no_tty: crate::osext::env_str(ssh::DISABLE_VAR),
             no_title: crate::osext::env_str(TITLE_DISABLE_VAR),
             herdr_tab_id: crate::osext::env_str(HERDR_TAB_VAR),
@@ -448,6 +453,14 @@ pub enum LaunchNotice {
     SshConfigUnlocatable,
     /// The argv of the session about to start, program included.
     SshCommand { argv: Vec<String> },
+
+    // --- the session manager (flows::session_manager)
+    /// The container was given what it needs to report an agent to the manager
+    /// running this pane, and the socket it reports over is open.
+    SessionManagerReady { pane_id: String, socket: String },
+    /// It was not, and this is why. The session opens regardless: a status
+    /// indicator is not worth a shell.
+    SessionManagerUnavailable { reason: String },
     /// devpod itself failed the session; its own diagnostics are already on the
     /// user's stderr.
     DevpodSessionFailed { exit: Exit },
@@ -1976,27 +1989,121 @@ pub(crate) fn workspace_ssh(
     // on the warm path, where that round trip costs more than the pty it decides.
     let options = already_cached_options(session.host, SystemTime::now());
     let terminal = terminal_for(session.host, &options, workspace_id);
-    match route(payload.as_ref(), &terminal, workspace_id, notices) {
+    // Container-side reporting, which is the other half of naming the agent and
+    // the only half that reaches an agent started *inside* the workspace. Off
+    // unless the consent variable is set, and then only inside a manager's pane.
+    // Started before the session and stopped after it, whichever transport the
+    // session turns out to take.
+    let relay = herdr::Reporting::resolve(&session.host.herdr)
+        .and_then(|reporting| begin_reporting(session, workspace_id, &options, reporting, notices));
+    let coordinates = relay.as_ref().map(|(reporting, _)| reporting);
+    let session_outcome = match route(payload.as_ref(), &terminal, workspace_id, notices) {
         Route::Terminal { payload, config } => ssh_with_terminal(
             session,
             workspace_id,
             payload,
             config,
             workdir,
-            agent,
+            herdr::Visibility {
+                agent,
+                reporting: coordinates,
+            },
             notices,
         ),
-        Route::DevpodAttach => {
-            devpod_session(session, workspace_id, None, workdir, forward, notices)
-        }
+        Route::DevpodAttach => devpod_session(
+            session,
+            workspace_id,
+            None,
+            workdir,
+            coordinates,
+            forward,
+            notices,
+        ),
         Route::DevpodCommand(payload) => devpod_session(
             session,
             workspace_id,
             Some(payload),
             workdir,
+            coordinates,
             forward,
             notices,
         ),
+    };
+    // The forward outlives the session by nothing: the socket it carries is only
+    // meaningful while an agent is in there to report through it, and an ssh left
+    // holding a listen path in a container is the kind of thing that is still
+    // there a week later.
+    if let Some((_, forward)) = relay {
+        forward.stop(session.runner);
+    }
+    session_outcome
+}
+
+/// Prepare the container and open the forward, reporting whichever part failed.
+///
+/// `None` means no reporting this launch, and it is never fatal: the reason is
+/// said and the session opens regardless (`flows::session_manager`).
+fn begin_reporting(
+    session: &SessionContext<'_>,
+    workspace_id: &str,
+    options: &ContextOptions,
+    reporting: herdr::Reporting,
+    notices: &mut dyn Notices<LaunchNotice>,
+) -> Option<(herdr::Reporting, session_manager::Forward)> {
+    // The alias, resolved without asking whether dl is on a terminal.
+    //
+    // Deliberately not [`Terminal`], which answers a different question and is
+    // `Absent` for a launch whose output is redirected -- the forward does not
+    // care about that, and keying it on a terminal is a bug this had. What it
+    // needs is the file devpod published the alias into, because the forward is
+    // OpenSSH: devpod's own `-R` was measured and hangs for a unix socket, so
+    // there is no second way in, and a workspace with no alias has nothing to
+    // forward over.
+    let config = match session.host.ssh_config(options) {
+        None => {
+            notices.say(LaunchNotice::SessionManagerUnavailable {
+                reason: "dl cannot tell where devpod publishes its ssh aliases, so the \
+                         manager's socket cannot be forwarded"
+                    .to_owned(),
+            });
+            return None;
+        }
+        Some(config) => match ssh::alias_in(&config, workspace_id) {
+            ssh::Alias::Published => config,
+            ssh::Alias::WorkspaceAbsent | ssh::Alias::NoConfig => {
+                notices.say(LaunchNotice::SessionManagerUnavailable {
+                    reason: format!(
+                        "devpod has published no ssh alias for this workspace in {}, so the \
+                         manager's socket cannot be forwarded",
+                        config.display()
+                    ),
+                });
+                return None;
+            }
+        },
+    };
+    if let session_manager::Prepared::Refused { reason } = session_manager::prepare(
+        session.runner,
+        &session.host.cache_dir,
+        &config,
+        workspace_id,
+        &reporting,
+    ) {
+        notices.say(LaunchNotice::SessionManagerUnavailable { reason });
+        return None;
+    }
+    match session_manager::start_forward(session.runner, &config, workspace_id, &reporting) {
+        Ok(forward) => {
+            notices.say(LaunchNotice::SessionManagerReady {
+                pane_id: reporting.pane_id().to_owned(),
+                socket: reporting.container_socket(),
+            });
+            Some((reporting, forward))
+        }
+        Err(reason) => {
+            notices.say(LaunchNotice::SessionManagerUnavailable { reason });
+            None
+        }
     }
 }
 
@@ -2010,6 +2117,7 @@ fn devpod_session(
     workspace_id: &str,
     payload: Option<&RemotePayload>,
     workdir: Option<&str>,
+    reporting: Option<&herdr::Reporting>,
     forward: &mut dyn FnMut(&str),
     notices: &mut dyn Notices<LaunchNotice>,
 ) -> Result<Session, SessionRefused> {
@@ -2027,6 +2135,11 @@ fn devpod_session(
         session.forwarded_claude().as_ref(),
     );
     args.extend(forwarding.args.iter().cloned());
+    // `--set-env` and not `--send-env`: these are the container's own paths for a
+    // socket and a binary, which this host's environment does not hold.
+    if let Some(reporting) = reporting {
+        args.extend(reporting.devpod_flags());
+    }
 
     let call = Call::new(args).with_env(forwarding.env);
     notices.say(LaunchNotice::SshCommand { argv: call.argv() });
@@ -2061,19 +2174,24 @@ fn ssh_with_terminal(
     payload: &RemotePayload,
     config: &Path,
     workdir: Option<&str>,
-    agent: Option<&str>,
+    visible: herdr::Visibility<'_>,
     notices: &mut dyn Notices<LaunchNotice>,
 ) -> Result<Session, SessionRefused> {
     // The agent's name goes on last and reaches only the environment, so the
     // permit list `Reuse::derive` keys the control socket on is the same list the
-    // two credentials built (`clients::herdr`).
+    // two credentials built (`clients::herdr`). The manager's coordinates, unlike
+    // the name, do cross the transport and so do join that list.
     let forwarding = herdr::extend_openssh_forwarding(
         claude::extend_openssh_forwarding(
             gh::openssh_forwarding(session.forwarded_token(notices)),
             session.forwarded_claude().as_ref(),
         ),
-        agent,
+        visible.agent,
     );
+    let forwarding = match visible.reporting {
+        Some(reporting) => reporting.extend_openssh_forwarding(forwarding),
+        None => forwarding,
+    };
     // Derived from the permit list that is about to be sent, not from one read
     // again somewhere else: a master filters `SendEnv` against its own list in
     // silence, so the list and the socket it is carried over have to be one fact.

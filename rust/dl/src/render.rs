@@ -2572,6 +2572,15 @@ pub(crate) fn launch_notice(notice: &LaunchNotice) -> Option<String> {
                 .to_owned()
         }
         LaunchNotice::SshCommand { argv } => format!("SSH command: {}", argv.join(" ")),
+        LaunchNotice::SessionManagerReady { pane_id, socket } => format!(
+            "Session manager: reporting agents in this workspace to pane {pane_id} over {socket}"
+        ),
+        // A warning and not a debug line: the whole point of the feature is that a
+        // manager which silently sees nothing is expensive, so the launch that
+        // could not wire it up says so once.
+        LaunchNotice::SessionManagerUnavailable { reason } => {
+            format!("Session manager: agents in this workspace will not be visible; {reason}")
+        }
         // debug: devpod's own diagnostics are already on the user's stderr, and the
         // status is the exit code this command ends with.
         LaunchNotice::DevpodSessionFailed { .. } => return None,
