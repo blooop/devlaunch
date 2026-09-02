@@ -649,7 +649,8 @@ Two multiplexer limits are worth stating, because neither is dl's to fix:
 action rename-tab` or a plugin; no escape sequence reaches it, which is why this
 names the pane instead. The window title zellij then publishes to the outer
 terminal is `<session> | <pane title>`, so the workspace id is what shows up in a
-kitty tab bar.
+kitty tab bar, provided zellij is the innermost multiplexer. Nest another one
+inside it and the escape stops there instead, which is the next section.
 
 ### The herdr tab, which is renamed and not written to
 
