@@ -406,7 +406,8 @@ Images are yours: `docker system df` is what shows those.
 | `DEVLAUNCH_NO_TTY=1` | Never give a workspace command a terminal |
 | `DEVLAUNCH_AID_AGENT=<agent>` | Change `aid`'s default agent |
 | `DEVLAUNCH_AID_REMOTE_CONTROL=0` | Start `aid` sessions without Claude Code's Remote Control, which is otherwise on |
-| `HERDR_AGENT=<agent>` | Written, not read: an `aid` launch that starts an agent names it here so a session manager can see it. See [docs/workspace-tools.md](docs/workspace-tools.md) |
+| `DEVLAUNCH_HERDR=1` | Let an agent started *inside* a workspace report to the [herdr](https://herdr.dev) pane you launched from. Off by default: it lends herdr into the container and opens a second ssh connection. See [docs/workspace-tools.md](docs/workspace-tools.md) |
+| `HERDR_AGENT=<agent>` | Written, not read: an `aid` launch that starts an agent, or a `dl <ws> -- <agent>` whose command is one, names it here so a session manager can see it. See [docs/workspace-tools.md](docs/workspace-tools.md) |
 | `DEVLAUNCH_TIMING=1\|json` | Write a timing summary to stderr. See [docs/performance.md](docs/performance.md) |
 | `DEVPOD_SSH_CONFIG=<path>` | devpod's own, honoured rather than set: it is where `devpod up` publishes host aliases, so it is where `dl` looks for them. See [docs/cli.md](docs/cli.md) |
 
@@ -416,8 +417,9 @@ rows are not switches and do not follow it: `DEVLAUNCH_AID_AGENT` and `DEVPOD_SS
 take a value, `DEVLAUNCH_TIMING` counts only empty and `0` as off, so `false` and `no`
 turn it on, `DEVLAUNCH_AID_REMOTE_CONTROL` takes `1`/`true`/`on`/`yes` or
 `0`/`false`/`off`/`no` and refuses anything else rather than guessing, and `HERDR_AGENT` is
-the one written rather than read, by `aid` alone, so a value of your own survives a plain
-`dl` and an `aid` line that starts no agent, and nothing else.
+the one written rather than read, so a value of your own survives only a line that starts
+no agent: an `aid` launch names the agent it picked, and `dl` names one whose command is an
+agent by name.
 
 Changes to what a container gets land on `devpod up`, so a workspace that is already running
 keeps what it was given. `dl <ws> restart` is what re-decides it, and `dl <ws> recreate` is what

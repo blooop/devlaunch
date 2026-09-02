@@ -13,10 +13,10 @@
 //! `devpod up` child orphaned, still holding the build while `dl` — and the
 //! launch lock it released on exit — were already gone (F3).
 //!
-//! This module is the missing `finally`, expressed as the only two things a
-//! handler is allowed to do about a file and a child: `unlink(2)`/`rmdir(2)` a
-//! path, and `killpg(2)` a process group. All three are on POSIX's
-//! async-signal-safe list.
+//! This module is the missing `finally`, expressed as the only things a handler
+//! is allowed to do about a file and a child: `unlink(2)`/`rmdir(2)` a path, and
+//! `killpg(2)`/`kill(2)` a process group or a single detached child. All four are
+//! on POSIX's async-signal-safe list.
 //!
 //! # The registry is lock-free by construction
 //!
@@ -56,6 +56,10 @@ const FILE_SLOTS: usize = 16;
 /// tools staging directory is ever a directory, so a handful is plenty.
 const DIR_SLOTS: usize = 4;
 
+/// How many *detached* children can be registered for a signal at once. One at a
+/// time in practice -- the session manager's socket forward -- so this is slack.
+const PID_SLOTS: usize = 4;
+
 /// Paths the handler `unlink`s. `null` means the slot is free.
 static FILES: [AtomicPtr<libc::c_char>; FILE_SLOTS] =
     [const { AtomicPtr::new(ptr::null_mut()) }; FILE_SLOTS];
@@ -64,6 +68,13 @@ static FILES: [AtomicPtr<libc::c_char>; FILE_SLOTS] =
 /// directory whose one file was itself registered comes away empty.
 static DIRS: [AtomicPtr<libc::c_char>; DIR_SLOTS] =
     [const { AtomicPtr::new(ptr::null_mut()) }; DIR_SLOTS];
+
+/// Pids the handler `kill`s. `0` means the slot is free.
+///
+/// Separate from [`FOREGROUND_PGID`] because these children are in sessions of
+/// their own: `Runner::detach` `setsid`s, so a group-wide Ctrl-C never reaches
+/// them and the foreground group the handler signals does not contain them.
+static PIDS: [AtomicI32; PID_SLOTS] = [const { AtomicI32::new(0) }; PID_SLOTS];
 
 /// The process group of the foreground child this process is waiting on, or `0`
 /// for "none". The handler `killpg`s it so a `devpod up` cannot outlive the
@@ -79,14 +90,25 @@ static FOREGROUND_PGID: AtomicI32 = AtomicI32::new(0);
 #[derive(Debug)]
 #[must_use = "the path is registered only while this value is held"]
 pub struct Registration {
-    slot: &'static AtomicPtr<libc::c_char>,
+    slot: Slot,
+}
+
+/// Which pool a [`Registration`] holds a slot in.
+#[derive(Debug)]
+enum Slot {
+    Path(&'static AtomicPtr<libc::c_char>),
+    Pid(&'static AtomicI32),
 }
 
 impl Drop for Registration {
     fn drop(&mut self) {
-        // Free the slot for reuse. Deliberately not `CString::from_raw` — see the
-        // module docs on why the backing allocation is leaked rather than freed.
-        self.slot.store(ptr::null_mut(), Ordering::SeqCst);
+        // Free the slot for reuse. For a path, deliberately not
+        // `CString::from_raw` — see the module docs on why the backing allocation
+        // is leaked rather than freed.
+        match self.slot {
+            Slot::Path(slot) => slot.store(ptr::null_mut(), Ordering::SeqCst),
+            Slot::Pid(slot) => slot.store(0, Ordering::SeqCst),
+        }
     }
 }
 
@@ -108,6 +130,34 @@ pub fn register_dir(path: &Path) -> Option<Registration> {
     register_in(&DIRS, path)
 }
 
+/// Register `pid` to be sent `SIGTERM` if this process is interrupted.
+///
+/// For a child started with [`crate::Runner::detach`], which `setsid`s: a
+/// terminal's Ctrl-C goes to the foreground process group and a detached child is
+/// not in it, and `dl`'s handler `_exit`s without unwinding, so nothing else takes
+/// such a child down. Without this a `dl` that is interrupted leaves it running
+/// indefinitely -- one per interrupted launch.
+///
+/// Returns `None` if every slot is full, which costs that one child its
+/// interrupt-time signal and nothing else. Drop the registration when the child
+/// has been reaped or signalled, so the handler cannot name a recycled pid.
+pub fn register_pid(pid: i32) -> Option<Registration> {
+    if pid <= 0 {
+        return None;
+    }
+    for slot in &PIDS {
+        if slot
+            .compare_exchange(0, pid, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            return Some(Registration {
+                slot: Slot::Pid(slot),
+            });
+        }
+    }
+    None
+}
+
 fn register_in(slots: &'static [AtomicPtr<libc::c_char>], path: &Path) -> Option<Registration> {
     // The allocation happens here, in ordinary control flow — never in the
     // handler.
@@ -117,7 +167,9 @@ fn register_in(slots: &'static [AtomicPtr<libc::c_char>], path: &Path) -> Option
             .compare_exchange(ptr::null_mut(), raw, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok()
         {
-            return Some(Registration { slot });
+            return Some(Registration {
+                slot: Slot::Path(slot),
+            });
         }
     }
     // No free slot: reclaim the string we could not place. Safe to free because
@@ -197,6 +249,14 @@ unsafe fn drain() {
             libc::killpg(pgid, libc::SIGTERM);
         }
     }
+    // The detached children next, for the same reason the foreground child is
+    // signalled above: `dl` is about to `_exit`, and one of these holds a remote
+    // forward open inside a container.
+    //
+    // SAFETY: same contract as this function; see [`signal_detached`].
+    unsafe {
+        signal_detached();
+    }
     for slot in &FILES {
         let path = slot.load(Ordering::SeqCst);
         if !path.is_null() {
@@ -215,6 +275,33 @@ unsafe fn drain() {
             // absent directory yields an error that is ignored.
             unsafe {
                 libc::rmdir(path);
+            }
+        }
+    }
+}
+
+/// `SIGTERM` every registered detached child.
+///
+/// Its own function so a test can call it without the rest of [`drain`], which
+/// signals the foreground process group and restores the terminal -- neither of
+/// which a test can do to a process it shares with other tests.
+///
+/// # Safety
+///
+/// Same contract as [`drain`]: async-signal-safe, reads only lock-free atomics
+/// and calls only async-signal-safe syscalls.
+unsafe fn signal_detached() {
+    for slot in &PIDS {
+        let pid = slot.load(Ordering::SeqCst);
+        if pid > 0 {
+            // SAFETY: `kill` is async-signal-safe. The stale-pid hazard is the one
+            // `killpg` in [`drain`] has, bounded the same way: a registration is
+            // dropped the moment the child is signalled or reaped, and for a slot
+            // read in that window to name a *live* process the kernel would have
+            // had to recycle that pid within those few instructions, which needs
+            // the whole pid space to wrap first.
+            unsafe {
+                libc::kill(pid, libc::SIGTERM);
             }
         }
     }
@@ -244,6 +331,49 @@ mod tests {
         assert!(file_is_registered(path), "held while the guard lives");
         drop(registration);
         assert!(!file_is_registered(path), "gone once the guard drops");
+    }
+
+    /// The registered child is signalled, which is the whole point of the pool.
+    ///
+    /// A detached child is `setsid`'d, so a terminal's Ctrl-C to the foreground
+    /// process group never reaches it, and `dl`'s handler `_exit`s without
+    /// unwinding, so nothing on the ordinary return path runs either. Before this
+    /// pool existed, an interrupted launch left the session manager's `ssh -N -R`
+    /// holding a listen path inside a container indefinitely -- one per launch.
+    #[test]
+    fn a_registered_child_is_signalled_and_a_dropped_registration_is_not() {
+        let child = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("exec sleep 30")
+            .spawn()
+            .expect("a child to signal");
+        let pid = i32::try_from(child.id()).expect("a pid fits");
+        let registration = register_pid(pid).expect("a free slot");
+
+        // SAFETY: the test contract for this function -- it reads atomics and
+        // calls `kill`, and touches neither the terminal nor the foreground group.
+        unsafe { signal_detached() };
+
+        let mut child = child;
+        let status = child.wait().expect("the child is ours to reap");
+        assert_eq!(
+            std::os::unix::process::ExitStatusExt::signal(&status),
+            Some(libc::SIGTERM),
+            "the registered child outlived the handler"
+        );
+        drop(registration);
+        assert!(
+            PIDS.iter().all(|slot| slot.load(Ordering::SeqCst) != pid),
+            "a dropped registration left a pid the handler would signal again"
+        );
+    }
+
+    #[test]
+    fn a_pid_that_names_no_process_is_not_registered() {
+        // `0` is "every process in my group" and a negative pid is a group, both
+        // of which `kill` would read as something far larger than one child.
+        assert!(register_pid(0).is_none());
+        assert!(register_pid(-1).is_none());
     }
 
     #[test]

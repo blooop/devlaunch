@@ -66,6 +66,7 @@ use crate::clients::claude;
 use crate::clients::devpod::{self, Call, ContainerState, ListingUnreadable, NotRun, Patience};
 use crate::clients::devpod_home::{CreateRecord, DevpodHome, create_record};
 use crate::clients::gh::{self, GhEvent, StagedToken, Token, TokenLookup};
+use crate::clients::herdr;
 use crate::clients::ssh;
 use crate::domain::locks::{self, Contention, LockError};
 use crate::domain::metadata::MetadataStorage;
@@ -87,6 +88,7 @@ use crate::flows::provision::{
 use crate::flows::records::{self, Records, RecordsNotice, StartupError};
 use crate::flows::repo_manager::CacheNotice;
 use crate::flows::repo_manager::EnsureRepoError;
+use crate::flows::session_manager;
 use crate::flows::workspace_clone::{PrepareColdError, WorkspaceCloneManager};
 use crate::notices::{Notices, Wrapped};
 use crate::runner::{Exit, Runner};
@@ -141,15 +143,6 @@ pub(crate) const TITLE_DISABLE_VAR: &str = "DEVLAUNCH_NO_TITLE";
 /// to* — a pane with no tab id is a pane with nothing to name, whatever else it
 /// says about itself.
 pub(crate) const HERDR_TAB_VAR: &str = "HERDR_TAB_ID";
-
-/// `HERDR_BIN_PATH`: the herdr that spawned this pane.
-///
-/// Preferred over a `PATH` lookup because a rename lands on the socket of the
-/// server that owns this pane, and the binary that server shipped is the one that
-/// speaks its protocol. It is also the only one guaranteed to be *findable*: herdr
-/// installs per-environment often enough (pixi, cargo, a downloaded release) that
-/// `herdr` need not be on the `PATH` a launch inherits at all.
-pub(crate) const HERDR_BIN_VAR: &str = "HERDR_BIN_PATH";
 
 /// The variable a project's host-side `initializeCommand` reads to tell branch
 /// workspaces apart; devpod gives the hook no workspace identity of its own (see
@@ -208,6 +201,9 @@ pub struct Host {
     pub(crate) dotfiles_on_attach: Option<String>,
     /// `DEVLAUNCH_ZELLIJ`.
     pub(crate) zellij: Option<String>,
+    /// `DEVLAUNCH_HERDR`, and the four coordinates herdr exports into its own
+    /// panes. A host value like [`Host::gh`], read the same way.
+    pub(crate) herdr: herdr::HostEnv,
     /// `DEVLAUNCH_NO_TTY`.
     pub(crate) no_tty: Option<String>,
     /// `DEVLAUNCH_NO_TITLE`.
@@ -275,10 +271,11 @@ impl Host {
             claude: claude::HostEnv::from_process(),
             dotfiles_on_attach: crate::osext::env_str(DOTFILES_ON_ATTACH_VAR),
             zellij: crate::osext::env_str(ZELLIJ_VAR),
+            herdr: herdr::HostEnv::from_process(),
             no_tty: crate::osext::env_str(ssh::DISABLE_VAR),
             no_title: crate::osext::env_str(TITLE_DISABLE_VAR),
             herdr_tab_id: crate::osext::env_str(HERDR_TAB_VAR),
-            herdr_bin: crate::osext::env_str(HERDR_BIN_VAR),
+            herdr_bin: crate::osext::env_str(herdr::BIN_VAR),
             stdin_tty: is_a_terminal(libc::STDIN_FILENO),
             stdout_tty: is_a_terminal(libc::STDOUT_FILENO),
             stderr_tty: is_a_terminal(libc::STDERR_FILENO),
@@ -447,6 +444,14 @@ pub enum LaunchNotice {
     SshConfigUnlocatable,
     /// The argv of the session about to start, program included.
     SshCommand { argv: Vec<String> },
+
+    // --- the session manager (flows::session_manager)
+    /// The container was given what it needs to report an agent to the manager
+    /// running this pane, and the socket it reports over is open.
+    SessionManagerReady { pane_id: String, socket: String },
+    /// It was not, and this is why. The session opens regardless: a status
+    /// indicator is not worth a shell.
+    SessionManagerUnavailable { reason: String },
     /// devpod itself failed the session; its own diagnostics are already on the
     /// user's stderr.
     DevpodSessionFailed { exit: Exit },
@@ -1967,25 +1972,137 @@ pub(crate) fn workspace_ssh(
                 .map_err(SessionRefused::Unquotable)?,
         ),
     };
+    // Read off the command dl was handed, not the payload: the payload is already
+    // wrapped in a `cd` and possibly in zellij, and the question is what program
+    // the person asked for.
+    let agent = command.and_then(herdr::agent_in);
     // The already-cached options, never a fresh `devpod context options`: this is
     // on the warm path, where that round trip costs more than the pty it decides.
     let options = already_cached_options(session.host, SystemTime::now());
     let terminal = terminal_for(session.host, &options, workspace_id);
-    match route(payload.as_ref(), &terminal, workspace_id, notices) {
-        Route::Terminal { payload, config } => {
-            ssh_with_terminal(session, workspace_id, payload, config, workdir, notices)
-        }
-        Route::DevpodAttach => {
-            devpod_session(session, workspace_id, None, workdir, forward, notices)
-        }
+    // Container-side reporting, which is the other half of naming the agent and
+    // the only half that reaches an agent started *inside* the workspace. Off
+    // unless the consent variable is set, and then only inside a manager's pane.
+    // Started before the session and stopped after it, whichever transport the
+    // session turns out to take.
+    let relay = herdr::Reporting::resolve(&session.host.herdr)
+        .and_then(|reporting| begin_reporting(session, workspace_id, &options, reporting, notices));
+    // Both halves of what a manager can be told, and every route gets both. The
+    // agent's name used to reach the OpenSSH route alone, which is a route the
+    // launch chooses rather than the caller: `dl <ws> -- claude` with no published
+    // alias yet, or with its output redirected, is a `devpod ssh` and was silently
+    // nameless.
+    let visibility = herdr::Visibility {
+        agent,
+        reporting: relay.as_ref().map(|(reporting, _)| reporting),
+    };
+    let session_outcome = match route(payload.as_ref(), &terminal, workspace_id, notices) {
+        Route::Terminal { payload, config } => ssh_with_terminal(
+            session,
+            workspace_id,
+            payload,
+            config,
+            workdir,
+            visibility,
+            notices,
+        ),
+        Route::DevpodAttach => devpod_session(
+            session,
+            workspace_id,
+            None,
+            workdir,
+            visibility,
+            forward,
+            notices,
+        ),
         Route::DevpodCommand(payload) => devpod_session(
             session,
             workspace_id,
             Some(payload),
             workdir,
+            visibility,
             forward,
             notices,
         ),
+    };
+    // The forward outlives the session by nothing: the socket it carries is only
+    // meaningful while an agent is in there to report through it, and an ssh left
+    // holding a listen path in a container is the kind of thing that is still
+    // there a week later.
+    if let Some((_, forward)) = relay {
+        forward.stop(session.runner);
+    }
+    session_outcome
+}
+
+/// Prepare the container and open the forward, reporting whichever part failed.
+///
+/// `None` means no reporting this launch, and it is never fatal: the reason is
+/// said and the session opens regardless (`flows::session_manager`).
+fn begin_reporting(
+    session: &SessionContext<'_>,
+    workspace_id: &str,
+    options: &ContextOptions,
+    reporting: herdr::Reporting,
+    notices: &mut dyn Notices<LaunchNotice>,
+) -> Option<(herdr::Reporting, session_manager::Forward)> {
+    // The alias, resolved without asking whether dl is on a terminal.
+    //
+    // Deliberately not [`Terminal`], which answers a different question and is
+    // `Absent` for a launch whose output is redirected -- the forward does not
+    // care about that, and keying it on a terminal is a bug this had. What it
+    // needs is the file devpod published the alias into, because the forward is
+    // OpenSSH: devpod's own `-R` was measured and hangs for a unix socket, so
+    // there is no second way in, and a workspace with no alias has nothing to
+    // forward over.
+    let config = match session.host.ssh_config(options) {
+        None => {
+            notices.say(LaunchNotice::SessionManagerUnavailable {
+                reason: "dl cannot tell where devpod publishes its ssh aliases, so the \
+                         manager's socket cannot be forwarded"
+                    .to_owned(),
+            });
+            return None;
+        }
+        Some(config) => match ssh::alias_in(&config, workspace_id) {
+            ssh::Alias::Published => config,
+            ssh::Alias::WorkspaceAbsent | ssh::Alias::NoConfig => {
+                notices.say(LaunchNotice::SessionManagerUnavailable {
+                    reason: format!(
+                        "devpod has published no ssh alias for this workspace in {}, so the \
+                         manager's socket cannot be forwarded",
+                        config.display()
+                    ),
+                });
+                return None;
+            }
+        },
+    };
+    // The forward first, because what `prepare` asks the container includes
+    // whether this forward's socket arrived -- and nothing on this end can ask
+    // that, since a detached child's stderr goes nowhere and nothing waits for its
+    // exit. A refusal from here therefore has a forward to take back down.
+    let forward =
+        match session_manager::start_forward(session.runner, &config, workspace_id, &reporting) {
+            Ok(forward) => forward,
+            Err(reason) => {
+                notices.say(LaunchNotice::SessionManagerUnavailable { reason });
+                return None;
+            }
+        };
+    match session_manager::prepare(session.runner, &config, workspace_id, &reporting) {
+        session_manager::Prepared::Ready => {
+            notices.say(LaunchNotice::SessionManagerReady {
+                pane_id: reporting.pane_id().to_owned(),
+                socket: reporting.container_socket(),
+            });
+            Some((reporting, forward))
+        }
+        session_manager::Prepared::Refused { reason } => {
+            forward.stop(session.runner);
+            notices.say(LaunchNotice::SessionManagerUnavailable { reason });
+            None
+        }
     }
 }
 
@@ -1999,6 +2116,7 @@ fn devpod_session(
     workspace_id: &str,
     payload: Option<&RemotePayload>,
     workdir: Option<&str>,
+    visibility: herdr::Visibility<'_>,
     forward: &mut dyn FnMut(&str),
     notices: &mut dyn Notices<LaunchNotice>,
 ) -> Result<Session, SessionRefused> {
@@ -2016,8 +2134,18 @@ fn devpod_session(
         session.forwarded_claude().as_ref(),
     );
     args.extend(forwarding.args.iter().cloned());
+    // `--set-env` and not `--send-env`: these are the container's own paths for a
+    // socket and a binary, which this host's environment does not hold.
+    if let Some(reporting) = visibility.reporting {
+        args.extend(reporting.devpod_flags());
+    }
 
-    let call = Call::new(args).with_env(forwarding.env);
+    // The agent's name goes in this child's *environment* and onto no flag. What
+    // reads it is the manager on this host, which walks dl's descendants and reads
+    // their `/proc/<pid>/environ`, and this `devpod` is the descendant it finds.
+    // Sending it into the container as well would name the agent to a container
+    // that is not the one running it.
+    let call = Call::new(args).with_env(herdr::inherited_with(forwarding.env, visibility.agent));
     notices.say(LaunchNotice::SshCommand { argv: call.argv() });
 
     // Only stderr is read, which under a pty carries devpod's own warnings and
@@ -2050,12 +2178,24 @@ fn ssh_with_terminal(
     payload: &RemotePayload,
     config: &Path,
     workdir: Option<&str>,
+    visible: herdr::Visibility<'_>,
     notices: &mut dyn Notices<LaunchNotice>,
 ) -> Result<Session, SessionRefused> {
-    let forwarding = claude::extend_openssh_forwarding(
-        gh::openssh_forwarding(session.forwarded_token(notices)),
-        session.forwarded_claude().as_ref(),
+    // The agent's name goes on last and reaches only the environment, so the
+    // permit list `Reuse::derive` keys the control socket on is the same list the
+    // two credentials built (`clients::herdr`). The manager's coordinates, unlike
+    // the name, do cross the transport and so do join that list.
+    let forwarding = herdr::extend_openssh_forwarding(
+        claude::extend_openssh_forwarding(
+            gh::openssh_forwarding(session.forwarded_token(notices)),
+            session.forwarded_claude().as_ref(),
+        ),
+        visible.agent,
     );
+    let forwarding = match visible.reporting {
+        Some(reporting) => reporting.extend_openssh_forwarding(forwarding),
+        None => forwarding,
+    };
     // Derived from the permit list that is about to be sent, not from one read
     // again somewhere else: a master filters `SendEnv` against its own list in
     // silence, so the list and the socket it is carried over have to be one fact.
@@ -2433,7 +2573,7 @@ fn naming_gate(host: &Host, name: &str) -> Option<String> {
 pub enum HerdrTabRename {
     /// Run this, and do not care whether it worked.
     Run {
-        /// [`HERDR_BIN_VAR`] when herdr exported one, else [`HERDR_BIN_FALLBACK`]
+        /// [`herdr::BIN_VAR`] when herdr exported one, else [`HERDR_BIN_FALLBACK`]
         /// for `PATH` to resolve.
         bin: String,
         /// The value of [`HERDR_TAB_VAR`], passed straight back to herdr. Opaque
@@ -2531,7 +2671,7 @@ pub fn names_for(host: &Host, name: &str) -> (TerminalTitle, HerdrTabRename) {
 }
 
 /// The program name a `PATH` lookup is left to resolve when herdr exported no
-/// [`HERDR_BIN_VAR`].
+/// [`herdr::BIN_VAR`].
 ///
 /// A fallback and not the default: reaching it means the pane says it belongs to a
 /// herdr tab while saying nothing about which herdr, which is a herdr older than
@@ -6508,6 +6648,83 @@ mod tests {
             &mut notices,
         );
         (session, notices, said)
+    }
+
+    /// The wiring `clients::herdr`'s own tests cannot reach.
+    ///
+    /// Its unit tests know that `claude` is an agent and that the name belongs in
+    /// the environment rather than in argv; only this one knows the launch flow
+    /// actually asks. The environment is where it has to land: a session manager
+    /// reads `/proc/<pid>/environ` of the pane's processes, and argv is also the
+    /// one place another user on the host could read it from.
+    #[test]
+    fn a_command_that_names_an_agent_names_it_to_the_ssh_child() {
+        let scene = Scene::new().on_a_terminal(&["myws"]).with_running("myws");
+
+        let _ = a_session(&scene, Some("claude 'fix the bug'"));
+
+        let calls = scene.runner.calls_to("ssh");
+        let call = calls.last().expect("an openssh session");
+        assert_eq!(
+            call.invocation()
+                .env
+                .entries
+                .get(herdr::AGENT_VAR)
+                .map(String::as_str),
+            Some("claude"),
+        );
+        assert!(
+            !call.argv().iter().any(|arg| arg.contains(herdr::AGENT_VAR)),
+            "the name must not travel in argv: {:?}",
+            call.argv()
+        );
+    }
+
+    /// The same name on the other transport, which the launch picks and the caller
+    /// does not.
+    ///
+    /// `Route::DevpodCommand` is where `dl <ws> -- claude` lands whenever the
+    /// OpenSSH route is unavailable: no alias published yet (a workspace devpod has
+    /// only just created), no ssh config, or output redirected. The agent's name
+    /// reached the OpenSSH route alone, so on any of those the launch was silently
+    /// nameless -- and `aid`, which sets the variable in its own process before
+    /// exec'ing, covered both routes all along.
+    #[test]
+    fn a_command_that_names_an_agent_names_it_on_the_devpod_route_too() {
+        let scene = Scene::new().with_running("myws");
+
+        let _ = a_session(&scene, Some("claude 'fix the bug'"));
+
+        let calls = scene.runner.calls_to("devpod");
+        let call = calls.last().expect("a devpod session");
+        assert_eq!(
+            call.invocation()
+                .env
+                .entries
+                .get(herdr::AGENT_VAR)
+                .map(String::as_str),
+            Some("claude"),
+            "the devpod child carries no agent name, so herdr reads none off it"
+        );
+        assert!(
+            !call.argv().iter().any(|arg| arg.contains(herdr::AGENT_VAR)),
+            "the name must not travel into the container: {:?}",
+            call.argv()
+        );
+    }
+
+    /// The other half, and the one that keeps a manager honest: a command that is
+    /// not an agent must leave the launch exactly as it was, rather than claiming
+    /// the pane holds an agent nothing has detection rules for.
+    #[test]
+    fn an_ordinary_command_names_no_agent() {
+        let scene = Scene::new().on_a_terminal(&["myws"]).with_running("myws");
+
+        let _ = a_session(&scene, Some("make test"));
+
+        let calls = scene.runner.calls_to("ssh");
+        let call = calls.last().expect("an openssh session");
+        assert_eq!(call.invocation().env.entries.get(herdr::AGENT_VAR), None);
     }
 
     #[test]

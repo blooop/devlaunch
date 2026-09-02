@@ -813,12 +813,15 @@ The second step was never broken. `dl <ws> -- <agent>` pipes the agent's own TUI
 through the pane, so the pane holds the real screen, prompt box and permission
 dialogs included. Only the name was missing.
 
-So `aid` supplies it. Every `aid` launch that starts an agent exports
-`HERDR_AGENT=<agent>` for the session, naming whichever agent it picked:
+So the launcher supplies it. Every `aid` launch that starts an agent exports
+`HERDR_AGENT=<agent>` for the session, naming whichever agent it picked, and `dl`
+does the same for a command whose program is an agent by name:
 
 ```bash
 aid blooop/devlaunch@fix/42        # exports HERDR_AGENT=claude
 aid --codex blooop/devlaunch       # exports HERDR_AGENT=codex
+dl blooop/devlaunch -- claude      # exports HERDR_AGENT=claude
+dl blooop/devlaunch -- make test   # exports nothing: make is not an agent
 ```
 
 Nothing else changes and nothing has to be turned on. A herdr pane running the
@@ -846,6 +849,36 @@ for a name nothing reads.
 A line that starts no agent writes nothing, and that includes a retired spelling
 `dl` is about to refuse. There is no session there for anyone to classify.
 
+### What `dl` reads, and what it refuses to guess
+
+`dl` did not pick the agent, so it reads the command it was handed. Leading
+`NAME=value` assignments are the shell's rather than the program's and are stepped
+over, the program is compared by its last path component so `/usr/local/bin/claude`
+and `claude` answer alike, and everything past the program is ignored because
+nothing after it can change which agent starts.
+
+Only a name on the list `dl` and `aid` share is a name it will write, which is the
+one part of this worth arguing about. `dl <ws> -- make test` could as easily export
+`HERDR_AGENT=make`, and that would be worse than the silence it gets: a manager
+would be told the pane holds an agent it has never heard of, look for detection
+rules under that label, and find none. So the list is the list of agents devlaunch
+knows, `aid`'s own table is held against it by a test, and a command naming
+anything else is a command `dl` says nothing about.
+
+It is still a reading and not a parse. A command holding a pipe or a `&&` gets the
+answer for its first program, which is the one whose screen the pane holds when it
+starts, and a command that reaches an agent halfway through a chain is not named.
+
+Both transports carry it, which is worth saying because the launch picks the
+transport and you do not. A command normally goes over OpenSSH against the alias
+devpod published, and when there is no alias to use yet, no ssh config, or no
+terminal, the same command goes as `devpod ssh --command`. The name travels in that
+child's own environment either way and on no flag, because what reads it is the
+manager on this host: it walks `dl`'s descendants and reads their
+`/proc/<pid>/environ`, and the descendant it finds is the `ssh` or the `devpod`.
+Sending it *into* the container instead would name the agent to the one place that
+is not running it.
+
 ### What this does not do
 
 **It is one manager's variable.** `HERDR_AGENT` is herdr's name, and one of the
@@ -859,17 +892,103 @@ absence is the whole of the detection. A manager with an equivalent override nee
 that override set some other way; a manager with none is still blind, and no
 amount of cooperation from `dl` would change that.
 
-**Plain `dl` sets nothing**, because plain `dl` has no agent to name. `dl <ws> --
-claude` typed out by hand is your command, and reading an agent back out of a
-command tail would be a guess. Export the variable yourself on a line like that:
+Reading two of herdr's exports is still a small thing to know about it. The
+container-side half below is not: it speaks herdr's socket protocol, installs
+herdr's binary and writes a hook that calls herdr's own subcommands. The
+plan had been a facility that knew no manager's name -- a list of variables to
+forward and a socket to carry, with the manager-specific part left outside `dl`
+entirely. What retired it was a measurement rather than a change of mind
+([#549](https://github.com/blooop/devlaunch/issues/549)): a general container has
+no python3, no jq, no socat and no nc, so there is nothing in there for a generic
+facility to hand the socket *to*. Something has to speak the protocol, and the
+only thing that can is the manager's own binary, lent in and driven by a hook that
+knows its subcommands. A second manager is a second client module beside
+`clients/herdr.rs`, which is the cost that buys.
 
-```bash
-HERDR_AGENT=claude dl blooop/devlaunch -- claude
-```
+**It only covers an agent named on `dl`'s own command line.** `dl <ws>` opens a
+shell, and a `claude` you type at that shell is a process inside the container that
+no host manager can see. Naming it is impossible from out here, so that case is
+served by a different mechanism, in the next section.
 
 **Nothing is forwarded into the container.** The variable is set on the host, for
 the host process a manager inspects. It is not in the workspace's `SendEnv` permit
 list and no agent inside sees it.
+
+## Reporting an agent started inside the workspace
+
+The section above covers an agent `dl` or `aid` started, whose screen the pane
+already holds. It cannot cover the other way of working, which is the common one:
+
+```bash
+dl blooop/devlaunch      # a shell in the container
+claude                   # started in there, by hand
+```
+
+That `claude` is a process in the container. herdr walks the host's processes and
+finds `dl`, `ssh` and two `devpod`s, and its own documentation is explicit that
+`HERDR_AGENT` "cannot see it if you set it only inside a VM or container". No
+host-side variable reaches this. So the container reports for itself:
+
+```bash
+DEVLAUNCH_HERDR=1 dl blooop/devlaunch
+```
+
+Set that, from inside a herdr pane, and the pane tracks whatever agent you start in
+the workspace: idle when it is waiting for you, working while it works, blocked
+when it wants a decision, and released when the session ends.
+
+### What it does, once per workspace
+
+Four things have to be true inside the container, and the launch arranges all four.
+
+**The manager's socket has to be reachable.** `dl` forwards it with `ssh -R`, over
+a connection of its own that lives exactly as long as the session. A connection of
+its own rather than a flag on the session, for two measured reasons: devpod's own
+`-R` hangs with no output for a unix socket, and a bare `dl <ws>` is a devpod
+attach, so a flag would serve one route and not the other. Being separate also
+keeps it out of the multiplexed control socket, where a forward outlives the trip
+that asked for it and is inherited by a later launch that asked for nothing.
+
+**Something has to speak the protocol.** A general container has no python3, no jq,
+no socat and no nc, which is also why herdr's own Claude Code hook can never fire in
+one: its first act is `command -v python3`. So the herdr binary itself is lent in,
+the way `gh` and `claude` already are, at about 1.4 seconds for 17MB.
+
+**The coordinates have to arrive**, with the socket and binary paths rewritten to
+the container's: `HERDR_ENV`, `HERDR_PANE_ID`, `HERDR_SOCKET_PATH`, `HERDR_BIN_PATH`.
+
+**Something has to fire.** A Claude Code hook, installed at
+`/etc/claude-code/managed-settings.json` inside the container. That location is the
+point rather than a detail: this repo's devcontainer bind-mounts the host's
+`~/.claude` into the container, so a hook written to `~/.claude/settings.json` from
+in there would be an edit to your own machine's config.
+
+The lend and the install happen at most once per workspace per version of herdr,
+and a launch with the variable unset costs nothing at all. A launch with it set
+costs one round trip: `dl` asks the container what it already has rather than
+trusting a note it wrote to itself last time. A cache keyed on the workspace id
+cannot answer this, because the id outlives the container. `dl <ws> recreate`,
+`dl <ws> reset`, a `devpod delete` or a rebuilt image all replace what is inside
+while the id stays put, and a note that went on describing the old container
+bought silence: `dl` would say it was reporting agents to your pane while nothing
+in there had ever heard of herdr.
+
+### What it does not do
+
+**It is one manager and one agent.** The hook reports `claude`, because the events
+it hangs off are Claude Code's. Another agent needs its own hook.
+
+**A failure costs the reporting and never the session.** A container whose sudo
+wants a password, a workspace devpod has published no alias for, a forward the
+container user cannot bind: each of those prints one line saying agents here will
+not be visible, and then opens your shell as usual. The alternative is refusing a
+shell because a status indicator could not be wired up.
+
+**The state is authoritative, not read off the screen.** That is a gain over the
+host-side half, and it is also why the mechanism is `pane report-agent` rather than
+`pane report-agent-session`: the second reports a session id for a pane that
+already has an agent and does not establish one, so a container sending only those
+stays invisible.
 
 ## The shared pixi package cache
 

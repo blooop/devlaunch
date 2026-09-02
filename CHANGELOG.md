@@ -7,6 +7,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`dl <ws> -- <agent>` now names the agent to a session manager too.** 0.27 gave
+  that to `aid` alone, and the docs told you to prefix the variable yourself on a
+  plain `dl` line. Now `dl` reads the command it was handed: when the program is an
+  agent devlaunch knows by name, the child that carries the session carries
+  `HERDR_AGENT=<agent>`, and [herdr](https://herdr.dev) reports the workspace agent
+  as idle, working and blocked exactly as it does for `aid`. Both transports carry
+  it, which matters because the launch picks the transport: a command goes over
+  OpenSSH where devpod has published an alias and as `devpod ssh --command` where
+  it has not.
+
+  Reading the command is not the guess 0.27's docs said it would be, with one
+  restriction that is the whole design: only a name on the list `dl` and `aid`
+  share is written. `dl <ws> -- make test` could as easily export
+  `HERDR_AGENT=make`, and that is worse than silence, because a manager would then
+  look for detection rules under a label it has never heard of and find none. The
+  reading itself steps over leading `NAME=value` assignments, compares the program
+  by its last path component, and ignores everything after it.
+
+  Measured against herdr 0.8.2 rather than argued: `dl <ws> -- claude` in a herdr
+  pane with nothing exported went from no agent at all to `claude`, idle, and then
+  working while the agent worked. The same run confirmed the mechanism 0.27 rests
+  on, which no test in either tree can reach: `dl`'s own row carries nothing
+  because a `setenv` after start does not rewrite `/proc/<pid>/environ`, and the
+  `ssh` child it spawns carries the name. herdr reads a descendant's environment,
+  which is what makes the child enough.
+
+  An agent started *inside* the workspace is not covered by this half, and no
+  host-side variable could cover it. That case is the next entry.
+
+- **`DEVLAUNCH_HERDR=1` makes an agent started inside a workspace visible too.**
+  This is the case that could not be fixed from the host: `dl <ws>` opens a shell,
+  the `claude` you type at it is a process in the container, and herdr's own
+  documentation says the agent hint "cannot see it if you set it only inside a VM
+  or container". So the container reports for itself, over herdr's documented
+  socket protocol, and the pane tracks it as idle, working, blocked and released.
+
+  Four things have to be true inside, and the launch arranges all four. The
+  manager's socket is forwarded with `ssh -R` over a connection of its own, which
+  is what makes it work on a container that has been running for a week and what
+  keeps the forward out of the multiplexed master, where devlaunch#549 measured
+  that forwards accumulate and are inherited by a later launch that asked for
+  none. The herdr binary is lent in, because a general container has no python3,
+  no jq, no socat and no nc, which is also why herdr's own Claude Code hook can
+  never fire in one: its first act is `command -v python3`. The coordinates travel
+  with the socket and binary paths rewritten to the container's. And the hook is
+  installed at `/etc/claude-code/managed-settings.json`, which is chosen rather
+  than incidental: this repo's devcontainer bind-mounts the host's `~/.claude`, so
+  a hook written to `~/.claude/settings.json` from inside would be an edit to the
+  user's own machine. A workspace that already holds managed settings `dl` did not
+  write keeps them and loses the reporting instead: that file is Claude Code's
+  highest-precedence configuration, and whatever policy an image put there is
+  worth more than a status indicator.
+
+  Off by default, and the lend plus install happen at most once per workspace per
+  version of herdr. A launch with the variable unset spends nothing; a launch with
+  it set spends one round trip asking the container what it already has, rather
+  than trusting a host-side note about a container that `dl <ws> recreate` may
+  have replaced since.
+
+  Every failure costs the reporting and never the session. A locked-down sudo, a
+  workspace with no published ssh alias, a forward that cannot bind: each prints
+  one line saying agents here will not be visible, and then opens the shell.
+
+  The mechanism is `pane report-agent` and not `pane report-agent-session`, which
+  was measured: the second reports a session id for a pane that already has an
+  agent and does not establish one, so a container sending only those stays
+  invisible. Verified end to end against herdr 0.8.2 -- a pane went from no agent
+  at all to `claude` because a `claude -p` run inside the container reported
+  through the forwarded socket, with nothing on `dl`'s command line naming an
+  agent.
+
 ### Fixed
 
 - **`claude` in a workspace no longer opens the first-run wizard in front of a
