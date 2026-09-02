@@ -768,7 +768,6 @@ HERDR_AGENT=claude dl blooop/devlaunch -- claude
 **Nothing is forwarded into the container.** The variable is set on the host, for
 the host process a manager inspects. It is not in the workspace's `SendEnv` permit
 list and no agent inside sees it.
-||||||| Stash base
 
 ## The shared pixi package cache
 
