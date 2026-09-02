@@ -121,18 +121,34 @@ that wants the one your host is not signed in to.
 dl owner/repo --claude-profile work
 ```
 
-The name is one directory under `<config>/devlaunch/claude-profiles/`, holding the
-`.credentials.json` a `claude` login writes. devlaunch reads these and has no writer
-for them, so creating one is Claude Code's job: point its own `CLAUDE_CONFIG_DIR` at
-the directory and log in there.
+The name is one directory under `~/.claude-profiles/`, holding the
+`.credentials.json` a `claude` login writes. Each such directory is a
+`CLAUDE_CONFIG_DIR` of its own, which is what makes the logins independent.
 
-They sit under the **config** directory and never the cache, which is deliberate.
-`dl --purge` deletes devlaunch's cache entire and `dl --prune` walks the clones
-inside it, so a credential kept anywhere under there would be one flag away from
-deletion. A login is not a cache: nothing regenerates it.
+**That is somebody else's directory and `dl` only reads it.** The layout and the
+`CLAUDE_PROFILES_DIR` variable belong to the tool that manages them, honoured here
+rather than set, the same arrangement `dl` has with devpod's own
+`DEVPOD_SSH_CONFIG`. An earlier version of this feature invented a devlaunch-shaped
+root under the config directory, and that was wrong: it made a third location for one
+concept and would have asked anyone with working profiles to log every account in
+again somewhere new.
 
-`DEVLAUNCH_CLAUDE_PROFILES_DIR` replaces the location whole, which is what lets a
-scratch run complete and read its own profiles rather than the real ones.
+So there is no writer. Creating a profile, seeding the config it shares with your main
+login, and deleting it belong to whatever made the directory; `dl` reads one file out
+of it. By hand that is `CLAUDE_CONFIG_DIR=~/.claude-profiles/work claude`, then a
+login.
+
+Nothing `dl` deletes can reach them. `dl --purge` removes devlaunch's cache entire and
+`dl --prune` walks the clones inside it, and a login was never in either path.
+
+Two variables, in this order: `DEVLAUNCH_CLAUDE_PROFILES_DIR` is devlaunch's own and
+wins, which is what lets a scratch run read and complete its own profiles rather than
+the real credentials; `CLAUDE_PROFILES_DIR` is the managing tool's and is honoured
+next.
+
+`--claude-profile default` resolves the login you would get anyway and never consults
+a `default/` directory. It exists as a word because a picker needs something to
+select, and a recalled line needs a way to say "not the profile I used last time".
 
 **A named profile that holds no credential stops the launch.** It does not fall back
 to your default login, and that refusal is the feature rather than a rough edge. Two

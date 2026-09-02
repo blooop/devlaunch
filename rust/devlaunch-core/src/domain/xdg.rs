@@ -65,41 +65,65 @@ fn devlaunch_cache_in(cache_home: &Path) -> PathBuf {
     cache_home.join("devlaunch")
 }
 
-/// Where named Claude profiles live: `config_home()/devlaunch/claude-profiles`.
+/// Where named Claude profiles live: `~/.claude-profiles`, or wherever
+/// `$CLAUDE_PROFILES_DIR` says.
 ///
-/// **Under the config home, not the cache**, which is the whole reason this is a
-/// function. `dl --purge` deletes [`devlaunch_cache`] entire and `dl --prune` walks
-/// [`clone_root_in`] inside it, so a credential kept anywhere under the cache would
-/// be one flag away from deletion. A login is not a cache: nothing regenerates it.
-/// `the_profiles_root_is_nowhere_a_purge_or_a_prune_can_reach` holds that.
+/// **This is somebody else's directory and devlaunch only reads it.** The layout is
+/// `claude-as`'s (a per-account `CLAUDE_CONFIG_DIR` per subdirectory, each holding the
+/// `.credentials.json` a login writes), and the variable is `claude-as`'s too, so it
+/// is honoured rather than set -- the arrangement [`super::super::clients::ssh::CONFIG_VAR`]
+/// already has with devpod's own. Inventing a devlaunch-shaped root instead was the
+/// first version of this and it was wrong: it made a *third* location for one concept
+/// and would have asked a user with working profiles to log every account in again
+/// somewhere new.
 ///
-/// Beside `config.toml`, which [`super::config`] already puts one directory under the
-/// config home, so devlaunch has one configuration directory rather than two.
+/// So there is no writer here, deliberately, matching [`super::config`]'s note about
+/// `config.toml`. Creating a profile, seeding its shared config and deleting it belong
+/// to whatever made the directory; devlaunch reads one file out of it.
 ///
-/// `$DEVLAUNCH_CLAUDE_PROFILES_DIR` replaces it whole, which is what lets a test and
-/// a scratch run read and complete their own profiles rather than the real ones. An
-/// empty value counts as unset, the rule every variable here follows.
+/// **Nothing devlaunch deletes can reach it.** `dl --purge` removes
+/// [`devlaunch_cache`] entire and `dl --prune` walks [`clone_root_in`] inside that, so
+/// a login was never in their path and still is not:
+/// `the_profiles_root_is_nowhere_a_purge_or_a_prune_can_reach` holds it.
+///
+/// `$DEVLAUNCH_CLAUDE_PROFILES_DIR` is devlaunch's own and wins over both, which is
+/// what lets a test and a scratch run read and complete their own profiles instead of
+/// the real credentials. An empty value counts as unset in every case, the rule every
+/// variable here follows.
 pub fn claude_profiles_root() -> Result<PathBuf, NoHomeDirectory> {
-    match std::env::var_os(CLAUDE_PROFILES_DIR_VAR) {
-        Some(value) if !value.is_empty() => Ok(PathBuf::from(value)),
-        _ => config_home().map(|config| claude_profiles_root_in(&config)),
+    if let Some(scoped) = non_empty(CLAUDE_PROFILES_DIR_VAR) {
+        return Ok(PathBuf::from(scoped));
     }
+    if let Some(theirs) = non_empty(FOREIGN_PROFILES_DIR_VAR) {
+        return Ok(PathBuf::from(theirs));
+    }
+    crate::osext::home_dir()
+        .map(|home| claude_profiles_root_in(&home))
+        .ok_or(NoHomeDirectory)
 }
 
-/// The placement half of [`claude_profiles_root`], as a function of the config home.
+/// The placement half of [`claude_profiles_root`], as a function of the home directory.
 ///
 /// Split out for [`devlaunch_cache_in`]'s reason: the decision is then a function of
 /// its input, so a test can state the machine it means instead of mutating an
 /// environment every other test in the binary shares.
-fn claude_profiles_root_in(config_home: &Path) -> PathBuf {
-    config_home.join("devlaunch").join(CLAUDE_PROFILES_LEAF)
+fn claude_profiles_root_in(home: &Path) -> PathBuf {
+    home.join(CLAUDE_PROFILES_LEAF)
 }
 
-/// The scratch override for [`claude_profiles_root`].
+/// A variable's value, if it has one that is not empty.
+fn non_empty(name: &str) -> Option<OsString> {
+    std::env::var_os(name).filter(|value| !value.is_empty())
+}
+
+/// devlaunch's own override, which scopes a scratch run away from real credentials.
 const CLAUDE_PROFILES_DIR_VAR: &str = "DEVLAUNCH_CLAUDE_PROFILES_DIR";
 
-/// The leaf [`claude_profiles_root`] ends in, named once.
-const CLAUDE_PROFILES_LEAF: &str = "claude-profiles";
+/// `claude-as`'s own variable for the same directory, honoured rather than set.
+const FOREIGN_PROFILES_DIR_VAR: &str = "CLAUDE_PROFILES_DIR";
+
+/// The leaf [`claude_profiles_root`] ends in under `$HOME`, named once.
+const CLAUDE_PROFILES_LEAF: &str = ".claude-profiles";
 
 /// The one directory devlaunch clones into, under the cache directory ownership
 /// is decided by.
@@ -207,7 +231,7 @@ mod tests {
         // under either is one flag away from deletion and nothing regenerates a
         // login. This asserts the placement rather than trusting whoever moves it
         // next.
-        let profiles = claude_profiles_root_in(Path::new("/c"));
+        let profiles = claude_profiles_root_in(Path::new("/h"));
         let devlaunch = devlaunch_cache_in(Path::new("/k"));
         let clones = clone_root_in(&devlaunch);
         assert!(
@@ -217,9 +241,10 @@ mod tests {
             devlaunch.display()
         );
         assert!(!profiles.starts_with(&clones));
-        // And it is beside the other configuration, so devlaunch has one
-        // configuration directory rather than two.
-        assert_eq!(profiles, PathBuf::from("/c/devlaunch/claude-profiles"));
+        // And it is `claude-as`'s directory, not one devlaunch invented: a second
+        // location for one concept would ask a user with working profiles to log
+        // every account in again somewhere new.
+        assert_eq!(profiles, PathBuf::from("/h/.claude-profiles"));
     }
 
     #[test]

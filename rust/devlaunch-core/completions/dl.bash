@@ -86,14 +86,15 @@ _dl_completion() {
     # *workspaces*, and a profile you made a minute ago has to complete now. It is one
     # readdir of a directory holding a handful of entries.
     #
-    # Honours DEVLAUNCH_CLAUDE_PROFILES_DIR and XDG_CONFIG_HOME the same way
-    # `domain::xdg::claude_profiles_root` does, so a scratch run completes its own
-    # profiles and not the real ones. A mistyped name is a hard refusal at launch, not
-    # a fallback to the default login, which is what makes completing these worth the
-    # readdir.
+    # A mistyped name is a hard refusal at launch rather than a fallback to the default
+    # login, which is what makes completing these worth the readdir.
     if [[ "${prev}" == "--claude-profile" ]]; then
-        local profiles_root="${DEVLAUNCH_CLAUDE_PROFILES_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/devlaunch/claude-profiles}"
-        local profiles="" pdir
+        # The same three sources `domain::xdg::claude_profiles_root` reads, in the same
+        # order: devlaunch's own scratch override, then claude-as's own variable, then
+        # its default directory. `default` is offered because it is a name the resolver
+        # answers for without any directory existing.
+        local profiles_root="${DEVLAUNCH_CLAUDE_PROFILES_DIR:-${CLAUDE_PROFILES_DIR:-$HOME/.claude-profiles}}"
+        local profiles="default" pdir
         if [[ -d "${profiles_root}" ]]; then
             for pdir in "${profiles_root}"/*/; do
                 [[ -d "$pdir" ]] || continue

@@ -278,7 +278,11 @@ pub(crate) fn resolve_token(
     if forwarding_disabled(host.disable.as_deref()) {
         return TokenLookup::Missing(NoToken::OptedOut);
     }
-    if let Some(named) = host.profile.as_deref() {
+    if let Some(named) = host
+        .profile
+        .as_deref()
+        .filter(|named| *named != DEFAULT_PROFILE)
+    {
         return from_profile(named, profiles_root);
     }
     if let Some(token) = host.token.as_deref().and_then(Token::parse) {
@@ -300,6 +304,16 @@ pub(crate) fn resolve_token(
         None => TokenLookup::Missing(NoToken::Unreadable(path.display().to_string())),
     }
 }
+
+/// The profile name that means "the login this host uses anyway".
+///
+/// `claude-as default` runs `claude` with no `CLAUDE_CONFIG_DIR` at all rather than
+/// looking for a directory of that name, and this matches it: `--claude-profile
+/// default` resolves the unnamed credential below and **never** consults
+/// `<root>/default/`, even if one exists. Worth having as a word rather than as the
+/// absence of a flag, because a picker needs something to select and a recalled line
+/// needs a way to say "not the profile I used last time".
+const DEFAULT_PROFILE: &str = "default";
 
 /// The token a named profile holds, or the reason it holds none.
 ///
@@ -525,6 +539,51 @@ mod tests {
         assert_eq!(
             resolve_token(None, Some(root.path()), &host),
             TokenLookup::Found(Token("not-a-real-work-token".to_owned()))
+        );
+    }
+
+    #[test]
+    fn the_default_profile_names_the_unnamed_credential() {
+        // `claude-as default` runs claude with no CLAUDE_CONFIG_DIR rather than looking
+        // for a directory called default, and this matches it. A picker needs a word for
+        // "the ordinary login", and a recalled line needs a way to say "not the profile
+        // I used last time".
+        let home = logged_in("not-a-real-home-token");
+        let root = profiles_root_with("default", "not-a-real-directory-token");
+        let host = HostEnv {
+            profile: Some("default".to_owned()),
+            ..HostEnv::default()
+        };
+        // The home credential, and emphatically not `<root>/default/`, which exists
+        // here precisely so the test can tell the two apart.
+        assert_eq!(
+            resolve_token(Some(home.path()), Some(root.path()), &host),
+            TokenLookup::Found(Token("not-a-real-home-token".to_owned()))
+        );
+    }
+
+    #[test]
+    fn the_default_profile_still_honours_the_config_dir_and_the_opt_out() {
+        // It resolves the unnamed credential, so it picks up everything that decides
+        // which one that is rather than jumping straight to `$HOME/.claude`.
+        let moved = credential_dir_holding("not-a-real-moved-token");
+        let host = HostEnv {
+            profile: Some("default".to_owned()),
+            config_dir: Some(moved.path().display().to_string()),
+            ..HostEnv::default()
+        };
+        assert_eq!(
+            resolve_token(None, None, &host),
+            TokenLookup::Found(Token("not-a-real-moved-token".to_owned()))
+        );
+        let opted_out = HostEnv {
+            disable: Some("1".to_owned()),
+            profile: Some("default".to_owned()),
+            ..HostEnv::default()
+        };
+        assert_eq!(
+            resolve_token(None, None, &opted_out),
+            TokenLookup::Missing(NoToken::OptedOut)
         );
     }
 
