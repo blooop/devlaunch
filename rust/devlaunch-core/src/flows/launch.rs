@@ -144,15 +144,6 @@ pub(crate) const TITLE_DISABLE_VAR: &str = "DEVLAUNCH_NO_TITLE";
 /// says about itself.
 pub(crate) const HERDR_TAB_VAR: &str = "HERDR_TAB_ID";
 
-/// `HERDR_BIN_PATH`: the herdr that spawned this pane.
-///
-/// Preferred over a `PATH` lookup because a rename lands on the socket of the
-/// server that owns this pane, and the binary that server shipped is the one that
-/// speaks its protocol. It is also the only one guaranteed to be *findable*: herdr
-/// installs per-environment often enough (pixi, cargo, a downloaded release) that
-/// `herdr` need not be on the `PATH` a launch inherits at all.
-pub(crate) const HERDR_BIN_VAR: &str = "HERDR_BIN_PATH";
-
 /// The variable a project's host-side `initializeCommand` reads to tell branch
 /// workspaces apart; devpod gives the hook no workspace identity of its own (see
 /// docs/devcontainer-projects.md).
@@ -284,7 +275,7 @@ impl Host {
             no_tty: crate::osext::env_str(ssh::DISABLE_VAR),
             no_title: crate::osext::env_str(TITLE_DISABLE_VAR),
             herdr_tab_id: crate::osext::env_str(HERDR_TAB_VAR),
-            herdr_bin: crate::osext::env_str(HERDR_BIN_VAR),
+            herdr_bin: crate::osext::env_str(herdr::BIN_VAR),
             stdin_tty: is_a_terminal(libc::STDIN_FILENO),
             stdout_tty: is_a_terminal(libc::STDOUT_FILENO),
             stderr_tty: is_a_terminal(libc::STDERR_FILENO),
@@ -2582,7 +2573,7 @@ fn naming_gate(host: &Host, name: &str) -> Option<String> {
 pub enum HerdrTabRename {
     /// Run this, and do not care whether it worked.
     Run {
-        /// [`HERDR_BIN_VAR`] when herdr exported one, else [`HERDR_BIN_FALLBACK`]
+        /// [`herdr::BIN_VAR`] when herdr exported one, else [`HERDR_BIN_FALLBACK`]
         /// for `PATH` to resolve.
         bin: String,
         /// The value of [`HERDR_TAB_VAR`], passed straight back to herdr. Opaque
@@ -2645,7 +2636,7 @@ impl HerdrTabRename {
 }
 
 /// The program name a `PATH` lookup is left to resolve when herdr exported no
-/// [`HERDR_BIN_VAR`].
+/// [`herdr::BIN_VAR`].
 ///
 /// A fallback and not the default: reaching it means the pane says it belongs to a
 /// herdr tab while saying nothing about which herdr, which is a herdr older than
