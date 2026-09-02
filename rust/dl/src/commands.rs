@@ -374,7 +374,46 @@ fn render_claude_profiles() -> Ending {
         };
         println!("{:<width$}  {state:<13}  {}", row.name, account_of(row));
     }
+    say_shared_accounts(&rows);
     Ending::Done
+}
+
+/// Name the profiles that are two names for one account.
+///
+/// A footnote rather than a column, because it is a fact about a *pair* and a column
+/// would have to repeat it once per row while still not saying which pair. And worth
+/// saying at all because the columns cannot: two profiles of one account render
+/// identically to two colleagues who share an organisation, so the redundant one is
+/// invisible exactly where a person is choosing between them.
+///
+/// One line per group rather than per profile, and only for groups the listing itself
+/// found, so nothing is claimed about a profile whose state file named no account.
+fn say_shared_accounts(rows: &[claude_profiles::ProfileSummary]) {
+    let mut said: Vec<String> = Vec::new();
+    for row in rows {
+        if row.shares_account_with.is_empty() {
+            continue;
+        }
+        let mut group: Vec<&str> = row
+            .shares_account_with
+            .iter()
+            .map(String::as_str)
+            .chain(std::iter::once(row.name.as_str()))
+            .collect();
+        group.sort_unstable();
+        let key = group.join(" ");
+        if said.contains(&key) {
+            continue;
+        }
+        said.push(key);
+        let names = group
+            .iter()
+            .map(|name| format!("'{name}'"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        println!();
+        println!("{names} are the same account, so all but one are spare.");
+    }
 }
 
 /// The account column: what the state file says, or why it says nothing.

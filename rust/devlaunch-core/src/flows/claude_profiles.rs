@@ -73,6 +73,16 @@ pub struct ProfileSummary {
     /// profile never logged in to has none, and neither does one whose file Claude
     /// Code has since reshaped.
     pub account: Option<Account>,
+    /// The other profiles in this listing signed in as the **same account**, by name
+    /// and sorted. Empty for a profile that is the only one of its account, which is
+    /// every profile on a host that has not accumulated any.
+    ///
+    /// Worth computing because two profiles of one account is not visible in the
+    /// columns: they render identically to two genuinely different logins that happen
+    /// to share an organisation, and the whole point of the listing is that a name
+    /// proves nothing. Decided on `accountUuid`, never on a display field, for that
+    /// reason.
+    pub shares_account_with: Vec<String>,
 }
 
 /// Every profile this host offers, `default` first and the rest by name.
@@ -112,7 +122,42 @@ pub fn summarise(profiles_root: Option<&Path>, unnamed: Option<&Path>) -> Vec<Pr
         .collect();
     named.sort_by(|a, b| a.name.cmp(&b.name));
     rows.extend(named);
+    note_shared_accounts(&mut rows);
     rows
+}
+
+/// Fill in [`ProfileSummary::shares_account_with`] across a built listing.
+///
+/// Grouped by `accountUuid` and by nothing else. A shared `organizationName` is two
+/// colleagues, a shared `emailAddress` would be the same thing said less precisely,
+/// and a profile whose file names no id at all joins no group rather than joining the
+/// group of blanks.
+fn note_shared_accounts(rows: &mut [ProfileSummary]) {
+    let mut by_account: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
+    for row in rows.iter() {
+        if let Some(uuid) = row.account.as_ref().and_then(|a| a.account_uuid.as_deref()) {
+            by_account
+                .entry(uuid.to_owned())
+                .or_default()
+                .push(row.name.clone());
+        }
+    }
+    by_account.retain(|_, names| names.len() > 1);
+    let shared = by_account;
+    for row in rows.iter_mut() {
+        let Some(uuid) = row.account.as_ref().and_then(|a| a.account_uuid.as_deref()) else {
+            continue;
+        };
+        let Some(names) = shared.get(uuid) else {
+            continue;
+        };
+        row.shares_account_with = names
+            .iter()
+            .filter(|name| *name != &row.name)
+            .cloned()
+            .collect();
+    }
 }
 
 /// [`summarise`], for this machine.
@@ -139,6 +184,9 @@ fn row(name: String, path: PathBuf) -> ProfileSummary {
         path: path.clone(),
         state,
         account: claude::account_at(&path),
+        // Filled in by `note_shared_accounts` once the whole listing exists: it is a
+        // fact about a row's neighbours, so no row can answer it alone.
+        shares_account_with: Vec::new(),
     }
 }
 
@@ -158,10 +206,13 @@ mod tests {
             .expect("a credential");
         }
         if let Some(email) = email {
+            // The uuid is derived from the email, so two profiles of one account are
+            // built by giving them one address and two profiles that merely look alike
+            // are built by giving them two.
             std::fs::write(
                 dir.join(".claude.json"),
                 format!(
-                    r#"{{"oauthAccount":{{"emailAddress":"{email}",
+                    r#"{{"oauthAccount":{{"emailAddress":"{email}","accountUuid":"uuid-of-{email}",
                        "organizationName":"Someorg","seatTier":"team"}},"other":1}}"#
                 ),
             )
@@ -251,6 +302,68 @@ mod tests {
         let rows = summarise(Some(root.path()), None);
         let offered: Vec<&str> = rows.iter().map(|row| row.name.as_str()).collect();
         assert_eq!(offered, ["work"]);
+    }
+
+    #[test]
+    fn two_profiles_of_one_account_say_so_about_each_other() {
+        // The case the columns cannot show: same account under two names renders
+        // identically to two different logins sharing an organisation, so one of the
+        // two is dead weight and nothing else would say which.
+        let root = tempfile::tempdir().expect("a scratch root");
+        profile(root.path(), "one", true, Some("same@example.com"));
+        profile(root.path(), "two", true, Some("same@example.com"));
+        profile(root.path(), "other", true, Some("different@example.com"));
+        let rows = summarise(Some(root.path()), None);
+        let shared = |name: &str| {
+            rows.iter()
+                .find(|row| row.name == name)
+                .map(|row| row.shares_account_with.clone())
+                .expect(name)
+        };
+        assert_eq!(shared("one"), ["two"]);
+        assert_eq!(shared("two"), ["one"]);
+        assert!(shared("other").is_empty());
+    }
+
+    #[test]
+    fn a_shared_organisation_is_not_a_shared_account() {
+        // Every profile the fixture builds carries `organizationName: Someorg`, which
+        // is exactly the trap: colleagues share an organisation and are different
+        // accounts. Grouping is by `accountUuid` and nothing else.
+        let root = tempfile::tempdir().expect("a scratch root");
+        profile(root.path(), "mine", true, Some("me@example.com"));
+        profile(root.path(), "theirs", true, Some("them@example.com"));
+        for row in summarise(Some(root.path()), None) {
+            assert!(row.shares_account_with.is_empty(), "{}", row.name);
+        }
+    }
+
+    #[test]
+    fn a_profile_naming_no_account_joins_no_group() {
+        // Two blanks are not "the same account", and saying so would be a claim about
+        // nothing. A profile with no state file has no id to group on.
+        let root = tempfile::tempdir().expect("a scratch root");
+        profile(root.path(), "quiet", true, None);
+        profile(root.path(), "silent", true, None);
+        for row in summarise(Some(root.path()), None) {
+            assert!(row.shares_account_with.is_empty(), "{}", row.name);
+        }
+    }
+
+    #[test]
+    fn a_profile_that_duplicates_the_default_login_is_named_too() {
+        // The most pointless profile there is: a second name for the login you would
+        // have got anyway. `default` is in the grouping for exactly this.
+        let home = tempfile::tempdir().expect("a scratch home");
+        let unnamed = home.path().join(".claude");
+        std::fs::create_dir_all(unnamed.parent().expect("a parent")).expect("a home");
+        profile(home.path(), ".claude", true, Some("me@example.com"));
+        let root = tempfile::tempdir().expect("a scratch root");
+        profile(root.path(), "spare", true, Some("me@example.com"));
+        let rows = summarise(Some(root.path()), Some(&unnamed));
+        assert_eq!(rows[0].name, DEFAULT_PROFILE);
+        assert_eq!(rows[0].shares_account_with, ["spare"]);
+        assert_eq!(rows[1].shares_account_with, [DEFAULT_PROFILE]);
     }
 
     #[test]

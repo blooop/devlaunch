@@ -41,6 +41,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the way to find a profile created and never logged in to, since a launch naming one of
   those refuses.
 
+  It also names the profiles that are **two names for one account**, which is the other
+  thing a name cannot tell you: two profiles of one account render identically to two
+  colleagues who share an organisation, so the redundant one is invisible exactly where
+  you are choosing between them. Grouped on the account's own id and never on a display
+  field, since a shared organisation is two people; a profile naming no account joins no
+  group, because two blanks are not the same account. Said once per group as a footnote
+  rather than per row as a column, because it is a fact about a pair.
+
   A profile name beginning with a dot is now refused as well as unlisted. A `<root>/*/`
   glob matches no dot-directory, so neither the listing nor the completion would ever
   show one, and a profile you can launch but never see is a trap. That is marginally
