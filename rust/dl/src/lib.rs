@@ -27,6 +27,7 @@ mod cli;
 mod commands;
 mod hangup;
 mod launch;
+mod pane_shell;
 mod render;
 mod select;
 mod session;

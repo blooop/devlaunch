@@ -9,6 +9,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A new pane in a devlaunch tab opens a shell in the same container.** Splitting
+  a pane in an `aid` tab used to give you a shell on the host, several namespaces
+  away from the container the tab is about; the container was always reachable with
+  `dl <ws>`, but nothing told the new pane which workspace. Point
+  [herdr](https://herdr.dev)'s `[terminal] default_shell` at the `dl-herdr-shell`
+  name `dl --install` now links, and every pane created from then on -- by key, by
+  mouse, by `herdr pane split` -- opens in the workspace its tab holds and opens
+  your ordinary shell when its tab holds none.
+
+  **Nothing is remembered.** The pane shell reads `HERDR_TAB_ID` out of its own
+  environment, asks herdr which panes that tab holds and what each is running, and
+  reads the workspace out of `dl`'s own transport argv (`devpod ssh <id>` for a bare
+  attach, `ssh <id>.devpod` for a command, which is every `aid`). A note kept
+  against a tab id would be smaller and wrong without a floor: a tab whose session
+  has exited would go on naming a workspace nobody is in, and every pane opened
+  there would land in the wrong container.
+
+  A second name rather than a flag because `default_shell` takes an **executable**,
+  not a command string: measured on herdr 0.8.2, a two-word value fails the spawn
+  with `ENOENT` naming the whole string as one path, and it fails when a pane is
+  created rather than at config load, where `herdr config check` still says
+  `config: ok`. The name is a two-line script in `~/.local/bin` that runs
+  `dl --herdr-shell`, and it resolves `dl` through `PATH` rather than by absolute
+  path -- an absolute path is what `pixi global update` invalidates, and a
+  `default_shell` that has gone stale is a pane that will not open at all. The
+  script falls through to a shell itself if `dl` cannot be found, for the same
+  reason.
+
+  Every failure opens the shell you would have got anyway -- no herdr, no tab, a
+  socket that will not answer, an answer that is not JSON, a timeout -- because this
+  sits in front of every pane on the machine. A pane with no `HERDR_TAB_ID` spawns
+  no herdr and asks nothing. `dl --install` prints the config line and does not
+  write it: `~/.config/herdr/config.toml` belongs to herdr.
+
 - **`dl <ws> -- <agent>` now names the agent to a session manager too.** 0.27 gave
   that to `aid` alone, and the docs told you to prefix the variable yourself on a
   plain `dl` line. Now `dl` reads the command it was handed: when the program is an

@@ -79,7 +79,7 @@ fn is_python_space(c: char) -> bool {
 /// A present `HOME` — even empty — wins: its trailing slashes are stripped and an
 /// empty result becomes `/`, exactly as `expanduser` does. Only an absent `HOME`
 /// consults the password database.
-pub(crate) fn home_dir() -> Option<PathBuf> {
+pub fn home_dir() -> Option<PathBuf> {
     home_from(std::env::var_os("HOME"), std::env::home_dir)
 }
 

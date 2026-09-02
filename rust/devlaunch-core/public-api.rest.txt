@@ -2689,6 +2689,19 @@ pub fn devlaunch_core::flows::repo_manager::WrongRepoLock::eq(&self, &devlaunch_
 impl core::fmt::Debug for devlaunch_core::flows::repo_manager::WrongRepoLock
 pub fn devlaunch_core::flows::repo_manager::WrongRepoLock::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::repo_manager::WrongRepoLock
+pub mod devlaunch_core::flows::session_manager
+pub enum devlaunch_core::flows::session_manager::PaneDestination
+pub devlaunch_core::flows::session_manager::PaneDestination::HostShell
+pub devlaunch_core::flows::session_manager::PaneDestination::Workspace(alloc::string::String)
+impl core::clone::Clone for devlaunch_core::flows::session_manager::PaneDestination
+pub fn devlaunch_core::flows::session_manager::PaneDestination::clone(&self) -> devlaunch_core::flows::session_manager::PaneDestination
+impl core::cmp::Eq for devlaunch_core::flows::session_manager::PaneDestination
+impl core::cmp::PartialEq for devlaunch_core::flows::session_manager::PaneDestination
+pub fn devlaunch_core::flows::session_manager::PaneDestination::eq(&self, &devlaunch_core::flows::session_manager::PaneDestination) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::session_manager::PaneDestination
+pub fn devlaunch_core::flows::session_manager::PaneDestination::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::session_manager::PaneDestination
+pub fn devlaunch_core::flows::session_manager::pane_destination(&dyn devlaunch_runner::Runner) -> devlaunch_core::flows::session_manager::PaneDestination
 pub mod devlaunch_core::flows::workspace_clone
 pub enum devlaunch_core::flows::workspace_clone::EnsureBranchError
 pub devlaunch_core::flows::workspace_clone::EnsureBranchError::Branch(devlaunch_core::flows::branch_manager::BranchError)
@@ -2790,6 +2803,7 @@ pub mod devlaunch_core::notices
 pub fn alloc::vec::Vec<T>::say(&mut self, T)
 pub mod devlaunch_core::osext
 pub fn devlaunch_core::osext::env_str(&str) -> core::option::Option<alloc::string::String>
+pub fn devlaunch_core::osext::home_dir() -> core::option::Option<std::path::PathBuf>
 pub mod devlaunch_core::runner
 pub use devlaunch_core::runner::<<devlaunch_runner::*>>
 pub mod devlaunch_core::shell

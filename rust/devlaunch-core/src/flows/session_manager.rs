@@ -28,11 +28,13 @@
 //! not be wired up, which is the wrong way round.
 
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use crate::clients::herdr::{self, Reporting};
 use crate::clients::kill::{self, Signal};
-use crate::clients::ssh;
+use crate::clients::{devpod, ssh};
 use crate::domain::workspace_state::NonEmpty;
+use crate::flows::launch;
 use crate::runner::interrupt;
 use crate::runner::{DetachOutcome, Exit, Invocation, Outcome, Runner, SpawnSpec};
 
@@ -318,12 +320,296 @@ pub(crate) fn start_forward(
     }
 }
 
+// ===========================================================================
+// where a pane herdr just made should put its shell
+// ===========================================================================
+
+/// Where the shell in a pane herdr has just created belongs.
+///
+/// Two arms and no third, because there is no useful way to half-answer this: a
+/// pane either opens inside a workspace or opens the shell it would have opened
+/// anyway. Every refusal below -- no manager, no tab, a socket that will not
+/// answer, an answer that is not JSON -- is [`PaneDestination::HostShell`], which
+/// is what makes this safe to put in front of every pane on the machine.
+#[derive(Clone, Debug, PartialEq, Eq)]
+// binary surface -- not part of the frozen wf API (#251 §7)
+pub enum PaneDestination {
+    /// The tab holds a live devlaunch session, in this workspace.
+    Workspace(String),
+    /// Open an ordinary shell on this host.
+    HostShell,
+}
+
+/// Where a pane herdr just spawned a shell into should actually put it.
+///
+/// The whole of the feature, from this process's own environment to one answer.
+/// [`launch::HERDR_TAB_VAR`] says which tab the new pane is in; herdr says which
+/// panes that tab holds and what each of them is running; and dl reads its own
+/// transport out of those argvs.
+///
+/// Both variables are read from the constants that already declare them -- the tab
+/// from `flows::launch`, where the tab rename put it, and the binary from
+/// `clients::herdr` beside herdr's other exports. Neither is spelled again here.
+///
+/// Nothing is remembered between launches and nothing is written down, which is
+/// the property the whole design turns on. A tab whose session has exited answers
+/// [`PaneDestination::HostShell`] the moment it has, and a tab reused for
+/// something else was never claimed in the first place -- where a note kept
+/// against a tab id would go on naming a workspace nobody in that tab is in.
+pub fn pane_destination(runner: &dyn Runner) -> PaneDestination {
+    let tab_id = crate::osext::env_str(launch::HERDR_TAB_VAR);
+    let binary = crate::osext::env_str(herdr::BIN_VAR);
+    destination_for(
+        runner,
+        PaneEnv {
+            tab_id: tab_id.as_deref(),
+            binary: binary.as_deref(),
+        },
+    )
+}
+
+/// What herdr exported into this pane, as the pane shell reads it.
+///
+/// A struct rather than two `Option<&str>` parameters, which is what this was:
+/// the two are the same type, adjacent, and swapping them compiles clean and
+/// answers [`PaneDestination::HostShell`] for every pane on the machine -- a
+/// silent, total loss of the feature that nothing would catch.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct PaneEnv<'a> {
+    /// [`launch::HERDR_TAB_VAR`]: which tab, and the whole of the detection.
+    tab_id: Option<&'a str>,
+    /// [`herdr::BIN_VAR`]: which herdr, or none and a `PATH` lookup.
+    binary: Option<&'a str>,
+}
+
+/// [`pane_destination`], against a stated environment rather than this process's.
+fn destination_for(runner: &dyn Runner, host: PaneEnv<'_>) -> PaneDestination {
+    let Some(tab_id) = host.tab_id.filter(|id| !id.is_empty()) else {
+        // Not in a manager's pane at all, which is the ordinary case for every
+        // shell on a machine that has one, and the case this must be cheapest in:
+        // no herdr is spawned and nothing is asked.
+        return PaneDestination::HostShell;
+    };
+    let binary = host
+        .binary
+        .filter(|path| !path.is_empty())
+        .unwrap_or(launch::HERDR_BIN_FALLBACK);
+    // One budget for the whole question. Spending it per call instead let a tab
+    // of N panes cost `ANSWER_WITHIN * (N + 1)`, and nothing bounds N.
+    let mut budget = Budget::of(herdr::ANSWER_WITHIN);
+    let Some(panes) = ask(runner, binary, &herdr::pane_list_argv(), &mut budget)
+        .as_deref()
+        .and_then(herdr::panes_in)
+    else {
+        return PaneDestination::HostShell;
+    };
+    for pane in in_tab(tab_id, &panes) {
+        let Some(info) = ask(
+            runner,
+            binary,
+            &herdr::process_info_argv(&pane.pane_id),
+            &mut budget,
+        )
+        .as_deref()
+        .and_then(herdr::process_info_in) else {
+            continue;
+        };
+        if let Some(workspace_id) = workspace_among(&info) {
+            return PaneDestination::Workspace(workspace_id);
+        }
+    }
+    PaneDestination::HostShell
+}
+
+/// What is left of the time the whole question may take.
+///
+/// A budget rather than a deadline, because the [`Runner`] seam takes a duration
+/// per call and knows nothing about wall-clock instants -- which is also what
+/// makes this testable without a clock: a test reads the durations the calls were
+/// given and adds them up.
+struct Budget {
+    left: Duration,
+}
+
+impl Budget {
+    fn of(total: Duration) -> Self {
+        Self { left: total }
+    }
+
+    /// What the next call may take, or `None` when the budget is gone.
+    ///
+    /// `None` stops the questioning rather than asking with no bound: a run that
+    /// has already spent the whole budget is a herdr that is not answering, and
+    /// the caller reads that as no workspace, which is a shell.
+    fn next(&self) -> Option<Duration> {
+        (!self.left.is_zero()).then_some(self.left)
+    }
+
+    /// Charge what a call actually cost.
+    ///
+    /// Saturating, so a call that overran leaves nothing rather than wrapping.
+    fn spend(&mut self, taken: Duration) {
+        self.left = self.left.saturating_sub(taken);
+    }
+}
+
+/// Ask herdr one question, and treat every way of not answering alike.
+///
+/// stdout only, and only when the call succeeded: herdr writes its refusals as
+/// well-formed JSON on a non-zero exit, so a caller that read those would be
+/// parsing an envelope with no `result` in it to reach the same `None` this
+/// returns for free.
+fn ask(runner: &dyn Runner, program: &str, args: &[String], budget: &mut Budget) -> Option<String> {
+    let spec = SpawnSpec::new(Invocation::new(program.to_owned()).with_args(args.iter().cloned()))
+        .with_timeout(budget.next()?);
+    let started = Instant::now();
+    let outcome = runner.capture(&spec);
+    budget.spend(started.elapsed());
+    match outcome {
+        Outcome::Ran { exit, io } if exit.is_success() => Some(io.stdout),
+        // A refusal, a herdr that is not installed, a timeout, an OS that would
+        // not start it: four facts, one consequence.
+        _ => None,
+    }
+}
+
+/// The panes of one tab, the focused one first.
+///
+/// Focused first so that a tab holding two devlaunch sessions answers with the
+/// one the person was last looking at, which is the only reading of "the same
+/// container" that is not arbitrary. Two sessions in one tab is unusual; a stable
+/// answer for it is cheap.
+fn in_tab<'a>(tab_id: &str, panes: &'a [herdr::PaneInfo]) -> Vec<&'a herdr::PaneInfo> {
+    let mut mine: Vec<&herdr::PaneInfo> =
+        panes.iter().filter(|pane| pane.tab_id == tab_id).collect();
+    mine.sort_by_key(|pane| !pane.focused);
+    mine
+}
+
+/// The workspace any of one pane's foreground processes names.
+///
+/// The whole foreground list and not just its head, because a dl session is a
+/// chain: the pane's own foreground process is `dl`, which names a *spec* and not
+/// an id, and the transport that names the id is its child. herdr publishes the
+/// chain, which is the same reading it does to identify an agent.
+fn workspace_among(info: &herdr::PaneProcessInfo) -> Option<String> {
+    info.foreground_processes
+        .iter()
+        .filter_map(|process| process.argv.as_deref())
+        .find_map(workspace_named_by)
+        .map(str::to_owned)
+}
+
+/// The workspace an argv names, when the argv is one of dl's two transports.
+///
+/// **This reads dl's own writing**, which is what makes it a reading and not a
+/// guess: both argvs are built in this crate.
+///
+/// | transport | shape | built by |
+/// |---|---|---|
+/// | devpod | `devpod ssh <id> ...` | `flows::launch`'s `devpod_session` |
+/// | OpenSSH | `ssh ... <id>.devpod <payload>` | [`ssh::command_args`] |
+///
+/// It is still a second copy of a fact, and CLAUDE.md's standing rule asks for a
+/// test beside it that diffs the two. That is
+/// `both_transports_name_the_workspace_they_were_built_for`: it runs both real
+/// builders and asserts this recovers the id each was given, so a **structural**
+/// drift fails it -- an alias that gains a `user@`, a `devpod ssh` that grows a
+/// flag before the id, a payload that becomes two arguments. Checked by making
+/// each of those changes and watching it fail.
+///
+/// What it cannot catch is a *coordinated* rename, because both halves read
+/// [`ssh::HOST_SUFFIX`] and a change to that constant moves them together. That
+/// is what the tests spelling `.devpod` out as a literal are for, and it is the
+/// right division: a shared constant is one copy of the fact, and the second copy
+/// is the shape around it.
+///
+/// The program is compared by its last path component, so a `/usr/bin/ssh` and a
+/// bare `ssh` answer alike, exactly as [`herdr::agent_in`] does it.
+fn workspace_named_by(argv: &[String]) -> Option<&str> {
+    let program = argv.first()?.rsplit('/').next()?;
+    if program == devpod::PROGRAM {
+        // `devpod up`, `devpod status` and the rest name a workspace too, and not
+        // one of them is a session anybody can join. Only `ssh` counts.
+        let mut rest = argv[1..].iter();
+        if rest.next().map(String::as_str) != Some("ssh") {
+            return None;
+        }
+        return rest.next().map(String::as_str).filter(|id| plausible(id));
+    }
+    if program == ssh::PROGRAM {
+        return ssh_host(&argv[1..]).and_then(alias_workspace);
+    }
+    None
+}
+
+/// The host an `ssh` argv connects to: its first positional argument.
+///
+/// A value-taking option's value is skipped **with** the option, which is the
+/// whole of what this adds over scanning for the suffix. The scan that came first
+/// guarded on the characters in an argument -- no `/`, no `=` -- and a `-F` config
+/// path with neither passed it: a sibling pane running
+/// `ssh -F myconf.devpod somehost`, which has nothing to do with devlaunch, made
+/// the pane shell claim the workspace `myconf` and then close, reproduced against
+/// live herdr 0.8.2. An argument's meaning is its position, not its spelling.
+///
+/// The list is OpenSSH's, not dl's. dl emits `-F` and `-o` and nothing else, so a
+/// list of two would serve every argv this crate builds -- and this is read
+/// against argvs the *user* wrote, in a sibling pane, where any of them can
+/// appear. `-o` is on it twice over: `ssh -o SendEnv=X host` and
+/// `ssh -oSendEnv=X host` are both legal, and the attached form needs no skip
+/// because it is not a bare word.
+fn ssh_host(args: &[String]) -> Option<&str> {
+    const TAKES_A_VALUE: &[&str] = &[
+        "-B", "-b", "-c", "-D", "-E", "-e", "-F", "-I", "-i", "-J", "-L", "-l", "-m", "-O", "-o",
+        "-p", "-Q", "-R", "-S", "-W", "-w",
+    ];
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        if TAKES_A_VALUE.contains(&arg.as_str()) {
+            // The value is the next word, whatever it looks like.
+            rest.next();
+        } else if !arg.starts_with('-') {
+            return Some(arg);
+        }
+        // Anything else starting with `-` is a bundle of flags taking no value
+        // (`-t`, `-tt`, `-nNT`) or an option with its value attached (`-oX=y`).
+        // Neither is a host and neither eats the word after it.
+    }
+    None
+}
+
+/// The workspace a host name is the alias for, or `None` if it is somebody's own
+/// host that happens to end the same way.
+///
+/// [`ssh_host`] has already established that this argument is the host, so what is
+/// left is only whether devpod published it. A `user@` prefix is refused rather
+/// than stripped: devpod publishes a bare alias and dl passes it through
+/// unchanged, so a host carrying one is not an alias dl wrote, and guessing which
+/// half of it is the workspace is how a launch gets handed a name nobody has.
+fn alias_workspace(host: &str) -> Option<&str> {
+    if host.contains('@') {
+        return None;
+    }
+    host.strip_suffix(ssh::HOST_SUFFIX)
+        .filter(|id| plausible(id))
+}
+
+/// Whether a word taken from an argv can be a workspace id at all.
+///
+/// Empty is what a bare `.devpod` or a `devpod ssh` with no workspace leaves, and
+/// a leading `-` is a flag that landed where the id should be. Neither is a
+/// workspace, and handing either to a launch would be handing it a guess.
+fn plausible(id: &str) -> bool {
+    !id.is_empty() && !id.starts_with('-')
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::clients::herdr::HostEnv;
     use crate::testing::ScriptedRunner;
-    use devlaunch_test_support::Response;
+    use devlaunch_test_support::{Response, Unscripted};
 
     fn reporting() -> Reporting {
         let binary = std::env::current_exe().expect("this test binary is a readable file");
@@ -606,5 +892,582 @@ mod tests {
             !reason.contains("unable to resolve host"),
             "the reason kept sudo's hostname noise: {reason}"
         );
+    }
+
+    // =======================================================================
+    // where a pane herdr just made should put its shell
+    // =======================================================================
+
+    /// The herdr a pane's environment names, in the tests below.
+    const LENT_HERDR: &str = "/opt/herdr/bin/herdr";
+
+    /// A `pane list` answer, in herdr's own envelope, listing these panes.
+    ///
+    /// Written out in full rather than built from [`herdr::PaneInfo`], because the
+    /// fifteen fields this type does not model are exactly what the parse has to
+    /// keep ignoring: a fixture derived from the type could not catch a parse that
+    /// started depending on them.
+    fn pane_list(panes: &[(&str, &str, bool)]) -> String {
+        let rows: Vec<String> = panes
+            .iter()
+            .map(|(pane_id, tab_id, focused)| {
+                format!(
+                    r#"{{"pane_id":"{pane_id}","terminal_id":"term-1","workspace_id":"w1","tab_id":"{tab_id}","focused":{focused},"agent_status":"none","revision":7,"label":null,"cwd":"/home/dev","terminal_title":"devlaunch@main"}}"#
+                )
+            })
+            .collect();
+        format!(
+            r#"{{"id":"cli:pane:list","result":{{"type":"pane_list","panes":[{}]}}}}"#,
+            rows.join(",")
+        )
+    }
+
+    /// A `pane process-info` answer whose foreground chain is these argvs.
+    fn process_info(chain: &[&[&str]]) -> String {
+        let rows: Vec<String> = chain
+            .iter()
+            .enumerate()
+            .map(|(index, argv)| {
+                let words: Vec<String> = argv.iter().map(|word| format!("\"{word}\"")).collect();
+                format!(
+                    r#"{{"pid":{},"name":"{}","argv0":"{}","argv":[{}],"cmdline":"{}","cwd":"/home/dev"}}"#,
+                    100 + index,
+                    argv.first().copied().unwrap_or_default(),
+                    argv.first().copied().unwrap_or_default(),
+                    words.join(","),
+                    argv.join(" ")
+                )
+            })
+            .collect();
+        format!(
+            r#"{{"id":"cli:pane:process_info","result":{{"type":"pane_process_info","process_info":{{"pane_id":"w1:p1","shell_pid":99,"tty":"/dev/pts/3","foreground_process_group_id":100,"foreground_processes":[{}]}}}}}}"#,
+            rows.join(",")
+        )
+    }
+
+    /// A pane herdr spawned in the tab named, with a herdr to ask.
+    fn in_pane_of(tab_id: &str) -> PaneEnv<'_> {
+        PaneEnv {
+            tab_id: Some(tab_id),
+            binary: Some(LENT_HERDR),
+        }
+    }
+
+    /// [`destination_for`], named for what it answers.
+    fn destination(runner: &ScriptedRunner, host: PaneEnv<'_>) -> PaneDestination {
+        destination_for(runner, host)
+    }
+
+    fn argv(words: &[&str]) -> Vec<String> {
+        words.iter().map(|word| (*word).to_owned()).collect()
+    }
+
+    #[test]
+    fn the_devpod_transport_names_its_workspace() {
+        assert_eq!(
+            workspace_named_by(&argv(&["devpod", "ssh", "devlaunch-main-3j1t"])),
+            Some("devlaunch-main-3j1t")
+        );
+    }
+
+    #[test]
+    fn the_openssh_transport_names_its_workspace() {
+        assert_eq!(
+            workspace_named_by(&argv(&[
+                "ssh",
+                "-F",
+                "/home/dev/.ssh/devpod/config",
+                "-t",
+                "devlaunch-main-3j1t.devpod",
+                "bash -lc 'claude'",
+            ])),
+            Some("devlaunch-main-3j1t")
+        );
+    }
+
+    /// The two arguments that look most like a published alias and are not one. A
+    /// config path can end in the suffix and a `ControlPath` can contain it;
+    /// neither is a host, and reading either would hand a launch a directory.
+    #[test]
+    fn neither_a_path_nor_an_option_value_is_read_as_the_alias() {
+        assert_eq!(
+            workspace_named_by(&argv(&[
+                "ssh",
+                "-F",
+                "/home/dev/.ssh/mine.devpod",
+                "-o",
+                "ControlPath=/run/user/1000/dl/ws.devpod",
+                "-t",
+                "real-ws-3j1t.devpod",
+                "bash -lc 'true'",
+            ])),
+            Some("real-ws-3j1t")
+        );
+    }
+
+    /// The defect: the guards above are about the *characters* in an argument, so
+    /// a `-F` config path with no `/` in it passed all of them and was read as the
+    /// host. Reproduced against live herdr 0.8.2 -- a sibling pane running
+    /// `ssh -F myconf.devpod -o ProxyCommand=... somehost`, which has nothing to do
+    /// with devlaunch, made the pane shell claim the workspace `myconf`.
+    ///
+    /// An argument's meaning comes from its position, not its spelling: the value
+    /// of a value-taking option is never a host.
+    #[test]
+    fn an_option_value_that_ends_in_the_suffix_is_not_the_host() {
+        assert_eq!(
+            workspace_named_by(&argv(&[
+                "ssh",
+                "-F",
+                "myconf.devpod",
+                "-o",
+                "ProxyCommand=sleep 600",
+                "somehost",
+            ])),
+            None
+        );
+    }
+
+    /// And where both are present, the host is the one that is a host.
+    #[test]
+    fn a_config_path_does_not_win_over_the_alias_beside_it() {
+        assert_eq!(
+            workspace_named_by(&argv(&[
+                "ssh",
+                "-F",
+                "myconf.devpod",
+                "-t",
+                "real-ws-3j1t.devpod",
+                "bash -lc true",
+            ])),
+            Some("real-ws-3j1t")
+        );
+    }
+
+    /// Only `devpod ssh` is a session. The other subcommands name a workspace
+    /// just as plainly and not one of them is something a second pane can join.
+    #[test]
+    fn a_devpod_that_is_not_ssh_names_nothing() {
+        assert_eq!(
+            workspace_named_by(&argv(&["devpod", "up", "devlaunch-main-3j1t"])),
+            None
+        );
+        assert_eq!(
+            workspace_named_by(&argv(&[
+                "devpod",
+                "status",
+                "devlaunch-main-3j1t",
+                "--output",
+                "json"
+            ])),
+            None
+        );
+    }
+
+    /// The head of the chain. `dl` names a *spec*, which is not an id, and the
+    /// pane shell's own process names nothing at all -- so the reading has to walk
+    /// past both to the transport underneath.
+    #[test]
+    fn dl_itself_names_no_workspace() {
+        assert_eq!(
+            workspace_named_by(&argv(&["dl", "blooop/devlaunch@main", "--", "claude"])),
+            None
+        );
+        assert_eq!(workspace_named_by(&argv(&["dl", "--herdr-shell"])), None);
+    }
+
+    #[test]
+    fn a_program_reached_by_path_answers_as_its_last_component_does() {
+        assert_eq!(
+            workspace_named_by(&argv(&["/usr/bin/ssh", "-t", "ws-3j1t.devpod", "true"])),
+            Some("ws-3j1t")
+        );
+        assert_eq!(
+            workspace_named_by(&argv(&["/usr/local/bin/devpod", "ssh", "ws-3j1t"])),
+            Some("ws-3j1t")
+        );
+    }
+
+    #[test]
+    fn an_empty_or_flag_shaped_id_is_not_a_workspace() {
+        assert_eq!(workspace_named_by(&argv(&["ssh", "-t", ".devpod"])), None);
+        assert_eq!(workspace_named_by(&argv(&["devpod", "ssh"])), None);
+        assert_eq!(
+            workspace_named_by(&argv(&["devpod", "ssh", "--help"])),
+            None
+        );
+        assert_eq!(workspace_named_by(&[]), None);
+    }
+
+    /// The diff test CLAUDE.md's standing rule asks for. [`workspace_named_by`] is
+    /// a second copy of a shape two argv builders own, so both builders are run
+    /// and their output is fed to the reader. Break either builder and this fails;
+    /// without it the pane shell would quietly stop finding workspaces and no test
+    /// in the tree would notice.
+    #[test]
+    fn both_transports_name_the_workspace_they_were_built_for() {
+        let workspace_id = "devlaunch-main-3j1t";
+
+        let openssh = ssh::command_args(
+            Path::new("/home/dev/.ssh/devpod/config"),
+            workspace_id,
+            "claude",
+            &["GH_TOKEN".to_owned()],
+            Some("/workspaces/devlaunch"),
+            &ssh::Reuse::Direct,
+        )
+        .expect("a quotable command");
+        assert_eq!(
+            workspace_named_by(&openssh),
+            Some(workspace_id),
+            "the OpenSSH argv: {openssh:?}"
+        );
+
+        // The devpod client takes the subcommand and supplies the program, so the
+        // argv a manager reads is the program followed by the call's own args.
+        let devpod_argv =
+            devpod::Call::new(["ssh", workspace_id, "--workdir", "/workspaces/devlaunch"]).argv();
+        assert_eq!(
+            workspace_named_by(&devpod_argv),
+            Some(workspace_id),
+            "the devpod argv: {devpod_argv:?}"
+        );
+    }
+
+    #[test]
+    fn only_the_panes_of_this_tab_are_considered() {
+        let panes = vec![
+            herdr::PaneInfo {
+                pane_id: "w1:p1".to_owned(),
+                tab_id: "w1:t1".to_owned(),
+                focused: false,
+            },
+            herdr::PaneInfo {
+                pane_id: "w1:p2".to_owned(),
+                tab_id: "w1:t2".to_owned(),
+                focused: false,
+            },
+            herdr::PaneInfo {
+                pane_id: "w1:p3".to_owned(),
+                tab_id: "w1:t1".to_owned(),
+                focused: false,
+            },
+        ];
+        let mine: Vec<&str> = in_tab("w1:t1", &panes)
+            .iter()
+            .map(|pane| pane.pane_id.as_str())
+            .collect();
+        assert_eq!(mine, ["w1:p1", "w1:p3"]);
+    }
+
+    #[test]
+    fn the_focused_pane_of_a_tab_is_asked_first() {
+        let panes = vec![
+            herdr::PaneInfo {
+                pane_id: "w1:p1".to_owned(),
+                tab_id: "w1:t1".to_owned(),
+                focused: false,
+            },
+            herdr::PaneInfo {
+                pane_id: "w1:p2".to_owned(),
+                tab_id: "w1:t1".to_owned(),
+                focused: true,
+            },
+            herdr::PaneInfo {
+                pane_id: "w1:p3".to_owned(),
+                tab_id: "w1:t1".to_owned(),
+                focused: false,
+            },
+        ];
+        let mine: Vec<&str> = in_tab("w1:t1", &panes)
+            .iter()
+            .map(|pane| pane.pane_id.as_str())
+            .collect();
+        assert_eq!(mine, ["w1:p2", "w1:p1", "w1:p3"]);
+    }
+
+    /// The ordinary shell on a machine that has herdr installed. **Nothing is
+    /// asked**, which is the part worth asserting: this runs in front of every
+    /// pane, and a pane that is not devlaunch's must not pay a round trip.
+    #[test]
+    fn a_pane_outside_herdr_asks_herdr_nothing() {
+        let runner = ScriptedRunner::new();
+        runner.on_unscripted(Unscripted::Panic);
+        assert_eq!(
+            destination_for(&runner, PaneEnv::default()),
+            PaneDestination::HostShell
+        );
+        assert_eq!(runner.call_count(), 0);
+    }
+
+    /// herdr exports the variable into every pane it spawns, so an empty value is
+    /// a herdr saying "no tab" rather than a herdr that is absent.
+    #[test]
+    fn an_exported_but_empty_tab_id_asks_herdr_nothing() {
+        let runner = ScriptedRunner::new();
+        runner.on_unscripted(Unscripted::Panic);
+        assert_eq!(
+            destination_for(
+                &runner,
+                PaneEnv {
+                    tab_id: Some(""),
+                    ..PaneEnv::default()
+                }
+            ),
+            PaneDestination::HostShell
+        );
+        assert_eq!(runner.call_count(), 0);
+    }
+
+    #[test]
+    fn a_tab_holding_a_session_puts_the_pane_in_its_workspace() {
+        let runner = ScriptedRunner::new();
+        runner.on_unscripted(Unscripted::Panic);
+        runner.script(
+            [LENT_HERDR, "pane", "list"],
+            Response::stdout(pane_list(&[("w1:p1", "w1:t1", true)])),
+        );
+        runner.script(
+            [LENT_HERDR, "pane", "process-info", "--pane", "w1:p1"],
+            Response::stdout(process_info(&[
+                &["dl", "blooop/devlaunch@main"],
+                &["devpod", "ssh", "devlaunch-main-3j1t", "--workdir", "/w"],
+            ])),
+        );
+        assert_eq!(
+            destination(&runner, in_pane_of("w1:t1")),
+            PaneDestination::Workspace("devlaunch-main-3j1t".to_owned())
+        );
+    }
+
+    /// The case a note kept against a tab id gets wrong, and the reason this asks
+    /// herdr every time: the session has gone, the tab is still there, and the
+    /// answer has to be a host shell.
+    #[test]
+    fn a_tab_whose_session_has_exited_opens_a_host_shell() {
+        let runner = ScriptedRunner::new();
+        runner.on_unscripted(Unscripted::Panic);
+        runner.script(
+            [LENT_HERDR, "pane", "list"],
+            Response::stdout(pane_list(&[("w1:p1", "w1:t1", true)])),
+        );
+        runner.script(
+            [LENT_HERDR, "pane", "process-info", "--pane", "w1:p1"],
+            Response::stdout(process_info(&[&["bash"]])),
+        );
+        assert_eq!(
+            destination(&runner, in_pane_of("w1:t1")),
+            PaneDestination::HostShell
+        );
+    }
+
+    /// A pane herdr describes as running nothing at all. Distinct from a pane
+    /// running something that is not a transport: this one is the shape herdr
+    /// answers with when it could read the pty and found no foreground process,
+    /// and an empty list must read as "no workspace here" rather than reaching
+    /// anything that assumes a head.
+    #[test]
+    fn a_pane_with_no_foreground_process_holds_no_workspace() {
+        let runner = ScriptedRunner::new();
+        runner.on_unscripted(Unscripted::Panic);
+        runner.script(
+            [LENT_HERDR, "pane", "list"],
+            Response::stdout(pane_list(&[("w1:p1", "w1:t1", true)])),
+        );
+        runner.script(
+            [LENT_HERDR, "pane", "process-info", "--pane", "w1:p1"],
+            Response::stdout(process_info(&[])),
+        );
+        assert_eq!(
+            destination(&runner, in_pane_of("w1:t1")),
+            PaneDestination::HostShell
+        );
+    }
+
+    /// A pane herdr will not describe must not end the search: the tab's other
+    /// pane is the one holding the session.
+    #[test]
+    fn a_pane_herdr_will_not_describe_is_stepped_over() {
+        let runner = ScriptedRunner::new();
+        runner.on_unscripted(Unscripted::Panic);
+        runner.script(
+            [LENT_HERDR, "pane", "list"],
+            Response::stdout(pane_list(&[
+                ("w1:p1", "w1:t1", true),
+                ("w1:p2", "w1:t1", false),
+            ])),
+        );
+        runner.script(
+            [LENT_HERDR, "pane", "process-info", "--pane", "w1:p1"],
+            Response::exited(1),
+        );
+        runner.script(
+            [LENT_HERDR, "pane", "process-info", "--pane", "w1:p2"],
+            Response::stdout(process_info(&[&["ssh", "-t", "ws-3j1t.devpod", "true"]])),
+        );
+        assert_eq!(
+            destination(&runner, in_pane_of("w1:t1")),
+            PaneDestination::Workspace("ws-3j1t".to_owned())
+        );
+    }
+
+    /// Every way herdr can fail to answer, and one consequence for all of them. A
+    /// pane opens either way, which is the whole promise this sits on.
+    #[test]
+    fn a_herdr_that_will_not_answer_costs_the_container_and_not_the_pane() {
+        let refusals = [
+            // The refusal herdr actually writes when its server is down: exit 1,
+            // and well-formed JSON with `error` where `result` would be.
+            Response::Ran {
+                exit: crate::runner::Exit::Code(1),
+                stdout: r#"{"id":"cli:pane:list","error":{"code":"server_not_running","message":"no herdr server is running"}}"#.to_owned(),
+                stderr: String::new(),
+            },
+            Response::stdout("not json at all"),
+            // Exit 0 and an envelope for some other question.
+            Response::stdout(r#"{"id":"cli:pane:list","result":{"type":"pong","version":"0.8.2","protocol":20}}"#),
+            Response::ProgramNotFound,
+            Response::TimedOut,
+        ];
+        for refusal in refusals {
+            let runner = ScriptedRunner::new();
+            runner.script([LENT_HERDR], refusal.clone());
+            assert_eq!(
+                destination(&runner, in_pane_of("w1:t1")),
+                PaneDestination::HostShell,
+                "{refusal:?}"
+            );
+        }
+    }
+
+    /// The bound is the point rather than the number: this runs in front of every
+    /// pane, so a herdr that accepts a connection and never answers has to be
+    /// abandoned instead of holding the pane open.
+    #[test]
+    fn every_question_asked_of_herdr_is_bounded() {
+        let runner = ScriptedRunner::new();
+        runner.script(
+            [LENT_HERDR, "pane", "list"],
+            Response::stdout(pane_list(&[])),
+        );
+        destination(&runner, in_pane_of("w1:t1"));
+        let calls = runner.calls_to(LENT_HERDR);
+        assert!(!calls.is_empty(), "herdr was never asked");
+        for call in calls {
+            assert_eq!(
+                call.spec().and_then(|spec| spec.timeout),
+                Some(herdr::ANSWER_WITHIN),
+                "{:?} is unbounded",
+                call.argv()
+            );
+        }
+    }
+
+    /// The bound is on the whole question, not on each part of it.
+    ///
+    /// The per-call spelling that came first let a tab of N panes cost
+    /// `ANSWER_WITHIN * (N + 1)` -- a ten-pane tab against a herdr that accepts and
+    /// never answers held the new pane for five and a half seconds, while three
+    /// separate comments promised half a second "for the lot", and nothing bounds
+    /// N.
+    ///
+    /// Asserted on [`Budget`] rather than on a run, and that is a real limit worth
+    /// stating: the scripted runner answers instantly, so a run through it spends
+    /// nothing and every call is granted the whole remaining budget. Summing the
+    /// grants would therefore assert a property the design does not have. What
+    /// bounds the wall clock is this type -- a call that burns its grant leaves
+    /// nothing for the next one, and `next()` then declines to ask at all rather
+    /// than asking unbounded.
+    #[test]
+    fn a_spent_budget_stops_the_questioning_rather_than_unbounding_it() {
+        let mut budget = Budget::of(Duration::from_millis(500));
+        assert_eq!(budget.next(), Some(Duration::from_millis(500)));
+
+        budget.spend(Duration::from_millis(400));
+        assert_eq!(
+            budget.next(),
+            Some(Duration::from_millis(100)),
+            "the second question was granted the first one's budget again"
+        );
+
+        budget.spend(Duration::from_millis(100));
+        assert_eq!(
+            budget.next(),
+            None,
+            "a spent budget asked anyway, and with no bound on the answer"
+        );
+
+        // A call that overran its grant leaves nothing, rather than wrapping into
+        // a budget larger than the one it started with.
+        budget.spend(Duration::from_secs(9));
+        assert_eq!(budget.next(), None);
+    }
+
+    /// And no single question may be granted more than the whole.
+    #[test]
+    fn no_question_is_granted_more_than_the_whole_budget() {
+        let runner = ScriptedRunner::new();
+        runner.script(
+            [LENT_HERDR, "pane", "list"],
+            Response::stdout(pane_list(&[
+                ("w1:p1", "w1:t1", true),
+                ("w1:p2", "w1:t1", false),
+            ])),
+        );
+        runner.script(
+            [LENT_HERDR, "pane", "process-info"],
+            Response::stdout(process_info(&[&["bash"]])),
+        );
+        destination(&runner, in_pane_of("w1:t1"));
+
+        let calls = runner.calls_to(LENT_HERDR);
+        assert!(!calls.is_empty(), "herdr was never asked");
+        for call in calls {
+            let granted = call.spec().and_then(|spec| spec.timeout);
+            assert!(
+                granted.is_some_and(|grant| grant <= herdr::ANSWER_WITHIN),
+                "{:?} was granted {granted:?}",
+                call.argv()
+            );
+        }
+    }
+
+    /// The binary herdr exported, because that copy is the one whose socket owns
+    /// this pane. A `PATH` lookup is what a herdr too old to export one leaves.
+    #[test]
+    fn the_exported_binary_is_preferred_over_the_one_on_path() {
+        let runner = ScriptedRunner::new();
+        runner.script(
+            [LENT_HERDR, "pane", "list"],
+            Response::stdout(pane_list(&[])),
+        );
+        destination(&runner, in_pane_of("w1:t1"));
+        assert_eq!(runner.calls_to(LENT_HERDR).len(), 1);
+
+        let runner = ScriptedRunner::new();
+        runner.script(
+            [launch::HERDR_BIN_FALLBACK, "pane", "list"],
+            Response::stdout(pane_list(&[])),
+        );
+        destination_for(
+            &runner,
+            PaneEnv {
+                tab_id: Some("w1:t1"),
+                ..PaneEnv::default()
+            },
+        );
+        assert_eq!(runner.calls_to(launch::HERDR_BIN_FALLBACK).len(), 1);
+    }
+
+    /// The three words that belong to another program, pinned where a change to
+    /// them is a change to this feature and not a rename.
+    #[test]
+    fn the_two_questions_are_asked_in_herdrs_own_words() {
+        assert_eq!(herdr::pane_list_argv(), ["pane", "list"]);
+        assert_eq!(
+            herdr::process_info_argv("w1:p7"),
+            ["pane", "process-info", "--pane", "w1:p7"]
+        );
+        assert_eq!(launch::HERDR_TAB_VAR, "HERDR_TAB_ID");
     }
 }

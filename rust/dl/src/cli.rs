@@ -404,6 +404,8 @@ pub(crate) enum Command {
     Reconcile { yes: bool },
     /// `dl --purge [-y]`
     Purge { yes: bool },
+    /// `dl --herdr-shell`, and the `dl-herdr-shell` name that means the same.
+    HerdrShell,
     /// A verb with no workspace named: the fuzzy selector picks one (M8) — or,
     /// for a verb that applies per workspace ([`Verb::several_at_once`]), several.
     Select {
@@ -555,6 +557,10 @@ pub(crate) struct Cli {
     /// Print the version.
     #[arg(long, group = "what")]
     version: bool,
+    /// Open a shell for a pane a session manager just created: inside the
+    /// workspace its tab already holds, or on this host when the tab holds none.
+    #[arg(long = "herdr-shell", group = "what")]
+    herdr_shell: bool,
 
     /// Retired: the flag spelling of the `stop` verb. Recognised so it can be
     /// refused with the word to use instead. Deliberately outside the `what` group,
@@ -731,6 +737,7 @@ enum Chosen {
     Repos,
     CompletionData,
     UpdateCache,
+    HerdrShell,
 }
 
 impl Cli {
@@ -748,6 +755,7 @@ impl Cli {
             (self.repos, Chosen::Repos),
             (self.completion_data, Chosen::CompletionData),
             (self.update_cache, Chosen::UpdateCache),
+            (self.herdr_shell, Chosen::HerdrShell),
         ]
         .into_iter()
         .find_map(|(given, chosen)| given.then_some(chosen))
@@ -913,6 +921,7 @@ fn global_command(cli: &Cli, chosen: Chosen) -> Result<Command, GrammarError> {
         Chosen::Repos => Command::Repos,
         Chosen::CompletionData => Command::CompletionData,
         Chosen::UpdateCache => Command::UpdateCache { force: cli.force },
+        Chosen::HerdrShell => Command::HerdrShell,
     })
 }
 
@@ -928,6 +937,7 @@ fn flag_of(chosen: Chosen) -> &'static str {
         Chosen::Repos => "--repos",
         Chosen::CompletionData => "--completion-data",
         Chosen::UpdateCache => "--update-cache",
+        Chosen::HerdrShell => "--herdr-shell",
     }
 }
 

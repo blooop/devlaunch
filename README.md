@@ -256,10 +256,16 @@ instead. [docs/cli.md](docs/cli.md) has the full `--rm` contract, including whic
 | `dl --prune` | Remove the clone directories no workspace opens any more, the agent git worktrees inside the clones it keeps, and the volumes of workspaces devpod has forgotten |
 | `dl --reconcile` | Re-point workspaces whose recorded source folder went missing. Deletes nothing |
 | `dl --purge` | Remove devlaunch's own workspaces and caches |
-| `dl --install` | Install shell completions |
+| `dl --install` | Install shell completions, and the `dl-herdr-shell` name a herdr pane opens through |
 | `dl --refresh` | Rebuild the completion cache now |
 | `dl --version` | Print the version |
+| `dl --herdr-shell` | The shell a new [herdr](https://herdr.dev) pane opens: inside the workspace its tab holds, or on this host |
 | `dl --help`, `-h` | Print help |
+
+`--herdr-shell` is not a command to type. It is what herdr's `[terminal] default_shell` points at,
+so that splitting a pane in an `aid` tab opens a terminal in that workspace's container instead of
+on this host. `dl --install` links the name and prints the config line;
+[docs/workspace-tools.md](docs/workspace-tools.md) has the rest.
 
 `--prune`, `--reconcile` and `--purge` print their plan and ask first. `-y` skips the question,
 and for `--prune` and `rm`, `--force` goes ahead despite work that is nowhere else.

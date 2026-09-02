@@ -27,11 +27,14 @@ use devlaunch_core::flows::lifecycle::{
 use devlaunch_core::flows::listing::{self, CommandContext, DlView, Sizes};
 use devlaunch_core::flows::records::{Records, StartupError, open_records, open_storage};
 use devlaunch_core::flows::repo_manager::CacheNotice;
+use devlaunch_core::flows::session_manager::{self, PaneDestination};
+use devlaunch_core::osext;
 use devlaunch_core::runner::{Exit, Runner};
 
 use crate::cli::{self, Command, ListOutput, RmOnExit, Verb};
 use crate::hangup;
 use crate::launch::{self, Family, Reached};
+use crate::pane_shell::{self, become_the_host_shell};
 use crate::render;
 use crate::render::Swept;
 use crate::select;
@@ -123,6 +126,30 @@ pub(crate) fn dispatch(
         ),
         Command::Reconcile { yes } => render_reconcile(runner, &mut context, refresh, yes),
         Command::Purge { yes } => render_purge(&mut context, cache, yes),
+        // Re-entered rather than special-cased: a pane that resolved to a
+        // workspace is a `dl <ws>`, and the whole point is that it is
+        // indistinguishable from one typed by hand -- same launch, same terminal
+        // title, same agent reporting, same everything a manager reads.
+        Command::HerdrShell => match session_manager::pane_destination(runner) {
+            PaneDestination::Workspace(workspace_id) => {
+                let ending = dispatch(
+                    runner,
+                    cache,
+                    refresh,
+                    Command::Workspace {
+                        target: workspace_id,
+                        verb: Verb::Attach { rm: RmOnExit::No },
+                        devcontainer: None,
+                    },
+                );
+                if pane_shell::no_session_ran(ending) {
+                    become_the_host_shell()
+                } else {
+                    ending
+                }
+            }
+            PaneDestination::HostShell => become_the_host_shell(),
+        },
         // The two arms that name a verb are the two that can be `rme`, and the
         // hangup is asked *here* rather than inside either of them: a picked batch
         // is one command over several workspaces, and the shell it was typed in is
@@ -170,6 +197,10 @@ pub(crate) fn dispatch(
 pub(crate) fn without_a_cache_directory(command: Command) -> Ending {
     match command {
         Command::Version => render_version(),
+        // A pane is not a place to refuse. Everything else here reads the cache and
+        // says why it cannot; this opens the shell it would have opened anyway,
+        // which is the same promise it keeps for every other failure.
+        Command::HerdrShell => become_the_host_shell(),
         _ => refuse_startup(&StartupError::NoHomeDirectory),
     }
 }
@@ -481,9 +512,47 @@ fn render_install(context: &mut CommandContext<'_>, cache: &Path, rc: Option<&Pa
         }
         Ok(installed) => {
             report_install(&installed);
+            // The pane shell, after the completions and reported apart from
+            // them: it is a second thing `--install` does, and a machine that
+            // cannot take it still installed completions.
+            report_pane_shell(pane_shell::install_path(osext::home_dir().as_deref()).as_deref());
             Ending::Done
         }
     }
+}
+
+/// The pane shell's own two lines: where the name is, and what to point herdr at.
+///
+/// Said on every `--install`, including one that changed nothing, because the
+/// config line is the half the user has to act on and it is not written for them.
+fn report_pane_shell(script: Option<&Path>) {
+    let Some(script) = script else {
+        eprintln!("No pane shell: this host has no home directory to install one in");
+        return;
+    };
+    let installed = pane_shell::install(script);
+    let path = installed.path().display();
+    match &installed {
+        pane_shell::Installed::Written { .. } => eprintln!("Wrote the pane shell to {path}"),
+        pane_shell::Installed::Refreshed { .. } => {
+            eprintln!("Refreshed the pane shell at {path}");
+        }
+        pane_shell::Installed::AlreadyCurrent { .. } => {
+            eprintln!("The pane shell at {path} is already current");
+        }
+        pane_shell::Installed::Refused { reason, .. } => {
+            eprintln!("No pane shell at {path}: {reason}");
+            eprintln!(
+                "A new pane in a devlaunch tab will open a shell on this host, not in the container"
+            );
+            return;
+        }
+    }
+    eprintln!(
+        "To open new herdr panes inside the workspace their tab holds, put this in \
+         ~/.config/herdr/config.toml and run 'herdr server reload-config':"
+    );
+    eprintln!("{}", pane_shell::config_line(installed.path()));
 }
 
 /// The script-state line, shared by the success report and the P17 failure path.
