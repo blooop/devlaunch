@@ -4591,6 +4591,29 @@ fi
         );
     }
 
+    /// The probe's mount-matching rule, in Rust: every `mountinfo` root whose mount
+    /// point is `cfg_dir`, sits under it, or is an ancestor of it.
+    ///
+    /// A deliberate second implementation of the awk in [`claude_config_lines`], which
+    /// is the only reason the constant it replaced was ever worth having. Fields 4 and
+    /// 5 are read positionally because those two sit before `mountinfo`'s optional
+    /// fields, which is what makes `$4` and `$5` safe in the awk as well.
+    fn matching_mount_roots(cfg_dir: &str) -> Vec<String> {
+        let info = std::fs::read_to_string("/proc/self/mountinfo").expect("mountinfo");
+        let with_slash = format!("{cfg_dir}/");
+        info.lines()
+            .filter_map(|line| {
+                let mut fields = line.split(' ').skip(3);
+                let root = fields.next()?;
+                let point = unescape_mount(fields.next()?);
+                let matches = point == cfg_dir
+                    || point.starts_with(&with_slash)
+                    || with_slash.starts_with(&format!("{point}/"));
+                matches.then(|| root.to_owned())
+            })
+            .collect()
+    }
+
     #[test]
     fn the_onboarding_stage_is_last_and_gated_on_nothing() {
         // Last so the stages in front of it keep the indices the tests around here
@@ -4813,14 +4836,41 @@ fi
             ),
             "{report}"
         );
-        // A scratch home on the test machine's own filesystem: nothing is mounted
-        // into it, so the scan runs, finds nothing, and the directory reads as ours.
         assert_eq!(found.get("claudescan").map(String::as_str), Some("ok"));
-        assert_eq!(found.get("claudemounts").map(String::as_str), Some(""));
+
+        // What the scan should have found, computed here rather than assumed. This
+        // used to assert the empty string, on the premise that "a scratch home on the
+        // test machine's own filesystem" has nothing mounted anywhere near it. That
+        // premise is false wherever `/tmp` is its own mount, which is the systemd
+        // default and so the case on most developer machines: `tempfile` puts the
+        // scratch home under `/tmp`, the *ancestor* direction of the scan matches the
+        // `/tmp` mount correctly, and the test failed for doing its job. It passed in
+        // CI only because a GitHub runner keeps `/tmp` on the root filesystem.
+        //
+        // Deriving it is the better guard anyway, and it is what makes this a diff
+        // rather than a second copy: `matching_mount_roots` is the probe's rule
+        // written a second time, in Rust, so a quoting mistake in the awk shows up as
+        // a disagreement between two implementations instead of as a mismatch against
+        // a constant somebody has to keep true.
+        let cfg_dir = found
+            .get("claudedir")
+            .expect("the probe named the config dir");
+        let expected = matching_mount_roots(cfg_dir);
         assert_eq!(
-            ClaudeConfig::parse(&report, Some("/nowhere")),
-            Some(ClaudeConfig::Ours)
+            found.get("claudemounts").map(String::as_str),
+            Some(expected.join(" ").as_str()),
+            "{report}"
         );
+
+        // And the verdict those mounts earn, which is `Ours` on a machine with nothing
+        // mounted near the scratch dir and on one whose only match is a mount rooted at
+        // `/` -- the `/tmp` case, which `cfg_dir_is_foreign` already excludes by name.
+        let want = if cfg_dir_is_foreign(cfg_dir, Some("/nowhere"), &expected.join(" ")) {
+            ClaudeConfig::Foreign
+        } else {
+            ClaudeConfig::Ours
+        };
+        assert_eq!(ClaudeConfig::parse(&report, Some("/nowhere")), Some(want));
         assert!(
             answered.status.success(),
             "the probe exits 0 in every state"
