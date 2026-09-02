@@ -9,6 +9,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`claude` in a workspace no longer opens the first-run wizard in front of a
+  working token.** The setup pass now seeds `hasCompletedOnboarding` into a Claude
+  config directory that has no `.claude.json` in it at all.
+
+  The forwarded `CLAUDE_CODE_OAUTH_TOKEN` was arriving and was valid the whole
+  time. What nobody had measured is that Claude Code asks two questions and only
+  one of them is about a credential: before it consults a credential of any kind
+  the interactive TUI asks whether first-time setup has been done in this config
+  directory, and the only thing it asks is that flag in `.claude.json`. A container
+  whose config directory nothing has ever written answers no, so it showed the
+  theme picker and then `Select login method` while holding a token that already
+  worked.
+
+  **What made it hard to see is that print mode never asks.** In the same
+  workspace, in the same second, `dl <ws> -- claude -p "say OK"` answered `OK` and
+  the interactive `claude` asked for a login, so "the token is not arriving" and
+  "the token is arriving and a wizard is standing in front of it" looked identical
+  from the outside and have opposite fixes. Measured against Claude Code 2.1.258 on
+  `blooop/rocker`, a repo with no `.devcontainer/` of its own: devpod's fallback
+  image gives it a virgin config directory, where a repo whose devcontainer mounts
+  `~/.claude` was reading an answer the host had given months ago. That is why this
+  looked like it only happened to some repos.
+
+  **Where that file is is not where the config directory is,** and the first
+  version of this got it wrong in the way that reports success and changes nothing.
+  Claude Code resolves the two halves of its configuration differently, and only one
+  defaults into `~/.claude`:
+
+  ```text
+  globalConfig: join(CLAUDE_CONFIG_DIR || homedir(), ".claude.json")
+  userSettings: join(CLAUDE_CONFIG_DIR || join(homedir(), ".claude"), "settings.json")
+  ```
+
+  So the seed goes to `$CLAUDE_CONFIG_DIR/.claude.json` where that is set and
+  `$HOME/.claude.json` where it is not, beside the config directory rather than
+  inside it. Seeding the directory either way was measured doing nothing at all in a
+  container with the variable unset, over a stage reporting `ok`.
+
+  **Only where the file is absent,** which is the whole of the condition and is what
+  lets it sit in front of the probe that decides who owns the directory. Merging a
+  key into a file that is already there would need JSON in a POSIX shell and would
+  be a write over the host's real config, on precisely the mounts the Claude client
+  declines to forward over. It records one boolean and carries no secret. There is
+  no environment variable that turns the gate off.
+
+  Nothing is ever overwritten, and that is the promise rather than the stronger one.
+  A host that points `CLAUDE_CONFIG_DIR` at `~/.claude` has a `.claude.json` in
+  there already and it is left alone. A host that does not keeps its config at
+  `~/.claude.json`, so its `~/.claude/` holds none, and a container that mounts that
+  directory and pins `CLAUDE_CONFIG_DIR` to it gains one, which appears on the host
+  too. That is the one boolean, it is what makes `claude` in that container start,
+  and the host's own `claude` does not read it.
+
+  A dangling `.claude.json` symlink is not followed: `[ -e ]` resolves the link, so
+  a dangling one reads as absent and the redirection behind it creates the target.
+  Measured writing the seed outside the directory it was given, at exit 0. The guard
+  asks `-L` as well, and the write is create-exclusive so the guard cannot be raced
+  by a `postCreate` or a dotfiles apply running beside it.
+
+  Neither opt-out reaches it, and both would be the wrong owner.
+  `DEVLAUNCH_NO_TOOLS=1` is about installing tools and this installs none;
+  `DEVLAUNCH_NO_CLAUDE_TOKEN=1` says do not put a credential in this container,
+  which is a different sentence from "make me answer the theme picker".
+
 - **`aid` no longer leaves the herdr tab unnamed for as long as you take to type
   the prompt.** Naming happens on the launch, and `aid` with no prompt on the line
   does not launch straight away: it boots the workspace in the background and asks
@@ -51,6 +115,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   second reading of one, so a spec `dl` will refuse is not named either. Deriving it
   from `spec::parse` alone named `..` and `-weird` on a tab for a launch that then
   failed with `UnsafeName`, and herdr persists `custom_name`.
+
 
 ## [0.28.0] - 2026-09-02
 
