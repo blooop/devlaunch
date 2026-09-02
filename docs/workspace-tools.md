@@ -711,7 +711,50 @@ Two multiplexer limits are worth stating, because neither is dl's to fix:
 action rename-tab` or a plugin; no escape sequence reaches it, which is why this
 names the pane instead. The window title zellij then publishes to the outer
 terminal is `<session> | <pane title>`, so the workspace id is what shows up in a
-kitty tab bar.
+kitty tab bar, provided zellij is the innermost multiplexer. Nest another one
+inside it and the escape stops there instead, which is the next section.
+
+### The herdr tab, which is renamed and not written to
+
+[herdr](https://herdr.dev) is the one multiplexer `dl` names with a command rather
+than an escape, and it is worth saying why, because the paragraph above declines to
+do exactly that for zellij.
+
+**The escape reaches herdr and stops there.** herdr reads OSC 2 and keeps it: after
+`dl rocker@nb1` in a herdr pane, `herdr pane list` reports that pane's
+`terminal_title` as `rocker@nb1`, unmangled. What it does not do is show it. A herdr
+tab label is a field of its own, `custom_name` in herdr's `session.json`, which falls
+back to the tab *number* when unset, and `herdr tab rename` is the only thing that
+writes it. So the name `dl` computed sits one field away from the tab strip with
+nothing to carry it across. `dl` carries it, with the same name and
+under the same switch.
+
+**Detection is what made this worth doing.** The argument against
+`zellij action rename-tab` is that it costs a probe to find out whether zellij is
+even there. herdr exports `HERDR_TAB_ID` into every pane it spawns, so `dl` reads
+one variable it already has and does nothing at all when it is absent.
+`HERDR_BIN_PATH`, exported beside it, is the herdr asked; a `PATH` lookup for
+`herdr` is the fallback for a herdr too old to export one.
+
+**Stacking is where this stops being a nicety.** The escape goes to whichever
+multiplexer owns the pty, and that is the innermost one. Under `kitty -> zellij` the
+escape reaches zellij, which takes it as the pane title and publishes
+`<session> | <pane title>` upward, so the workspace name lands in the outer terminal
+exactly as the paragraph above promises. Put herdr inside that zellij and the same
+escape now stops one layer further in, at herdr, and the layers that used to display
+it never see it. Nothing about `dl` changed in that story; a layer was added. The
+tab strip herdr draws is then the only place left to put the name.
+
+**It is best-effort and it is the same feature.** A stale tab id, a herdr server that
+has since exited, a binary that moved: none of them may cost you a workspace, so the
+rename is spawned and never waited on, and nothing is reported about whether it
+worked. `DEVLAUNCH_NO_TITLE=1` turns it off with the escape and the `PS1` line,
+because it is one feature and not three, and a run whose stderr is not a terminal
+renames nothing for the same reason it writes no escape.
+
+Unlike the escape, the rename **sticks**. herdr persists `custom_name`, so a tab
+named by a launch keeps that name after the workspace is closed, until something
+renames it again.
 
 ## Telling a session manager which agent is running
 
@@ -766,8 +809,14 @@ A line that starts no agent writes nothing, and that includes a retired spelling
 
 ### What this does not do
 
-**It is one manager's variable.** `HERDR_AGENT` is herdr's name, and it is the only
-manager-specific word in either binary. A manager with an equivalent override needs
+**It is one manager's variable.** `HERDR_AGENT` is herdr's name, and one of the
+three manager-specific words in the two binaries: the other two are the
+`HERDR_TAB_ID` and `HERDR_BIN_PATH` that
+[the herdr tab](#the-herdr-tab-which-is-renamed-and-not-written-to) reads. The
+direction is opposite in the two cases, which is why they stay separate features.
+This one is a name `aid` *writes* for herdr to read, and it is written whether or
+not herdr is there. Those two are names herdr *exports* for `dl` to read, so their
+absence is the whole of the detection. A manager with an equivalent override needs
 that override set some other way; a manager with none is still blind, and no
 amount of cooperation from `dl` would change that.
 

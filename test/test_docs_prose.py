@@ -118,3 +118,45 @@ def test_no_docs_page_calls_itself_the_readme(page):
         "page under docs/. Name the page, or name the README explicitly if that is "
         "what is meant"
     )
+
+
+# The four line prefixes git writes into a file it could not merge for you. The
+# base marker is the one that matters here: `merge.conflictStyle = diff3` (and
+# `zdiff3`) adds it, so a resolver written against the familiar three leaves it
+# behind, and it is the only marker whose line carries prose after it that can
+# read as a heading.
+CONFLICT_MARKERS = ("<<<<<<<", "|||||||", "=======", ">>>>>>>")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "page", READER_FACING, ids=lambda page: page.relative_to(REPO_ROOT).as_posix()
+)
+def test_no_reader_facing_page_carries_a_merge_conflict_marker(page):
+    """A resolved conflict that left a marker in the published prose.
+
+    `check-merge-conflict` in .pre-commit-config.yaml is not this: without
+    `--assume-in-merge` it does nothing unless the working tree is mid-merge, so
+    a conflict resolved out of `git stash pop` -- which leaves no MERGE_HEAD --
+    walks straight past it. That is how `||||||| Stash base` reached line 771 of
+    workspace-tools.md and was committed.
+
+    Nothing else caught it either, and the near misses are worth naming. The
+    contract tests read one named section each, so a marker in a neighbouring
+    section is invisible to them. The dash rule above reads every line of the
+    same pages and had no reason to look at these seven characters. And the
+    marker renders as literal text, so the page is wrong only for a reader.
+
+    Scoped to the pages a reader is sent to rather than the tree, because that is
+    where a stray marker is a published defect rather than a mess in a branch.
+    """
+    offenders = [
+        f"{number}: {line.rstrip()}"
+        for number, line in enumerate(page.read_text(encoding="utf-8").splitlines(), start=1)
+        if line.startswith(CONFLICT_MARKERS)
+    ]
+    assert not offenders, (
+        f"{page.relative_to(REPO_ROOT)} carries {len(offenders)} merge conflict "
+        "marker line(s); a conflict was resolved without removing them:\n  "
+        + "\n  ".join(offenders[:5])
+    )

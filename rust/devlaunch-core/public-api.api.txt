@@ -48,6 +48,7 @@ pub devlaunch_core::api::LaunchNotice::DevcontainerIgnoredRunning::spec: alloc::
 pub devlaunch_core::api::LaunchNotice::DevcontainerIgnoredRunning::workspace_id: alloc::string::String
 pub devlaunch_core::api::LaunchNotice::DevpodSessionFailed
 pub devlaunch_core::api::LaunchNotice::DevpodSessionFailed::exit: devlaunch_runner::Exit
+pub devlaunch_core::api::LaunchNotice::HerdrTab(devlaunch_core::flows::launch::HerdrTabRename)
 pub devlaunch_core::api::LaunchNotice::LaunchLockUnavailable
 pub devlaunch_core::api::LaunchNotice::LaunchLockUnavailable::reason: alloc::string::String
 pub devlaunch_core::api::LaunchNotice::LaunchLockUnavailable::workspace_id: alloc::string::String
@@ -522,6 +523,7 @@ pub devlaunch_core::flows::launch::LaunchNotice::DevcontainerIgnoredRunning::spe
 pub devlaunch_core::flows::launch::LaunchNotice::DevcontainerIgnoredRunning::workspace_id: alloc::string::String
 pub devlaunch_core::flows::launch::LaunchNotice::DevpodSessionFailed
 pub devlaunch_core::flows::launch::LaunchNotice::DevpodSessionFailed::exit: devlaunch_runner::Exit
+pub devlaunch_core::flows::launch::LaunchNotice::HerdrTab(devlaunch_core::flows::launch::HerdrTabRename)
 pub devlaunch_core::flows::launch::LaunchNotice::LaunchLockUnavailable
 pub devlaunch_core::flows::launch::LaunchNotice::LaunchLockUnavailable::reason: alloc::string::String
 pub devlaunch_core::flows::launch::LaunchNotice::LaunchLockUnavailable::workspace_id: alloc::string::String

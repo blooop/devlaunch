@@ -66,7 +66,7 @@
 //! **What it still does not reach, and it is not one type.** A type [`api`]
 //! never re-exports but a promised signature names is reachable from outside
 //! and classified as binary surface, so a break in it diffs
-//! `public-api.rest.txt` alone. Counted rather than guessed at: **36 such types
+//! `public-api.rest.txt` alone. Counted rather than guessed at: **37 such types
 //! own close to six hundred rows over there**, and `scripts/public-api-snapshots.sh
 //! --print-residual` lists them.
 //!

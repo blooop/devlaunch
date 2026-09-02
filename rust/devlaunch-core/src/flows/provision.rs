@@ -2648,6 +2648,14 @@ mod lending_contract;
 #[cfg(test)]
 mod zellij_contract;
 
+/// The command line and the two herdr variables `docs/workspace-tools.md` publishes
+/// about naming a herdr tab, held against the argv the stage builds and the switch
+/// it shares. Beside the other two for `zellij_contract`'s reason, and reading the
+/// same section splitter; the code it guards is in `flows::launch`, which is why its
+/// own header says so.
+#[cfg(test)]
+mod herdr_tab_contract;
+
 #[cfg(test)]
 mod tests {
     //! # What this pins, and how

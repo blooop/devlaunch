@@ -1399,6 +1399,22 @@ pub fn devlaunch_core::flows::launch::BranchNotNamed::eq(&self, &devlaunch_core:
 impl core::fmt::Debug for devlaunch_core::flows::launch::BranchNotNamed
 pub fn devlaunch_core::flows::launch::BranchNotNamed::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::launch::BranchNotNamed
+pub enum devlaunch_core::flows::launch::HerdrTabRename
+pub devlaunch_core::flows::launch::HerdrTabRename::Off
+pub devlaunch_core::flows::launch::HerdrTabRename::Run
+pub devlaunch_core::flows::launch::HerdrTabRename::Run::bin: alloc::string::String
+pub devlaunch_core::flows::launch::HerdrTabRename::Run::label: alloc::string::String
+pub devlaunch_core::flows::launch::HerdrTabRename::Run::tab_id: alloc::string::String
+impl devlaunch_core::flows::launch::HerdrTabRename
+pub fn devlaunch_core::flows::launch::HerdrTabRename::argv(&self) -> core::option::Option<alloc::vec::Vec<&str>>
+impl core::clone::Clone for devlaunch_core::flows::launch::HerdrTabRename
+pub fn devlaunch_core::flows::launch::HerdrTabRename::clone(&self) -> devlaunch_core::flows::launch::HerdrTabRename
+impl core::cmp::Eq for devlaunch_core::flows::launch::HerdrTabRename
+impl core::cmp::PartialEq for devlaunch_core::flows::launch::HerdrTabRename
+pub fn devlaunch_core::flows::launch::HerdrTabRename::eq(&self, &devlaunch_core::flows::launch::HerdrTabRename) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::launch::HerdrTabRename
+pub fn devlaunch_core::flows::launch::HerdrTabRename::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::launch::HerdrTabRename
 pub enum devlaunch_core::flows::launch::LaunchAborted
 pub devlaunch_core::flows::launch::LaunchAborted::DevpodNotRun(devlaunch_core::clients::devpod::NotRun)
 pub devlaunch_core::flows::launch::LaunchAborted::ListingUnreadable(devlaunch_core::clients::devpod::ListingUnreadable)
