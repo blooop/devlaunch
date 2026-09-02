@@ -27,11 +27,13 @@ use devlaunch_core::flows::lifecycle::{
 use devlaunch_core::flows::listing::{self, CommandContext, DlView, Sizes};
 use devlaunch_core::flows::records::{Records, StartupError, open_records, open_storage};
 use devlaunch_core::flows::repo_manager::CacheNotice;
+use devlaunch_core::flows::session_manager::{self, PaneDestination};
 use devlaunch_core::runner::{Exit, Runner};
 
 use crate::cli::{self, Command, ListOutput, RmOnExit, Verb};
 use crate::hangup;
 use crate::launch::{self, Family, Reached};
+use crate::pane_shell::{self, become_the_host_shell};
 use crate::render;
 use crate::render::Swept;
 use crate::select;
@@ -123,6 +125,23 @@ pub(crate) fn dispatch(
         ),
         Command::Reconcile { yes } => render_reconcile(runner, &mut context, refresh, yes),
         Command::Purge { yes } => render_purge(&mut context, cache, yes),
+        // Re-entered rather than special-cased: a pane that resolved to a
+        // workspace is a `dl <ws>`, and the whole point is that it is
+        // indistinguishable from one typed by hand -- same launch, same terminal
+        // title, same agent reporting, same everything a manager reads.
+        Command::HerdrShell => match session_manager::pane_destination(runner) {
+            PaneDestination::Workspace(workspace_id) => dispatch(
+                runner,
+                cache,
+                refresh,
+                Command::Workspace {
+                    target: workspace_id,
+                    verb: Verb::Attach { rm: RmOnExit::No },
+                    devcontainer: None,
+                },
+            ),
+            PaneDestination::HostShell => become_the_host_shell(),
+        },
         // The two arms that name a verb are the two that can be `rme`, and the
         // hangup is asked *here* rather than inside either of them: a picked batch
         // is one command over several workspaces, and the shell it was typed in is
@@ -481,9 +500,44 @@ fn render_install(context: &mut CommandContext<'_>, cache: &Path, rc: Option<&Pa
         }
         Ok(installed) => {
             report_install(&installed);
+            // The pane shell's name, after the completions and reported apart
+            // from them: it is a second thing `--install` does, and a machine
+            // whose `dl` sits somewhere unwritable still installed completions.
+            report_pane_shell(&pane_shell::link_beside(
+                std::env::current_exe().ok().as_deref(),
+            ));
             Ending::Done
         }
     }
+}
+
+/// The pane shell's own two lines: where the name is, and what to point herdr at.
+///
+/// Said on every `--install`, including one that changed nothing, because the
+/// config line is the half the user has to act on and it is not written for them.
+fn report_pane_shell(linked: &pane_shell::Linked) {
+    let path = linked.path().display();
+    match linked {
+        pane_shell::Linked::Created { .. } => eprintln!("Linked the pane shell at {path}"),
+        pane_shell::Linked::Repointed { .. } => {
+            eprintln!("Re-pointed the pane shell at {path} to this build");
+        }
+        pane_shell::Linked::AlreadyCurrent { .. } => {
+            eprintln!("The pane shell at {path} is already this build");
+        }
+        pane_shell::Linked::Refused { reason, .. } => {
+            eprintln!("No pane shell at {path}: {reason}");
+            eprintln!(
+                "A new pane in a devlaunch tab will open a shell on this host, not in the container"
+            );
+            return;
+        }
+    }
+    eprintln!(
+        "To open new herdr panes inside the workspace their tab holds, put this in \
+         ~/.config/herdr/config.toml and run 'herdr server reload-config':"
+    );
+    eprintln!("{}", pane_shell::config_line(linked.path()));
 }
 
 /// The script-state line, shared by the success report and the P17 failure path.

@@ -882,15 +882,15 @@ is not running it.
 ### What this does not do
 
 **It is one manager's variable.** `HERDR_AGENT` is herdr's name, and one of the
-three manager-specific words in the two binaries: the other two are the
-`HERDR_TAB_ID` and `HERDR_BIN_PATH` that
-[the herdr tab](#the-herdr-tab-which-is-renamed-and-not-written-to) reads. The
-direction is opposite in the two cases, which is why they stay separate features.
-This one is a name `aid` *writes* for herdr to read, and it is written whether or
-not herdr is there. Those two are names herdr *exports* for `dl` to read, so their
-absence is the whole of the detection. A manager with an equivalent override needs
-that override set some other way; a manager with none is still blind, and no
-amount of cooperation from `dl` would change that.
+manager-specific words in the two binaries: the others are the `HERDR_TAB_ID` and
+`HERDR_BIN_PATH` that [the herdr tab](#the-herdr-tab-which-is-renamed-and-not-written-to)
+and [a new pane](#opening-a-new-pane-in-the-workspace-its-tab-already-holds) both
+read. The direction is opposite in the two cases, which is why they stay separate
+features. This one is a name `aid` *writes* for herdr to read, and it is written
+whether or not herdr is there. Those two are names herdr *exports* for `dl` to
+read, so their absence is the whole of the detection. A manager with an equivalent
+override needs that override set some other way; a manager with none is still
+blind, and no amount of cooperation from `dl` would change that.
 
 Reading two of herdr's exports is still a small thing to know about it. The
 container-side half below is not: it speaks herdr's socket protocol, installs
@@ -989,6 +989,111 @@ host-side half, and it is also why the mechanism is `pane report-agent` rather t
 `pane report-agent-session`: the second reports a session id for a pane that
 already has an agent and does not establish one, so a container sending only those
 stays invisible.
+
+## Opening a new pane in the workspace its tab already holds
+
+The two sections above are about *watching* a pane. This one is about working in
+one. Split a pane in an `aid` tab and you used to get a shell on this host, several
+namespaces away from the container the tab is about:
+
+```bash
+aid blooop/devlaunch@fix/42   # a tab, an agent, a container
+# split the pane, and the new one is on your laptop
+```
+
+The container was always reachable. `dl <ws>` in any terminal is a second shell in
+it, and has been for as long as `dl` has existed. What was missing is that nothing
+told the new pane *which* workspace, so you retyped it or you lost the tab.
+
+Point herdr's `default_shell` at `dl-herdr-shell` and the new pane asks:
+
+```toml
+[terminal]
+default_shell = "/home/you/.pixi/bin/dl-herdr-shell"
+```
+
+`dl --install` writes the name and prints that line with your own path in it. Run
+`herdr server reload-config` afterwards and every pane created from then on, by
+key, by mouse, by `herdr pane split`, opens in the container when its tab holds a
+devlaunch session and opens your ordinary shell when it does not.
+
+### Why a second name, and not a flag
+
+`default_shell` takes an **executable**, not a command string, so
+`default_shell = "dl --herdr-shell"` cannot work. Measured on herdr 0.8.2: the
+whole string is treated as one path and the spawn fails with
+
+```
+Unable to spawn /usr/bin/env FOO=1 /bin/bash because it doesn't exist on the
+filesystem (ENOENT: No such file or directory)
+```
+
+and it fails at the moment a pane is created rather than at config load, where
+`herdr config check` still says `config: ok`. So the entry point has to be a name
+that needs no arguments.
+
+It is a symlink beside `dl` rather than a second binary, for two reasons. It is on
+`PATH` wherever `dl` already is, and it is always the same build as the launcher
+the pane re-enters. `dl` reads its own `argv[0]` and turns the name into
+`--herdr-shell`, so there is one code path and not two.
+
+`dl --install` makes the link and leaves the config alone. Writing to
+`~/.config/herdr/config.toml` would be devlaunch editing a file it does not own,
+and on this machine that file is chezmoi-managed, so an edit would be undone on
+the next `chezmoi apply` and re-made on the next `dl --install` forever.
+
+### Nothing is remembered, and that is the design
+
+The pane shell reads `HERDR_TAB_ID` out of its own environment, asks herdr which
+panes that tab holds, and asks what each of them is running. A tab is devlaunch's
+if one of its panes has a `dl` transport in its foreground right now:
+
+| transport | what the pane is running |
+|---|---|
+| a bare `dl <ws>` | `devpod ssh <workspace-id> ...` |
+| `dl <ws> -- <cmd>`, which is every `aid` | `ssh ... <workspace-id>.devpod ...` |
+
+Both are argvs `dl` itself builds, so reading the workspace out of them is `dl`
+reading its own writing. herdr publishes a pane's whole foreground chain, which is
+the same reading it does to decide which agent a pane holds, and the transport is
+in there under the `dl` that started it.
+
+The alternative was a note kept against a tab id, written at launch. It is a
+smaller lookup and it is wrong in a way that has no floor: a tab whose session has
+exited, or that you reused for something else, goes on naming a workspace nobody
+in it is in, and every pane you open there lands in the wrong container. Reading
+it back live has no such state to be stale. A tab whose session has ended answers
+"no workspace" the moment it has ended.
+
+The cost is one `pane list` and one `process-info` per pane in the tab, which is
+usually one to three round trips on a unix socket. The whole of it is bounded at
+half a second.
+
+### What it does not do
+
+**A failure costs the container and never the pane.** No herdr, no tab id, a
+socket that will not answer, an answer that is not JSON, a herdr that is not
+installed, a timeout: every one of them opens the shell you would have got anyway.
+This sits in front of every pane on the machine, so there is no failure it may
+turn into a pane that does not open.
+
+**It is one manager's variable.** `HERDR_TAB_ID` is herdr's, and so is the
+`default_shell` field. A manager that spawns a program per pane and identifies the
+tab in its environment would need a client module of its own, which is the same
+answer the section above gives.
+
+**A pane outside a devlaunch tab costs nothing at all.** With no `HERDR_TAB_ID`
+in the environment, no herdr is spawned and no question is asked, which is the
+ordinary case for most panes on a machine that has one.
+
+**It does not go the other way.** Something inside the container asking herdr to
+open a pane is a different feature, and the socket
+[`DEVLAUNCH_HERDR`](#reporting-an-agent-started-inside-the-workspace) forwards is
+for reporting rather than for control.
+
+**The pane's shell is a shell.** It is not an agent, and nothing is typed into it.
+A `claude` you start in there is covered by `DEVLAUNCH_HERDR`, exactly as one
+started in any other devlaunch shell is.
 
 ## The shared pixi package cache
 

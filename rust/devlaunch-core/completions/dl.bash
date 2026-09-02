@@ -65,7 +65,7 @@ _dl_completion() {
     # The retired spellings (--stop, --autorm) are absent by rule rather than by
     # hand: the grammar marks them `hide = true`, and the test drops every hidden
     # flag, so a spelling this build only still answers for is never offered.
-    local global_opts="--ls --install --refresh --prune --reconcile --purge --rm --devcontainer --help -h --version"
+    local global_opts="--ls --install --refresh --prune --reconcile --purge --herdr-shell --rm --devcontainer --help -h --version"
     if [[ "$cmd" == aid ]]; then
         global_opts="--claude --codex --gemini --devcontainer --help -h --version"
     fi

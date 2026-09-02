@@ -27,9 +27,13 @@ pub mod provision;
 pub mod records;
 // binary surface — not part of the frozen wf API (#251 §7)
 pub mod repo_manager;
-// Crate-private, like `clients::herdr` whose decisions it carries out: nothing
-// outside core opens a session manager's socket, and what a launch made of it
-// reaches the caller as a notice.
-pub(crate) mod session_manager;
+// binary surface — not part of the frozen wf API (#251 §7), and only just: the
+// reporting half is crate-private like `clients::herdr` whose decisions it
+// carries out, because nothing outside core opens a session manager's socket and
+// what a launch made of one reaches the caller as a notice. `pane_destination` is
+// the exception and the reason this is `pub` — `dl --herdr-shell` is a command of
+// its own rather than part of a launch, and what crosses the crate boundary for
+// it is one decision and no socket.
+pub mod session_manager;
 // binary surface — not part of the frozen wf API (#251 §7)
 pub mod workspace_clone;

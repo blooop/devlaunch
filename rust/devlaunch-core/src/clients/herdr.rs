@@ -1170,3 +1170,112 @@ case "${1:-}" in
 esac
 exit 0
 "#;
+
+// ===========================================================================
+// asking herdr what a tab holds
+// ===========================================================================
+
+use std::time::Duration;
+
+use serde::Deserialize;
+
+/// What every question asked of herdr may cost, all of them together.
+///
+/// A bound and a tight one, because this sits in front of *every* pane herdr
+/// opens. A manager that accepts a connection and never answers must cost a pane
+/// its container, not its existence: the caller reads a timeout as "no workspace"
+/// and opens a plain shell. Half a second is two orders of magnitude more than a
+/// unix socket round trip measured on herdr 0.8.2 and still under the threshold
+/// at which a person notices a pane appearing.
+pub(crate) const ANSWER_WITHIN: Duration = Duration::from_millis(500);
+
+/// One pane, as `herdr pane list` describes it.
+///
+/// Four fields of the nineteen herdr publishes, and the other fifteen are
+/// deliberately not modelled: serde ignores what is not named, so a herdr that
+/// grows a field does not stop answering here. `tab_id` and `focused` are among
+/// the ones herdr's schema marks required, so neither is an `Option` pretending
+/// a missing value means something.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub(crate) struct PaneInfo {
+    pub(crate) pane_id: String,
+    pub(crate) tab_id: String,
+    pub(crate) focused: bool,
+}
+
+/// What one pane's foreground processes are, as `herdr pane process-info` has them.
+///
+/// This is the same reading herdr does to decide which agent a pane holds, which
+/// is what makes it the right question to ask: it is the pane's live truth rather
+/// than a note anybody wrote down.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub(crate) struct PaneProcessInfo {
+    #[serde(default)]
+    pub(crate) foreground_processes: Vec<ForegroundProcess>,
+}
+
+/// One process in a pane's foreground, with the argv it was exec'd with.
+///
+/// `argv` is optional in herdr's own schema — a process whose `/proc` entry it
+/// could not read still gets a row — so an absent argv is an ordinary answer and
+/// not a malformed one.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub(crate) struct ForegroundProcess {
+    #[serde(default)]
+    pub(crate) argv: Option<Vec<String>>,
+}
+
+/// The argv that asks herdr for every pane in the session.
+///
+/// Every pane and not one tab's, because herdr has no `pane list --tab`: the tab
+/// is a field on each pane and the filtering is this side's. One round trip
+/// either way.
+pub(crate) fn pane_list_argv() -> Vec<String> {
+    vec!["pane".to_owned(), "list".to_owned()]
+}
+
+/// The argv that asks herdr what one pane is running.
+pub(crate) fn process_info_argv(pane_id: &str) -> Vec<String> {
+    vec![
+        "pane".to_owned(),
+        "process-info".to_owned(),
+        "--pane".to_owned(),
+        pane_id.to_owned(),
+    ]
+}
+
+/// The panes in `herdr pane list`'s answer.
+///
+/// herdr answers every CLI call with a `{"id": …, "result": …}` envelope, or the
+/// same shape with `error` in place of `result`; a refusal is therefore
+/// well-formed JSON that simply has no `panes` in it, and both arrive here as
+/// `None`. The caller does not need them apart: a herdr that would not answer and
+/// a herdr that answered nothing both mean there is no workspace to find.
+pub(crate) fn panes_in(answer: &str) -> Option<Vec<PaneInfo>> {
+    #[derive(Deserialize)]
+    struct Envelope {
+        result: Panes,
+    }
+    #[derive(Deserialize)]
+    struct Panes {
+        panes: Vec<PaneInfo>,
+    }
+    serde_json::from_str::<Envelope>(answer)
+        .ok()
+        .map(|envelope| envelope.result.panes)
+}
+
+/// The process info in `herdr pane process-info`'s answer.
+pub(crate) fn process_info_in(answer: &str) -> Option<PaneProcessInfo> {
+    #[derive(Deserialize)]
+    struct Envelope {
+        result: Info,
+    }
+    #[derive(Deserialize)]
+    struct Info {
+        process_info: PaneProcessInfo,
+    }
+    serde_json::from_str::<Envelope>(answer)
+        .ok()
+        .map(|envelope| envelope.result.process_info)
+}
