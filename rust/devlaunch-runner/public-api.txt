@@ -8,6 +8,7 @@ pub fn devlaunch_runner::interrupt::Registration::drop(&mut self)
 pub unsafe fn devlaunch_runner::interrupt::cleanup_and_exit(i32) -> never
 pub fn devlaunch_runner::interrupt::register_dir(&std::path::Path) -> core::option::Option<devlaunch_runner::interrupt::Registration>
 pub fn devlaunch_runner::interrupt::register_file(&std::path::Path) -> core::option::Option<devlaunch_runner::interrupt::Registration>
+pub fn devlaunch_runner::interrupt::register_pid(i32) -> core::option::Option<devlaunch_runner::interrupt::Registration>
 pub enum devlaunch_runner::DetachOutcome
 pub devlaunch_runner::DetachOutcome::NotStarted(devlaunch_runner::OsFailure)
 pub devlaunch_runner::DetachOutcome::ProgramNotFound

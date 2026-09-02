@@ -33,6 +33,7 @@ use crate::clients::herdr::{self, Reporting};
 use crate::clients::kill::{self, Signal};
 use crate::clients::ssh;
 use crate::domain::workspace_state::NonEmpty;
+use crate::runner::interrupt;
 use crate::runner::{DetachOutcome, Exit, Invocation, Outcome, Runner, SpawnSpec};
 
 /// What [`prepare`] came to.
@@ -264,9 +265,21 @@ fn last_line(stream: &str) -> Option<String> {
 /// Detached rather than waited on: it has to outlive this call and live exactly as
 /// long as the session that follows it, which is the caller's business and not
 /// this function's.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub(crate) struct Forward {
     pid: u32,
+    /// Registered for the interrupt handler, and held for exactly as long as the
+    /// forward is: dropping it frees the slot so the handler cannot signal a pid
+    /// that has since been recycled. `None` only if every slot was full, which
+    /// costs this forward its interrupt-time cleanup and nothing else.
+    ///
+    /// Without it a `dl` that is Ctrl-C'd leaves the forward running: the child is
+    /// `setsid`'d, so a terminal's signal to the foreground process group never
+    /// reaches it, and `dl`'s handler `_exit`s without unwinding, so [`stop`] --
+    /// which only runs on the ordinary return path -- never happens.
+    ///
+    /// [`stop`]: Forward::stop
+    _cleanup: Option<interrupt::Registration>,
 }
 
 impl Forward {
@@ -292,7 +305,10 @@ pub(crate) fn start_forward(
     let argv = reporting.forward_argv(config, workspace_id);
     let (program, args) = argv.split_first().expect("the forward names ssh");
     match runner.detach(&Invocation::new(program.clone()).with_args(args.iter().cloned())) {
-        DetachOutcome::Started { pid } => Ok(Forward { pid }),
+        DetachOutcome::Started { pid } => Ok(Forward {
+            pid,
+            _cleanup: interrupt::register_pid(i32::try_from(pid).unwrap_or(0)),
+        }),
         DetachOutcome::ProgramNotFound => Err("no ssh on this host".to_owned()),
         DetachOutcome::NotStarted(failure) => Err(format!("{failure:?}")),
     }
