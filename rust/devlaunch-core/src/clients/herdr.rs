@@ -816,25 +816,6 @@ fn sanitised(pane_id: &str) -> String {
         .collect()
 }
 
-/// The leaf under dl's cache directory that records what a workspace was given.
-const MARKER_DIR: &str = "herdr";
-
-/// Where the record for one workspace lives.
-pub(crate) fn marker_path(cache_dir: &Path, workspace_id: &str) -> PathBuf {
-    cache_dir.join(MARKER_DIR).join(workspace_id)
-}
-
-/// What a marker holds: the identity of the binary that was lent.
-///
-/// The host binary's size, and deliberately nothing more. It changes whenever the
-/// manager is updated, which is the only event that has to invalidate a lend, and
-/// it costs one `stat` where a `--version` comparison costs a process. A size
-/// collision across two herdr builds would leave an old binary in place, which is
-/// a stale status indicator rather than a broken workspace.
-pub(crate) fn stamp(host_binary_len: u64) -> String {
-    format!("herdr-bytes:{host_binary_len}")
-}
-
 /// Whether the container already has this binary and this hook.
 ///
 /// Answers by exit status rather than by output, so the caller has nothing to

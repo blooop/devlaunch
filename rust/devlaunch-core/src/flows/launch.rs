@@ -2082,13 +2082,9 @@ fn begin_reporting(
             }
         },
     };
-    if let session_manager::Prepared::Refused { reason } = session_manager::prepare(
-        session.runner,
-        &session.host.cache_dir,
-        &config,
-        workspace_id,
-        &reporting,
-    ) {
+    if let session_manager::Prepared::Refused { reason } =
+        session_manager::prepare(session.runner, &config, workspace_id, &reporting)
+    {
         notices.say(LaunchNotice::SessionManagerUnavailable { reason });
         return None;
     }

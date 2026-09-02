@@ -57,9 +57,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   user's own machine.
 
   Off by default, and the lend plus install happen at most once per workspace per
-  version of herdr, recorded by a marker under `dl`'s cache directory. A launch
-  with the variable unset spends nothing; a launch into a prepared workspace
-  spends no round trip.
+  version of herdr. A launch with the variable unset spends nothing; a launch with
+  it set spends one round trip asking the container what it already has, rather
+  than trusting a host-side note about a container that `dl <ws> recreate` may
+  have replaced since.
 
   Every failure costs the reporting and never the session. A locked-down sudo, a
   workspace with no published ssh alias, a forward that cannot bind: each prints
