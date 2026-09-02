@@ -241,6 +241,18 @@ pub struct Host {
     /// home directory; `dl` still runs there when `XDG_CACHE_HOME` is set, and
     /// then there is no ssh config for it to look in at all.
     pub(crate) home: Option<PathBuf>,
+    /// Where named Claude profiles live, if this machine resolves one.
+    ///
+    /// Resolved once by the caller, as [`Self::cache_dir`] is and for the same reason:
+    /// resolving it can fail on a machine that names no home directory, and a second
+    /// answer computed further down could disagree with the first. `None` is that
+    /// machine, and a launch that named a profile there refuses rather than falling
+    /// back to the unnamed credential.
+    ///
+    /// **Under the config home, never the cache**
+    /// ([`crate::domain::xdg::claude_profiles_root`]): `--purge` deletes the cache
+    /// entire, and a login is not a cache.
+    pub(crate) claude_profiles_root: Option<PathBuf>,
     /// Everything devlaunch stores: the launch locks, the shared pixi cache and
     /// the context-options cache all hang off this.
     pub(crate) cache_dir: PathBuf,
@@ -282,9 +294,22 @@ impl Host {
             devpod_ssh_config: crate::osext::env_str(ssh::CONFIG_VAR),
             ssh_auth_sock: crate::osext::env_str(SSH_AUTH_SOCK_VAR),
             home: crate::osext::home_dir(),
+            claude_profiles_root: crate::domain::xdg::claude_profiles_root().ok(),
             cache_dir: cache_dir.into(),
             devpod_home: DevpodHome::locate(),
         }
+    }
+
+    /// Name the Claude profile this run forwards, if one was typed.
+    ///
+    /// A builder rather than a parameter on [`Self::from_process`], so adding it does
+    /// not move that signature, and so a caller with nothing to say passes nothing.
+    /// The value is not validated here: [`crate::clients::claude`] owns that check and
+    /// owns the refusal, which keeps one boundary rather than two.
+    #[must_use]
+    pub fn with_claude_profile(mut self, profile: Option<String>) -> Self {
+        self.claude.profile = profile;
+        self
     }
 
     /// The lock two `up`s of one workspace serialize on.
@@ -1935,7 +1960,11 @@ impl<'a> SessionContext<'a> {
         if self.claude_seen.get() != Some(ClaudeConfig::Ours) {
             return None;
         }
-        match claude::resolve_token(self.host.home.as_deref(), &self.host.claude) {
+        match claude::resolve_token(
+            self.host.home.as_deref(),
+            self.host.claude_profiles_root.as_deref(),
+            &self.host.claude,
+        ) {
             claude::TokenLookup::Found(token) => Some(token),
             claude::TokenLookup::Missing(_) => None,
         }

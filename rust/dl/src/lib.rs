@@ -485,7 +485,7 @@ fn one_command(argv: &[String]) -> i32 {
     // parse because Python asks it there too — a command line dl goes on to refuse
     // has still warmed the cache.
     let wanted =
-        completion_cache::wants_startup_cache_refresh(&cli::argv_without_devcontainer(argv));
+        completion_cache::wants_startup_cache_refresh(&cli::argv_without_value_flags(argv));
 
     // One process, one cache directory, and one background refresh. Both are
     // resolved out here rather than per command: two halves of one run that
@@ -594,6 +594,9 @@ fn grammar_refusal(refused: &cli::GrammarError) -> String {
         ),
         cli::GrammarError::DevcontainerNotAllowed { command } => {
             format!("--devcontainer means nothing for {command}: it opens no workspace.")
+        }
+        cli::GrammarError::ClaudeProfileNotAllowed { command } => {
+            format!("--claude-profile means nothing for {command}: it forwards no Claude login.")
         }
         // The two forms it *does* apply to are named, and so is what to type to
         // delete a workspace now: somebody who reached for `--rm` on another verb
