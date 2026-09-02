@@ -83,9 +83,7 @@ DEFAULT_SHELL_FIELD = "default_shell"
 # executable and cannot hold `dl --herdr-shell`.
 PANE_SHELL_NAME = "dl-herdr-shell"
 
-WORKSPACE_TOOLS = (
-    Path(__file__).resolve().parent.parent.parent / "docs" / "workspace-tools.md"
-)
+WORKSPACE_TOOLS = Path(__file__).resolve().parent.parent.parent / "docs" / "workspace-tools.md"
 
 
 def _workspace_tools() -> str:
