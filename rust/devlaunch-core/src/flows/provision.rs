@@ -912,10 +912,21 @@ pub(crate) fn onboarding_script() -> String {
         // `CLAUDE_CONFIG_DIR` names a directory in whatever the pass's working
         // directory happens to be. Nothing to seed.
         "case \"$dir\" in /*) ;; *) exit 0 ;; esac".to_owned(),
-        // Whoever wrote it owns it. `-e` and not `-f`: a `.claude.json` that is a
-        // directory some image created is equally not this stage's to replace.
-        "if [ -e \"$dir/.claude.json\" ]; then exit 0; fi".to_owned(),
+        // Whoever put it there owns it, and `-L` beside `-e` is what makes that true
+        // of a symlink as well. `-e` resolves the link, so a **dangling** one reads
+        // as absent and the redirection behind it then creates the target: measured
+        // at exit 0, nothing in the directory, and the seed at a path this stage
+        // never named, which for a link into a not-yet-populated mount of the host's
+        // config is the one write the design says never happens.
+        "if [ -e \"$dir/.claude.json\" ] || [ -L \"$dir/.claude.json\" ]; then exit 0; fi"
+            .to_owned(),
         "mkdir -p \"$dir\" || exit 1".to_owned(),
+        // `set -C` so the guard above cannot be raced. Two passes over one workspace
+        // are serialized by the launch lock, but a `postCreate` or a dotfiles apply
+        // running beside this is not, and noclobber makes the create exclusive: the
+        // redirection refuses a target that appeared in between, dangling symlink
+        // included, rather than overwriting whatever now answers to that name.
+        "set -C".to_owned(),
         // `printf` with the JSON as an *argument*, so the stage stays one line's
         // worth of quoting (see [`Stage`]) and no heredoc has to survive being read
         // by the pass's shell before the nested one sees it.
@@ -2829,8 +2840,9 @@ if [ -z "$dir" ]; then
   if [ -z "$dir" ]; then exit 0; fi
 fi
 case "$dir" in /*) ;; *) exit 0 ;; esac
-if [ -e "$dir/.claude.json" ]; then exit 0; fi
+if [ -e "$dir/.claude.json" ] || [ -L "$dir/.claude.json" ]; then exit 0; fi
 mkdir -p "$dir" || exit 1
+set -C
 printf '"'"'%s\n'"'"' '"'"'{"hasCompletedOnboarding":true}'"'"' > "$dir/.claude.json"'; then
   echo "devlaunch-probe stage onboarding ok"
 else
@@ -4698,6 +4710,41 @@ fi
         assert!(
             !home.join(".claude/.claude.json").exists(),
             "the config directory is not where this file lives"
+        );
+    }
+
+    #[test]
+    fn a_dangling_config_symlink_does_not_take_the_seed_out_of_the_directory() {
+        // `[ -e ]` resolves the link, so a dangling one reads as absent and the
+        // redirection behind it then *creates the target*. Measured on the composed
+        // script before the guard was fixed: exit 0, nothing in the config
+        // directory, and 32 bytes at a path the stage never named.
+        //
+        // A container reaches this through any dotfiles or `postCreate` step that
+        // links `.claude.json` at somewhere not there yet, which devpod runs.
+        let scratch = tempfile::tempdir().expect("a scratch dir");
+        let home = scratch.path().join("home");
+        let elsewhere = scratch.path().join("elsewhere");
+        std::fs::create_dir_all(&home).expect("a home");
+        std::fs::create_dir_all(&elsewhere).expect("somewhere else");
+        let target = elsewhere.join("not-here-yet.json");
+        std::os::unix::fs::symlink(&target, home.join(".claude.json")).expect("a dangling link");
+
+        let answered = std::process::Command::new("bash")
+            .arg("-c")
+            .arg(onboarding_script())
+            .env("HOME", &home)
+            .env_remove("CLAUDE_CONFIG_DIR")
+            .output()
+            .expect("bash ran");
+        assert!(
+            answered.status.success(),
+            "a link somebody else left is nothing to warn about: {}",
+            String::from_utf8_lossy(&answered.stderr)
+        );
+        assert!(
+            !target.exists(),
+            "the seed followed a dangling link out of the directory it was given"
         );
     }
 
