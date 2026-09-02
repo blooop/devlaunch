@@ -1996,7 +1996,15 @@ pub(crate) fn workspace_ssh(
     // session turns out to take.
     let relay = herdr::Reporting::resolve(&session.host.herdr)
         .and_then(|reporting| begin_reporting(session, workspace_id, &options, reporting, notices));
-    let coordinates = relay.as_ref().map(|(reporting, _)| reporting);
+    // Both halves of what a manager can be told, and every route gets both. The
+    // agent's name used to reach the OpenSSH route alone, which is a route the
+    // launch chooses rather than the caller: `dl <ws> -- claude` with no published
+    // alias yet, or with its output redirected, is a `devpod ssh` and was silently
+    // nameless.
+    let visibility = herdr::Visibility {
+        agent,
+        reporting: relay.as_ref().map(|(reporting, _)| reporting),
+    };
     let session_outcome = match route(payload.as_ref(), &terminal, workspace_id, notices) {
         Route::Terminal { payload, config } => ssh_with_terminal(
             session,
@@ -2004,10 +2012,7 @@ pub(crate) fn workspace_ssh(
             payload,
             config,
             workdir,
-            herdr::Visibility {
-                agent,
-                reporting: coordinates,
-            },
+            visibility,
             notices,
         ),
         Route::DevpodAttach => devpod_session(
@@ -2015,7 +2020,7 @@ pub(crate) fn workspace_ssh(
             workspace_id,
             None,
             workdir,
-            coordinates,
+            visibility,
             forward,
             notices,
         ),
@@ -2024,7 +2029,7 @@ pub(crate) fn workspace_ssh(
             workspace_id,
             Some(payload),
             workdir,
-            coordinates,
+            visibility,
             forward,
             notices,
         ),
@@ -2120,7 +2125,7 @@ fn devpod_session(
     workspace_id: &str,
     payload: Option<&RemotePayload>,
     workdir: Option<&str>,
-    reporting: Option<&herdr::Reporting>,
+    visibility: herdr::Visibility<'_>,
     forward: &mut dyn FnMut(&str),
     notices: &mut dyn Notices<LaunchNotice>,
 ) -> Result<Session, SessionRefused> {
@@ -2140,11 +2145,16 @@ fn devpod_session(
     args.extend(forwarding.args.iter().cloned());
     // `--set-env` and not `--send-env`: these are the container's own paths for a
     // socket and a binary, which this host's environment does not hold.
-    if let Some(reporting) = reporting {
+    if let Some(reporting) = visibility.reporting {
         args.extend(reporting.devpod_flags());
     }
 
-    let call = Call::new(args).with_env(forwarding.env);
+    // The agent's name goes in this child's *environment* and onto no flag. What
+    // reads it is the manager on this host, which walks dl's descendants and reads
+    // their `/proc/<pid>/environ`, and this `devpod` is the descendant it finds.
+    // Sending it into the container as well would name the agent to a container
+    // that is not the one running it.
+    let call = Call::new(args).with_env(herdr::inherited_with(forwarding.env, visibility.agent));
     notices.say(LaunchNotice::SshCommand { argv: call.argv() });
 
     // Only stderr is read, which under a pty carries devpod's own warnings and
@@ -6599,6 +6609,39 @@ mod tests {
         assert!(
             !call.argv().iter().any(|arg| arg.contains(herdr::AGENT_VAR)),
             "the name must not travel in argv: {:?}",
+            call.argv()
+        );
+    }
+
+    /// The same name on the other transport, which the launch picks and the caller
+    /// does not.
+    ///
+    /// `Route::DevpodCommand` is where `dl <ws> -- claude` lands whenever the
+    /// OpenSSH route is unavailable: no alias published yet (a workspace devpod has
+    /// only just created), no ssh config, or output redirected. The agent's name
+    /// reached the OpenSSH route alone, so on any of those the launch was silently
+    /// nameless -- and `aid`, which sets the variable in its own process before
+    /// exec'ing, covered both routes all along.
+    #[test]
+    fn a_command_that_names_an_agent_names_it_on_the_devpod_route_too() {
+        let scene = Scene::new().with_running("myws");
+
+        let _ = a_session(&scene, Some("claude 'fix the bug'"));
+
+        let calls = scene.runner.calls_to("devpod");
+        let call = calls.last().expect("a devpod session");
+        assert_eq!(
+            call.invocation()
+                .env
+                .entries
+                .get(herdr::AGENT_VAR)
+                .map(String::as_str),
+            Some("claude"),
+            "the devpod child carries no agent name, so herdr reads none off it"
+        );
+        assert!(
+            !call.argv().iter().any(|arg| arg.contains(herdr::AGENT_VAR)),
+            "the name must not travel into the container: {:?}",
             call.argv()
         );
     }
