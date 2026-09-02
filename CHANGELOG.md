@@ -116,7 +116,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from `spec::parse` alone named `..` and `-weird` on a tab for a launch that then
   failed with `UnsafeName`, and herdr persists `custom_name`.
 
-
 ## [0.28.0] - 2026-09-02
 
 ### Added
