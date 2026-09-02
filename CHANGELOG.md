@@ -12,9 +12,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`dl --claude-profile <name>` forwards a named Claude login instead of the
   default one**, for the case one credential cannot serve: two accounts on one
   machine, and a workspace that wants the one your host is not signed in to. Profiles
-  are directories under `<config>/devlaunch/claude-profiles/`, each holding the
-  `.credentials.json` a `claude` login writes. devlaunch reads them and has no writer,
-  so creating one is Claude Code's job with its own `CLAUDE_CONFIG_DIR`.
+  are directories under `~/.claude-profiles/`, or wherever `CLAUDE_PROFILES_DIR` points,
+  each holding the `.credentials.json` a `claude` login writes and each a
+  `CLAUDE_CONFIG_DIR` of its own, which is what makes the logins independent.
+
+  **That layout and that variable belong to the tool managing the profiles, and `dl`
+  only reads them.** The first version of this invented a devlaunch-shaped root under
+  the config directory, which was a third location for one concept and would have asked
+  anyone with working profiles to log every account in again somewhere new. There is no
+  writer here: creating, seeding and deleting a profile stay with whatever made the
+  directory. `DEVLAUNCH_CLAUDE_PROFILES_DIR` still wins over `CLAUDE_PROFILES_DIR`, so a
+  scratch run reads its own profiles rather than the real credentials.
+
+  `--claude-profile default` resolves the login you would get anyway and never consults
+  a `default/` directory, so a picker has something to select and a recalled line has a
+  way to say "not the profile I used last time".
 
   **A named profile that holds no credential stops the launch, and that refusal is the
   feature.** It does not fall back to the default login. Two accounts on one machine is
@@ -30,11 +42,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that has opted out has no account to choose.
 
   **Not stored with the workspace**, unlike `--devcontainer`, so no workspace can
-  quietly forward an account chosen weeks ago. Profiles live under the config directory
-  and never the cache, so `--purge` and `--prune` cannot reach a login;
-  `DEVLAUNCH_CLAUDE_PROFILES_DIR` moves them for a scratch run. Completion offers the
-  profiles that exist, read off the disk rather than the completion cache, because a
-  profile made a minute ago has to complete now.
+  quietly forward an account chosen weeks ago. Profiles live outside everything devlaunch owns
+  so `--purge` and `--prune`, which walk devlaunch's cache, were never in reach of a
+  login. Completion offers the profiles that exist plus `default`, read off the disk
+  rather than the completion cache, because a profile made a minute ago has to complete
+  now.
 
   It is not the claude.ai account a container's `claude` is paired to for Remote
   Control, and it does not weaken the check that leaves a repo's own mounted Claude

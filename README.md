@@ -290,9 +290,15 @@ workspaces where you want a different account than the one `claude` on your host
 dl blooop/devlaunch --claude-profile work
 ```
 
-Profiles live in `<config>/devlaunch/claude-profiles/<name>/`, each holding the
-`.credentials.json` that a `claude` login writes. Create one by pointing Claude Code's own
-`CLAUDE_CONFIG_DIR` at the directory and logging in there; `dl` reads these and never writes them.
+Profiles live in `~/.claude-profiles/<name>/`, or wherever `CLAUDE_PROFILES_DIR` points, each
+holding the `.credentials.json` that a `claude` login writes. Each is a `CLAUDE_CONFIG_DIR` of its
+own, which is what makes the logins independent. `dl` reads that layout rather than inventing one,
+so profiles you already have work with no re-login, and it never writes there: creating and
+deleting them stays with whatever made the directory. By hand it is
+`CLAUDE_CONFIG_DIR=~/.claude-profiles/work claude`, then log in.
+
+`--claude-profile default` means the login you would get anyway, so a recalled line has a way to
+say "not the profile I used last time".
 
 Unlike `--devcontainer` it is **not** stored with the workspace, so it applies to the launch you
 typed it on and no workspace ever forwards an account chosen weeks ago. A name that holds no
@@ -436,12 +442,13 @@ Images are yours: `docker system df` is what shows those.
 | `DEVLAUNCH_TIMING=1\|json` | Write a timing summary to stderr. See [docs/performance.md](docs/performance.md) |
 | `DEVPOD_SSH_CONFIG=<path>` | devpod's own, honoured rather than set: it is where `devpod up` publishes host aliases, so it is where `dl` looks for them. See [docs/cli.md](docs/cli.md) |
 | `CLAUDE_CONFIG_DIR=<path>` | Claude Code's own, honoured rather than set: it is where the host keeps its Claude configuration, so it is where `dl` reads the login to forward. It replaces `~/.claude` rather than being tried before it, exactly as Claude Code treats it. See [docs/workspace-tools.md](docs/workspace-tools.md) |
-| `DEVLAUNCH_CLAUDE_PROFILES_DIR=<path>` | Where `--claude-profile` looks. Defaults to `<config>/devlaunch/claude-profiles`. Under the config directory and never the cache, so `dl --purge` cannot reach a login |
+| `DEVLAUNCH_CLAUDE_PROFILES_DIR=<path>` | Where `--claude-profile` looks, and it wins over the row below. For scoping a scratch run away from real credentials |
+| `CLAUDE_PROFILES_DIR=<path>` | Honoured rather than set: the profile directory `claude-as` manages. Defaults to `~/.claude-profiles`. Nothing `dl` deletes reaches it |
 
 Every switch here reads the same values: anything but empty, `0`, `false` or `no` counts as
-set. On a "no" variable that means turn it off; on an opt-in one it means turn it on. Seven
+set. On a "no" variable that means turn it off; on an opt-in one it means turn it on. Eight
 rows are not switches and do not follow it: `DEVLAUNCH_AID_AGENT`, `DEVPOD_SSH_CONFIG`,
-`CLAUDE_CONFIG_DIR` and `DEVLAUNCH_CLAUDE_PROFILES_DIR` take a value, `DEVLAUNCH_TIMING` counts only empty and `0` as off, so `false` and `no`
+`CLAUDE_CONFIG_DIR`, `DEVLAUNCH_CLAUDE_PROFILES_DIR` and `CLAUDE_PROFILES_DIR` take a value, `DEVLAUNCH_TIMING` counts only empty and `0` as off, so `false` and `no`
 turn it on, `DEVLAUNCH_AID_REMOTE_CONTROL` takes `1`/`true`/`on`/`yes` or
 `0`/`false`/`off`/`no` and refuses anything else rather than guessing, and `HERDR_AGENT` is
 the one written rather than read, so a value of your own survives only a line that starts
