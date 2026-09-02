@@ -334,6 +334,7 @@ pub fn name_before_launch(spec: &str) {
 /// the name, where the writes need a terminal and a herdr. `None` is "say nothing",
 /// and the table in [`name_before_launch`] is the contract.
 fn early_name(spec: &str) -> Option<String> {
+    use devlaunch_core::domain::spec::{SpecIdentity, identity};
     use devlaunch_core::domain::workspace_id::WorkspaceId;
     use devlaunch_core::flows::launch::{Plan, plan};
 
@@ -353,10 +354,16 @@ fn early_name(spec: &str) -> Option<String> {
             .ok()
             .map(|workspace| workspace.label()),
         // No ref, so no triple and no label to derive. The repo alone is what the
-        // spec states, and the launch appends the branch it resolves.
-        Plan::Triple {
-            repo, branch: None, ..
-        } => Some(repo),
+        // spec states, and the launch appends the branch it resolves -- but rendered
+        // the way the launch will render it. `SpecIdentity::RepoLabel` is that
+        // rendering, and core's answer for this exact row: `slug`ged, so the case
+        // and the dots and the underscores match `WorkspaceId::label`'s repo part,
+        // and capped, which nothing downstream is -- `sanitize_title` filters
+        // control characters and trims and has no opinion about length.
+        Plan::Triple { branch: None, .. } => match identity(spec).ok()? {
+            SpecIdentity::RepoLabel(label) => Some(label),
+            _ => None,
+        },
         // `plan`'s fallback, which is wider than "a workspace name": anything not a
         // triple, a path or a git source lands here, a mistyped triple included.
         // Passed through unvalidated because `Plan::Existing { name }` is exactly
@@ -822,6 +829,25 @@ mod early_name_tests {
         ] {
             assert_eq!(early_name(spec), None, "{spec}");
         }
+    }
+
+    #[test]
+    fn a_repo_with_no_ref_is_rendered_the_way_the_launch_renders_it() {
+        // The launch reaches this row through `WorkspaceId::label`, whose repo part
+        // is `slug(repo)`. The raw repo is not that: it keeps the case, the dots and
+        // the underscores, so the early name and the launch's disagreed in more than
+        // the branch suffix this row is meant to be missing.
+        assert_eq!(
+            early_name("blooop/Rocker.git").as_deref(),
+            Some("rocker-git")
+        );
+        assert_eq!(early_name("blooop/my_repo").as_deref(), Some("my-repo"));
+        // And capped, which nothing downstream does: `sanitize_title` filters
+        // control characters and trims, and has no opinion about length, so an
+        // uncapped repo reached the escape and the tab label at whatever width the
+        // spec was typed at.
+        let long = early_name(&format!("blooop/{}", "z".repeat(200))).expect("a name");
+        assert!(long.len() <= 47, "uncapped at {} chars", long.len());
     }
 
     #[test]
