@@ -100,6 +100,22 @@ pub(crate) fn extend_openssh_forwarding(base: Forwarding, agent: Option<&str>) -
     }
 }
 
+/// The same name, for a child whose transport carries no permit list.
+///
+/// The devpod route has no `SendEnv`: `devpod ssh` takes `--set-env`, which puts a
+/// value inside the *container*, and that is the wrong place for this one. What
+/// reads it is the manager on this host, which walks dl's descendants and reads
+/// their `/proc/<pid>/environ`; the descendant it finds on this route is the
+/// `devpod` process itself. So the name goes in that child's environment and
+/// nowhere else, which is what the OpenSSH route does with it too
+/// ([`extend_openssh_forwarding`], env and never the permit list).
+pub(crate) fn inherited_with(env: EnvSpec, agent: Option<&str>) -> EnvSpec {
+    match agent {
+        None => env,
+        Some(agent) => inherited(env).and(AGENT_VAR, agent),
+    }
+}
+
 /// A base environment that is a parent environment.
 ///
 /// `Forwarding::default()` carries `EnvSpec::default()`, which is already the

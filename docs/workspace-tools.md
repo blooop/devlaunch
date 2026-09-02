@@ -869,6 +869,16 @@ It is still a reading and not a parse. A command holding a pipe or a `&&` gets t
 answer for its first program, which is the one whose screen the pane holds when it
 starts, and a command that reaches an agent halfway through a chain is not named.
 
+Both transports carry it, which is worth saying because the launch picks the
+transport and you do not. A command normally goes over OpenSSH against the alias
+devpod published, and when there is no alias to use yet, no ssh config, or no
+terminal, the same command goes as `devpod ssh --command`. The name travels in that
+child's own environment either way and on no flag, because what reads it is the
+manager on this host: it walks `dl`'s descendants and reads their
+`/proc/<pid>/environ`, and the descendant it finds is the `ssh` or the `devpod`.
+Sending it *into* the container instead would name the agent to the one place that
+is not running it.
+
 ### What this does not do
 
 **It is one manager's variable.** `HERDR_AGENT` is herdr's name, and one of the
