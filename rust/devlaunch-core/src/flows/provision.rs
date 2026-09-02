@@ -841,46 +841,79 @@ const ONBOARDED_JSON: &str = r#"{"hasCompletedOnboarding":true}"#;
 ///
 /// The file is written only where there is none, which is what makes this sound
 /// without asking [`ClaudeConfig`]'s question — an answer the probe behind this
-/// stage cannot have yet. A config directory somebody else owns arrives with the
-/// host's own `.claude.json` already sitting in it, a repo that bind-mounts
-/// `~/.claude` and this repo's own devcontainer among them, so there is nothing to
-/// seed and nothing of the host's is edited. The alternative, merging a key into a
-/// file that is already there, would need JSON in a POSIX shell *and* would be a
-/// write into the host's real config on precisely the mounts
-/// [`crate::clients::claude`] declines to forward over.
+/// stage cannot have yet. The alternative, merging a key into a file that is already
+/// there, would need JSON in a POSIX shell *and* would be a write over the host's
+/// real config on precisely the mounts [`crate::clients::claude`] declines to
+/// forward over.
+///
+/// **Nothing is ever overwritten, and that is the whole promise.** The stronger one
+/// — that nothing of the host's is written at all — does not hold, and it is worth
+/// being exact about why rather than asserting it. A mount of the host's `~/.claude`
+/// arrives holding the host's own `.claude.json` **only where the host points
+/// `CLAUDE_CONFIG_DIR` at that directory**; a host that does not keeps its config at
+/// `~/.claude.json` and leaves `~/.claude/` without one. A container that mounts
+/// that directory and pins `CLAUDE_CONFIG_DIR` to it — which is exactly what this
+/// repo's own claude-code feature does — therefore has no answer to find, gets one
+/// seeded, and the file appears on the host as well. That is the one boolean, it is
+/// what makes `claude` in that container start at all, and the host's own `claude`
+/// does not read it.
 ///
 /// Seeding ahead of Claude Code's own first run costs that run nothing: it merges
 /// its keys over the file it finds and leaves this one standing.
 ///
+/// # Where the file is, which is not where the config directory is
+///
 /// `CLAUDE_CONFIG_DIR` first, for the reason [`claude_config_lines`] reads it
-/// first — Claude Code honours it, a devcontainer feature may set it, and the
-/// dotfiles a workspace was provisioned with may export it. A stage that seeded
-/// `$HOME/.claude` regardless would write a file Claude Code never opens.
+/// first: Claude Code honours it, a devcontainer feature may set it, and the
+/// dotfiles a workspace was provisioned with may export it.
+///
+/// **When it is unset the file is `$HOME/.claude.json`, beside the config directory
+/// and not inside it.** Claude Code 2.1.258 resolves the two halves of its
+/// configuration differently, and only one of them defaults into `~/.claude`:
+///
+/// ```text
+/// globalConfig: join(CLAUDE_CONFIG_DIR || homedir(), ".claude.json")
+/// userSettings: join(CLAUDE_CONFIG_DIR || join(homedir(), ".claude"), "settings.json")
+/// ```
+///
+/// So [`CLAUDE_CONFIG_RELPATH`] is the right answer to the question
+/// [`claude_config_lines`] asks, where the config *directory* is, and the wrong
+/// answer to the one this stage asks. The first version of this seeded the probe's
+/// path, and was measured doing nothing whatever in a container with the variable
+/// unset: one `claude -p` wrote 36482 bytes to `$HOME/.claude.json` and left
+/// `$HOME/.claude/.claude.json` absent, so the seed sat in a file nothing opens and
+/// the wizard it exists to close appeared anyway, over a stage reporting `ok`.
+///
+/// That branch cannot come right by luck, because both readings are the same
+/// environment: the interactive `claude` is launched through the same `bash -lc`
+/// this stage runs in, so what `CLAUDE_CONFIG_DIR` says here is what it says
+/// there.
 pub(crate) fn onboarding_script() -> String {
     [
         // `set -u` for the reason `zellij_script` sets it.
         "set -u".to_owned(),
-        // Deliberately *not* the probe's one-line `${CLAUDE_CONFIG_DIR:-${HOME-}/.claude}`,
-        // and this is the one place the two may differ. That spelling turns an unset
-        // `$HOME` into `/.claude` — empty, then a slash — which is an absolute path
-        // and passes every guard below it. The probe hands that to `readlink -f` and
-        // reports a fact; this stage would *write* it, and in a container running as
-        // root the write succeeds: a `.claude.json` at the filesystem root, which
-        // Claude Code never opens and nothing ever cleans up. So the fallback is
-        // taken only when there is a home to hang it on.
+        // `$CLAUDE_CONFIG_DIR` when set, and **`$HOME` itself** when not — not
+        // `$HOME/.claude`, which is the trap this stage lives inside. The note above
+        // has the asymmetry that makes it a trap.
+        //
+        // Composed rather than written as the probe's one-line
+        // `${CLAUDE_CONFIG_DIR:-${HOME-}/...}` for a second reason too: that spelling
+        // turns an unset `$HOME` into an absolute path, which passes every guard
+        // below it. The probe hands its version to `readlink -f` and reports a fact;
+        // this stage *writes* what it resolves, and in a container running as root
+        // that write succeeds. So the fallback is taken only when there is a home to
+        // hang it on, and a container that cannot say where home is gets nothing.
         "dir=\"${CLAUDE_CONFIG_DIR:-}\"".to_owned(),
         "if [ -z \"$dir\" ]; then".to_owned(),
-        "  home=\"${HOME:-}\"".to_owned(),
-        "  if [ -z \"$home\" ]; then exit 0; fi".to_owned(),
-        format!("  dir=\"$home/{CLAUDE_CONFIG_RELPATH}\""),
+        "  dir=\"${HOME:-}\"".to_owned(),
+        "  if [ -z \"$dir\" ]; then exit 0; fi".to_owned(),
         "fi".to_owned(),
-        // Not an absolute path, so not anybody's config directory: a relative
+        // Not an absolute path, so nowhere Claude Code will look: a relative
         // `CLAUDE_CONFIG_DIR` names a directory in whatever the pass's working
         // directory happens to be. Nothing to seed.
         "case \"$dir\" in /*) ;; *) exit 0 ;; esac".to_owned(),
-        // Whoever wrote it owns it. `-e` and not `-f`, because a `.claude.json` that
-        // is a symlink into a mount, or a directory some image created, is equally
-        // not this stage's to replace.
+        // Whoever wrote it owns it. `-e` and not `-f`: a `.claude.json` that is a
+        // directory some image created is equally not this stage's to replace.
         "if [ -e \"$dir/.claude.json\" ]; then exit 0; fi".to_owned(),
         "mkdir -p \"$dir\" || exit 1".to_owned(),
         // `printf` with the JSON as an *argument*, so the stage stays one line's
@@ -1530,9 +1563,10 @@ pub(crate) fn setup_stages(
     //
     // A nested `bash -c` for the zellij stage's reason: a stage is interpolated into
     // `if <command>; then`, which is one line, and this script is not. Not
-    // redirected, unlike that one, because this script prints nothing on either
-    // path — the only thing that can write is `mkdir`, and that writes to stderr,
-    // which is not where the protocol lives.
+    // redirected, unlike that one, because nothing in this script writes to
+    // *stdout*, which is the stream the outcome protocol shares. `mkdir` and the
+    // redirection can both fail and both say so on stderr, which is where a stage's
+    // complaint belongs.
     stages.push(Stage::new(
         ONBOARDING_STAGE,
         format!("bash -c {}", quote(&onboarding_script())),
@@ -2791,9 +2825,8 @@ fi"#;
     const ONBOARDING_STAGE_SNIPPET: &str = r#"if bash -c 'set -u
 dir="${CLAUDE_CONFIG_DIR:-}"
 if [ -z "$dir" ]; then
-  home="${HOME:-}"
-  if [ -z "$home" ]; then exit 0; fi
-  dir="$home/.claude"
+  dir="${HOME:-}"
+  if [ -z "$dir" ]; then exit 0; fi
 fi
 case "$dir" in /*) ;; *) exit 0 ;; esac
 if [ -e "$dir/.claude.json" ]; then exit 0; fi
@@ -4592,9 +4625,10 @@ fi
         let home = scratch.path().join("home");
         std::fs::create_dir_all(&home).expect("a home");
 
-        // Virgin: seeded, and the file is the flag and nothing else.
+        // Virgin: seeded, and the file is the flag and nothing else. `$HOME` and not
+        // `$HOME/.claude`: see `the_seed_lands_where_claude_code_reads_it_when_no_config_dir_is_set`.
         assert!(run(&home, None).status.success());
-        let seeded = home.join(".claude/.claude.json");
+        let seeded = home.join(".claude.json");
         let text = std::fs::read_to_string(&seeded).expect("a seeded config");
         assert_eq!(text.trim(), ONBOARDED_JSON);
         let parsed: serde_json::Value =
@@ -4626,6 +4660,44 @@ fi
                 .expect("a seeded config where the variable pointed")
                 .trim(),
             ONBOARDED_JSON
+        );
+    }
+
+    #[test]
+    fn the_seed_lands_where_claude_code_reads_it_when_no_config_dir_is_set() {
+        // The config *directory* is `$HOME/.claude` whether or not
+        // `CLAUDE_CONFIG_DIR` is set, which is what [`claude_config_lines`] resolves
+        // and is correct for what it asks. `.claude.json` does not live in it.
+        // Measured against Claude Code 2.1.258 in a container with the variable
+        // unset: one `claude -p` created `$HOME/.claude.json`, 36482 bytes, and left
+        // `$HOME/.claude/.claude.json` absent. So the probe's spelling names the
+        // right directory and the wrong file, and a seed written the probe's way is
+        // a file Claude Code never opens -- the wizard it exists to close appears
+        // anyway, with nothing to show why.
+        let scratch = tempfile::tempdir().expect("a scratch dir");
+        let home = scratch.path().join("home");
+        std::fs::create_dir_all(&home).expect("a home");
+        let answered = std::process::Command::new("bash")
+            .arg("-c")
+            .arg(onboarding_script())
+            .env("HOME", &home)
+            .env_remove("CLAUDE_CONFIG_DIR")
+            .output()
+            .expect("bash ran");
+        assert!(
+            answered.status.success(),
+            "{}",
+            String::from_utf8_lossy(&answered.stderr)
+        );
+        assert_eq!(
+            std::fs::read_to_string(home.join(".claude.json"))
+                .expect("the file Claude Code actually reads")
+                .trim(),
+            ONBOARDED_JSON
+        );
+        assert!(
+            !home.join(".claude/.claude.json").exists(),
+            "the config directory is not where this file lives"
         );
     }
 
@@ -6653,10 +6725,12 @@ fi
                 // degradation of a container, so it takes the default rather than
                 // declaring an exception.
                 (ZELLIJ_STAGE, FailureLevel::Warning),
-                // Likewise: a config directory this could not write is a workspace
-                // whose every `claude` opens the first-run wizard in front of a
-                // working token, which is exactly the sort of quiet degradation a
-                // named warning exists for.
+                // Likewise, and unlike the hostname: this fails on a container
+                // whose config directory will not take the file, which is rare
+                // rather than the majority case, so it takes the default. What the
+                // failure costs varies and the warning does not claim otherwise —
+                // a wizard in front of a working token where one was forwarded, and
+                // merely a wizard where one was not.
                 (ONBOARDING_STAGE, FailureLevel::Warning),
             ]
         );
