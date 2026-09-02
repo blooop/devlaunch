@@ -2474,6 +2474,19 @@ impl HerdrTabRename {
     /// backslash that filter also drops are surplus to this sink and dropped
     /// anyway, because one name for the tab and the pane is worth more than three
     /// characters in a repo slug that could never hold them.
+    ///
+    /// A label that begins with a dash goes over as a bare positional, and **the
+    /// `--` that would normally guard it must not be sent**. herdr's `<LABEL>...`
+    /// is variadic and joins what it collects, and it collects the separator too:
+    /// `herdr tab rename <id> -- devlaunch@nb3` names the tab `-- devlaunch@nb3`.
+    /// Measured against herdr 0.8.2, after sending it and reading the tab back.
+    ///
+    /// So the dash is left to herdr, which takes it as a value today
+    /// (`herdr tab rename zz:t999 -odd` answers `tab_not_found`, a socket
+    /// refusing a tab rather than a parser refusing a flag). Stripping it here
+    /// instead is the one repair not available: it would name the tab something
+    /// the escape did not name the pane, which is the whole thing this shares a
+    /// filter to prevent.
     pub fn argv(&self) -> Option<Vec<&str>> {
         match self {
             Self::Run { bin, tab_id, label } => Some(vec![bin, "tab", "rename", tab_id, label]),
@@ -5793,6 +5806,36 @@ mod tests {
                 "w8:tB",
                 "devlaunch@nb3"
             ])
+        );
+    }
+
+    #[test]
+    fn a_label_starting_with_a_dash_is_sent_bare_because_the_separator_would_be_named() {
+        // `sanitize_title` keeps a leading dash. It takes out the controls the
+        // escape fears and the three characters `PS1` would re-expand, and a dash
+        // is none of them -- and the two arms that title without deriving an id,
+        // `Plan::Existing`'s raw spec and `Plan::Creatable`'s path leaf, are
+        // exactly where one arrives from. So `dl ./-odd` reaches here as `-odd`.
+        //
+        // The reflex is to guard it with `--`, and that is the bug rather than the
+        // fix. herdr's `<LABEL>...` is variadic and joins everything it collects,
+        // separator included: sending `-- devlaunch@nb3` to herdr 0.8.2 and reading
+        // the tab back gives the label `-- devlaunch@nb3`. Measured, not reasoned
+        // -- `tab rename <id> -- normal` returns `tab_not_found` like any other
+        // call, so the argument parses and only the resulting name is wrong, which
+        // is invisible to anything short of looking at the tab.
+        //
+        // Stripping the dash instead is the one repair that is not available: the
+        // tab would be named something the escape did not name the pane.
+        let host = Host {
+            herdr_tab_id: Some("w8:t7".to_owned()),
+            ..titling()
+        };
+
+        assert_eq!(
+            HerdrTabRename::from_host(&host, "-odd").argv(),
+            Some(vec!["herdr", "tab", "rename", "w8:t7", "-odd"]),
+            "a separator here would be joined into the label by herdr"
         );
     }
 
