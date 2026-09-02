@@ -12,9 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`dl <ws> -- <agent>` now names the agent to a session manager too.** 0.27 gave
   that to `aid` alone, and the docs told you to prefix the variable yourself on a
   plain `dl` line. Now `dl` reads the command it was handed: when the program is an
-  agent devlaunch knows by name, the ssh child carries `HERDR_AGENT=<agent>`, and
-  [herdr](https://herdr.dev) reports the workspace agent as idle, working and
-  blocked exactly as it does for `aid`.
+  agent devlaunch knows by name, the child that carries the session carries
+  `HERDR_AGENT=<agent>`, and [herdr](https://herdr.dev) reports the workspace agent
+  as idle, working and blocked exactly as it does for `aid`. Both transports carry
+  it, which matters because the launch picks the transport: a command goes over
+  OpenSSH where devpod has published an alias and as `devpod ssh --command` where
+  it has not.
 
   Reading the command is not the guess 0.27's docs said it would be, with one
   restriction that is the whole design: only a name on the list `dl` and `aid`
@@ -54,7 +57,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   installed at `/etc/claude-code/managed-settings.json`, which is chosen rather
   than incidental: this repo's devcontainer bind-mounts the host's `~/.claude`, so
   a hook written to `~/.claude/settings.json` from inside would be an edit to the
-  user's own machine.
+  user's own machine. A workspace that already holds managed settings `dl` did not
+  write keeps them and loses the reporting instead: that file is Claude Code's
+  highest-precedence configuration, and whatever policy an image put there is
+  worth more than a status indicator.
 
   Off by default, and the lend plus install happen at most once per workspace per
   version of herdr. A launch with the variable unset spends nothing; a launch with
