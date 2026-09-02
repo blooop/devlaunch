@@ -3,10 +3,11 @@
 //! [`crate::clients::herdr`] holds every decision this flow makes and every string
 //! it sends; this is the round trips, in the order they have to happen:
 //!
-//! 1. [`prepare`] puts the manager's own binary and a Claude Code hook inside the
-//!    container. At most twice per workspace per version of that binary, and
-//!    normally never: a marker under dl's cache directory records what was
-//!    installed, so the steady state costs no round trip at all.
+//! 1. [`prepare`] asks the container what it already has, and puts the manager's
+//!    own binary and a Claude Code hook there if it is missing either. One round
+//!    trip in the steady state, three when there is work to do. The question is
+//!    asked every launch on purpose: nothing on this host can know whether the
+//!    container that was prepared is the container that is running now.
 //! 2. [`start_forward`] opens the connection that carries the manager's socket in,
 //!    and hands back something the caller stops when the session ends.
 //!
@@ -40,13 +41,21 @@ pub(crate) enum Prepared {
 
 /// Put the manager's binary and the hook that calls it inside the container.
 ///
-/// Three trips at worst and none at best. The marker is keyed on the host binary's
-/// size, which is the cheapest thing that changes when the manager is updated: a
-/// `--version` comparison would mean running the host binary on every launch to
-/// learn something that is almost always unchanged.
+/// Three trips at worst and one at best, and the one is not optional. A cache of
+/// what a workspace was given used to make the steady state free, and it was
+/// wrong in the way a cache of someone else's state is always wrong: `dl <ws>
+/// recreate`, `dl <ws> reset`, a `devpod delete`, or a rebuilt image all replace
+/// the container and none of them change the workspace id, so a marker keyed on
+/// that id went on describing a container that no longer existed. dl then printed
+/// "reporting agents in this workspace" over a container that had never heard of
+/// herdr, and no agent inside it was ever visible again -- the exact silent
+/// nothing this whole flow exists to remove, now stated positively.
+///
+/// The container is the only thing that knows, so the container is asked. The
+/// probe compares the binary's size, which is the cheapest thing that changes
+/// when the manager is updated.
 pub(crate) fn prepare(
     runner: &dyn Runner,
-    cache_dir: &Path,
     config: &Path,
     workspace_id: &str,
     reporting: &Reporting,
@@ -60,23 +69,9 @@ pub(crate) fn prepare(
             ),
         };
     };
-    let stamp = herdr::stamp(metadata.len());
-    let marker = herdr::marker_path(cache_dir, workspace_id);
-    if std::fs::read_to_string(&marker).is_ok_and(|held| held.trim() == stamp) {
-        return Prepared::Ready;
-    }
-
-    // The probe is worth its trip: a workspace prepared by an earlier run of dl
-    // whose marker this run cannot see (a scratch cache directory, a cleared
-    // cache) is the common case for anyone testing this, and lending 17MB again
-    // to learn nothing is the expensive way to find out.
-    //
-    // A probe that comes back *non-zero* is the ordinary answer -- it is a `test`,
-    // and the container has not been prepared yet -- so only a trip that never
-    // ran at all stops this. Reading a failed test as a refusal is the bug this
-    // shape exists to make impossible: it left every unprepared workspace
-    // reporting "could not probe the container" with nothing after the colon,
-    // because a `test` that fails says nothing on either stream.
+    // A non-zero probe is the ordinary answer and not a failure -- it is a `test`,
+    // and the container has not been prepared yet. Only a trip that never ran at
+    // all stops a launch; see [`Trip`], which is where that has gone wrong twice.
     match run_remote(
         runner,
         config,
@@ -85,12 +80,8 @@ pub(crate) fn prepare(
         None,
         "probe the container",
     ) {
-        Trip::Ran { exit, .. } if exit.is_success() => {
-            // Prepared already, by an earlier run whose marker is gone. Record it
-            // and spend nothing.
-            record(&marker, &stamp);
-            return Prepared::Ready;
-        }
+        // Prepared already, by this launch or an earlier one, and nothing to do.
+        Trip::Ran { exit, .. } if exit.is_success() => return Prepared::Ready,
         Trip::Ran { .. } => {}
         Trip::NeverRan { reason } => return Prepared::Refused { reason },
     }
@@ -114,21 +105,7 @@ pub(crate) fn prepare(
         }
     }
 
-    record(&marker, &stamp);
     Prepared::Ready
-}
-
-/// Remember what this workspace was given, so the next launch spends no trip.
-///
-/// Written only after the container has agreed, never before: a marker that runs
-/// ahead of the install is a workspace that never gets prepared and never says
-/// why. Failures are ignored on purpose -- an unwritable cache costs a round trip
-/// per launch and nothing else.
-fn record(marker: &Path, stamp: &str) {
-    if let Some(parent) = marker.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let _ = std::fs::write(marker, format!("{stamp}\n"));
 }
 
 /// What one non-interactive trip into the workspace came to.
@@ -282,34 +259,34 @@ mod tests {
         .expect("a host in a manager's pane")
     }
 
-    /// The steady state, and the one that has to be free: a marker that matches
-    /// the host binary means no trip at all.
+    /// Every launch asks the container, because only the container knows.
+    ///
+    /// A marker under dl's cache directory used to answer this for free, keyed on
+    /// the workspace id and the host binary's size. Both survive the container:
+    /// `dl <ws> recreate` and `dl <ws> reset` destroy it, keep the id, and end in
+    /// a session, so the second launch here returned `Ready` after asking nothing
+    /// at all -- and dl then announced it was reporting agents to a pane over a
+    /// container that had no herdr in it, forever, with the failure visible
+    /// nowhere.
     #[test]
-    fn a_prepared_workspace_costs_no_round_trip() {
-        let cache = tempfile::tempdir().expect("a scratch cache");
+    fn a_second_launch_asks_the_container_again() {
         let reporting = reporting();
-        let len = std::fs::metadata(reporting.host_binary())
-            .expect("readable")
-            .len();
-        let marker = herdr::marker_path(cache.path(), "myws");
-        std::fs::create_dir_all(marker.parent().expect("a parent")).expect("the marker dir");
-        std::fs::write(&marker, format!("{}\n", herdr::stamp(len))).expect("the marker");
+        let config = Path::new("/tmp/ssh-config");
         let runner = ScriptedRunner::new();
+        // The probe, answering that this container is prepared already.
+        runner.script(["ssh"], Response::ok());
 
+        for _ in 0..2 {
+            assert_eq!(
+                prepare(&runner, config, "myws", &reporting),
+                Prepared::Ready
+            );
+        }
         assert_eq!(
-            prepare(
-                &runner,
-                cache.path(),
-                Path::new("/tmp/ssh-config"),
-                "myws",
-                &reporting
-            ),
-            Prepared::Ready
-        );
-        assert!(
-            runner.calls().is_empty(),
-            "a prepared workspace was asked something: {:?}",
-            runner.calls()
+            runner.calls_to("ssh").len(),
+            2,
+            "the second launch believed a host-side record over the container: {:?}",
+            runner.calls_to("ssh")
         );
     }
 
@@ -322,7 +299,6 @@ mod tests {
     /// flow exists for.
     #[test]
     fn an_unprepared_container_is_prepared_rather_than_refused() {
-        let cache = tempfile::tempdir().expect("a scratch cache");
         let reporting = reporting();
         let len = std::fs::metadata(reporting.host_binary())
             .expect("readable")
@@ -344,7 +320,7 @@ mod tests {
         runner.script(["ssh"], Response::ok());
 
         assert_eq!(
-            prepare(&runner, cache.path(), config, "myws", &reporting),
+            prepare(&runner, config, "myws", &reporting),
             Prepared::Ready
         );
         let commands: Vec<String> = runner
@@ -363,33 +339,21 @@ mod tests {
             "the third trip is not the install: {}",
             commands[2]
         );
-        assert!(
-            herdr::marker_path(cache.path(), "myws").exists(),
-            "a prepared workspace was not recorded, so the next launch pays again"
-        );
     }
 
-    /// A container that answers the probe cleanly has been prepared by an earlier
-    /// run whose marker is gone, and must cost one trip rather than a fresh lend.
+    /// A container that answers the probe cleanly is prepared already, and must
+    /// cost that one trip rather than a fresh 17MB lend.
     #[test]
     fn a_container_that_is_already_prepared_is_not_lent_to_again() {
-        let cache = tempfile::tempdir().expect("a scratch cache");
         let reporting = reporting();
         let runner = ScriptedRunner::new();
         runner.script(["ssh"], Response::ok());
 
         assert_eq!(
-            prepare(
-                &runner,
-                cache.path(),
-                Path::new("/tmp/ssh-config"),
-                "myws",
-                &reporting
-            ),
+            prepare(&runner, Path::new("/tmp/ssh-config"), "myws", &reporting),
             Prepared::Ready
         );
         assert_eq!(runner.calls_to("ssh").len(), 1, "the probe was not enough");
-        assert!(herdr::marker_path(cache.path(), "myws").exists());
     }
 
     /// An unreachable workspace is not an unprepared one: ssh's own 255 must not
@@ -397,17 +361,12 @@ mod tests {
     /// that is not answering.
     #[test]
     fn an_unreachable_workspace_is_refused_rather_than_lent_to() {
-        let cache = tempfile::tempdir().expect("a scratch cache");
         let runner = ScriptedRunner::new();
         runner.script(["ssh"], Response::failed(255, "Connection refused"));
 
-        let Prepared::Refused { reason } = prepare(
-            &runner,
-            cache.path(),
-            Path::new("/tmp/ssh-config"),
-            "myws",
-            &reporting(),
-        ) else {
+        let Prepared::Refused { reason } =
+            prepare(&runner, Path::new("/tmp/ssh-config"), "myws", &reporting())
+        else {
             panic!("an unreachable workspace cannot be prepared");
         };
         assert!(reason.contains("Connection refused"), "{reason}");
@@ -430,7 +389,6 @@ mod tests {
     /// such workspace on every launch, forever, and never lent anything.
     #[test]
     fn a_probe_that_answers_no_out_loud_is_still_an_answer() {
-        let cache = tempfile::tempdir().expect("a scratch cache");
         let reporting = reporting();
         let len = std::fs::metadata(reporting.host_binary())
             .expect("readable")
@@ -451,7 +409,7 @@ mod tests {
         runner.script(["ssh"], Response::ok());
 
         assert_eq!(
-            prepare(&runner, cache.path(), config, "myws", &reporting),
+            prepare(&runner, config, "myws", &reporting),
             Prepared::Ready,
             "a container that warned about its locale was read as unreachable"
         );
@@ -463,38 +421,10 @@ mod tests {
         );
     }
 
-    /// A marker naming a different binary is not this binary's marker.
-    #[test]
-    fn a_marker_from_another_version_is_not_believed() {
-        let cache = tempfile::tempdir().expect("a scratch cache");
-        let reporting = reporting();
-        let marker = herdr::marker_path(cache.path(), "myws");
-        std::fs::create_dir_all(marker.parent().expect("a parent")).expect("the marker dir");
-        std::fs::write(&marker, herdr::stamp(1)).expect("the marker");
-        let runner = ScriptedRunner::new();
-        runner.script(["ssh"], Response::failed(255, "no such container"));
-
-        assert!(matches!(
-            prepare(
-                &runner,
-                cache.path(),
-                Path::new("/tmp/ssh-config"),
-                "myws",
-                &reporting
-            ),
-            Prepared::Refused { .. }
-        ));
-        assert!(
-            !runner.calls().is_empty(),
-            "nothing was asked of the container"
-        );
-    }
-
     /// The refusal carries the container's own last word, and not the `sudo`
     /// hostname warning that rides along on every trip.
     #[test]
     fn a_refusal_names_what_the_container_said() {
-        let cache = tempfile::tempdir().expect("a scratch cache");
         let runner = ScriptedRunner::new();
         runner.script(
             ["ssh"],
@@ -504,13 +434,9 @@ mod tests {
             ),
         );
 
-        let Prepared::Refused { reason } = prepare(
-            &runner,
-            cache.path(),
-            Path::new("/tmp/ssh-config"),
-            "myws",
-            &reporting(),
-        ) else {
+        let Prepared::Refused { reason } =
+            prepare(&runner, Path::new("/tmp/ssh-config"), "myws", &reporting())
+        else {
             panic!("a container that refuses sudo cannot be prepared");
         };
         assert!(
@@ -520,27 +446,6 @@ mod tests {
         assert!(
             !reason.contains("unable to resolve host"),
             "the reason kept sudo's hostname noise: {reason}"
-        );
-    }
-
-    /// A refusal must not leave a marker: the next launch has to try again.
-    #[test]
-    fn a_refused_workspace_is_not_marked_as_prepared() {
-        let cache = tempfile::tempdir().expect("a scratch cache");
-        let runner = ScriptedRunner::new();
-        runner.script(["ssh"], Response::failed(1, "nope"));
-
-        let _ = prepare(
-            &runner,
-            cache.path(),
-            Path::new("/tmp/ssh-config"),
-            "myws",
-            &reporting(),
-        );
-
-        assert!(
-            !herdr::marker_path(cache.path(), "myws").exists(),
-            "a refused install left a marker claiming it succeeded"
         );
     }
 }

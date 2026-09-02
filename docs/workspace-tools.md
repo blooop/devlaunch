@@ -940,10 +940,15 @@ point rather than a detail: this repo's devcontainer bind-mounts the host's
 `~/.claude` into the container, so a hook written to `~/.claude/settings.json` from
 in there would be an edit to your own machine's config.
 
-The lend and the install happen at most once per workspace per version of herdr. A
-marker under `dl`'s cache directory records what was installed, so a launch into a
-prepared workspace costs no extra round trip, and a launch with the variable unset
-costs nothing at all.
+The lend and the install happen at most once per workspace per version of herdr,
+and a launch with the variable unset costs nothing at all. A launch with it set
+costs one round trip: `dl` asks the container what it already has rather than
+trusting a note it wrote to itself last time. A cache keyed on the workspace id
+cannot answer this, because the id outlives the container. `dl <ws> recreate`,
+`dl <ws> reset`, a `devpod delete` or a rebuilt image all replace what is inside
+while the id stays put, and a note that went on describing the old container
+bought silence: `dl` would say it was reporting agents to your pane while nothing
+in there had ever heard of herdr.
 
 ### What it does not do
 
