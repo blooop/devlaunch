@@ -72,6 +72,34 @@ pub(crate) fn host_shell(shell: Option<&str>) -> &str {
     }
 }
 
+/// Whether an ending means no session ever ran in this pane.
+///
+/// The pane shell's promise is that a failure costs the container and never the
+/// pane, and the resolution keeps it: everything that can go wrong finding the
+/// workspace answers [`PaneDestination::HostShell`](devlaunch_core::flows::session_manager::PaneDestination::HostShell).
+/// The launch *after* it escaped that. A tab whose transport names a workspace dl
+/// cannot address -- one devpod created and dl has no record of, or one deleted
+/// since the session in the sibling pane started -- refused, printed its complaint
+/// and exited non-zero, which closes the pane. Reproduced against live herdr
+/// 0.8.2: `Unknown workspace 'not-a-real-ws-9zzz'`, exit 1, pane gone.
+///
+/// So the two endings that mean *nothing started* fall through to a shell, and the
+/// ones that carry a session's own status do not. That distinction is the whole
+/// point and is why this is not "fall through on any failure": a session that ran
+/// and exited 130 is the person pressing Ctrl-C, and reopening a shell under them
+/// would be devlaunch refusing to let a pane close when they asked it to.
+///
+/// The refusal is still printed, by the launch, above the shell this then opens.
+/// They keep both the reason and the pane.
+pub(crate) fn no_session_ran(ending: Ending) -> bool {
+    match ending {
+        // dl said no before anything started.
+        Ending::Refused | Ending::DevpodMissing => true,
+        // A session ran, or a child did, and the number is theirs.
+        Ending::Done | Ending::Child(_) | Ending::Session(_) => false,
+    }
+}
+
 /// Hand the pane to an ordinary shell, and do not come back.
 ///
 /// `exec` rather than a spawn-and-wait for two reasons that are really one. The
@@ -197,6 +225,21 @@ pub(crate) fn config_line(link: &Path) -> String {
 mod tests {
     use super::*;
     use std::ffi::OsString;
+
+    /// The split this rests on, stated over every arm so a new one has to answer
+    /// for itself rather than defaulting into the fall-through.
+    #[test]
+    fn only_an_ending_with_no_session_behind_it_falls_through_to_a_shell() {
+        // Nothing ran: the pane would otherwise close carrying dl's complaint.
+        assert!(no_session_ran(Ending::Refused));
+        assert!(no_session_ran(Ending::DevpodMissing));
+        // Something ran, and the number is its own -- including the one a person
+        // produces by pressing Ctrl-C, which must close the pane as they asked.
+        assert!(!no_session_ran(Ending::Done));
+        assert!(!no_session_ran(Ending::Session(0)));
+        assert!(!no_session_ran(Ending::Session(130)));
+        assert!(!no_session_ran(Ending::Child(devlaunch_core::runner::Exit::Code(1))));
+    }
 
     #[test]
     fn the_installed_name_is_recognised_however_it_is_reached() {
