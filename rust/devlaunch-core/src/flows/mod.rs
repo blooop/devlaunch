@@ -27,5 +27,9 @@ pub mod provision;
 pub mod records;
 // binary surface — not part of the frozen wf API (#251 §7)
 pub mod repo_manager;
+// Crate-private, like `clients::herdr` whose decisions it carries out: nothing
+// outside core opens a session manager's socket, and what a launch made of it
+// reaches the caller as a notice.
+pub(crate) mod session_manager;
 // binary surface — not part of the frozen wf API (#251 §7)
 pub mod workspace_clone;
