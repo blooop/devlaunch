@@ -152,8 +152,18 @@ $ dl --claude-profiles
 NAME     STATE          ACCOUNT
 default  authed         someone@example.com · Someorg · team_tier_1
 work     authed         someone@work.example · Workorg · team_tier_1
+spare    authed         someone@example.com · Someorg · team_tier_1
 fresh    not logged in  -
+
+'default', 'spare' are the same account, so all but one are spare.
 ```
+
+That last line is the other thing a name cannot tell you. Two profiles of one
+account render **identically** to two colleagues who share an organisation, so the
+redundant one is invisible exactly where you are choosing between them. It is decided
+on the account's own id and never on a display field, because a shared organisation is
+two people and a shared name is nothing at all. A profile whose state file names no
+account joins no group, so no claim is made about a blank.
 
 **A profile's name is chosen by you and verified by nothing**, which is the reason
 this listing exists. A profile called `work` holding a personal login reads as correct

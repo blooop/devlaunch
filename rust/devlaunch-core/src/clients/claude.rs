@@ -105,6 +105,11 @@ const ACCOUNT_FILENAME: &str = ".claude.json";
 /// fields worth showing a person choosing between profiles.
 const ACCOUNT_KEY: &str = "oauthAccount";
 const EMAIL_KEY: &str = "emailAddress";
+/// Not shown to anyone: an opaque id is noise in a table. Read so that two profiles
+/// holding one account can be *said* to, which no pair of display fields proves --
+/// two logins of one organisation share an `organizationName` and are still different
+/// accounts.
+const ACCOUNT_UUID_KEY: &str = "accountUuid";
 const ORGANIZATION_KEY: &str = "organizationName";
 const SEAT_KEY: &str = "seatTier";
 
@@ -404,11 +409,19 @@ pub struct Account {
     pub email: Option<String>,
     pub organization: Option<String>,
     pub seat_tier: Option<String>,
+    /// The account's own id, for telling two profiles of one account apart from two
+    /// profiles that merely look alike. Never displayed.
+    pub account_uuid: Option<String>,
 }
 
 impl Account {
-    /// Whether anything at all was learned, so a caller can tell "signed in as
-    /// somebody I cannot name" from "signed in as nobody".
+    /// Whether anything **worth showing** was learned, so a caller can tell "signed in
+    /// as somebody I cannot name" from "signed in as nobody".
+    ///
+    /// Deliberately blind to [`Self::account_uuid`]: an id alone renders as an empty
+    /// column, so a file carrying only that is no better than a file carrying nothing,
+    /// and claiming two such profiles are "the same account" would be a claim about
+    /// two blanks.
     pub fn is_empty(&self) -> bool {
         self.email.is_none() && self.organization.is_none() && self.seat_tier.is_none()
     }
@@ -437,6 +450,7 @@ pub(crate) fn account_at(config_dir: &Path) -> Option<Account> {
         email: field(EMAIL_KEY),
         organization: field(ORGANIZATION_KEY),
         seat_tier: field(SEAT_KEY),
+        account_uuid: field(ACCOUNT_UUID_KEY),
     };
     (!found.is_empty()).then_some(found)
 }
