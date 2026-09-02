@@ -441,6 +441,43 @@ mod tests {
         );
     }
 
+    /// Somebody else's managed settings are policy, and this feature is a status
+    /// indicator. The install refuses before it writes.
+    ///
+    /// `/etc/claude-code/managed-settings.json` is Claude Code's highest-precedence
+    /// configuration. An image can ship `permissions.deny` there and mean it, and
+    /// dl opens other people's repositories, so a `tee` straight onto it takes away
+    /// rules dl knows nothing about -- with no merge, no backup and no notice.
+    #[test]
+    fn the_install_refuses_to_overwrite_settings_dl_did_not_write() {
+        let command = install_command();
+        assert!(
+            command.contains(&format!("exit {INSTALL_FOREIGN_SETTINGS}")),
+            "the install overwrites a foreign settings file: {command}"
+        );
+        let guard = command
+            .split("; ")
+            .find(|clause| clause.contains(&format!("exit {INSTALL_FOREIGN_SETTINGS}")))
+            .expect("the guard is one clause");
+        assert!(
+            command.find(guard) < command.find("tee /etc/claude-code"),
+            "the guard runs after the write it is guarding: {command}"
+        );
+    }
+
+    /// A settings file is matched by what is in it, not by its being there.
+    ///
+    /// `test -f` read somebody else's policy file as a prepared workspace, so the
+    /// hook was never installed and the container reported nothing, forever.
+    #[test]
+    fn the_probe_reads_the_settings_rather_than_counting_them() {
+        let command = probe_command(17_740_520, "/tmp/devlaunch-herdr-w1-p3.sock");
+        assert!(
+            command.contains(&format!("grep -qF {CONTAINER_HOOK} {CONTAINER_SETTINGS}")),
+            "the probe cannot tell dl's settings from anyone else's: {command}"
+        );
+    }
+
     /// A lend onto the path a concurrent session is running earns ETXTBSY, so the
     /// bytes land elsewhere and are renamed into place.
     #[test]
@@ -880,6 +917,17 @@ fn sanitised(pane_id: &str) -> String {
         .collect()
 }
 
+/// The install's exit status when the container already holds managed settings
+/// that dl did not write.
+///
+/// `/etc/claude-code/managed-settings.json` is Claude Code's highest-precedence
+/// configuration: an image can ship `permissions.deny` there, or turn off bypass
+/// mode, and mean it. Overwriting it with a hooks-only file of dl's own would take
+/// that policy away silently, so this answer refuses instead, and the reporting is
+/// what gets lost rather than the workspace's own rules. dl opens other people's
+/// repositories, so the file is not hypothetical.
+pub(crate) const INSTALL_FOREIGN_SETTINGS: i32 = 11;
+
 /// The probe's exit status when the forwarded socket is not in the container.
 ///
 /// A number of its own because it is the one probe answer that cannot be repaired
@@ -899,13 +947,18 @@ pub(crate) const PROBE_NO_SOCKET: i32 = 10;
 /// only check here that a *detached* forward cannot report on itself: its stderr
 /// goes to `/dev/null` and nothing waits for its exit, so a container that cannot
 /// bind the listen path would otherwise be announced as reporting.
+///
+/// The settings are matched by content and not by existence, because a container
+/// can hold a managed settings file that is nothing to do with dl -- see
+/// [`INSTALL_FOREIGN_SETTINGS`]. `test -f` read one of those as a prepared
+/// workspace and reported nothing thereafter.
 pub(crate) fn probe_command(host_binary_len: u64, container_socket: &str) -> String {
     format!(
         "test -S {container_socket} || exit {PROBE_NO_SOCKET}; \
          test -x {CONTAINER_BINARY} \
          && test \"$(stat -c %s {CONTAINER_BINARY})\" = {host_binary_len} \
          && test -x {CONTAINER_HOOK} \
-         && test -f {CONTAINER_SETTINGS}"
+         && grep -qF {CONTAINER_HOOK} {CONTAINER_SETTINGS}"
     )
 }
 
@@ -930,6 +983,11 @@ pub(crate) fn lend_command() -> &'static str {
 
 /// The command that installs the hook and the settings that call it.
 ///
+/// It refuses before it writes if the container already holds a managed settings
+/// file without dl's hook in it: that file is somebody's policy, and this feature
+/// is a status indicator. See [`INSTALL_FOREIGN_SETTINGS`]. A container with no
+/// `grep` fails that guard closed, which is the right way round.
+///
 /// Both payloads travel inside the command rather than on stdin, because stdin is
 /// spoken for on the lend trip and two trips that differ only in their payload are
 /// harder to read than one heredoc each. The delimiters are quoted (`<<'EOF'`), so
@@ -939,6 +997,8 @@ pub(crate) fn lend_command() -> &'static str {
 pub(crate) fn install_command() -> String {
     format!(
         "set -e; \
+         if [ -f {CONTAINER_SETTINGS} ] && ! grep -qF {CONTAINER_HOOK} {CONTAINER_SETTINGS}; \
+         then exit {INSTALL_FOREIGN_SETTINGS}; fi; \
          sudo -n mkdir -p /usr/local/share/devlaunch /etc/claude-code; \
          sudo -n tee {CONTAINER_HOOK} >/dev/null <<'DEVLAUNCH_HOOK_EOF'\n\
          {hook}\n\
