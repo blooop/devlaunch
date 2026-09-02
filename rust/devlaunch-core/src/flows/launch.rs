@@ -129,6 +129,28 @@ pub(crate) const ZELLIJ_SESSION: &str = "devlaunch";
 /// for; defaulting it off costs everybody the feature.
 pub(crate) const TITLE_DISABLE_VAR: &str = "DEVLAUNCH_NO_TITLE";
 
+/// `HERDR_TAB_ID`: the herdr tab this process is running in, if it is.
+///
+/// herdr's own variable, not dl's, exported into every pane it spawns alongside
+/// `HERDR_ENV`, `HERDR_PANE_ID` and `HERDR_WORKSPACE_ID`. Read rather than probed,
+/// which is the whole reason this stage exists at all: [`TerminalTitle`] declines to
+/// detect a multiplexer because detection costs a round trip, and this one costs an
+/// environment lookup.
+///
+/// The tab id and not `HERDR_ENV`, because the id is what the rename is *addressed
+/// to* — a pane with no tab id is a pane with nothing to name, whatever else it
+/// says about itself.
+pub(crate) const HERDR_TAB_VAR: &str = "HERDR_TAB_ID";
+
+/// `HERDR_BIN_PATH`: the herdr that spawned this pane.
+///
+/// Preferred over a `PATH` lookup because a rename lands on the socket of the
+/// server that owns this pane, and the binary that server shipped is the one that
+/// speaks its protocol. It is also the only one guaranteed to be *findable*: herdr
+/// installs per-environment often enough (pixi, cargo, a downloaded release) that
+/// `herdr` need not be on the `PATH` a launch inherits at all.
+pub(crate) const HERDR_BIN_VAR: &str = "HERDR_BIN_PATH";
+
 /// The variable a project's host-side `initializeCommand` reads to tell branch
 /// workspaces apart; devpod gives the hook no workspace identity of its own (see
 /// docs/devcontainer-projects.md).
@@ -190,6 +212,15 @@ pub struct Host {
     pub(crate) no_tty: Option<String>,
     /// `DEVLAUNCH_NO_TITLE`.
     pub(crate) no_title: Option<String>,
+    /// `HERDR_TAB_ID`: the herdr tab to name, or `None` outside herdr.
+    ///
+    /// Beside `no_title` rather than inside it because it answers a different
+    /// question: `no_title` is whether to name anything, this is whether there is a
+    /// tab to name as well as a pane. Both are read by [`naming_gate`]'s two
+    /// callers — see [`HerdrTabRename`].
+    pub(crate) herdr_tab_id: Option<String>,
+    /// `HERDR_BIN_PATH`: which herdr to ask, falling back to `PATH`.
+    pub(crate) herdr_bin: Option<String>,
     pub(crate) stdin_tty: bool,
     pub(crate) stdout_tty: bool,
     /// Whether stderr is a terminal, which is the stream the title is written to
@@ -246,6 +277,8 @@ impl Host {
             zellij: crate::osext::env_str(ZELLIJ_VAR),
             no_tty: crate::osext::env_str(ssh::DISABLE_VAR),
             no_title: crate::osext::env_str(TITLE_DISABLE_VAR),
+            herdr_tab_id: crate::osext::env_str(HERDR_TAB_VAR),
+            herdr_bin: crate::osext::env_str(HERDR_BIN_VAR),
             stdin_tty: is_a_terminal(libc::STDIN_FILENO),
             stdout_tty: is_a_terminal(libc::STDOUT_FILENO),
             stderr_tty: is_a_terminal(libc::STDERR_FILENO),
@@ -427,6 +460,19 @@ pub enum LaunchNotice {
     /// is an escape sequence, so the renderer that turns notices into sentences
     /// drops it and the sink that prints them writes this one raw.
     TerminalTitle(TerminalTitle),
+    /// Name the herdr tab the same thing, which the escape above cannot reach.
+    ///
+    /// A notice for [`TerminalTitle`]'s reasons and one more. The moment is the
+    /// same -- in front of the session that takes the terminal. The stream is not
+    /// core's to touch, and neither is the process table: core runs no command it
+    /// was not handed a runner for, and this one is deliberately not run through
+    /// the runner, because the runner's commands are the launch's and this one is
+    /// allowed to fail unnoticed. So the binary spawns it, as the binary writes
+    /// the escape.
+    ///
+    /// Said even when it is [`Off`](HerdrTabRename::Off), so that the sink stays
+    /// the only place deciding nothing happens.
+    HerdrTab(HerdrTabRename),
 
     // --- the launch's own arms (dl.py `_run_cli`)
     /// The workspace is already running, so this launch attaches straight to it.
@@ -2270,10 +2316,7 @@ impl TerminalTitle {
     /// *name* is what a person should read, not what devpod is addressed by — see the
     /// type's own docs and [`Placement::title`] for which of the two it is.
     pub(crate) fn from_host(host: &Host, name: &str) -> Self {
-        if switched_on(host.no_title.as_deref()) || !host.stderr_tty {
-            return Self::Off;
-        }
-        match sanitize_title(name) {
+        match naming_gate(host, name) {
             Some(text) => Self::Write(format!("\x1b]2;{text}\x07")),
             None => Self::Off,
         }
@@ -2326,6 +2369,138 @@ fn sanitize_title(name: &str) -> Option<String> {
     }
 }
 
+/// The one decision behind every name this launch publishes: whether to name
+/// anything, and what the name is.
+///
+/// Both emitters go through here, so neither can be on while the other is off and
+/// neither can spell the name differently. That is the same guarantee
+/// [`sanitize_title`] already gives dl's escape and the container's `PS1` line --
+/// "one filter for both because the two halves have to be the one string" --
+/// extended to the third emitter rather than restated beside it.
+///
+/// `None` covers all three refusals at once: opted out with
+/// [`TITLE_DISABLE_VAR`], no terminal on stderr to name, and a name that
+/// sanitises away to nothing.
+fn naming_gate(host: &Host, name: &str) -> Option<String> {
+    if switched_on(host.no_title.as_deref()) || !host.stderr_tty {
+        return None;
+    }
+    sanitize_title(name)
+}
+
+/// Name the *herdr tab* after the workspace, which no escape sequence can do.
+///
+/// # Why this exists when [`TerminalTitle`] already names the terminal
+///
+/// Because herdr terminates the escape and shows something else. Measured on a
+/// live herdr 0.8.2 inside zellij inside kitty: `dl rocker@nb1` left herdr's own
+/// record of that pane reading `terminal_title: "rocker@nb1"` -- the OSC arrived,
+/// unmangled, and claude in the container did not overwrite it -- while
+/// `herdr tab list` reported the tab's label as `4`. A herdr tab label is a field
+/// of its own (`custom_name` in herdr's `session.json`), it falls back to the tab
+/// *number* when unset, and `herdr tab rename` is the only thing that writes it.
+/// herdr publishes no config option that would derive one from a pane title.
+///
+/// So the name dl already computed sits one field away from the tab strip with
+/// nothing to carry it across. This carries it.
+///
+/// **It is not a reversal of [`TerminalTitle`]'s argument against multiplexer
+/// commands.** That argument weighs an escape against a command for the same
+/// target and prefers the escape, because the escape reaches every multiplexer
+/// and costs no detection. Both halves still hold: the escape is still written,
+/// still reaches herdr, and detection here costs an environment lookup rather
+/// than a round trip, because herdr exports [`HERDR_TAB_VAR`] into every pane it
+/// spawns. What is new is a target the escape cannot address at all.
+///
+/// # Why the innermost multiplexer is the one that matters
+///
+/// A stacked terminal gives the escape to whichever multiplexer owns the pty, and
+/// that is the innermost one. Under `kitty -> zellij` the escape reached zellij,
+/// which took it as the pane title and published `<session> | <pane title>` upward,
+/// so the workspace name showed in the outer terminal -- which is what
+/// `docs/workspace-tools.md` promises. Insert herdr and the same escape stops at
+/// herdr, one layer further in, and the layers that used to display it never see
+/// it. Nothing in dl changed; a layer was added. The tab strip herdr draws is then
+/// the only place the name can appear, which is where this puts it.
+///
+/// # Best-effort, always
+///
+/// A tab label is decoration and a workspace is not. A stale tab id, a herdr
+/// server that has since exited, a binary that is not on `PATH` -- none of them
+/// may cost the launch anything, so the caller spawns this and ignores what
+/// happens, the way the dotfiles refresh is ignored.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HerdrTabRename {
+    /// Run this, and do not care whether it worked.
+    Run {
+        /// [`HERDR_BIN_VAR`] when herdr exported one, else [`HERDR_BIN_FALLBACK`]
+        /// for `PATH` to resolve.
+        bin: String,
+        /// The value of [`HERDR_TAB_VAR`], passed straight back to herdr. Opaque
+        /// to dl: herdr's ids are herdr's to spell (`w8:t7` today), and validating
+        /// somebody else's format here would only reject a future one.
+        tab_id: String,
+        /// The name, from [`naming_gate`] and therefore byte-identical to the one
+        /// inside [`TerminalTitle`]'s escape.
+        label: String,
+    },
+    /// Do nothing: not in herdr, or not naming anything.
+    Off,
+}
+
+impl HerdrTabRename {
+    /// What this host wants renamed for *name*, or [`Off`](Self::Off).
+    pub(crate) fn from_host(host: &Host, name: &str) -> Self {
+        let tab_id = nonblank(host.herdr_tab_id.as_deref());
+        match (naming_gate(host, name), tab_id) {
+            (Some(label), Some(tab_id)) => Self::Run {
+                bin: nonblank(host.herdr_bin.as_deref())
+                    .unwrap_or(HERDR_BIN_FALLBACK)
+                    .to_owned(),
+                tab_id: tab_id.to_owned(),
+                label,
+            },
+            _ => Self::Off,
+        }
+    }
+
+    /// The command to run, program first, or nothing.
+    ///
+    /// argv and not a shell string, which is what makes the label safe to pass
+    /// through unquoted: there is no shell to re-read it. [`sanitize_title`] has
+    /// already removed every control character, and a NUL is the only byte argv
+    /// itself cannot carry -- `char::is_control` covers it -- so what survives the
+    /// shared filter is exactly what `execve` will take. The `$`, backtick and
+    /// backslash that filter also drops are surplus to this sink and dropped
+    /// anyway, because one name for the tab and the pane is worth more than three
+    /// characters in a repo slug that could never hold them.
+    pub fn argv(&self) -> Option<Vec<&str>> {
+        match self {
+            Self::Run { bin, tab_id, label } => Some(vec![bin, "tab", "rename", tab_id, label]),
+            Self::Off => None,
+        }
+    }
+}
+
+/// The program name a `PATH` lookup is left to resolve when herdr exported no
+/// [`HERDR_BIN_VAR`].
+///
+/// A fallback and not the default: reaching it means the pane says it belongs to a
+/// herdr tab while saying nothing about which herdr, which is a herdr older than
+/// the variable rather than an error.
+pub(crate) const HERDR_BIN_FALLBACK: &str = "herdr";
+
+/// *value* with a blank one read as absent.
+///
+/// An exported-but-empty variable is what a shell leaves behind when something
+/// upstream failed to compute it (`export HERDR_BIN_PATH="$(command -v herdr)"`
+/// finding nothing), so it means "no answer" and not "a program with no name".
+/// Trimmed, because a tab id is compared by herdr and a path is handed to
+/// `execve`, and neither wants the whitespace.
+fn nonblank(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|text| !text.is_empty())
+}
+
 // ===========================================================================
 // the attach
 // ===========================================================================
@@ -2354,6 +2529,7 @@ pub(crate) fn attach_workspace(
     session: &SessionContext<'_>,
     workspace_id: &str,
     title: TerminalTitle,
+    herdr_tab: HerdrTabRename,
     command: Option<&str>,
     forward: &mut dyn FnMut(&str),
     notices: &mut dyn Notices<LaunchNotice>,
@@ -2368,6 +2544,10 @@ pub(crate) fn attach_workspace(
         // is a fact about the spec that was launched and this function is given only
         // an id — see [`Placement::title`].
         notices.say(LaunchNotice::TerminalTitle(title));
+        // Then the tab, which the escape cannot reach. Behind the escape because
+        // the escape is the one racing a shell prompt; both in front of the
+        // refresh, which neither may wait for.
+        notices.say(LaunchNotice::HerdrTab(herdr_tab));
         if command.is_none()
             && matches!(
                 DotfilesRefresh::from_host(session.host),
@@ -3705,7 +3885,10 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
             self.claude_seen
                 .set(self.provision.remembered_claude(placement.workspace_id()));
         }
+        // Both names, from the one `placement.title()` and the one gate behind it,
+        // so the tab and the pane cannot be given different answers.
         let title = TerminalTitle::from_host(self.host, placement.title());
+        let herdr_tab = HerdrTabRename::from_host(self.host, placement.title());
         let context = SessionContext::new(
             self.context.runner(),
             self.host,
@@ -3716,6 +3899,7 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
             &context,
             placement.workspace_id(),
             title,
+            herdr_tab,
             command,
             self.forward,
             &mut *self.notices,
@@ -4234,10 +4418,12 @@ mod tests {
         let claude_seen = ClaudeSeen::new();
         let session = SessionContext::new(&scene.runner, &scene.host, token, &claude_seen);
         let title = TerminalTitle::from_host(&scene.host, workspace_id);
+        let herdr_tab = HerdrTabRename::from_host(&scene.host, workspace_id);
         attach_workspace(
             &session,
             workspace_id,
             title,
+            herdr_tab,
             command,
             &mut nowhere,
             notices,
@@ -5563,6 +5749,155 @@ mod tests {
         );
     }
 
+    // ------------------------------------------------------- the herdr tab
+
+    #[test]
+    fn a_herdr_pane_gets_its_tab_named_as_well_as_its_title() {
+        // Measured on a live herdr 0.8.2: `dl rocker@nb1` in a herdr pane left the
+        // pane's `terminal_title` reading `rocker@nb1` -- the OSC arrived, intact --
+        // while `herdr tab list` still reported that tab's label as `4`. A tab label
+        // is a field of its own (`custom_name` in herdr's session.json), and no
+        // escape sequence addresses it; `herdr tab rename` is the only thing that
+        // does. So the escape names the pane and this names the tab, and the two are
+        // the same name.
+        let host = Host {
+            herdr_tab_id: Some("w8:t7".to_owned()),
+            ..titling()
+        };
+
+        assert_eq!(
+            HerdrTabRename::from_host(&host, "rocker@nb1").argv(),
+            Some(vec!["herdr", "tab", "rename", "w8:t7", "rocker@nb1"])
+        );
+    }
+
+    #[test]
+    fn the_herdr_that_spawned_this_pane_is_the_one_asked_to_rename_the_tab() {
+        // `HERDR_BIN_PATH` beside the tab id, and both are herdr's own exports. The
+        // socket a rename lands on belongs to the server that spawned this pane, so
+        // the binary that server shipped is the one that speaks its protocol -- and
+        // a herdr installed per-environment (pixi here) need not be the `herdr` a
+        // bare `PATH` lookup would find, or need not be on `PATH` at all.
+        let host = Host {
+            herdr_tab_id: Some("w8:tB".to_owned()),
+            herdr_bin: Some("/opt/pixi/envs/herdr/bin/herdr".to_owned()),
+            ..titling()
+        };
+
+        assert_eq!(
+            HerdrTabRename::from_host(&host, "devlaunch@nb3").argv(),
+            Some(vec![
+                "/opt/pixi/envs/herdr/bin/herdr",
+                "tab",
+                "rename",
+                "w8:tB",
+                "devlaunch@nb3"
+            ])
+        );
+    }
+
+    #[test]
+    fn a_pane_outside_herdr_has_no_tab_to_name_and_asks_for_nothing() {
+        // The whole stage is one environment lookup that usually finds nothing, and
+        // finding nothing must cost a launch no process. This is the arm every
+        // launch on a machine without herdr takes.
+        assert_eq!(
+            HerdrTabRename::from_host(&titling(), "devlaunch@nb3"),
+            HerdrTabRename::Off
+        );
+    }
+
+    #[test]
+    fn an_exported_but_empty_tab_id_is_not_a_tab() {
+        // What a shell leaves behind when something upstream failed to compute it.
+        // Handing `""` to `herdr tab rename` would be asking to rename a tab that
+        // cannot exist, so it reads as absent rather than as a target.
+        for blank in ["", "   "] {
+            let host = Host {
+                herdr_tab_id: Some(blank.to_owned()),
+                ..titling()
+            };
+            assert_eq!(
+                HerdrTabRename::from_host(&host, "devlaunch@nb3"),
+                HerdrTabRename::Off,
+                "{blank:?}"
+            );
+        }
+    }
+
+    /// A host in a herdr pane, with a terminal, and no opinion about titles.
+    fn herding() -> Host {
+        Host {
+            herdr_tab_id: Some("w8:tB".to_owned()),
+            ..titling()
+        }
+    }
+
+    #[test]
+    fn the_title_switch_takes_the_herdr_tab_with_it() {
+        // One feature and not three. `DEVLAUNCH_NO_TITLE=1` is how somebody says
+        // "do not name my terminal after the workspace", and a tab strip that kept
+        // saying it would be the same feature ignoring the same switch. Off for the
+        // same reason the container's `PS1` line is off: they share `naming_gate`,
+        // so this cannot drift from the escape's own answer.
+        let opted_out = Host {
+            no_title: Some("1".to_owned()),
+            ..herding()
+        };
+
+        assert_eq!(
+            HerdrTabRename::from_host(&opted_out, "x"),
+            HerdrTabRename::Off
+        );
+        // And the shared gate means the two are never in disagreement about it.
+        assert_eq!(
+            TerminalTitle::from_host(&opted_out, "x"),
+            TerminalTitle::Off
+        );
+    }
+
+    #[test]
+    fn no_terminal_on_stderr_means_no_tab_name_either() {
+        // `dl <ws> -- cmd` in a pipeline is a run nobody is watching a tab bar for,
+        // and the tty check is the existing way that is said. Sharing it keeps one
+        // answer to "is there a terminal worth naming" rather than two.
+        let piped = Host {
+            stderr_tty: false,
+            ..herding()
+        };
+
+        assert_eq!(HerdrTabRename::from_host(&piped, "x"), HerdrTabRename::Off);
+    }
+
+    #[test]
+    fn the_tab_and_the_pane_are_given_the_one_name() {
+        // The guarantee the whole shape exists for, and the one a reader of a tab
+        // bar notices the absence of: a tab reading one thing while the pane inside
+        // it reads another is worse than a tab reading its number.
+        //
+        // Asserted on a name that the shared filter actually changes, so this would
+        // catch a second sanitiser as well as a second derivation. Controls come out
+        // for the escape's sake and `$` for `PS1`'s; argv needs neither, and takes
+        // them anyway, because one name is worth more than three characters no
+        // derived workspace id can hold.
+        let raw = "ws$(id)\x1b]2;pwned\x07@main";
+
+        let tab = HerdrTabRename::from_host(&herding(), raw);
+        let label = match &tab {
+            HerdrTabRename::Run { label, .. } => label.clone(),
+            HerdrTabRename::Off => panic!("a herdr pane with a terminal names its tab"),
+        };
+        let osc = TerminalTitle::from_host(&herding(), raw)
+            .osc()
+            .expect("the same host writes an escape")
+            .to_owned();
+
+        assert_eq!(osc, format!("\x1b]2;{label}\x07"));
+        // Spelled out once, so a change to the filter has to be looked at rather
+        // than just re-derived on both sides of an equality.
+        assert_eq!(label, "ws(id)]2;pwned@main");
+    }
+
     #[test]
     fn a_command_no_remote_shell_could_be_given_is_refused() {
         // A NUL cannot survive a shell word, so there is no payload to build.
@@ -6849,6 +7184,55 @@ mod tests {
         assert_eq!(
             notices.first(),
             Some(&LaunchNotice::TerminalTitle(TerminalTitle::Off)),
+            "{notices:?}"
+        );
+    }
+
+    #[test]
+    fn the_handover_names_the_herdr_tab_beside_the_terminal_it_names() {
+        // Beside the escape and in front of the session, for the escape's own
+        // reason: after the ssh takes the terminal this process may not run again
+        // for hours, and a tab named then is a tab named after the work is over.
+        //
+        // Second rather than first because the escape is the one with the deadline
+        // -- it is racing the shell prompt that repaints the title -- while a tab
+        // label is written once and stays. Neither is allowed to wait for the
+        // dotfiles refresh, which is why both sit in front of it.
+        let mut scene = Scene::new().with_running("myws");
+        scene.host.stderr_tty = true;
+        scene.host.herdr_tab_id = Some("w8:tB".to_owned());
+        scene.host.dotfiles_on_attach = Some("1".to_owned());
+        let token = HostToken::new();
+        let mut notices = Vec::new();
+
+        let _ = attaching(&scene, &token, "myws", None, &mut notices);
+
+        assert_eq!(
+            notices.get(1),
+            Some(&LaunchNotice::HerdrTab(HerdrTabRename::Run {
+                bin: HERDR_BIN_FALLBACK.to_owned(),
+                tab_id: "w8:tB".to_owned(),
+                label: "myws".to_owned(),
+            })),
+            "{notices:?}"
+        );
+    }
+
+    #[test]
+    fn a_handover_outside_herdr_still_says_it_is_naming_no_tab() {
+        // `Off` said rather than skipped, for the reason the title's `Off` is said:
+        // the sink is the single place that decides nothing happens. A caller that
+        // filtered here would be a second place deciding it.
+        let mut scene = Scene::new().with_running("myws");
+        scene.host.stderr_tty = true;
+        let token = HostToken::new();
+        let mut notices = Vec::new();
+
+        let _ = attaching(&scene, &token, "myws", None, &mut notices);
+
+        assert_eq!(
+            notices.get(1),
+            Some(&LaunchNotice::HerdrTab(HerdrTabRename::Off)),
             "{notices:?}"
         );
     }
