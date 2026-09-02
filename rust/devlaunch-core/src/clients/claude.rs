@@ -96,6 +96,18 @@ const CREDENTIALS_FILENAME: &str = ".credentials.json";
 const OAUTH_KEY: &str = "claudeAiOauth";
 const ACCESS_TOKEN_KEY: &str = "accessToken";
 
+/// Claude Code's own account and state file, beside the credential in a config
+/// directory. Read for a *label*, never for a credential: nothing in it is secret and
+/// nothing in it is forwarded anywhere.
+const ACCOUNT_FILENAME: &str = ".claude.json";
+
+/// The object in [`ACCOUNT_FILENAME`] describing who is signed in, and the three
+/// fields worth showing a person choosing between profiles.
+const ACCOUNT_KEY: &str = "oauthAccount";
+const EMAIL_KEY: &str = "emailAddress";
+const ORGANIZATION_KEY: &str = "organizationName";
+const SEAT_KEY: &str = "seatTier";
+
 /// A value that has the shape a Claude OAuth token has.
 ///
 /// Its own type for the reason [`super::gh::Token`] has one: the check belongs at
@@ -146,17 +158,27 @@ impl Token {
 pub(crate) struct ProfileName(String);
 
 impl ProfileName {
-    /// `raw` if it can be a leaf directory name, else nothing.
+    /// `raw` if it can be a leaf directory name worth offering, else nothing.
     ///
-    /// The same flat-ASCII set [`Token::parse`] accepts, minus the three spellings
-    /// that are not leaves: empty, `.` and `..`. A separator of either kind, a NUL and
-    /// a leading `-` are excluded by the set itself, the last one because a name that
-    /// looks like a flag reads as one everywhere it is later printed or passed on.
+    /// The same flat-ASCII set [`Token::parse`] accepts, and two leading characters
+    /// refused outright:
+    ///
+    /// - **`-`**, because a name that looks like a flag reads as one everywhere it is
+    ///   later printed or passed on.
+    /// - **`.`**, which covers `.` and `..` without special-casing them and settles a
+    ///   disagreement three places were having. A glob of `<root>/*/` does not match a
+    ///   dot-directory, so neither the shell completion nor the tool that manages the
+    ///   directory lists one, while this check used to accept it: `--claude-profile
+    ///   .hidden` was a profile you could launch and never see offered. A hidden
+    ///   profile is a trap rather than a feature, and one rule here makes the resolver,
+    ///   the listing and the completion agree.
+    ///
+    /// Slightly stricter than the `^[A-Za-z0-9._-]+$` the managing tool validates with,
+    /// which accepts a leading dot it then never lists. Refusing by a named rule beats
+    /// honouring a name nothing shows you.
     pub(crate) fn parse(raw: &str) -> Option<Self> {
         let flat = !raw.is_empty()
-            && !raw.starts_with('-')
-            && raw != "."
-            && raw != ".."
+            && !raw.starts_with(['-', '.'])
             && raw
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'));
@@ -363,6 +385,107 @@ fn config_dir(home: Option<&Path>, host: &HostEnv) -> Option<PathBuf> {
 fn token_from_credentials(text: &str) -> Option<Token> {
     let parsed: serde_json::Value = serde_json::from_str(text).ok()?;
     Token::parse(parsed.get(OAUTH_KEY)?.get(ACCESS_TOKEN_KEY)?.as_str()?)
+}
+
+/// Who a Claude config directory is signed in as.
+///
+/// **A label, not a credential.** The whole reason this type exists is that a profile's
+/// directory name is chosen by a person and verified by nothing: a profile called
+/// `work` holding a personal login is indistinguishable from a correct one until
+/// something reads the account out. Every field is optional because the file is Claude
+/// Code's, gains keys on its own schedule, and may be absent entirely in a profile
+/// that has been created but never logged in to.
+///
+/// Not redacted, unlike [`Token`], and deliberately: an email address is identity
+/// rather than a secret, it is what makes the label worth printing, and it never
+/// leaves the host. Nothing here is ever forwarded into a container.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Account {
+    pub email: Option<String>,
+    pub organization: Option<String>,
+    pub seat_tier: Option<String>,
+}
+
+impl Account {
+    /// Whether anything at all was learned, so a caller can tell "signed in as
+    /// somebody I cannot name" from "signed in as nobody".
+    pub fn is_empty(&self) -> bool {
+        self.email.is_none() && self.organization.is_none() && self.seat_tier.is_none()
+    }
+}
+
+/// The account a config directory names, if its state file says.
+///
+/// `None` covers every ordinary absence at once, because they are one answer to a
+/// caller drawing a table: no state file (a profile made and never logged in to), a
+/// file that is not JSON, or a file with no `oauthAccount`. Deliberately not a
+/// `Deserialize` struct over the whole file, for [`token_from_credentials`]'s reason:
+/// the file belongs to Claude Code and has 70-odd keys this does not read.
+pub(crate) fn account_at(config_dir: &Path) -> Option<Account> {
+    let text = std::fs::read_to_string(config_dir.join(ACCOUNT_FILENAME)).ok()?;
+    let parsed: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let account = parsed.get(ACCOUNT_KEY)?;
+    let field = |key: &str| {
+        account
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+    };
+    let found = Account {
+        email: field(EMAIL_KEY),
+        organization: field(ORGANIZATION_KEY),
+        seat_tier: field(SEAT_KEY),
+    };
+    (!found.is_empty()).then_some(found)
+}
+
+/// The config directory the *unnamed* login resolves to on this machine.
+///
+/// `$CLAUDE_CONFIG_DIR`, else `$HOME/.claude`, else nothing on a host that names
+/// neither, which is a real state: `dl` runs with `XDG_CACHE_HOME` set and no home.
+///
+/// Reads the process environment, unlike everything else here that takes a
+/// [`HostEnv`], and the exception is the caller: a listing is a read-only command with
+/// no `Host` to hand, and the alternative is exporting `HostEnv` and `config_dir` so a
+/// binary can rebuild an answer this module already knows.
+pub(crate) fn unnamed_config_dir_from_process() -> Option<PathBuf> {
+    config_dir(
+        crate::osext::home_dir().as_deref(),
+        &HostEnv::from_process(),
+    )
+}
+
+/// The word a listing offers for the unnamed credential.
+///
+/// A reader of [`DEFAULT_PROFILE`] for the one test that diffs it against
+/// [`crate::flows::claude_profiles::DEFAULT_PROFILE`]. Test-only on purpose: the
+/// listing spells its own row name and this exists so the two cannot drift, not so
+/// anything reads the name through here at runtime.
+#[cfg(test)]
+pub(crate) fn default_profile_name() -> &'static str {
+    DEFAULT_PROFILE
+}
+
+/// Whether a directory name is one a listing should offer.
+///
+/// The listing and the launch must not disagree about what a profile is, so this is
+/// asked of the same [`ProfileName`] check the launch applies, plus the one exclusion
+/// only a listing needs: `default` is a name the resolver answers for **without**
+/// consulting a directory, so a directory of that name is not a profile and offering
+/// it would offer a launch that ignores it.
+pub(crate) fn profile_name_is_offerable(name: &str) -> bool {
+    name != DEFAULT_PROFILE && ProfileName::parse(name).is_some()
+}
+
+/// Whether a config directory holds a credential at all.
+///
+/// The distinction a listing needs and [`resolve_token`] does not: a profile directory
+/// that exists with no credential in it is the ordinary state right after something
+/// created it, and saying "not logged in" is more use than saying nothing.
+pub(crate) fn has_credential(config_dir: &Path) -> bool {
+    config_dir.join(CREDENTIALS_FILENAME).is_file()
 }
 
 /// Add the Claude login to the flags and environment a session is opened with.
@@ -664,6 +787,10 @@ mod tests {
             "/etc",
             "..\\windows",
             "-flag",
+            // A dot-directory is refused rather than being a profile nothing lists:
+            // a `<root>/*/` glob does not match one, so the completion and the
+            // managing tool never offer it.
+            ".hidden",
             "has space",
             "n\u{0}ul",
         ] {

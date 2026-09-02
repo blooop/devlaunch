@@ -28,6 +28,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a `default/` directory, so a picker has something to select and a recalled line has a
   way to say "not the profile I used last time".
 
+- **`dl --claude-profiles` lists those logins with the account behind each one**, because
+  a profile's name is chosen by a person and verified by nothing. A profile called `work`
+  holding a personal login reads as correct right up until work is pushed from the wrong
+  identity, which is the failure profiles exist to prevent; the name is what you type and
+  the account column is what you get. Read from the three fields of `.claude.json` worth
+  showing (email, organisation, seat tier), and it distinguishes a profile with no
+  credential from one whose state file says nothing.
+
+  **No token is read to build it.** The `authed` column is the credential file's
+  existence and never its contents, so a listing has not touched a secret. It is also
+  the way to find a profile created and never logged in to, since a launch naming one of
+  those refuses.
+
+  A profile name beginning with a dot is now refused as well as unlisted. A `<root>/*/`
+  glob matches no dot-directory, so neither the listing nor the completion would ever
+  show one, and a profile you can launch but never see is a trap. That is marginally
+  stricter than the `^[A-Za-z0-9._-]+$` the managing tool validates with, and it makes
+  the resolver, the listing and the completion agree.
+
   **A named profile that holds no credential stops the launch, and that refusal is the
   feature.** It does not fall back to the default login. Two accounts on one machine is
   what profiles are for, so a typo that silently forwarded the other one would be worse

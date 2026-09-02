@@ -145,6 +145,37 @@ next.
 a `default/` directory. It exists as a word because a picker needs something to
 select, and a recalled line needs a way to say "not the profile I used last time".
 
+### Seeing which account a profile actually holds
+
+```
+$ dl --claude-profiles
+NAME     STATE          ACCOUNT
+default  authed         someone@example.com · Someorg · team_tier_1
+work     authed         someone@work.example · Workorg · team_tier_1
+fresh    not logged in  -
+```
+
+**A profile's name is chosen by you and verified by nothing**, which is the reason
+this listing exists. A profile called `work` holding a personal login reads as correct
+right up until the work is pushed from the wrong identity, and that is the failure
+profiles are meant to prevent. The name is what you type; the account column is what
+you get.
+
+The account is read from `.claude.json`, the state file Claude Code keeps inside each
+config directory, and only three of its fields: the email address, the organisation
+and the seat tier. Nothing else is read and nothing is written. A `-` is a profile
+with no credential and so nobody to name; `unknown` is one that is logged in whose
+state file is absent or has moved on from the shape this reads, which stops nothing.
+
+**No token is read to build this.** The `authed` column is the credential file's
+existence, never its contents, so a listing has not touched a secret.
+`--claude-profiles` is also the honest way to find a profile created and never logged
+in to, since a launch naming one of those refuses.
+
+A name beginning with a dot is neither offered nor accepted. A `<root>/*/` glob does
+not match a dot-directory, so neither this listing nor the shell completion would show
+one, and a profile you can launch but never see is a trap rather than a feature.
+
 **A named profile that holds no credential stops the launch.** It does not fall back
 to your default login, and that refusal is the feature rather than a rough edge. Two
 accounts on one machine is what profiles are for, so a typo that silently forwarded

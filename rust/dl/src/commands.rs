@@ -15,6 +15,7 @@ use devlaunch_core::domain::config;
 use devlaunch_core::domain::spec::DevcontainerPath;
 use devlaunch_core::domain::workspace_id::WorkspaceId;
 use devlaunch_core::domain::xdg;
+use devlaunch_core::flows::claude_profiles;
 use devlaunch_core::flows::completion::{self, FileState, InstallError, Installed, RcChange};
 use devlaunch_core::flows::completion_cache::{self, Refreshed};
 use devlaunch_core::flows::kept_copies::KeptCopies;
@@ -109,6 +110,7 @@ pub(crate) fn dispatch(
         Command::Version => render_version(),
         Command::List { output, sizes } => render_list(runner, &mut context, cache, output, sizes),
         Command::Repos => render_repos(&mut context, cache),
+        Command::ClaudeProfiles => render_claude_profiles(),
         Command::CompletionData => render_completion_data(&mut context, cache),
         Command::UpdateCache { force } => render_update_cache(runner, &mut context, cache, force),
         Command::Refresh => render_refresh(&mut context, cache),
@@ -340,6 +342,66 @@ fn render_json(
 /// a cache with no repos, where Python's key check fell through to asking devpod.
 /// The distinguishing input is a `completions.json` written by something other
 /// than dl; every cache dl writes carries all four keys.
+/// `dl --claude-profiles`: the logins `--claude-profile` can name, and who each is.
+///
+/// **The account matters more than the name**, which is why this exists at all: a
+/// profile's directory name is chosen by a person and verified by nothing, so a
+/// profile called `work` holding a personal login reads as correct right up until the
+/// work is pushed from the wrong identity. The name is what you type; the account
+/// column is what you get.
+///
+/// Nothing here reads a token. "authed" is the credential file's existence, so a
+/// listing has never touched a secret.
+fn render_claude_profiles() -> Ending {
+    let rows = claude_profiles::from_process();
+    if rows.is_empty() {
+        // No home directory and no override, which is a real state: `dl` runs with
+        // `XDG_CACHE_HOME` set and no home at all.
+        eprintln!("No Claude configuration directory on this machine, so no profiles to list.");
+        return Ending::Done;
+    }
+    let width = rows
+        .iter()
+        .map(|row| row.name.chars().count())
+        .max()
+        .unwrap_or(0)
+        .max("NAME".len());
+    println!("{:<width$}  {:<13}  ACCOUNT", "NAME", "STATE");
+    for row in &rows {
+        let state = match row.state {
+            claude_profiles::ProfileState::Authed => "authed",
+            claude_profiles::ProfileState::NoCredential => "not logged in",
+        };
+        println!("{:<width$}  {state:<13}  {}", row.name, account_of(row));
+    }
+    Ending::Done
+}
+
+/// The account column: what the state file says, or why it says nothing.
+fn account_of(row: &claude_profiles::ProfileSummary) -> String {
+    let Some(account) = &row.account else {
+        // Two different absences, and the difference is worth a word: a profile with no
+        // credential has nobody to name, while one that is logged in and unnameable
+        // means Claude Code's state file was absent or has moved on from the shape this
+        // reads. Neither is an error and neither stops a launch.
+        return match row.state {
+            claude_profiles::ProfileState::NoCredential => "-".to_owned(),
+            claude_profiles::ProfileState::Authed => "unknown".to_owned(),
+        };
+    };
+    let mut parts = Vec::new();
+    if let Some(email) = &account.email {
+        parts.push(email.clone());
+    }
+    if let Some(organization) = &account.organization {
+        parts.push(organization.clone());
+    }
+    if let Some(seat) = &account.seat_tier {
+        parts.push(seat.clone());
+    }
+    parts.join(" · ")
+}
+
 fn render_repos(context: &mut CommandContext<'_>, cache: &Path) -> Ending {
     if let Some(cached) =
         completion_cache::read_completion_cache(&completion_cache::cache_path(cache))
