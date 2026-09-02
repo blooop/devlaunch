@@ -109,19 +109,41 @@ pub(crate) fn prepare(
         Trip::NeverRan { reason } => return Prepared::Refused { reason },
     }
 
-    for (command, stdin, doing) in [
-        (
-            herdr::lend_command().to_owned(),
-            Some(reporting.host_binary().to_path_buf()),
-            "lend the session manager",
-        ),
-        (herdr::install_command(), None, "install the agent hook"),
+    for errand in [
+        Errand {
+            command: herdr::lend_command().to_owned(),
+            stdin: Some(reporting.host_binary().to_path_buf()),
+            doing: "lend the session manager",
+            refuses: None,
+        },
+        Errand {
+            command: herdr::install_command(),
+            stdin: None,
+            doing: "install the agent hook",
+            refuses: Some((
+                herdr::INSTALL_FOREIGN_SETTINGS,
+                format!(
+                    "the workspace already holds managed Claude Code settings dl did not write \
+                     at {}, and whatever policy they carry is worth more than a status indicator",
+                    herdr::CONTAINER_SETTINGS
+                ),
+            )),
+        },
     ] {
+        let Errand {
+            command,
+            stdin,
+            doing,
+            refuses,
+        } = errand;
         match run_remote(runner, config, workspace_id, &command, stdin, doing) {
             Trip::Ran { exit, .. } if exit.is_success() => {}
-            Trip::Ran { complaint, .. } => {
+            Trip::Ran { exit, complaint } => {
                 return Prepared::Refused {
-                    reason: refusal(doing, complaint.as_deref()),
+                    reason: match refuses {
+                        Some((code, said)) if exit == Exit::Code(code) => said,
+                        _ => refusal(doing, complaint.as_deref()),
+                    },
                 };
             }
             Trip::NeverRan { reason } => return Prepared::Refused { reason },
@@ -129,6 +151,19 @@ pub(crate) fn prepare(
     }
 
     Prepared::Ready
+}
+
+/// One thing [`prepare`] asks the container to do.
+///
+/// `refuses` is the one status this errand answers with that means something more
+/// specific than "it failed", so the refusal can say the specific thing. Only the
+/// install has one, and a status is per-errand rather than global because the
+/// numbers are only meaningful against the command that returned them.
+struct Errand {
+    command: String,
+    stdin: Option<std::path::PathBuf>,
+    doing: &'static str,
+    refuses: Option<(i32, String)>,
 }
 
 /// What one non-interactive trip into the workspace came to.
@@ -472,6 +507,56 @@ mod tests {
             runner.calls_to("ssh").len(),
             1,
             "17MB was lent into a workspace that has no socket to report over"
+        );
+    }
+
+    /// The refusal for a foreign settings file says what it is, because "could not
+    /// install the agent hook" would send a reader looking for a broken install.
+    #[test]
+    fn a_workspace_with_its_own_managed_settings_is_left_alone() {
+        let reporting = reporting();
+        let len = std::fs::metadata(reporting.host_binary())
+            .expect("readable")
+            .len();
+        let config = Path::new("/tmp/ssh-config");
+        let runner = ScriptedRunner::new();
+        runner.script(
+            [
+                "ssh",
+                "-F",
+                "/tmp/ssh-config",
+                "myws.devpod",
+                &herdr::probe_command(len, &reporting.container_socket()),
+            ],
+            Response::exited(1),
+        );
+        runner.script(
+            [
+                "ssh",
+                "-F",
+                "/tmp/ssh-config",
+                "myws.devpod",
+                herdr::lend_command(),
+            ],
+            Response::ok(),
+        );
+        runner.script(
+            [
+                "ssh",
+                "-F",
+                "/tmp/ssh-config",
+                "myws.devpod",
+                &herdr::install_command(),
+            ],
+            Response::exited(herdr::INSTALL_FOREIGN_SETTINGS),
+        );
+
+        let Prepared::Refused { reason } = prepare(&runner, config, "myws", &reporting) else {
+            panic!("dl overwrote settings it did not write");
+        };
+        assert!(
+            reason.contains(herdr::CONTAINER_SETTINGS) && reason.contains("did not write"),
+            "the refusal reads as a broken install rather than a file left alone: {reason}"
         );
     }
 
