@@ -256,6 +256,14 @@ pub(crate) const ZELLIJ_STAGE: StageName = StageName::new("zellij");
 /// workspace. Rides the same trip as the two above it.
 pub(crate) const TITLE_STAGE: StageName = StageName::new("title");
 
+/// The stage that records, in the container's Claude config directory, that nobody
+/// needs to be walked through first-time setup in there.
+///
+/// The last piece of the Claude login, and the one the forwarded token cannot
+/// carry. See [`onboarding_script`] for what it writes and why an absent file is
+/// the whole of its condition.
+pub(crate) const ONBOARDING_STAGE: StageName = StageName::new("onboarding");
+
 // ===========================================================================
 // quoting
 // ===========================================================================
@@ -797,6 +805,135 @@ pub(crate) fn zellij_script() -> String {
         profile_resolution("$HOME"),
         profile_prepend(PIXI_BIN_LINE, Some("failed=1")),
         "exit \"$failed\"".to_owned(),
+    ]
+    .join("\n")
+}
+
+/// What the seed file holds: the one key the interactive gate reads, and nothing
+/// else. A credential is deliberately not in here — see [`onboarding_script`].
+const ONBOARDED_JSON: &str = r#"{"hasCompletedOnboarding":true}"#;
+
+/// The [`ONBOARDING_STAGE`]'s script: record, in a Claude config directory that has
+/// no config file yet, that nobody needs walking through first-time setup in there.
+///
+/// # Why the forwarded token is not enough on its own
+///
+/// [`crate::clients::claude`] hands the container the host's access token, and
+/// measured against Claude Code 2.1.258 that authenticates `claude -p` from an
+/// otherwise empty `$HOME`, exactly as that module says. The **interactive** TUI is
+/// a second gate in front of the first: before it consults a credential of any kind
+/// it asks whether first-time setup has been done, and what it asks is
+/// `hasCompletedOnboarding` in `.claude.json`. So a container whose config
+/// directory nothing has ever written shows the theme picker and then `Select login
+/// method` while holding a token that already works — measured on `blooop/rocker`,
+/// a repo with no `.devcontainer/` of its own, where devpod's fallback image gives
+/// the container a virgin config directory and `claude -p` answered fine from the
+/// very environment the wizard appeared in.
+///
+/// This is therefore not an authentication step and carries no secret. It records
+/// one boolean, and what the boolean buys is that the token forwarded beside it
+/// *is* the login rather than a login the wizard is standing in front of. Claude
+/// Code is not being asked to skip anything it would otherwise do for a reason:
+/// there is no environment variable that turns the gate off, and that flag is the
+/// only thing the gate reads.
+///
+/// # Why an absent file is the whole of the condition
+///
+/// The file is written only where there is none, which is what makes this sound
+/// without asking [`ClaudeConfig`]'s question — an answer the probe behind this
+/// stage cannot have yet. The alternative, merging a key into a file that is already
+/// there, would need JSON in a POSIX shell *and* would be a write over the host's
+/// real config on precisely the mounts [`crate::clients::claude`] declines to
+/// forward over.
+///
+/// **Nothing is ever overwritten, and that is the whole promise.** The stronger one
+/// — that nothing of the host's is written at all — does not hold, and it is worth
+/// being exact about why rather than asserting it. A mount of the host's `~/.claude`
+/// arrives holding the host's own `.claude.json` **only where the host points
+/// `CLAUDE_CONFIG_DIR` at that directory**; a host that does not keeps its config at
+/// `~/.claude.json` and leaves `~/.claude/` without one. A container that mounts
+/// that directory and pins `CLAUDE_CONFIG_DIR` to it — which is exactly what this
+/// repo's own claude-code feature does — therefore has no answer to find, gets one
+/// seeded, and the file appears on the host as well. That is the one boolean, it is
+/// what makes `claude` in that container start at all, and the host's own `claude`
+/// does not read it.
+///
+/// Seeding ahead of Claude Code's own first run costs that run nothing: it merges
+/// its keys over the file it finds and leaves this one standing.
+///
+/// # Where the file is, which is not where the config directory is
+///
+/// `CLAUDE_CONFIG_DIR` first, for the reason [`claude_config_lines`] reads it
+/// first: Claude Code honours it, a devcontainer feature may set it, and the
+/// dotfiles a workspace was provisioned with may export it.
+///
+/// **When it is unset the file is `$HOME/.claude.json`, beside the config directory
+/// and not inside it.** Claude Code 2.1.258 resolves the two halves of its
+/// configuration differently, and only one of them defaults into `~/.claude`:
+///
+/// ```text
+/// globalConfig: join(CLAUDE_CONFIG_DIR || homedir(), ".claude.json")
+/// userSettings: join(CLAUDE_CONFIG_DIR || join(homedir(), ".claude"), "settings.json")
+/// ```
+///
+/// So [`CLAUDE_CONFIG_RELPATH`] is the right answer to the question
+/// [`claude_config_lines`] asks, where the config *directory* is, and the wrong
+/// answer to the one this stage asks. The first version of this seeded the probe's
+/// path, and was measured doing nothing whatever in a container with the variable
+/// unset: one `claude -p` wrote 36482 bytes to `$HOME/.claude.json` and left
+/// `$HOME/.claude/.claude.json` absent, so the seed sat in a file nothing opens and
+/// the wizard it exists to close appeared anyway, over a stage reporting `ok`.
+///
+/// That branch cannot come right by luck, because both readings are the same
+/// environment: the interactive `claude` is launched through the same `bash -lc`
+/// this stage runs in, so what `CLAUDE_CONFIG_DIR` says here is what it says
+/// there.
+pub(crate) fn onboarding_script() -> String {
+    [
+        // `set -u` for the reason `zellij_script` sets it.
+        "set -u".to_owned(),
+        // `$CLAUDE_CONFIG_DIR` when set, and **`$HOME` itself** when not — not
+        // `$HOME/.claude`, which is the trap this stage lives inside. The note above
+        // has the asymmetry that makes it a trap.
+        //
+        // Composed rather than written as the probe's one-line
+        // `${CLAUDE_CONFIG_DIR:-${HOME-}/...}` for a second reason too: that spelling
+        // turns an unset `$HOME` into an absolute path, which passes every guard
+        // below it. The probe hands its version to `readlink -f` and reports a fact;
+        // this stage *writes* what it resolves, and in a container running as root
+        // that write succeeds. So the fallback is taken only when there is a home to
+        // hang it on, and a container that cannot say where home is gets nothing.
+        "dir=\"${CLAUDE_CONFIG_DIR:-}\"".to_owned(),
+        "if [ -z \"$dir\" ]; then".to_owned(),
+        "  dir=\"${HOME:-}\"".to_owned(),
+        "  if [ -z \"$dir\" ]; then exit 0; fi".to_owned(),
+        "fi".to_owned(),
+        // Not an absolute path, so nowhere Claude Code will look: a relative
+        // `CLAUDE_CONFIG_DIR` names a directory in whatever the pass's working
+        // directory happens to be. Nothing to seed.
+        "case \"$dir\" in /*) ;; *) exit 0 ;; esac".to_owned(),
+        // Whoever put it there owns it, and `-L` beside `-e` is what makes that true
+        // of a symlink as well. `-e` resolves the link, so a **dangling** one reads
+        // as absent and the redirection behind it then creates the target: measured
+        // at exit 0, nothing in the directory, and the seed at a path this stage
+        // never named, which for a link into a not-yet-populated mount of the host's
+        // config is the one write the design says never happens.
+        "if [ -e \"$dir/.claude.json\" ] || [ -L \"$dir/.claude.json\" ]; then exit 0; fi"
+            .to_owned(),
+        "mkdir -p \"$dir\" || exit 1".to_owned(),
+        // `set -C` so the guard above cannot be raced. Two passes over one workspace
+        // are serialized by the launch lock, but a `postCreate` or a dotfiles apply
+        // running beside this is not, and noclobber makes the create exclusive: the
+        // redirection refuses a target that appeared in between, dangling symlink
+        // included, rather than overwriting whatever now answers to that name.
+        "set -C".to_owned(),
+        // `printf` with the JSON as an *argument*, so the stage stays one line's
+        // worth of quoting (see [`Stage`]) and no heredoc has to survive being read
+        // by the pass's shell before the nested one sees it.
+        format!(
+            "printf '%s\\n' {} > \"$dir/.claude.json\"",
+            quote(ONBOARDED_JSON)
+        ),
     ]
     .join("\n")
 }
@@ -1426,6 +1563,25 @@ pub(crate) fn setup_stages(
             .quieter(),
         );
     }
+    // Last, and gated on nothing. Neither tools switch owns it: seeding a boolean
+    // installs no tool, and a machine that turned tool provisioning off did not
+    // thereby ask to be walked through Claude Code's first-run wizard. Nor is it
+    // gated on the Claude login — `DEVLAUNCH_NO_CLAUDE_TOKEN` says do not put the
+    // host's credential in this container, which is a different sentence from "make
+    // me answer the theme picker", and a workspace opted out of forwarding still
+    // reaches its login screen because there is no credential rather than because
+    // a flag was missing.
+    //
+    // A nested `bash -c` for the zellij stage's reason: a stage is interpolated into
+    // `if <command>; then`, which is one line, and this script is not. Not
+    // redirected, unlike that one, because nothing in this script writes to
+    // *stdout*, which is the stream the outcome protocol shares. `mkdir` and the
+    // redirection can both fail and both say so on stderr, which is where a stage's
+    // complaint belongs.
+    stages.push(Stage::new(
+        ONBOARDING_STAGE,
+        format!("bash -c {}", quote(&onboarding_script())),
+    ));
     stages
 }
 
@@ -2680,6 +2836,27 @@ else
   echo "devlaunch-probe stage hostname failed $?"
 fi"#;
 
+    /// The onboarding stage's snippet, spelled out. Not a `PYTHON_` golden like the
+    /// two above it: this stage has no Python ancestor, it arrived after the port,
+    /// and the reason it is a literal anyway is the reason those are — it carries a
+    /// whole quoted script, so a quoting layer that merely *worked* would change
+    /// these bytes without failing anything else.
+    const ONBOARDING_STAGE_SNIPPET: &str = r#"if bash -c 'set -u
+dir="${CLAUDE_CONFIG_DIR:-}"
+if [ -z "$dir" ]; then
+  dir="${HOME:-}"
+  if [ -z "$dir" ]; then exit 0; fi
+fi
+case "$dir" in /*) ;; *) exit 0 ;; esac
+if [ -e "$dir/.claude.json" ] || [ -L "$dir/.claude.json" ]; then exit 0; fi
+mkdir -p "$dir" || exit 1
+set -C
+printf '"'"'%s\n'"'"' '"'"'{"hasCompletedOnboarding":true}'"'"' > "$dir/.claude.json"'; then
+  echo "devlaunch-probe stage onboarding ok"
+else
+  echo "devlaunch-probe stage onboarding failed $?"
+fi"#;
+
     const PYTHON_ZELLIJ_STAGE: &str = r#"if bash -c 'set -u
 failed=0
 if command -v zellij >/dev/null 2>&1; then exit 0; fi
@@ -3505,9 +3682,10 @@ fi
 
     #[test]
     fn the_setup_pass_is_the_script_python_composes() {
-        // Stages, then the probe — and the zellij stage carries a whole quoted
-        // script, which is where a quoting layer that merely *worked* would change
-        // these bytes.
+        // Stages, then the probe — and two of the stages carry a whole quoted script,
+        // which is where a quoting layer that merely *worked* would change these
+        // bytes. The onboarding stage is behind the opt-outs' reach on purpose and so
+        // appears in both spellings: see `the_onboarding_stage_is_last_and_gated_on_nothing`.
         let with_zellij = setup_script(&setup_stages(
             "myws",
             ToolsSwitch::Install,
@@ -3517,7 +3695,7 @@ fi
         assert_eq!(
             with_zellij,
             format!(
-                "{PYTHON_HOSTNAME_STAGE}\n{PYTHON_ZELLIJ_STAGE}\n{}",
+                "{PYTHON_HOSTNAME_STAGE}\n{PYTHON_ZELLIJ_STAGE}\n{ONBOARDING_STAGE_SNIPPET}\n{}",
                 probe_script()
             )
         );
@@ -3529,7 +3707,10 @@ fi
         ));
         assert_eq!(
             opted_out,
-            format!("{PYTHON_HOSTNAME_STAGE}\n{}", probe_script())
+            format!(
+                "{PYTHON_HOSTNAME_STAGE}\n{ONBOARDING_STAGE_SNIPPET}\n{}",
+                probe_script()
+            )
         );
     }
 
@@ -4407,6 +4588,200 @@ fi
             ),
             Some(ClaudeConfig::Ours),
             "the container's own path, escaped on the wire"
+        );
+    }
+
+    #[test]
+    fn the_onboarding_stage_is_last_and_gated_on_nothing() {
+        // Last so the stages in front of it keep the indices the tests around here
+        // reach them by, and present under every combination of the two switches:
+        // seeding a boolean is not tool provisioning, so neither switch owns it.
+        for (tools, zellij) in [
+            (ToolsSwitch::Install, ZellijSwitch::Install),
+            (ToolsSwitch::Skip, ZellijSwitch::Install),
+            (ToolsSwitch::Install, ZellijSwitch::Skip),
+            (ToolsSwitch::Skip, ZellijSwitch::Skip),
+        ] {
+            let stages = setup_stages("myws", tools, zellij, Some("repo@branch"));
+            assert_eq!(
+                stages.last().map(|stage| stage.name),
+                Some(ONBOARDING_STAGE),
+                "{tools:?}/{zellij:?}"
+            );
+            assert_eq!(stages[0].name, HOSTNAME_STAGE);
+        }
+    }
+
+    #[test]
+    fn the_onboarding_stage_is_one_word_the_pass_shell_hands_to_a_nested_bash() {
+        // The zellij stage's property, for the zellij stage's reason: the quoting has
+        // to survive being read by the *pass's* shell before the nested bash sees a
+        // script with quotes and braces of its own in it.
+        let stages = setup_stages("myws", ToolsSwitch::Skip, ZellijSwitch::Skip, None);
+        let command = &stages.last().expect("the onboarding stage").command;
+        assert_eq!(
+            shlex::split(command).expect("a stage a shell can read"),
+            vec!["bash".to_owned(), "-c".to_owned(), onboarding_script()]
+        );
+    }
+
+    #[test]
+    fn onboarding_is_seeded_into_a_virgin_config_dir_and_nowhere_else() {
+        // The behavioural half, and the whole claim: a config directory nothing has
+        // written gets the one key the interactive gate reads, and a directory that
+        // already has a `.claude.json` — the shape every mount of the host's own
+        // `~/.claude` arrives in — is left byte for byte alone.
+        let run = |home: &Path, config_dir: Option<&Path>| {
+            let mut command = std::process::Command::new("bash");
+            command.arg("-c").arg(onboarding_script()).env("HOME", home);
+            match config_dir {
+                Some(dir) => command.env("CLAUDE_CONFIG_DIR", dir),
+                None => command.env_remove("CLAUDE_CONFIG_DIR"),
+            };
+            command.output().expect("bash ran")
+        };
+
+        let scratch = tempfile::tempdir().expect("a scratch dir");
+        let home = scratch.path().join("home");
+        std::fs::create_dir_all(&home).expect("a home");
+
+        // Virgin: seeded, and the file is the flag and nothing else. `$HOME` and not
+        // `$HOME/.claude`: see `the_seed_lands_where_claude_code_reads_it_when_no_config_dir_is_set`.
+        assert!(run(&home, None).status.success());
+        let seeded = home.join(".claude.json");
+        let text = std::fs::read_to_string(&seeded).expect("a seeded config");
+        assert_eq!(text.trim(), ONBOARDED_JSON);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&text).expect("the seed is JSON Claude Code can read");
+        assert_eq!(parsed.get("hasCompletedOnboarding"), Some(&true.into()));
+        assert_eq!(
+            parsed.as_object().map(serde_json::Map::len),
+            Some(1),
+            "one key: this stage records a fact, it does not carry a credential"
+        );
+
+        // Somebody else's, which is what a mounted `~/.claude` looks like from in
+        // here. Run again over the file just written and it must not be touched.
+        let theirs = r#"{"oauthAccount":{"emailAddress":"someone@example.com"}}"#;
+        std::fs::write(&seeded, theirs).expect("their config");
+        assert!(run(&home, None).status.success());
+        assert_eq!(
+            std::fs::read_to_string(&seeded).expect("their config, still"),
+            theirs
+        );
+
+        // `CLAUDE_CONFIG_DIR` wins over `$HOME`, because Claude Code honours it and
+        // a stage that seeded `$HOME/.claude` regardless would write a file nothing
+        // ever opens. The directory need not exist yet.
+        let elsewhere = scratch.path().join("xdg/claude");
+        assert!(run(&home, Some(&elsewhere)).status.success());
+        assert_eq!(
+            std::fs::read_to_string(elsewhere.join(".claude.json"))
+                .expect("a seeded config where the variable pointed")
+                .trim(),
+            ONBOARDED_JSON
+        );
+    }
+
+    #[test]
+    fn the_seed_lands_where_claude_code_reads_it_when_no_config_dir_is_set() {
+        // The config *directory* is `$HOME/.claude` whether or not
+        // `CLAUDE_CONFIG_DIR` is set, which is what [`claude_config_lines`] resolves
+        // and is correct for what it asks. `.claude.json` does not live in it.
+        // Measured against Claude Code 2.1.258 in a container with the variable
+        // unset: one `claude -p` created `$HOME/.claude.json`, 36482 bytes, and left
+        // `$HOME/.claude/.claude.json` absent. So the probe's spelling names the
+        // right directory and the wrong file, and a seed written the probe's way is
+        // a file Claude Code never opens -- the wizard it exists to close appears
+        // anyway, with nothing to show why.
+        let scratch = tempfile::tempdir().expect("a scratch dir");
+        let home = scratch.path().join("home");
+        std::fs::create_dir_all(&home).expect("a home");
+        let answered = std::process::Command::new("bash")
+            .arg("-c")
+            .arg(onboarding_script())
+            .env("HOME", &home)
+            .env_remove("CLAUDE_CONFIG_DIR")
+            .output()
+            .expect("bash ran");
+        assert!(
+            answered.status.success(),
+            "{}",
+            String::from_utf8_lossy(&answered.stderr)
+        );
+        assert_eq!(
+            std::fs::read_to_string(home.join(".claude.json"))
+                .expect("the file Claude Code actually reads")
+                .trim(),
+            ONBOARDED_JSON
+        );
+        assert!(
+            !home.join(".claude/.claude.json").exists(),
+            "the config directory is not where this file lives"
+        );
+    }
+
+    #[test]
+    fn a_dangling_config_symlink_does_not_take_the_seed_out_of_the_directory() {
+        // `[ -e ]` resolves the link, so a dangling one reads as absent and the
+        // redirection behind it then *creates the target*. Measured on the composed
+        // script before the guard was fixed: exit 0, nothing in the config
+        // directory, and 32 bytes at a path the stage never named.
+        //
+        // A container reaches this through any dotfiles or `postCreate` step that
+        // links `.claude.json` at somewhere not there yet, which devpod runs.
+        let scratch = tempfile::tempdir().expect("a scratch dir");
+        let home = scratch.path().join("home");
+        let elsewhere = scratch.path().join("elsewhere");
+        std::fs::create_dir_all(&home).expect("a home");
+        std::fs::create_dir_all(&elsewhere).expect("somewhere else");
+        let target = elsewhere.join("not-here-yet.json");
+        std::os::unix::fs::symlink(&target, home.join(".claude.json")).expect("a dangling link");
+
+        let answered = std::process::Command::new("bash")
+            .arg("-c")
+            .arg(onboarding_script())
+            .env("HOME", &home)
+            .env_remove("CLAUDE_CONFIG_DIR")
+            .output()
+            .expect("bash ran");
+        assert!(
+            answered.status.success(),
+            "a link somebody else left is nothing to warn about: {}",
+            String::from_utf8_lossy(&answered.stderr)
+        );
+        assert!(
+            !target.exists(),
+            "the seed followed a dangling link out of the directory it was given"
+        );
+    }
+
+    #[test]
+    fn onboarding_seeds_nothing_when_there_is_no_home_to_seed() {
+        // No `CLAUDE_CONFIG_DIR` and no `$HOME` is a container that can say where
+        // nothing belongs, so nothing is written and the stage still exits clean.
+        // Written against the version of this that composed the path the probe's way,
+        // `"${CLAUDE_CONFIG_DIR:-${HOME-}/.claude}"`, which turns an unset home into
+        // `/.claude`: absolute, past every guard, and in a container running as root
+        // a real `.claude.json` at the filesystem root.
+        let scratch = tempfile::tempdir().expect("a scratch dir");
+        let answered = std::process::Command::new("bash")
+            .arg("-c")
+            .arg(onboarding_script())
+            .current_dir(scratch.path())
+            .env_remove("HOME")
+            .env_remove("CLAUDE_CONFIG_DIR")
+            .output()
+            .expect("bash ran");
+        assert!(
+            answered.status.success(),
+            "{}",
+            String::from_utf8_lossy(&answered.stderr)
+        );
+        assert!(!scratch.path().join(".claude").exists());
+        assert!(
+            !Path::new("/.claude.json").exists(),
+            "the root of this machine is not a Claude config directory"
         );
     }
 
@@ -6405,6 +6780,13 @@ fi
                 // degradation of a container, so it takes the default rather than
                 // declaring an exception.
                 (ZELLIJ_STAGE, FailureLevel::Warning),
+                // Likewise, and unlike the hostname: this fails on a container
+                // whose config directory will not take the file, which is rare
+                // rather than the majority case, so it takes the default. What the
+                // failure costs varies and the warning does not claim otherwise —
+                // a wizard in front of a working token where one was forwarded, and
+                // merely a wizard where one was not.
+                (ONBOARDING_STAGE, FailureLevel::Warning),
             ]
         );
     }
