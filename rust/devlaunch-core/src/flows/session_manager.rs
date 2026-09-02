@@ -85,14 +85,14 @@ pub(crate) fn prepare(
         None,
         "probe the container",
     ) {
-        Trip::Answered { success: true } => {
+        Trip::Ran { exit, .. } if exit.is_success() => {
             // Prepared already, by an earlier run whose marker is gone. Record it
             // and spend nothing.
             record(&marker, &stamp);
             return Prepared::Ready;
         }
-        Trip::Answered { success: false } => {}
-        Trip::Unanswered { reason } => return Prepared::Refused { reason },
+        Trip::Ran { .. } => {}
+        Trip::NeverRan { reason } => return Prepared::Refused { reason },
     }
 
     for (command, stdin, doing) in [
@@ -104,13 +104,13 @@ pub(crate) fn prepare(
         (herdr::install_command(), None, "install the agent hook"),
     ] {
         match run_remote(runner, config, workspace_id, &command, stdin, doing) {
-            Trip::Answered { success: true } => {}
-            Trip::Answered { success: false } => {
+            Trip::Ran { exit, .. } if exit.is_success() => {}
+            Trip::Ran { complaint, .. } => {
                 return Prepared::Refused {
-                    reason: format!("could not {doing}"),
+                    reason: refusal(doing, complaint.as_deref()),
                 };
             }
-            Trip::Unanswered { reason } => return Prepared::Refused { reason },
+            Trip::NeverRan { reason } => return Prepared::Refused { reason },
         }
     }
 
@@ -133,14 +133,26 @@ fn record(marker: &Path, stamp: &str) {
 
 /// What one non-interactive trip into the workspace came to.
 ///
-/// Three states and not two, because the difference between them decides whether
-/// a launch gives up: a command that ran and said no is an answer, and only a
-/// trip that never happened is a refusal.
+/// Two states, and the line between them is drawn by the **exit status alone**:
+/// a command that ran and said no is an answer whatever it printed on the way,
+/// and only a trip that never happened is a refusal. Drawing it anywhere else is
+/// the bug this shape has now had twice. The first spelling read an empty pair of
+/// streams as the answer, which left a `test` that fails silently reported as a
+/// refusal; the second read *any* output as a refusal, which is worse, because
+/// output on a failed trip is the common case rather than the odd one -- Debian's
+/// bash runs the remote `~/.bashrc` on `ssh host <cmd>`, so a pixi or nvm init
+/// line, a motd, or a locale warning rides along with every exit status.
+///
+/// The complaint therefore travels beside the status instead of standing in for
+/// it: a refusal that has one still quotes the container's own last word.
 enum Trip {
-    /// The container ran the command and this is what it exited with.
-    Answered { success: bool },
+    /// The container ran the command, and this is how it ended and what it said.
+    Ran {
+        exit: Exit,
+        complaint: Option<String>,
+    },
     /// Nothing ran, or nothing came back. The reason is the user's to read.
-    Unanswered { reason: String },
+    NeverRan { reason: String },
 }
 
 /// One non-interactive trip into the workspace.
@@ -165,37 +177,36 @@ fn run_remote(
     };
     match runner.capture(&spec) {
         Outcome::Ran { exit, io } => {
-            if exit.is_success() {
-                return Trip::Answered { success: true };
-            }
-            // ssh's own 255 is the one exit that means the trip did not happen:
-            // the workspace is unreachable, which is a different thing from a
-            // command inside it saying no.
-            let complaint = last_line(&io.stderr)
-                .or_else(|| last_line(&io.stdout))
-                .unwrap_or_default();
-            if exit == Exit::Code(SSH_TRANSPORT_FAILURE) {
-                return Trip::Unanswered {
-                    reason: format!("could not {doing}: {complaint}"),
-                };
-            }
-            if complaint.is_empty() {
-                Trip::Answered { success: false }
-            } else {
-                Trip::Unanswered {
-                    reason: format!("could not {doing}: {complaint}"),
-                }
+            let complaint = last_line(&io.stderr).or_else(|| last_line(&io.stdout));
+            match exit {
+                // ssh's own 255 is the one exit that means the trip did not
+                // happen: the workspace is unreachable, which is a different
+                // thing from a command inside it saying no. A signalled ssh is
+                // the same news -- whatever the remote command was doing, this
+                // end stopped listening before it heard the answer.
+                Exit::Code(SSH_TRANSPORT_FAILURE) | Exit::Signal(_) => Trip::NeverRan {
+                    reason: refusal(doing, complaint.as_deref()),
+                },
+                exit => Trip::Ran { exit, complaint },
             }
         }
-        Outcome::ProgramNotFound => Trip::Unanswered {
+        Outcome::ProgramNotFound => Trip::NeverRan {
             reason: format!("could not {doing}: no ssh on this host"),
         },
-        Outcome::TimedOut => Trip::Unanswered {
+        Outcome::TimedOut => Trip::NeverRan {
             reason: format!("could not {doing}: the workspace did not answer"),
         },
-        Outcome::NotStarted(failure) => Trip::Unanswered {
+        Outcome::NotStarted(failure) => Trip::NeverRan {
             reason: format!("could not {doing}: {failure:?}"),
         },
+    }
+}
+
+/// One refusal sentence, with the container's last word if it had one.
+fn refusal(doing: &str, complaint: Option<&str>) -> String {
+    match complaint {
+        Some(said) => format!("could not {doing}: {said}"),
+        None => format!("could not {doing}"),
     }
 }
 
@@ -404,6 +415,51 @@ mod tests {
             runner.calls_to("ssh").len(),
             1,
             "dl kept going after the workspace stopped answering"
+        );
+    }
+
+    /// The same bug as above, with the trigger that is common rather than rare.
+    ///
+    /// A failed probe that *says* something is still a probe that answered. The
+    /// first fix for this read an empty pair of streams as the answer, so it
+    /// covered a silent `test` and nothing else -- and a container is rarely
+    /// silent. Debian's bash is built with `SSH_SOURCE_BASHRC`, so
+    /// `ssh host <cmd>` runs the remote `~/.bashrc`: a pixi or nvm init line, an
+    /// `/etc/bash.bashrc` message or a locale warning arrives on stderr beside
+    /// the exit status. Reading that as "the trip never happened" refused every
+    /// such workspace on every launch, forever, and never lent anything.
+    #[test]
+    fn a_probe_that_answers_no_out_loud_is_still_an_answer() {
+        let cache = tempfile::tempdir().expect("a scratch cache");
+        let reporting = reporting();
+        let len = std::fs::metadata(reporting.host_binary())
+            .expect("readable")
+            .len();
+        let config = Path::new("/tmp/ssh-config");
+        let runner = ScriptedRunner::new();
+        runner.script(
+            [
+                "ssh",
+                "-F",
+                "/tmp/ssh-config",
+                "myws.devpod",
+                &herdr::probe_command(len),
+            ],
+            Response::failed(1, "bash: warning: setlocale: LC_ALL: cannot change locale"),
+        );
+        // The lend and the install, in that order, both fine.
+        runner.script(["ssh"], Response::ok());
+
+        assert_eq!(
+            prepare(&runner, cache.path(), config, "myws", &reporting),
+            Prepared::Ready,
+            "a container that warned about its locale was read as unreachable"
+        );
+        assert_eq!(
+            runner.calls_to("ssh").len(),
+            3,
+            "the probe answered no and nothing was lent: {:?}",
+            runner.calls_to("ssh")
         );
     }
 
