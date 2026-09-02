@@ -357,26 +357,41 @@ pub enum PaneDestination {
 /// something else was never claimed in the first place -- where a note kept
 /// against a tab id would go on naming a workspace nobody in that tab is in.
 pub fn pane_destination(runner: &dyn Runner) -> PaneDestination {
+    let tab_id = crate::osext::env_str(launch::HERDR_TAB_VAR);
+    let binary = crate::osext::env_str(herdr::BIN_VAR);
     destination_for(
         runner,
-        crate::osext::env_str(launch::HERDR_TAB_VAR).as_deref(),
-        crate::osext::env_str(herdr::BIN_VAR).as_deref(),
+        PaneEnv {
+            tab_id: tab_id.as_deref(),
+            binary: binary.as_deref(),
+        },
     )
 }
 
+/// What herdr exported into this pane, as the pane shell reads it.
+///
+/// A struct rather than two `Option<&str>` parameters, which is what this was:
+/// the two are the same type, adjacent, and swapping them compiles clean and
+/// answers [`PaneDestination::HostShell`] for every pane on the machine -- a
+/// silent, total loss of the feature that nothing would catch.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct PaneEnv<'a> {
+    /// [`launch::HERDR_TAB_VAR`]: which tab, and the whole of the detection.
+    tab_id: Option<&'a str>,
+    /// [`herdr::BIN_VAR`]: which herdr, or none and a `PATH` lookup.
+    binary: Option<&'a str>,
+}
+
 /// [`pane_destination`], against a stated environment rather than this process's.
-fn destination_for(
-    runner: &dyn Runner,
-    tab_id: Option<&str>,
-    binary: Option<&str>,
-) -> PaneDestination {
-    let Some(tab_id) = tab_id.filter(|id| !id.is_empty()) else {
+fn destination_for(runner: &dyn Runner, host: PaneEnv<'_>) -> PaneDestination {
+    let Some(tab_id) = host.tab_id.filter(|id| !id.is_empty()) else {
         // Not in a manager's pane at all, which is the ordinary case for every
         // shell on a machine that has one, and the case this must be cheapest in:
         // no herdr is spawned and nothing is asked.
         return PaneDestination::HostShell;
     };
-    let binary = binary
+    let binary = host
+        .binary
         .filter(|path| !path.is_empty())
         .unwrap_or(launch::HERDR_BIN_FALLBACK);
     // One budget for the whole question. Spending it per call instead let a tab
@@ -930,14 +945,17 @@ mod tests {
         )
     }
 
-    /// The pane shell's two inputs for a pane herdr spawned in the tab named.
-    fn in_pane_of(tab_id: &str) -> (Option<&str>, Option<&str>) {
-        (Some(tab_id), Some(LENT_HERDR))
+    /// A pane herdr spawned in the tab named, with a herdr to ask.
+    fn in_pane_of(tab_id: &str) -> PaneEnv<'_> {
+        PaneEnv {
+            tab_id: Some(tab_id),
+            binary: Some(LENT_HERDR),
+        }
     }
 
-    /// [`destination_for`] against one of those pairs.
-    fn destination(runner: &ScriptedRunner, host: (Option<&str>, Option<&str>)) -> PaneDestination {
-        destination_for(runner, host.0, host.1)
+    /// [`destination_for`], named for what it answers.
+    fn destination(runner: &ScriptedRunner, host: PaneEnv<'_>) -> PaneDestination {
+        destination_for(runner, host)
     }
 
     fn argv(words: &[&str]) -> Vec<String> {
@@ -1176,7 +1194,7 @@ mod tests {
         let runner = ScriptedRunner::new();
         runner.on_unscripted(Unscripted::Panic);
         assert_eq!(
-            destination_for(&runner, None, None),
+            destination_for(&runner, PaneEnv::default()),
             PaneDestination::HostShell
         );
         assert_eq!(runner.call_count(), 0);
@@ -1189,7 +1207,13 @@ mod tests {
         let runner = ScriptedRunner::new();
         runner.on_unscripted(Unscripted::Panic);
         assert_eq!(
-            destination_for(&runner, Some(""), None),
+            destination_for(
+                &runner,
+                PaneEnv {
+                    tab_id: Some(""),
+                    ..PaneEnv::default()
+                }
+            ),
             PaneDestination::HostShell
         );
         assert_eq!(runner.call_count(), 0);
@@ -1230,6 +1254,29 @@ mod tests {
         runner.script(
             [LENT_HERDR, "pane", "process-info", "--pane", "w1:p1"],
             Response::stdout(process_info(&[&["bash"]])),
+        );
+        assert_eq!(
+            destination(&runner, in_pane_of("w1:t1")),
+            PaneDestination::HostShell
+        );
+    }
+
+    /// A pane herdr describes as running nothing at all. Distinct from a pane
+    /// running something that is not a transport: this one is the shape herdr
+    /// answers with when it could read the pty and found no foreground process,
+    /// and an empty list must read as "no workspace here" rather than reaching
+    /// anything that assumes a head.
+    #[test]
+    fn a_pane_with_no_foreground_process_holds_no_workspace() {
+        let runner = ScriptedRunner::new();
+        runner.on_unscripted(Unscripted::Panic);
+        runner.script(
+            [LENT_HERDR, "pane", "list"],
+            Response::stdout(pane_list(&[("w1:p1", "w1:t1", true)])),
+        );
+        runner.script(
+            [LENT_HERDR, "pane", "process-info", "--pane", "w1:p1"],
+            Response::stdout(process_info(&[])),
         );
         assert_eq!(
             destination(&runner, in_pane_of("w1:t1")),
@@ -1402,7 +1449,13 @@ mod tests {
             [launch::HERDR_BIN_FALLBACK, "pane", "list"],
             Response::stdout(pane_list(&[])),
         );
-        destination_for(&runner, Some("w1:t1"), None);
+        destination_for(
+            &runner,
+            PaneEnv {
+                tab_id: Some("w1:t1"),
+                ..PaneEnv::default()
+            },
+        );
         assert_eq!(runner.calls_to(launch::HERDR_BIN_FALLBACK).len(), 1);
     }
 
