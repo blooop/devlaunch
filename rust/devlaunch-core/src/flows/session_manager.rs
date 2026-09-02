@@ -533,7 +533,8 @@ fn alias_workspace(host: &str) -> Option<&str> {
     if host.contains('@') {
         return None;
     }
-    host.strip_suffix(ssh::HOST_SUFFIX).filter(|id| plausible(id))
+    host.strip_suffix(ssh::HOST_SUFFIX)
+        .filter(|id| plausible(id))
 }
 
 /// Whether a word taken from an argv can be a workspace id at all.

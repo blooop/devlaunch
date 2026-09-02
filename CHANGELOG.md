@@ -30,9 +30,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not a command string: measured on herdr 0.8.2, a two-word value fails the spawn
   with `ENOENT` naming the whole string as one path, and it fails when a pane is
   created rather than at config load, where `herdr config check` still says
-  `config: ok`. The name is a symlink beside `dl`, so it is on `PATH` wherever `dl`
-  is and is always the same build the pane re-enters; `dl` reads its own `argv[0]`
-  and turns it into `--herdr-shell`, so there is one code path.
+  `config: ok`. The name is a two-line script in `~/.local/bin` that runs
+  `dl --herdr-shell`, and it resolves `dl` through `PATH` rather than by absolute
+  path -- an absolute path is what `pixi global update` invalidates, and a
+  `default_shell` that has gone stale is a pane that will not open at all. The
+  script falls through to a shell itself if `dl` cannot be found, for the same
+  reason.
 
   Every failure opens the shell you would have got anyway -- no herdr, no tab, a
   socket that will not answer, an answer that is not JSON, a timeout -- because this

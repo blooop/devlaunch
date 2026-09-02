@@ -2803,6 +2803,7 @@ pub mod devlaunch_core::notices
 pub fn alloc::vec::Vec<T>::say(&mut self, T)
 pub mod devlaunch_core::osext
 pub fn devlaunch_core::osext::env_str(&str) -> core::option::Option<alloc::string::String>
+pub fn devlaunch_core::osext::home_dir() -> core::option::Option<std::path::PathBuf>
 pub mod devlaunch_core::runner
 pub use devlaunch_core::runner::<<devlaunch_runner::*>>
 pub mod devlaunch_core::shell
