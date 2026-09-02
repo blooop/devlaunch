@@ -1595,6 +1595,7 @@ pub fn devlaunch_core::flows::launch::UnquotableCommand::eq(&self, &devlaunch_co
 impl core::fmt::Debug for devlaunch_core::flows::launch::UnquotableCommand
 pub fn devlaunch_core::flows::launch::UnquotableCommand::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::launch::UnquotableCommand
+pub fn devlaunch_core::flows::launch::names_for(&devlaunch_core::flows::launch::Host, &str) -> (devlaunch_core::flows::launch::TerminalTitle, devlaunch_core::flows::launch::HerdrTabRename)
 pub fn devlaunch_core::flows::launch::plan(&str) -> core::result::Result<devlaunch_core::flows::launch::Plan, devlaunch_core::domain::workspace_id::UnsafeName>
 pub fn devlaunch_core::flows::launch::resolve_triple(&mut devlaunch_core::flows::listing::CommandContext<'_>, &mut dyn devlaunch_core::flows::launch::ColdMachinery<'_>, &devlaunch_core::domain::workspace_id::WorkspaceId, &mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::launch::LaunchNotice>, devlaunch_core::clients::devpod::Patience) -> core::result::Result<devlaunch_core::flows::launch::Resolution, devlaunch_core::clients::devpod::NotRun>
 pub mod devlaunch_core::flows::lifecycle
