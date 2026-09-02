@@ -7,6 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A `dl` launch inside herdr now names the herdr *tab* after the workspace, not
+  just the pane.** Naming the terminal has been one OSC 2 escape since it arrived,
+  deliberately: the escape reaches every multiplexer at once where a command reaches
+  one, so `dl` writes it and lets whoever owns the pty parse it. herdr parses it and
+  keeps it — measured on herdr 0.8.2, `dl rocker@nb1` leaves that pane's
+  `terminal_title` reading `rocker@nb1`, unmangled, with claude in the container
+  correctly suppressed — and then shows something else. A herdr tab label is a field
+  of its own, `custom_name` in herdr's `session.json`, it falls back to the tab
+  *number* when unset, and `herdr tab rename` is the only thing that writes it.
+  herdr publishes no option that would derive one from a pane title. So the name was
+  arriving, being stored, and never displayed.
+
+  **The symptom was a tab that read `4`,** and the reason it took measuring to find
+  is that every layer was working. `herdr pane list` had the right name in it the
+  whole time.
+
+  **What makes this different from `zellij action rename-tab`,** which the same
+  module still declines to call: detection. That argument is that finding out
+  whether zellij is there costs a probe, and a probe per launch is not worth a tab
+  label. herdr exports `HERDR_TAB_ID` into every pane it spawns, so this costs one
+  environment lookup that usually finds nothing and then does nothing.
+  `HERDR_BIN_PATH`, exported beside it, is the herdr asked, since the rename lands on
+  the socket of the server that owns the pane; a `PATH` lookup for `herdr` is the
+  fallback for a herdr too old to export one. The escape is still written and still
+  reaches herdr. This is a second target rather than a second mechanism.
+
+  **Stacking is what turned a nicety into a bug.** The escape goes to whichever
+  multiplexer owns the pty, and that is the innermost. Under `kitty -> zellij` it
+  reached zellij, which took it as the pane title and published
+  `<session> | <pane title>` upward, so the workspace name landed in the outer
+  terminal — which is what `docs/workspace-tools.md` has always promised. Put herdr
+  inside that zellij and the same escape stops one layer further in, and the layers
+  that used to display it never see it. Nothing in `dl` changed; a layer was added.
+  That is why this reads as a regression on a machine that gained herdr and as
+  nothing at all on a machine without it.
+
+  **It is the same feature, so it is the same switch.** `DEVLAUNCH_NO_TITLE=1` turns
+  the rename off with the escape and the container's `PS1` line, and a run whose
+  stderr is not a terminal renames nothing for the same reason it writes no escape.
+  All three go through one gate and one filter, so the tab and the pane cannot be
+  given different names and cannot disagree about whether to have one. Best-effort
+  throughout: the rename is spawned, never waited on and never reported, because a
+  stale tab id, an exited herdr server or a moved binary must not be able to cost
+  anyone a workspace, and a herdr that accepts a connection and never answers must
+  not be able to hold one hostage. Unlike the escape it sticks, since herdr persists
+  `custom_name`.
+
+  `HERDR_TAB_ID` and `HERDR_BIN_PATH` are the second and third herdr-specific words
+  in these binaries, after the `HERDR_AGENT` that 0.27.0 added, and they point the
+  other way: that one is a name `aid` writes for herdr to read, these are names herdr
+  exports for `dl` to read.
+
 ## [0.27.0] - 2026-09-01
 
 ### Added

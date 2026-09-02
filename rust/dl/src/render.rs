@@ -8,6 +8,7 @@
 use std::fmt::Write as _;
 use std::io;
 use std::path::Path;
+use std::process;
 
 use devlaunch_core::clients::devpod::{ListingUnreadable, NotAListing, NotRun, Workspace};
 use devlaunch_core::clients::devpod_home::RepointFailure;
@@ -2603,6 +2604,12 @@ pub(crate) fn launch_notice(notice: &LaunchNotice) -> Option<String> {
         // `Saying` writes it instead, which is the only sink that should.
         LaunchNotice::TerminalTitle(_) => return None,
 
+        // --- the herdr tab (no level either: a command, not a sentence)
+        //
+        // Same reason as the title above, plus one: this stage is best-effort, so
+        // a line saying it happened would be a claim the sink cannot back.
+        LaunchNotice::HerdrTab(_) => return None,
+
         // --- passed through from the layers below, in those modules' own words
         LaunchNotice::Cache(cache) => return cache_notice(cache),
         LaunchNotice::Lifecycle(notice) => return lifecycle_notice(notice),
@@ -2638,6 +2645,33 @@ impl Notices<LaunchNotice> for Saying {
                 let mut stderr = io::stderr();
                 let _ = stderr.write_all(osc.as_bytes());
                 let _ = stderr.flush();
+            }
+            return;
+        }
+        // The herdr tab, which no escape addresses. The other half of naming the
+        // terminal, and the binary's for the same reason: core writes to no stream
+        // and runs no command it was not handed a runner for.
+        //
+        // **Spawned and not waited on.** Every failure here is survivable and none
+        // of them is the launch's -- a stale tab id, a server that has exited, a
+        // binary that moved -- so nothing is checked, and a `herdr` that accepted
+        // the connection and never answered must not be able to hold a workspace
+        // hostage. The cost of not waiting is that dl does not reap it: one
+        // short-lived entry in the process table, against a hang with no timeout to
+        // bound it. Every stream is closed so it cannot write over the title that
+        // was just flushed, or read from a stdin the session is about to want.
+        if let LaunchNotice::HerdrTab(rename) = &notice {
+            // `split_first` rather than `argv[0]`, so the "a command always has a
+            // program" invariant is checked here instead of borrowed from the
+            // shape of the vector the other crate built.
+            if let Some((program, args)) = rename.argv().as_deref().and_then(<[&str]>::split_first)
+            {
+                let _ = process::Command::new(program)
+                    .args(args)
+                    .stdin(process::Stdio::null())
+                    .stdout(process::Stdio::null())
+                    .stderr(process::Stdio::null())
+                    .spawn();
             }
             return;
         }
@@ -3216,7 +3250,7 @@ mod tests {
     use std::path::PathBuf;
 
     use devlaunch_core::flows::kill::{HostProcess, Signalled};
-    use devlaunch_core::flows::launch::TerminalTitle;
+    use devlaunch_core::flows::launch::{HerdrTabRename, TerminalTitle};
     use devlaunch_core::flows::listing::{SourceDescription, SourceKind};
 
     use super::*;
@@ -3862,6 +3896,26 @@ mod tests {
             .iter()
             .all(|line| !line.contains('\x1b')),
             "no escape reaches a collected report"
+        );
+    }
+
+    #[test]
+    fn the_herdr_tab_rename_is_not_a_line_either() {
+        // It is a command to run, not a sentence to print. A line here would put
+        // `herdr tab rename ...` into every collected report and into the tests
+        // that read a launch's words, and would say it whether or not it worked --
+        // which is the one thing this stage promises not to claim.
+        assert_eq!(
+            launch_notice(&LaunchNotice::HerdrTab(HerdrTabRename::Run {
+                bin: "herdr".to_owned(),
+                tab_id: "w8:tB".to_owned(),
+                label: "devlaunch@nb3".to_owned(),
+            })),
+            None
+        );
+        assert_eq!(
+            launch_notice(&LaunchNotice::HerdrTab(HerdrTabRename::Off)),
+            None
         );
     }
 
