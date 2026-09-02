@@ -28,6 +28,7 @@
 //! not be wired up, which is the wrong way round.
 
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use crate::clients::herdr::{self, Reporting};
 use crate::clients::kill::{self, Signal};
@@ -378,17 +379,24 @@ fn destination_for(
     let binary = binary
         .filter(|path| !path.is_empty())
         .unwrap_or(launch::HERDR_BIN_FALLBACK);
-    let Some(panes) = ask(runner, binary, &herdr::pane_list_argv())
+    // One budget for the whole question. Spending it per call instead let a tab
+    // of N panes cost `ANSWER_WITHIN * (N + 1)`, and nothing bounds N.
+    let mut budget = Budget::of(herdr::ANSWER_WITHIN);
+    let Some(panes) = ask(runner, binary, &herdr::pane_list_argv(), &mut budget)
         .as_deref()
         .and_then(herdr::panes_in)
     else {
         return PaneDestination::HostShell;
     };
     for pane in in_tab(tab_id, &panes) {
-        let Some(info) = ask(runner, binary, &herdr::process_info_argv(&pane.pane_id))
-            .as_deref()
-            .and_then(herdr::process_info_in)
-        else {
+        let Some(info) = ask(
+            runner,
+            binary,
+            &herdr::process_info_argv(&pane.pane_id),
+            &mut budget,
+        )
+        .as_deref()
+        .and_then(herdr::process_info_in) else {
             continue;
         };
         if let Some(workspace_id) = workspace_among(&info) {
@@ -398,16 +406,51 @@ fn destination_for(
     PaneDestination::HostShell
 }
 
+/// What is left of the time the whole question may take.
+///
+/// A budget rather than a deadline, because the [`Runner`] seam takes a duration
+/// per call and knows nothing about wall-clock instants -- which is also what
+/// makes this testable without a clock: a test reads the durations the calls were
+/// given and adds them up.
+struct Budget {
+    left: Duration,
+}
+
+impl Budget {
+    fn of(total: Duration) -> Self {
+        Self { left: total }
+    }
+
+    /// What the next call may take, or `None` when the budget is gone.
+    ///
+    /// `None` stops the questioning rather than asking with no bound: a run that
+    /// has already spent the whole budget is a herdr that is not answering, and
+    /// the caller reads that as no workspace, which is a shell.
+    fn next(&self) -> Option<Duration> {
+        (!self.left.is_zero()).then_some(self.left)
+    }
+
+    /// Charge what a call actually cost.
+    ///
+    /// Saturating, so a call that overran leaves nothing rather than wrapping.
+    fn spend(&mut self, taken: Duration) {
+        self.left = self.left.saturating_sub(taken);
+    }
+}
+
 /// Ask herdr one question, and treat every way of not answering alike.
 ///
 /// stdout only, and only when the call succeeded: herdr writes its refusals as
 /// well-formed JSON on a non-zero exit, so a caller that read those would be
 /// parsing an envelope with no `result` in it to reach the same `None` this
 /// returns for free.
-fn ask(runner: &dyn Runner, program: &str, args: &[String]) -> Option<String> {
+fn ask(runner: &dyn Runner, program: &str, args: &[String], budget: &mut Budget) -> Option<String> {
     let spec = SpawnSpec::new(Invocation::new(program.to_owned()).with_args(args.iter().cloned()))
-        .with_timeout(herdr::ANSWER_WITHIN);
-    match runner.capture(&spec) {
+        .with_timeout(budget.next()?);
+    let started = Instant::now();
+    let outcome = runner.capture(&spec);
+    budget.spend(started.elapsed());
+    match outcome {
         Outcome::Ran { exit, io } if exit.is_success() => Some(io.stdout),
         // A refusal, a herdr that is not installed, a timeout, an OS that would
         // not start it: four facts, one consequence.
@@ -1268,6 +1311,75 @@ mod tests {
                 call.spec().and_then(|spec| spec.timeout),
                 Some(herdr::ANSWER_WITHIN),
                 "{:?} is unbounded",
+                call.argv()
+            );
+        }
+    }
+
+    /// The bound is on the whole question, not on each part of it.
+    ///
+    /// The per-call spelling that came first let a tab of N panes cost
+    /// `ANSWER_WITHIN * (N + 1)` -- a ten-pane tab against a herdr that accepts and
+    /// never answers held the new pane for five and a half seconds, while three
+    /// separate comments promised half a second "for the lot", and nothing bounds
+    /// N.
+    ///
+    /// Asserted on [`Budget`] rather than on a run, and that is a real limit worth
+    /// stating: the scripted runner answers instantly, so a run through it spends
+    /// nothing and every call is granted the whole remaining budget. Summing the
+    /// grants would therefore assert a property the design does not have. What
+    /// bounds the wall clock is this type -- a call that burns its grant leaves
+    /// nothing for the next one, and `next()` then declines to ask at all rather
+    /// than asking unbounded.
+    #[test]
+    fn a_spent_budget_stops_the_questioning_rather_than_unbounding_it() {
+        let mut budget = Budget::of(Duration::from_millis(500));
+        assert_eq!(budget.next(), Some(Duration::from_millis(500)));
+
+        budget.spend(Duration::from_millis(400));
+        assert_eq!(
+            budget.next(),
+            Some(Duration::from_millis(100)),
+            "the second question was granted the first one's budget again"
+        );
+
+        budget.spend(Duration::from_millis(100));
+        assert_eq!(
+            budget.next(),
+            None,
+            "a spent budget asked anyway, and with no bound on the answer"
+        );
+
+        // A call that overran its grant leaves nothing, rather than wrapping into
+        // a budget larger than the one it started with.
+        budget.spend(Duration::from_secs(9));
+        assert_eq!(budget.next(), None);
+    }
+
+    /// And no single question may be granted more than the whole.
+    #[test]
+    fn no_question_is_granted_more_than_the_whole_budget() {
+        let runner = ScriptedRunner::new();
+        runner.script(
+            [LENT_HERDR, "pane", "list"],
+            Response::stdout(pane_list(&[
+                ("w1:p1", "w1:t1", true),
+                ("w1:p2", "w1:t1", false),
+            ])),
+        );
+        runner.script(
+            [LENT_HERDR, "pane", "process-info"],
+            Response::stdout(process_info(&[&["bash"]])),
+        );
+        destination(&runner, in_pane_of("w1:t1"));
+
+        let calls = runner.calls_to(LENT_HERDR);
+        assert!(!calls.is_empty(), "herdr was never asked");
+        for call in calls {
+            let granted = call.spec().and_then(|spec| spec.timeout);
+            assert!(
+                granted.is_some_and(|grant| grant <= herdr::ANSWER_WITHIN),
+                "{:?} was granted {granted:?}",
                 call.argv()
             );
         }
