@@ -42,8 +42,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reading `7`.
 
   The tab and the pane are still never given different answers. `names_for` returns
-  both, so a caller cannot ask for a title without a rename, and the invariant is a
-  property of the seam rather than one call site's discipline.
+  both halves, so there is no way to ask a host for half of its answer. It does not
+  make the pair unforgeable, and does not need to: both enums are `pub` because the
+  sink matches on them, and the only two producers are that function and the launch
+  path above it.
+
+  The name is derived through `plan`, which is the parse boundary rather than a
+  second reading of one, so a spec `dl` will refuse is not named either. Deriving it
+  from `spec::parse` alone named `..` and `-weird` on a tab for a launch that then
+  failed with `UnsafeName`, and herdr persists `custom_name`.
 
 ## [0.28.0] - 2026-09-02
 

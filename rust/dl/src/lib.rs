@@ -301,6 +301,7 @@ pub fn interactive_terminal() -> bool {
 /// | `owner/repo@ref` | `repo@ref` | the same, unless a record holds a legacy id |
 /// | `owner/repo` | `repo` | `repo@<default branch>` |
 /// | an existing workspace name | itself | the same |
+/// | anything else `plan` cannot classify | itself | the launch refuses it |
 /// | a path, or a source URL | nothing | the leaf devpod resolves |
 ///
 /// So two of the four rows are corrected by the launch a moment later, and that is

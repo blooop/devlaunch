@@ -726,9 +726,12 @@ resolving it costs a record lookup and, for an `owner/repo` with no ref, a
 | a path, or a source URL | nothing | the leaf devpod resolves |
 
 So two rows are corrected a moment later, and a tab reading `rocker` while you type
-and `rocker@main` afterwards beats one reading `7`. The tab and the pane are still
-never given different answers: both are written together at both points, which is
-what one pair-returning call rather than two constructors buys.
+and `rocker@main` afterwards beats one reading `7`. A spec that names nothing
+`dl` will accept is not named at all, because the name is derived through the same
+`plan` that refuses it.
+
+The tab and the pane are still never given different answers: both are written
+together at both points, from one call that has no way to return half an answer.
 
 ## Telling a session manager which agent is running
 

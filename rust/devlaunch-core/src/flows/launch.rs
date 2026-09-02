@@ -2505,11 +2505,17 @@ impl HerdrTabRename {
 /// name, on the tab a person is scanning to find the pane they are typing into.
 ///
 /// **One call returning both, rather than two the caller pairs up.** The invariant
-/// this protects is the one [`attach_workspace`]'s caller states: the tab and the
-/// pane go through one [`naming_gate`] and one [`sanitize_title`], so they cannot
-/// be given different names or disagree about whether to have one. A caller that
-/// could ask for a title without a rename could break that from outside the module,
-/// which is the whole reason this is a function and not two `pub` constructors.
+/// this serves is the one [`attach_workspace`]'s caller states: the tab and the pane
+/// go through one [`naming_gate`] and one [`sanitize_title`], so they cannot be
+/// given different names or disagree about whether to have one.
+///
+/// What this buys is exact and worth not overstating: **there is no way to ask this
+/// host for half of its answer.** It does not make the pair unforgeable -- both
+/// enums are `pub` and their variants with them, because the sink in `dl` matches on
+/// them, so anything could hand-build a [`TerminalTitle::Write`] with no rename
+/// beside it. Making that impossible would mean private variants and constructor
+/// functions, which is a different change; nothing needs it, because the only two
+/// producers are this function and the launch path above it.
 ///
 /// What an early name and the launch's later one *may* differ in is the name
 /// itself, and that is not a violation of the above: both are written as a pair, so
