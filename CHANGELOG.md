@@ -32,14 +32,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `~/.claude` was reading an answer the host had given months ago. That is why this
   looked like it only happened to some repos.
 
+  **Where that file is is not where the config directory is,** and the first
+  version of this got it wrong in the way that reports success and changes nothing.
+  Claude Code resolves the two halves of its configuration differently, and only one
+  defaults into `~/.claude`:
+
+  ```text
+  globalConfig: join(CLAUDE_CONFIG_DIR || homedir(), ".claude.json")
+  userSettings: join(CLAUDE_CONFIG_DIR || join(homedir(), ".claude"), "settings.json")
+  ```
+
+  So the seed goes to `$CLAUDE_CONFIG_DIR/.claude.json` where that is set and
+  `$HOME/.claude.json` where it is not, beside the config directory rather than
+  inside it. Seeding the directory either way was measured doing nothing at all in a
+  container with the variable unset, over a stage reporting `ok`.
+
   **Only where the file is absent,** which is the whole of the condition and is what
-  lets it sit in front of the probe that decides who owns the directory. A directory
-  somebody else owns arrives with the host's own `.claude.json` in it, so there is
-  nothing to seed and nothing of the host's is edited: merging a key into a file
-  that is already there would need JSON in a POSIX shell and would be a write into
-  the host's real config, on precisely the mounts the Claude client declines to
-  forward over. It records one boolean and carries no secret. There is no
-  environment variable that turns the gate off.
+  lets it sit in front of the probe that decides who owns the directory. Merging a
+  key into a file that is already there would need JSON in a POSIX shell and would
+  be a write over the host's real config, on precisely the mounts the Claude client
+  declines to forward over. It records one boolean and carries no secret. There is
+  no environment variable that turns the gate off.
+
+  Nothing is ever overwritten, and that is the promise rather than the stronger one.
+  A host that points `CLAUDE_CONFIG_DIR` at `~/.claude` has a `.claude.json` in
+  there already and it is left alone. A host that does not keeps its config at
+  `~/.claude.json`, so its `~/.claude/` holds none, and a container that mounts that
+  directory and pins `CLAUDE_CONFIG_DIR` to it gains one, which appears on the host
+  too. That is the one boolean, it is what makes `claude` in that container start,
+  and the host's own `claude` does not read it.
+
+  A dangling `.claude.json` symlink is not followed: `[ -e ]` resolves the link, so
+  a dangling one reads as absent and the redirection behind it creates the target.
+  Measured writing the seed outside the directory it was given, at exit 0. The guard
+  asks `-L` as well, and the write is create-exclusive so the guard cannot be raced
+  by a `postCreate` or a dotfiles apply running beside it.
 
   Neither opt-out reaches it, and both would be the wrong owner.
   `DEVLAUNCH_NO_TOOLS=1` is about installing tools and this installs none;

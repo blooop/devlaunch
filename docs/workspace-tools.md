@@ -101,17 +101,39 @@ question. So "the token is not arriving" and "the token is arriving and the wiza
 is in front of it" look identical from the outside and are fixed by opposite
 things.
 
-The setup pass therefore seeds that one key, in a config directory that has no
-`.claude.json` at all. It records a fact and carries no secret. There is no
-environment variable that turns the gate off; the flag in that file is the only
-thing it reads.
+The setup pass therefore seeds that one key, where there is no `.claude.json` at
+all. It records a fact and carries no secret. There is no environment variable that
+turns the gate off; the flag in that file is the only thing it reads.
+
+**Where that file is is not where the config directory is,** and getting this wrong
+is a fix that reports success and changes nothing. Claude Code resolves the two
+halves of its configuration differently, and only one of them defaults into
+`~/.claude`:
+
+```text
+globalConfig: join(CLAUDE_CONFIG_DIR || homedir(), ".claude.json")
+userSettings: join(CLAUDE_CONFIG_DIR || join(homedir(), ".claude"), "settings.json")
+```
+
+So with the variable set the file is `$CLAUDE_CONFIG_DIR/.claude.json`, and with it
+unset the file is `$HOME/.claude.json`, beside the config directory rather than
+inside it. The first version of this seeded the config directory either way and was
+measured doing nothing at all in a container with the variable unset.
 
 **Only where the file is absent,** which is the whole of the condition and is what
-keeps it from needing the ownership question the next section answers. A directory
-somebody else owns arrives with the host's own `.claude.json` sitting in it, a repo
-that bind-mounts `~/.claude` and this repo's own devcontainer among them, so there
-is nothing to seed and nothing of yours is edited. Claude Code merges its own keys
-over a file it finds, so seeding ahead of its first run costs that run nothing.
+keeps it from needing the ownership question the next section answers. Claude Code
+merges its own keys over a file it finds, so seeding ahead of its first run costs
+that run nothing.
+
+Nothing is ever overwritten, and that is the promise rather than the stronger one
+it would be nice to make. A config directory bind-mounted from your host that
+already holds a `.claude.json` is left untouched, which covers every host that
+points `CLAUDE_CONFIG_DIR` at `~/.claude`. A host that does not, and so keeps its
+own config at `~/.claude.json`, has a `~/.claude/` with no `.claude.json` in it: a
+container that mounts that directory and sets `CLAUDE_CONFIG_DIR` to it will gain
+one, and the file will therefore appear on your host too. It is the one boolean, it
+is what makes `claude` in that container work at all, and your own `claude` does not
+read it.
 
 **Neither opt-out reaches it,** and both would be the wrong owner.
 `DEVLAUNCH_NO_TOOLS=1` is about installing tools, and seeding a boolean installs
