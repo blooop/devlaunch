@@ -85,6 +85,68 @@ The cost is that the access token is short-lived, hours rather than days, and a
 variable cannot be refreshed in place. This is the same caveat the GitHub token
 has, for the same reason: see "When the token changes" above.
 
+### The wizard in front of it
+
+A token is not the only thing standing between `claude` and a prompt. Claude Code
+asks, before it consults a credential of any kind, whether first-time setup has
+been done in this config directory, and what it asks is `hasCompletedOnboarding`
+in `.claude.json`. A container whose config directory nothing has ever written
+answers no, so it shows the theme picker and then `Select login method` while
+holding a forwarded token that already works.
+
+The split is what made this confusing to diagnose. `dl <ws> -- claude -p "say OK"`
+answers from the forwarded token in the same workspace, in the same second, that
+the interactive `claude` asks you to log in: print mode never asks the onboarding
+question. So "the token is not arriving" and "the token is arriving and the wizard
+is in front of it" look identical from the outside and are fixed by opposite
+things.
+
+The setup pass therefore seeds that one key, where there is no `.claude.json` at
+all. It records a fact and carries no secret. There is no environment variable that
+turns the gate off; the flag in that file is the only thing it reads.
+
+**Where that file is is not where the config directory is,** and getting this wrong
+is a fix that reports success and changes nothing. Claude Code resolves the two
+halves of its configuration differently, and only one of them defaults into
+`~/.claude`:
+
+```text
+globalConfig: join(CLAUDE_CONFIG_DIR || homedir(), ".claude.json")
+userSettings: join(CLAUDE_CONFIG_DIR || join(homedir(), ".claude"), "settings.json")
+```
+
+So with the variable set the file is `$CLAUDE_CONFIG_DIR/.claude.json`, and with it
+unset the file is `$HOME/.claude.json`, beside the config directory rather than
+inside it. The first version of this seeded the config directory either way and was
+measured doing nothing at all in a container with the variable unset.
+
+**Only where the file is absent,** which is the whole of the condition and is what
+keeps it from needing the ownership question the next section answers. Claude Code
+merges its own keys over a file it finds, so seeding ahead of its first run costs
+that run nothing.
+
+Nothing is ever overwritten, and that is the promise rather than the stronger one
+it would be nice to make. A config directory bind-mounted from your host that
+already holds a `.claude.json` is left untouched, which covers every host that
+points `CLAUDE_CONFIG_DIR` at `~/.claude`. A host that does not, and so keeps its
+own config at `~/.claude.json`, has a `~/.claude/` with no `.claude.json` in it: a
+container that mounts that directory and sets `CLAUDE_CONFIG_DIR` to it will gain
+one, and the file will therefore appear on your host too. It is the one boolean, it
+is what makes `claude` in that container work at all, and your own `claude` does not
+read it.
+
+**Neither opt-out reaches it,** and both would be the wrong owner.
+`DEVLAUNCH_NO_TOOLS=1` is about installing tools, and seeding a boolean installs
+nothing. `DEVLAUNCH_NO_CLAUDE_TOKEN=1` says do not put your credential in this
+container, which is a different sentence from "make me answer the theme picker":
+a workspace opted out still reaches its login screen, because there is no
+credential rather than because a flag was missing.
+
+Which repos this was actually visible in: the ones with no `.devcontainer/` of
+their own. They get devpod's fallback image and a virgin config directory, where a
+repo whose devcontainer mounts `~/.claude` was reading a `.claude.json` that had
+answered the question on the host months ago.
+
 ### Who gets the Claude token
 
 Fewer things than get the GitHub one, deliberately. The GitHub token goes into
@@ -693,6 +755,45 @@ renames nothing for the same reason it writes no escape.
 Unlike the escape, the rename **sticks**. herdr persists `custom_name`, so a tab
 named by a launch keeps that name after the workspace is closed, until something
 renames it again.
+
+### The window `aid` used to leave unnamed
+
+Naming happens on the launch, and `aid` with no prompt on the line does not launch
+straight away: it boots the workspace in the background and asks for the prompt
+while it does, which is the whole point of that mode. So there was a window with a
+booting container, a person typing, and a tab still showing whatever it showed
+before. Measured on live herdr 0.8.2, with `dl` and `aid` built from one commit:
+
+| launch | tab label |
+|---|---|
+| `dl blooop/rocker@nb1` | `rocker@nb1` within 6s |
+| `aid --claude blooop/rocker@nb1 'prompt'` | `rocker@nb1` within 6s |
+| `aid blooop/rocker@nb1` | unchanged for the whole editor window, 40s in |
+| the same tab, after the prompt was submitted | `rocker@nb1` within 6s |
+
+`aid` names both halves itself now, before the banner and after the boot spawns,
+through the same pair the launch uses. The boot child cannot do it: its stdout and
+stderr are a log file, so the gate refuses it a name, and correctly, because an OSC
+escape written into a log is not a title.
+
+**The name is what the spec says rather than what it resolves to,** because
+resolving it costs a record lookup and, for an `owner/repo` with no ref, a
+`git ls-remote` for the default branch. An editor may not wait behind either.
+
+| spec | named while you type | the launch then says |
+|---|---|---|
+| `owner/repo@ref` | `repo@ref` | the same |
+| `owner/repo` | `repo` | `repo@<default branch>` |
+| an existing workspace name | itself | the same |
+| a path, or a source URL | nothing | the leaf devpod resolves |
+
+So two rows are corrected a moment later, and a tab reading `rocker` while you type
+and `rocker@main` afterwards beats one reading `7`. A spec that names nothing
+`dl` will accept is not named at all, because the name is derived through the same
+`plan` that refuses it.
+
+The tab and the pane are still never given different answers: both are written
+together at both points, from one call that has no way to return half an answer.
 
 ## Telling a session manager which agent is running
 

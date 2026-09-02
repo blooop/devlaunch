@@ -170,6 +170,17 @@ pub(crate) fn collect_prompt(parsed: AidArgs) -> (AidArgs, Option<BootChild>) {
     let Some(boot) = BootChild::spawn(&crate::rewrite::build_boot_args(&parsed)) else {
         return (parsed, None);
     };
+    // Name the pane and the tab now, because the launch that would name them is
+    // behind the editor and the editor is where the waiting happens. Deliberately
+    // *after* the boot spawns and before the banner: the boot is what the name is
+    // about, and a name written in front of a spawn that failed would be a name for
+    // a launch that then runs serially and names itself anyway.
+    //
+    // The boot child cannot do this for us. Its stdout and stderr are a log file,
+    // so `naming_gate` refuses it a name, and rightly: an OSC escape written into a
+    // log is not a title. That gate is also why this is a foreground call rather
+    // than something handed to `BootChild`.
+    dl::name_before_launch(&parsed.spec);
     banner(&parsed);
     let typed = dl::read_terminal_submission();
     (parsed.with_prompt(typed), Some(boot))
