@@ -480,27 +480,60 @@ fn workspace_named_by(argv: &[String]) -> Option<&str> {
         return rest.next().map(String::as_str).filter(|id| plausible(id));
     }
     if program == ssh::PROGRAM {
-        return argv[1..]
-            .iter()
-            .filter_map(|arg| alias_workspace(arg))
-            .find(|id| plausible(id));
+        return ssh_host(&argv[1..]).and_then(alias_workspace);
     }
     None
 }
 
-/// The workspace an `ssh` argument names, when it is the alias devpod published.
+/// The host an `ssh` argv connects to: its first positional argument.
 ///
-/// Two guards, and both are about the arguments surrounding the alias rather than
-/// about the alias. A path may end in the suffix (`-F ~/.ssh/x.devpod`) and an
-/// option value may contain it (`-o ControlPath=...`), and neither is a host to
-/// connect to; a published alias is a bare `<id>.devpod` carrying no `/` and no
-/// `=`. The remote payload is one argument holding a whole `bash -lc` line, and
-/// the same two guards exclude it.
-fn alias_workspace(arg: &str) -> Option<&str> {
-    if arg.contains('/') || arg.contains('=') {
+/// A value-taking option's value is skipped **with** the option, which is the
+/// whole of what this adds over scanning for the suffix. The scan that came first
+/// guarded on the characters in an argument -- no `/`, no `=` -- and a `-F` config
+/// path with neither passed it: a sibling pane running
+/// `ssh -F myconf.devpod somehost`, which has nothing to do with devlaunch, made
+/// the pane shell claim the workspace `myconf` and then close, reproduced against
+/// live herdr 0.8.2. An argument's meaning is its position, not its spelling.
+///
+/// The list is OpenSSH's, not dl's. dl emits `-F` and `-o` and nothing else, so a
+/// list of two would serve every argv this crate builds -- and this is read
+/// against argvs the *user* wrote, in a sibling pane, where any of them can
+/// appear. `-o` is on it twice over: `ssh -o SendEnv=X host` and
+/// `ssh -oSendEnv=X host` are both legal, and the attached form needs no skip
+/// because it is not a bare word.
+fn ssh_host(args: &[String]) -> Option<&str> {
+    const TAKES_A_VALUE: &[&str] = &[
+        "-B", "-b", "-c", "-D", "-E", "-e", "-F", "-I", "-i", "-J", "-L", "-l", "-m", "-O", "-o",
+        "-p", "-Q", "-R", "-S", "-W", "-w",
+    ];
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        if TAKES_A_VALUE.contains(&arg.as_str()) {
+            // The value is the next word, whatever it looks like.
+            rest.next();
+        } else if !arg.starts_with('-') {
+            return Some(arg);
+        }
+        // Anything else starting with `-` is a bundle of flags taking no value
+        // (`-t`, `-tt`, `-nNT`) or an option with its value attached (`-oX=y`).
+        // Neither is a host and neither eats the word after it.
+    }
+    None
+}
+
+/// The workspace a host name is the alias for, or `None` if it is somebody's own
+/// host that happens to end the same way.
+///
+/// [`ssh_host`] has already established that this argument is the host, so what is
+/// left is only whether devpod published it. A `user@` prefix is refused rather
+/// than stripped: devpod publishes a bare alias and dl passes it through
+/// unchanged, so a host carrying one is not an alias dl wrote, and guessing which
+/// half of it is the workspace is how a launch gets handed a name nobody has.
+fn alias_workspace(host: &str) -> Option<&str> {
+    if host.contains('@') {
         return None;
     }
-    arg.strip_suffix(ssh::HOST_SUFFIX)
+    host.strip_suffix(ssh::HOST_SUFFIX).filter(|id| plausible(id))
 }
 
 /// Whether a word taken from an argv can be a workspace id at all.
@@ -905,6 +938,45 @@ mod tests {
                 "-t",
                 "real-ws-3j1t.devpod",
                 "bash -lc 'true'",
+            ])),
+            Some("real-ws-3j1t")
+        );
+    }
+
+    /// The defect: the guards above are about the *characters* in an argument, so
+    /// a `-F` config path with no `/` in it passed all of them and was read as the
+    /// host. Reproduced against live herdr 0.8.2 -- a sibling pane running
+    /// `ssh -F myconf.devpod -o ProxyCommand=... somehost`, which has nothing to do
+    /// with devlaunch, made the pane shell claim the workspace `myconf`.
+    ///
+    /// An argument's meaning comes from its position, not its spelling: the value
+    /// of a value-taking option is never a host.
+    #[test]
+    fn an_option_value_that_ends_in_the_suffix_is_not_the_host() {
+        assert_eq!(
+            workspace_named_by(&argv(&[
+                "ssh",
+                "-F",
+                "myconf.devpod",
+                "-o",
+                "ProxyCommand=sleep 600",
+                "somehost",
+            ])),
+            None
+        );
+    }
+
+    /// And where both are present, the host is the one that is a host.
+    #[test]
+    fn a_config_path_does_not_win_over_the_alias_beside_it() {
+        assert_eq!(
+            workspace_named_by(&argv(&[
+                "ssh",
+                "-F",
+                "myconf.devpod",
+                "-t",
+                "real-ws-3j1t.devpod",
+                "bash -lc true",
             ])),
             Some("real-ws-3j1t")
         );
