@@ -411,13 +411,33 @@ mod tests {
     /// as prepared by a probe that only looked for the binary.
     #[test]
     fn the_probe_checks_the_binary_the_hook_and_the_settings() {
-        let command = probe_command(17_740_520);
+        let command = probe_command(17_740_520, "/tmp/devlaunch-herdr-w1-p3.sock");
         assert!(command.contains(CONTAINER_BINARY));
         assert!(command.contains(CONTAINER_HOOK));
         assert!(command.contains(CONTAINER_SETTINGS));
         assert!(
             command.contains("17740520"),
             "the probe does not compare the size: {command}"
+        );
+    }
+
+    /// The fourth thing, which no other check can stand in for.
+    ///
+    /// The forward is detached: its stderr is `/dev/null` and nothing waits for
+    /// its exit, so a container whose user cannot bind the listen path -- a
+    /// root-owned `/tmp`, a stale root-owned socket -- reports a pid and then
+    /// nothing. The probe is where that becomes visible, and it answers with a
+    /// status of its own because no amount of lending fixes it.
+    #[test]
+    fn the_probe_asks_whether_the_socket_arrived() {
+        let command = probe_command(17_740_520, "/tmp/devlaunch-herdr-w1-p3.sock");
+        assert!(
+            command.starts_with("test -S /tmp/devlaunch-herdr-w1-p3.sock"),
+            "the socket is not asked about first: {command}"
+        );
+        assert!(
+            command.contains(&format!("exit {PROBE_NO_SOCKET}")),
+            "a missing socket answers like any other failure: {command}"
         );
     }
 
@@ -715,10 +735,12 @@ impl Reporting {
     /// "unrepresentable rather than documented" move a keyed socket would be, at
     /// the cost of one handshake.
     ///
-    /// `ExitOnForwardFailure=yes` is what makes a failure visible at all: without
-    /// it the warning is emitted below the alias's `LogLevel error` and the session
-    /// carries on with no socket, which is the silent half-working state this whole
-    /// feature exists to remove.
+    /// `ExitOnForwardFailure=yes` is what makes this connection *end* when the
+    /// bind fails, rather than sit there having achieved nothing: the warning
+    /// itself is emitted below the alias's `LogLevel error` and nobody sees it,
+    /// and a detached child's streams go nowhere anyway. What makes the failure
+    /// visible is the probe, which asks the container whether the socket arrived
+    /// ([`probe_command`], and `PROBE_NO_SOCKET` for the answer).
     pub(crate) fn forward_argv(&self, config: &Path, workspace_id: &str) -> Vec<String> {
         vec![
             super::ssh::PROGRAM.to_owned(),
@@ -816,14 +838,29 @@ fn sanitised(pane_id: &str) -> String {
         .collect()
 }
 
-/// Whether the container already has this binary and this hook.
+/// The probe's exit status when the forwarded socket is not in the container.
+///
+/// A number of its own because it is the one probe answer that cannot be repaired
+/// by lending anything: the binary and the hook are dl's to install, and the
+/// socket is the forward's to deliver. Ten and not one, so it cannot be confused
+/// with a `test` that simply said no.
+pub(crate) const PROBE_NO_SOCKET: i32 = 10;
+
+/// Whether the container has the socket, this binary and this hook.
 ///
 /// Answers by exit status rather than by output, so the caller has nothing to
-/// parse. The size comparison is the same one the host-side marker makes, asked of
-/// the container this time.
-pub(crate) fn probe_command(host_binary_len: u64) -> String {
+/// parse. The size comparison is asked of the container because the container is
+/// the only thing that knows what it is holding.
+///
+/// The socket is asked about first and answers with [`PROBE_NO_SOCKET`], because
+/// it fails for a different reason and is fixed a different way. It is also the
+/// only check here that a *detached* forward cannot report on itself: its stderr
+/// goes to `/dev/null` and nothing waits for its exit, so a container that cannot
+/// bind the listen path would otherwise be announced as reporting.
+pub(crate) fn probe_command(host_binary_len: u64, container_socket: &str) -> String {
     format!(
-        "test -x {CONTAINER_BINARY} \
+        "test -S {container_socket} || exit {PROBE_NO_SOCKET}; \
+         test -x {CONTAINER_BINARY} \
          && test \"$(stat -c %s {CONTAINER_BINARY})\" = {host_binary_len} \
          && test -x {CONTAINER_HOOK} \
          && test -f {CONTAINER_SETTINGS}"

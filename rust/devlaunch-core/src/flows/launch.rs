@@ -2082,21 +2082,28 @@ fn begin_reporting(
             }
         },
     };
-    if let session_manager::Prepared::Refused { reason } =
-        session_manager::prepare(session.runner, &config, workspace_id, &reporting)
-    {
-        notices.say(LaunchNotice::SessionManagerUnavailable { reason });
-        return None;
-    }
-    match session_manager::start_forward(session.runner, &config, workspace_id, &reporting) {
-        Ok(forward) => {
+    // The forward first, because what `prepare` asks the container includes
+    // whether this forward's socket arrived -- and nothing on this end can ask
+    // that, since a detached child's stderr goes nowhere and nothing waits for its
+    // exit. A refusal from here therefore has a forward to take back down.
+    let forward =
+        match session_manager::start_forward(session.runner, &config, workspace_id, &reporting) {
+            Ok(forward) => forward,
+            Err(reason) => {
+                notices.say(LaunchNotice::SessionManagerUnavailable { reason });
+                return None;
+            }
+        };
+    match session_manager::prepare(session.runner, &config, workspace_id, &reporting) {
+        session_manager::Prepared::Ready => {
             notices.say(LaunchNotice::SessionManagerReady {
                 pane_id: reporting.pane_id().to_owned(),
                 socket: reporting.container_socket(),
             });
             Some((reporting, forward))
         }
-        Err(reason) => {
+        session_manager::Prepared::Refused { reason } => {
+            forward.stop(session.runner);
             notices.say(LaunchNotice::SessionManagerUnavailable { reason });
             None
         }
