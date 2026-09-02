@@ -225,15 +225,6 @@ pub(crate) fn sighup_arrived_ignored() -> bool {
     SIGHUP_ARRIVED_IGNORED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// Whether the process was started under the name herdr's `default_shell` holds.
-///
-/// `main` asks, because argv[0] is a property of the process and not of the
-/// command line — see [`pane_shell`] for why the entry point is a second name at
-/// all rather than a flag anyone could type.
-pub fn invoked_as_pane_shell(program: Option<&std::ffi::OsStr>) -> bool {
-    pane_shell::invoked_as(program)
-}
-
 pub fn install_signal_handlers() {
     extern "C" fn drain(signal: libc::c_int) {
         // SAFETY: called only as a signal handler; `cleanup_and_exit` is

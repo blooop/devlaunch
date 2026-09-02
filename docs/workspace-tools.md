@@ -908,7 +908,7 @@ Point herdr's `default_shell` at `dl-herdr-shell` and the new pane asks:
 
 ```toml
 [terminal]
-default_shell = "/home/you/.pixi/bin/dl-herdr-shell"
+default_shell = "/home/you/.local/bin/dl-herdr-shell"
 ```
 
 `dl --install` writes the name and prints that line with your own path in it. Run
@@ -931,10 +931,30 @@ and it fails at the moment a pane is created rather than at config load, where
 `herdr config check` still says `config: ok`. So the entry point has to be a name
 that needs no arguments.
 
-It is a symlink beside `dl` rather than a second binary, for two reasons. It is on
-`PATH` wherever `dl` already is, and it is always the same build as the launcher
-the pane re-enters. `dl` reads its own `argv[0]` and turns the name into
-`--herdr-shell`, so there is one code path and not two.
+### Why a script, and why in `~/.local/bin`
+
+It was a symlink beside `dl` first, with `dl` reading its own `argv[0]`. That
+cannot work on the install this project documents, because **`pixi global` does not
+symlink, it trampolines**: `~/.pixi/bin/dl` is a small binary that execs
+`~/.pixi/envs/devlaunch/bin/dl`, and it replaces `argv[0]` with the target's own
+path on the way. Measured with a trampoline pointed at `/bin/sleep`: the child's
+`/proc/<pid>/cmdline` reads `/bin/sleep 30`, not the name that was run.
+
+Two failures came out of that. `current_exe()` answers the environment path, so the
+link landed in `~/.pixi/envs/devlaunch/bin`, which is off `PATH` and is a directory
+`pixi global update` rebuilds, after which `default_shell` names a path that is gone
+and every pane on the machine stops opening. And a link placed in `~/.pixi/bin` by
+hand fails the other way: the trampoline rewrites `argv[0]`, the name is never seen,
+and every pane silently gets a host shell.
+
+So the installed thing is a two-line script that runs `dl --herdr-shell`, nothing
+reads `argv[0]`, and it goes in `~/.local/bin`, which is the user's own and which
+nothing but the user rewrites. The script resolves `dl` through `PATH` rather than by
+absolute path, for the same reason: an absolute path is what an update invalidates.
+
+It falls through to a shell itself when `dl` cannot be found, because a
+`default_shell` that will not start is the one failure that costs a pane its
+existence rather than its container.
 
 `dl --install` makes the link and leaves the config alone. Writing to
 `~/.config/herdr/config.toml` would be devlaunch editing a file it does not own,

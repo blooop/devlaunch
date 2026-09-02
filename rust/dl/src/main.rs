@@ -14,16 +14,10 @@ fn main() {
     // 101 and a traceback. Python decoded argv lossily and carried on, and
     // docs/rust-rewrite-plan.md row 4 forbids the traceback; row 12 licenses the
     // lossy render.
-    let mut args = std::env::args_os();
-    // argv[0] is a fact about the process rather than about the command line, so
-    // it is read here and turned into an ordinary flag: `dl-herdr-shell` is the
-    // name herdr's `default_shell` can hold, and `--herdr-shell` is what dl
-    // understands. One code path below this line, whichever name was typed.
-    let program = args.next();
-    let mut argv: Vec<String> = args.map(|arg| arg.to_string_lossy().into_owned()).collect();
-    if dl::invoked_as_pane_shell(program.as_deref()) {
-        argv.insert(0, "--herdr-shell".to_owned());
-    }
+    let argv: Vec<String> = std::env::args_os()
+        .skip(1)
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
     let ending = dl::run(&argv);
     // `process::exit` runs no destructors, and one of the things not run is the
     // flush of a stdout that ended without a newline.

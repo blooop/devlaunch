@@ -16,49 +16,57 @@
 //! for it. So `default_shell = "dl --herdr-shell"` cannot work, and a name that
 //! needs no arguments is what the field can hold.
 //!
-//! The flag still exists and is what the name resolves to, so there is one code
-//! path and not two: [`crate::cli::Command::HerdrShell`] is reached either way.
+//! # Why a script and not a symlink to `dl`
 //!
-//! herdr passes the program **no arguments at all** (measured the same way:
-//! `argc=0`), which is why the fall-through below execs the shell bare rather
-//! than forwarding an argv it was never given. A herdr that starts passing `-l`
-//! is a herdr this stops honouring, and the test named beside `ARGUMENTS_PASSED`
-//! is where that shows up.
+//! The name was a symlink first, and `dl` read its own `argv[0]`. That cannot work
+//! on the install CLAUDE.md names as how the host gets `dl`: **`pixi global` does
+//! not symlink, it trampolines.** `~/.pixi/bin/dl` is a small binary that execs
+//! `~/.pixi/envs/devlaunch/bin/dl`, and it replaces `argv[0]` with the target's own
+//! path on the way. Measured here, with a trampoline pointed at `/bin/sleep`: the
+//! child's `/proc/<pid>/cmdline` reads `/bin/sleep 30`, not the name that was run.
+//!
+//! Two failures came out of that, and neither is small. `current_exe()` answers
+//! the *env* path, so `dl --install` put the link in `~/.pixi/envs/devlaunch/bin`
+//! -- off `PATH`, and a directory `pixi global update` rebuilds, after which
+//! `default_shell` names a path that does not exist and **every pane on the machine
+//! stops opening**, at pane creation, with the ENOENT this module's other
+//! measurement describes. And a link placed in `~/.pixi/bin` by hand fails the
+//! other way: the trampoline rewrites `argv[0]`, so the name is never seen and
+//! every pane silently gets a host shell.
+//!
+//! So the installed thing is a two-line script that runs `dl --herdr-shell`, and
+//! nothing reads `argv[0]` any more. It resolves `dl` through `PATH` rather than
+//! by absolute path for the same reason [`crate::session`]'s refresh does: an
+//! absolute path is exactly what a `pixi global update` invalidates.
 
-use std::ffi::OsStr;
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 
 use crate::commands::Ending;
 
-/// The name devlaunch installs beside `dl` for herdr's `default_shell`.
-///
-/// A name and not a copy: `dl --install` links it to whatever `dl` is running, so
-/// the pane shell is always the same build as the launcher it re-enters.
+/// The name devlaunch installs for herdr's `default_shell`.
 pub(crate) const NAME: &str = "dl-herdr-shell";
 
-/// How many arguments herdr hands its `default_shell`.
+/// The script `dl --install` writes, and the whole of what herdr spawns.
 ///
-/// Zero, measured on herdr 0.8.2 by pointing `default_shell` at a script that
-/// logged its own `$#`. It is a constant here so that the number is written down
-/// once with the measurement beside it: the fall-through execs `$SHELL` with no
-/// arguments *because* there are none to forward, and if that ever stops being
-/// true a login pane would silently stop being one.
-#[cfg(test)]
-pub(crate) const ARGUMENTS_PASSED: usize = 0;
-
-/// Whether this process was started under the pane shell's name.
-///
-/// The file name and not the whole path, so a symlink, a hard link and a copy all
-/// answer alike, and so does one reached through a `PATH` entry. Anything that is
-/// not valid UTF-8 is not this name.
-pub(crate) fn invoked_as(program: Option<&OsStr>) -> bool {
-    program
-        .map(Path::new)
-        .and_then(Path::file_name)
-        .and_then(OsStr::to_str)
-        == Some(NAME)
-}
+/// Two things happen here that could not happen inside `dl`. It resolves `dl`
+/// itself, so a machine whose `dl` has been uninstalled still opens the pane
+/// rather than failing the spawn -- the one failure mode that costs a pane its
+/// existence rather than its container, since a `default_shell` that will not
+/// start is a pane that never appears. And it drops whatever argv herdr passed:
+/// herdr passes none today (measured on 0.8.2, `$#` was 0), `dl --herdr-shell`
+/// takes none, and a herdr that starts passing `-l` would otherwise reach clap as
+/// an unexpected argument, exit 2, and close the pane.
+pub(crate) const SCRIPT: &str = "\
+#!/bin/sh
+# Written by `dl --install`. Point herdr's [terminal] default_shell at this file.
+#
+# `dl` by name and not by path: `pixi global update` replaces the directory an
+# absolute path would name, and a default_shell that has gone stale is a pane that
+# will not open at all. The fallback is for the same reason -- a pane must open.
+command -v dl >/dev/null 2>&1 && exec dl --herdr-shell
+exec \"${SHELL:-/bin/sh}\"
+";
 
 /// The shell to open when the tab holds no workspace.
 ///
@@ -122,91 +130,90 @@ pub(crate) fn become_the_host_shell() -> Ending {
 // putting the name where herdr's config can point at it
 // ===========================================================================
 
-/// What linking the pane shell beside `dl` came to.
+/// What installing the pane shell came to.
 ///
-/// Four arms and three of them are fine. A machine whose `dl` sits somewhere
-/// unwritable still gets a working `dl` and a working `--install`; what it does
-/// not get is the pane shell, and saying so is the whole of the report.
+/// Four arms and three of them are fine. A machine whose `~/.local/bin` cannot be
+/// written still gets a working `dl` and working completions; what it does not get
+/// is the pane shell, and saying so is the whole of the report.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Linked {
-    /// The link was created.
-    Created { path: PathBuf },
-    /// It was already pointing at this build.
+pub(crate) enum Installed {
+    /// The script was written.
+    Written { path: PathBuf },
+    /// It was already byte-identical to what this build writes.
     AlreadyCurrent { path: PathBuf },
-    /// It was pointing somewhere else, and now points here.
-    Repointed { path: PathBuf },
-    /// It could not be made, and this is why.
+    /// It was different, and now is not.
+    Refreshed { path: PathBuf },
+    /// It could not be written, and this is why.
     Refused { path: PathBuf, reason: String },
 }
 
-impl Linked {
+impl Installed {
     pub(crate) fn path(&self) -> &Path {
         match self {
-            Self::Created { path }
+            Self::Written { path }
             | Self::AlreadyCurrent { path }
-            | Self::Repointed { path }
+            | Self::Refreshed { path }
             | Self::Refused { path, .. } => path,
         }
     }
 }
 
-/// Link [`NAME`] beside the `dl` this process is, pointing at it.
+/// Where the script goes.
 ///
-/// **Beside `dl` and not in a directory of devlaunch's own**, because the whole
-/// value of the link is that it is on `PATH` wherever `dl` already is and is the
-/// *same build* as the launcher a pane re-enters. A copy would be a second binary
-/// to keep in step; a wrapper script would be a third spelling of the argv.
+/// `~/.local/bin` rather than beside `dl`, and the difference is the whole of the
+/// bug above: "beside `dl`" resolves through `current_exe()`, which under `pixi
+/// global` is an environment directory that `pixi global update` rebuilds. This
+/// one is the user's own, is on `PATH` by convention, and nothing but the user
+/// rewrites it. It is also where `dev.sh` already puts `dl-next`, for the same
+/// reason.
+pub(crate) fn install_path(home: Option<&Path>) -> Option<PathBuf> {
+    Some(home?.join(".local").join("bin").join(NAME))
+}
+
+/// Write the script, and make it executable.
 ///
-/// A link that already points here is left alone rather than rewritten, which is
-/// divergence row 10's rule for the completion script applied to this: a re-run
-/// over a current install should say nothing changed and change nothing.
-///
-/// `dl` is not always at a path that can be linked next to. `pixi global` puts it
-/// under `~/.pixi/bin`, which is writable; a distribution package puts it in
-/// `/usr/bin`, which is not, and a `current_exe` that the kernel has marked
-/// ` (deleted)` names no directory at all. All of those are [`Linked::Refused`].
-pub(crate) fn link_beside(dl: Option<&Path>) -> Linked {
-    let Some(dl) = dl.filter(|path| path.is_absolute()) else {
-        return Linked::Refused {
-            path: PathBuf::from(NAME),
-            reason: "this build's own path could not be read".to_owned(),
+/// A re-run over a current install rewrites nothing and says so, which is
+/// divergence row 10's rule for the completion script applied to this.
+pub(crate) fn install(path: &Path) -> Installed {
+    let existing = std::fs::read_to_string(path).ok();
+    if existing.as_deref() == Some(SCRIPT) {
+        return Installed::AlreadyCurrent {
+            path: path.to_owned(),
         };
-    };
-    let Some(directory) = dl.parent() else {
-        return Linked::Refused {
-            path: PathBuf::from(NAME),
-            reason: format!("{} is not in a directory", dl.display()),
-        };
-    };
-    let link = directory.join(NAME);
-    match std::fs::read_link(&link) {
-        Ok(target) if target == dl => return Linked::AlreadyCurrent { path: link },
-        Ok(_) => {
-            if let Err(failure) = std::fs::remove_file(&link) {
-                return Linked::Refused {
-                    path: link,
-                    reason: failure.to_string(),
-                };
-            }
-            return match std::os::unix::fs::symlink(dl, &link) {
-                Ok(()) => Linked::Repointed { path: link },
-                Err(failure) => Linked::Refused {
-                    path: link,
-                    reason: failure.to_string(),
-                },
-            };
-        }
-        // Not a symlink, or not there at all. `symlink` below answers both: it
-        // succeeds where there was nothing and fails with `EEXIST` where there is
-        // a file somebody else put there, which is a file dl must not remove.
-        Err(_) => {}
     }
-    match std::os::unix::fs::symlink(dl, &link) {
-        Ok(()) => Linked::Created { path: link },
-        Err(failure) => Linked::Refused {
-            path: link,
+    let refreshing = existing.is_some();
+    if let Some(directory) = path.parent()
+        && let Err(failure) = std::fs::create_dir_all(directory)
+    {
+        return Installed::Refused {
+            path: path.to_owned(),
             reason: failure.to_string(),
-        },
+        };
+    }
+    if let Err(failure) = std::fs::write(path, SCRIPT) {
+        return Installed::Refused {
+            path: path.to_owned(),
+            reason: failure.to_string(),
+        };
+    }
+    // A `default_shell` herdr cannot execute is a pane that does not open, so the
+    // mode is part of the install rather than something the user is told to do.
+    if let Err(failure) =
+        std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+    {
+        return Installed::Refused {
+            path: path.to_owned(),
+            reason: failure.to_string(),
+        };
+    }
+    if refreshing {
+        Installed::Refreshed {
+            path: path.to_owned(),
+        }
+    } else {
+        Installed::Written {
+            path: path.to_owned(),
+        }
     }
 }
 
@@ -217,14 +224,13 @@ pub(crate) fn link_beside(dl: Option<&Path>) -> Linked {
 /// would be devlaunch editing something it does not own -- the same argument that
 /// puts the Claude Code hook at `/etc/claude-code/managed-settings.json` inside a
 /// container rather than in the `~/.claude` a devcontainer may have bind-mounted.
-pub(crate) fn config_line(link: &Path) -> String {
-    format!("[terminal]\ndefault_shell = \"{}\"", link.display())
+pub(crate) fn config_line(script: &Path) -> String {
+    format!("[terminal]\ndefault_shell = \"{}\"", script.display())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::OsString;
 
     /// The split this rests on, stated over every arm so a new one has to answer
     /// for itself rather than defaulting into the fall-through.
@@ -238,32 +244,9 @@ mod tests {
         assert!(!no_session_ran(Ending::Done));
         assert!(!no_session_ran(Ending::Session(0)));
         assert!(!no_session_ran(Ending::Session(130)));
-        assert!(!no_session_ran(Ending::Child(devlaunch_core::runner::Exit::Code(1))));
-    }
-
-    #[test]
-    fn the_installed_name_is_recognised_however_it_is_reached() {
-        for program in [
-            NAME,
-            "/home/dev/.local/bin/dl-herdr-shell",
-            "./dl-herdr-shell",
-        ] {
-            assert!(invoked_as(Some(&OsString::from(program))), "{program}");
-        }
-    }
-
-    #[test]
-    fn every_other_name_is_an_ordinary_dl() {
-        for program in [
-            "dl",
-            "/usr/local/bin/dl",
-            "aid",
-            "dl-herdr-shell-2",
-            "herdr-shell",
-        ] {
-            assert!(!invoked_as(Some(&OsString::from(program))), "{program}");
-        }
-        assert!(!invoked_as(None));
+        assert!(!no_session_ran(Ending::Child(
+            devlaunch_core::runner::Exit::Code(1)
+        )));
     }
 
     /// A `$SHELL` that is unset and one that is set to nothing are the same fact
@@ -277,110 +260,124 @@ mod tests {
 
     // ----------------------------------------------------- the installed name
 
-    /// The link is made beside `dl` so it is on `PATH` wherever `dl` is, and so it
-    /// is the same build the pane re-enters.
+    /// The bug this shape exists to prevent, stated as the property that fixes
+    /// it: nothing about the installed thing depends on the name it is run under.
+    /// A `pixi global` trampoline replaces `argv[0]` with its target's own path
+    /// (measured: a trampoline pointed at `/bin/sleep` gives a child whose
+    /// `cmdline` is `/bin/sleep 30`), so a symlink read through `argv[0]` was
+    /// never going to fire on the install CLAUDE.md documents.
     #[test]
-    fn the_link_lands_beside_the_binary_and_points_at_it() {
-        let dir = tempfile::tempdir().expect("a temporary directory");
-        let dl = dir.path().join("dl");
-        std::fs::write(&dl, "").expect("a file standing in for the binary");
+    fn the_script_runs_dl_by_name_and_reads_no_argv_zero() {
+        assert!(SCRIPT.contains("exec dl --herdr-shell"), "{SCRIPT}");
+        assert!(
+            !SCRIPT.contains("$0"),
+            "the script reads the name it was run under: {SCRIPT}"
+        );
+        // No absolute path to dl, because that is what a pixi global update
+        // invalidates -- and a default_shell naming a path that is gone is a pane
+        // that never opens.
+        assert!(!SCRIPT.contains("/dl "), "{SCRIPT}");
+    }
 
-        let linked = link_beside(Some(&dl));
+    /// A pane must open. Both of the script's own failure modes end in a shell:
+    /// a `dl` that is not installed, and the argv herdr may one day pass, which
+    /// `dl --herdr-shell` would meet with a clap error and exit 2.
+    #[test]
+    fn the_script_opens_a_shell_when_dl_cannot_run_it() {
+        assert!(SCRIPT.contains("command -v dl"), "{SCRIPT}");
+        assert!(SCRIPT.contains(r#"exec "${SHELL:-/bin/sh}""#), "{SCRIPT}");
+        assert!(
+            !SCRIPT.contains("$@"),
+            "the script forwards an argv dl refuses: {SCRIPT}"
+        );
+    }
+
+    /// It is a shell script, and herdr spawns it directly.
+    #[test]
+    fn the_script_is_executable_and_says_what_runs_it() {
+        assert!(SCRIPT.starts_with("#!/bin/sh\n"), "{SCRIPT}");
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let script = dir.path().join(NAME);
+
         assert_eq!(
-            linked,
-            Linked::Created {
-                path: dir.path().join(NAME)
+            install(&script),
+            Installed::Written {
+                path: script.clone()
             }
         );
-        assert_eq!(
-            std::fs::read_link(linked.path()).expect("a symlink"),
-            dl,
-            "the link does not point at this build"
+        let mode = <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::mode(
+            &std::fs::metadata(&script).expect("written").permissions(),
         );
+        assert_eq!(mode & 0o777, 0o755, "herdr could not execute it");
     }
 
-    /// Divergence row 10's rule, applied to the link: a re-run over a current
-    /// install changes nothing and says so.
+    /// The script actually runs, and falls through to a shell when `dl` is not on
+    /// the `PATH` it was given. Run rather than read, because the fallback is the
+    /// half that keeps a pane from vanishing.
     #[test]
-    fn a_link_that_already_points_here_is_left_alone() {
+    fn the_script_falls_through_to_a_shell_with_no_dl_on_path() {
         let dir = tempfile::tempdir().expect("a temporary directory");
-        let dl = dir.path().join("dl");
-        std::fs::write(&dl, "").expect("a file standing in for the binary");
+        let script = dir.path().join(NAME);
+        install(&script);
 
-        assert!(matches!(link_beside(Some(&dl)), Linked::Created { .. }));
+        let ran = std::process::Command::new(&script)
+            .env("PATH", dir.path())
+            .env("SHELL", "/bin/echo")
+            .output()
+            .expect("the script runs");
+        assert!(ran.status.success(), "{ran:?}");
+    }
+
+    /// Divergence row 10's rule: a re-run over a current install changes nothing
+    /// and says so.
+    #[test]
+    fn a_script_that_is_already_current_is_left_alone() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let script = dir.path().join(NAME);
+
+        assert!(matches!(install(&script), Installed::Written { .. }));
         assert_eq!(
-            link_beside(Some(&dl)),
-            Linked::AlreadyCurrent {
-                path: dir.path().join(NAME)
+            install(&script),
+            Installed::AlreadyCurrent {
+                path: script.clone()
             }
         );
     }
 
-    /// What `dl --install` after a `pixi global update` has to do: the name is
-    /// there and points at the build that is gone.
+    /// What `dl --install` after an upgrade has to do.
     #[test]
-    fn a_link_to_another_build_is_repointed() {
+    fn a_script_from_another_build_is_refreshed() {
         let dir = tempfile::tempdir().expect("a temporary directory");
-        let dl = dir.path().join("dl");
-        std::fs::write(&dl, "").expect("a file standing in for the binary");
-        std::os::unix::fs::symlink(dir.path().join("old-dl"), dir.path().join(NAME))
-            .expect("a link to some other build");
+        let script = dir.path().join(NAME);
+        std::fs::write(&script, "#!/bin/sh\nexec dl --something-else\n").expect("an old script");
 
         assert_eq!(
-            link_beside(Some(&dl)),
-            Linked::Repointed {
-                path: dir.path().join(NAME)
+            install(&script),
+            Installed::Refreshed {
+                path: script.clone()
             }
         );
+        assert_eq!(std::fs::read_to_string(&script).expect("readable"), SCRIPT);
+    }
+
+    /// A home dl could not read names no install path, and the report says so
+    /// rather than writing into whatever the working directory happens to be.
+    #[test]
+    fn no_home_directory_names_no_script() {
+        assert_eq!(install_path(None), None);
         assert_eq!(
-            std::fs::read_link(dir.path().join(NAME)).expect("a symlink"),
-            dl
+            install_path(Some(Path::new("/home/dev"))),
+            Some(PathBuf::from("/home/dev/.local/bin/dl-herdr-shell"))
         );
     }
 
-    /// A *file* at the name is somebody else's, and dl removes only its own link.
-    /// `symlink` answers this for free with `EEXIST`, which is the reason the
-    /// remove above is reached only from the `read_link` success arm.
-    #[test]
-    fn a_file_somebody_else_put_at_the_name_is_not_removed() {
-        let dir = tempfile::tempdir().expect("a temporary directory");
-        let dl = dir.path().join("dl");
-        std::fs::write(&dl, "").expect("a file standing in for the binary");
-        let occupied = dir.path().join(NAME);
-        std::fs::write(&occupied, "someone else's program").expect("a file at the name");
-
-        assert!(matches!(link_beside(Some(&dl)), Linked::Refused { .. }));
-        assert_eq!(
-            std::fs::read_to_string(&occupied).expect("still there"),
-            "someone else's program"
-        );
-    }
-
-    /// A `current_exe()` dl could not read, and a relative one it must not resolve
-    /// against whatever directory the pane happened to start in.
-    #[test]
-    fn a_path_that_is_not_an_absolute_one_is_refused() {
-        assert!(matches!(link_beside(None), Linked::Refused { .. }));
-        assert!(matches!(
-            link_beside(Some(Path::new("dl"))),
-            Linked::Refused { .. }
-        ));
-    }
-
-    /// The config line names the link and the field herdr reads. Both halves are
+    /// The config line names the script and the field herdr reads. Both halves are
     /// another program's words, so they are pinned rather than described.
     #[test]
     fn the_config_line_is_the_field_herdr_reads() {
         assert_eq!(
-            config_line(Path::new("/home/dev/.pixi/bin/dl-herdr-shell")),
-            "[terminal]\ndefault_shell = \"/home/dev/.pixi/bin/dl-herdr-shell\""
+            config_line(Path::new("/home/dev/.local/bin/dl-herdr-shell")),
+            "[terminal]\ndefault_shell = \"/home/dev/.local/bin/dl-herdr-shell\""
         );
-    }
-
-    /// The measurement this module's fall-through is built on, written down where
-    /// a change to it has to be argued for rather than noticed.
-    #[test]
-    fn herdr_hands_its_pane_shell_no_arguments() {
-        assert_eq!(ARGUMENTS_PASSED, 0);
     }
 }

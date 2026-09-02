@@ -28,6 +28,7 @@ use devlaunch_core::flows::listing::{self, CommandContext, DlView, Sizes};
 use devlaunch_core::flows::records::{Records, StartupError, open_records, open_storage};
 use devlaunch_core::flows::repo_manager::CacheNotice;
 use devlaunch_core::flows::session_manager::{self, PaneDestination};
+use devlaunch_core::osext;
 use devlaunch_core::runner::{Exit, Runner};
 
 use crate::cli::{self, Command, ListOutput, RmOnExit, Verb};
@@ -511,12 +512,10 @@ fn render_install(context: &mut CommandContext<'_>, cache: &Path, rc: Option<&Pa
         }
         Ok(installed) => {
             report_install(&installed);
-            // The pane shell's name, after the completions and reported apart
-            // from them: it is a second thing `--install` does, and a machine
-            // whose `dl` sits somewhere unwritable still installed completions.
-            report_pane_shell(&pane_shell::link_beside(
-                std::env::current_exe().ok().as_deref(),
-            ));
+            // The pane shell, after the completions and reported apart from
+            // them: it is a second thing `--install` does, and a machine that
+            // cannot take it still installed completions.
+            report_pane_shell(pane_shell::install_path(osext::home_dir().as_deref()).as_deref());
             Ending::Done
         }
     }
@@ -526,17 +525,22 @@ fn render_install(context: &mut CommandContext<'_>, cache: &Path, rc: Option<&Pa
 ///
 /// Said on every `--install`, including one that changed nothing, because the
 /// config line is the half the user has to act on and it is not written for them.
-fn report_pane_shell(linked: &pane_shell::Linked) {
-    let path = linked.path().display();
-    match linked {
-        pane_shell::Linked::Created { .. } => eprintln!("Linked the pane shell at {path}"),
-        pane_shell::Linked::Repointed { .. } => {
-            eprintln!("Re-pointed the pane shell at {path} to this build");
+fn report_pane_shell(script: Option<&Path>) {
+    let Some(script) = script else {
+        eprintln!("No pane shell: this host has no home directory to install one in");
+        return;
+    };
+    let installed = pane_shell::install(script);
+    let path = installed.path().display();
+    match &installed {
+        pane_shell::Installed::Written { .. } => eprintln!("Wrote the pane shell to {path}"),
+        pane_shell::Installed::Refreshed { .. } => {
+            eprintln!("Refreshed the pane shell at {path}");
         }
-        pane_shell::Linked::AlreadyCurrent { .. } => {
-            eprintln!("The pane shell at {path} is already this build");
+        pane_shell::Installed::AlreadyCurrent { .. } => {
+            eprintln!("The pane shell at {path} is already current");
         }
-        pane_shell::Linked::Refused { reason, .. } => {
+        pane_shell::Installed::Refused { reason, .. } => {
             eprintln!("No pane shell at {path}: {reason}");
             eprintln!(
                 "A new pane in a devlaunch tab will open a shell on this host, not in the container"
@@ -548,7 +552,7 @@ fn report_pane_shell(linked: &pane_shell::Linked) {
         "To open new herdr panes inside the workspace their tab holds, put this in \
          ~/.config/herdr/config.toml and run 'herdr server reload-config':"
     );
-    eprintln!("{}", pane_shell::config_line(linked.path()));
+    eprintln!("{}", pane_shell::config_line(installed.path()));
 }
 
 /// The script-state line, shared by the success report and the P17 failure path.
