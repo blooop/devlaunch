@@ -3,13 +3,19 @@
 //! [`crate::clients::herdr`] holds every decision this flow makes and every string
 //! it sends; this is the round trips, in the order they have to happen:
 //!
-//! 1. [`prepare`] asks the container what it already has, and puts the manager's
-//!    own binary and a Claude Code hook there if it is missing either. One round
-//!    trip in the steady state, three when there is work to do. The question is
-//!    asked every launch on purpose: nothing on this host can know whether the
-//!    container that was prepared is the container that is running now.
-//! 2. [`start_forward`] opens the connection that carries the manager's socket in,
+//! 1. [`start_forward`] opens the connection that carries the manager's socket in,
 //!    and hands back something the caller stops when the session ends.
+//! 2. [`prepare`] asks the container what it already has -- the socket from step 1
+//!    included -- and puts the manager's own binary and a Claude Code hook there if
+//!    it is missing either. One round trip in the steady state, three when there is
+//!    work to do. The question is asked every launch on purpose: nothing on this
+//!    host can know whether the container that was prepared is the container that
+//!    is running now, and nothing on this host can see whether a detached forward
+//!    bound its listen path.
+//!
+//! In that order, because the forward is what step 2 asks about. It is also the
+//! cheap one to undo: a `prepare` that refuses leaves the caller a forward to stop
+//! and no container state to unpick.
 //!
 //! Both are no-ops unless the launch resolved a [`Reporting`], which needs the
 //! consent variable *and* a manager's coordinates in this process's environment.
@@ -53,7 +59,8 @@ pub(crate) enum Prepared {
 ///
 /// The container is the only thing that knows, so the container is asked. The
 /// probe compares the binary's size, which is the cheapest thing that changes
-/// when the manager is updated.
+/// when the manager is updated, and it asks after the forwarded socket in the
+/// same trip -- which is why it runs *after* [`start_forward`] and not before.
 pub(crate) fn prepare(
     runner: &dyn Runner,
     config: &Path,
@@ -76,12 +83,28 @@ pub(crate) fn prepare(
         runner,
         config,
         workspace_id,
-        &herdr::probe_command(metadata.len()),
+        &herdr::probe_command(metadata.len(), &reporting.container_socket()),
         None,
         "probe the container",
     ) {
         // Prepared already, by this launch or an earlier one, and nothing to do.
         Trip::Ran { exit, .. } if exit.is_success() => return Prepared::Ready,
+        // The forward reported a pid and delivered nothing. Lending into this
+        // container would work and buy nothing: the hook would fire, find no
+        // socket, and stay quiet. Nothing dl can install repairs it, so this is
+        // the one probe answer that is a refusal rather than a to-do list.
+        Trip::Ran {
+            exit: Exit::Code(herdr::PROBE_NO_SOCKET),
+            ..
+        } => {
+            return Prepared::Refused {
+                reason: format!(
+                    "the manager's socket did not arrive at {} in the workspace, so the \
+                     forward bound nothing",
+                    reporting.container_socket()
+                ),
+            };
+        }
         Trip::Ran { .. } => {}
         Trip::NeverRan { reason } => return Prepared::Refused { reason },
     }
@@ -312,7 +335,7 @@ mod tests {
                 "-F",
                 "/tmp/ssh-config",
                 "myws.devpod",
-                &herdr::probe_command(len),
+                &herdr::probe_command(len, &reporting.container_socket()),
             ],
             Response::exited(1),
         );
@@ -401,7 +424,7 @@ mod tests {
                 "-F",
                 "/tmp/ssh-config",
                 "myws.devpod",
-                &herdr::probe_command(len),
+                &herdr::probe_command(len, &reporting.container_socket()),
             ],
             Response::failed(1, "bash: warning: setlocale: LC_ALL: cannot change locale"),
         );
@@ -418,6 +441,37 @@ mod tests {
             3,
             "the probe answered no and nothing was lent: {:?}",
             runner.calls_to("ssh")
+        );
+    }
+
+    /// A forward that reported a pid and bound nothing is not a prepared
+    /// workspace, and lending into it would buy silence.
+    ///
+    /// `detach` gives the forward `/dev/null` for stderr and never waits for it, so
+    /// `ExitOnForwardFailure=yes` takes the connection down and tells nobody. A
+    /// container whose user cannot create the listen path -- a root-owned `/tmp`, a
+    /// stale root-owned socket -- therefore used to be announced as "reporting
+    /// agents in this workspace" and report nothing. The probe is where it becomes
+    /// visible, and its answer is a refusal because no lend repairs it.
+    #[test]
+    fn a_forward_that_bound_nothing_is_refused_rather_than_lent_to() {
+        let reporting = reporting();
+        let runner = ScriptedRunner::new();
+        runner.script(["ssh"], Response::exited(herdr::PROBE_NO_SOCKET));
+
+        let Prepared::Refused { reason } =
+            prepare(&runner, Path::new("/tmp/ssh-config"), "myws", &reporting)
+        else {
+            panic!("a workspace the socket never reached cannot report an agent");
+        };
+        assert!(
+            reason.contains(&reporting.container_socket()),
+            "the reason does not say which socket never arrived: {reason}"
+        );
+        assert_eq!(
+            runner.calls_to("ssh").len(),
+            1,
+            "17MB was lent into a workspace that has no socket to report over"
         );
     }
 
