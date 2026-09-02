@@ -712,12 +712,15 @@ The second step was never broken. `dl <ws> -- <agent>` pipes the agent's own TUI
 through the pane, so the pane holds the real screen, prompt box and permission
 dialogs included. Only the name was missing.
 
-So `aid` supplies it. Every `aid` launch that starts an agent exports
-`HERDR_AGENT=<agent>` for the session, naming whichever agent it picked:
+So the launcher supplies it. Every `aid` launch that starts an agent exports
+`HERDR_AGENT=<agent>` for the session, naming whichever agent it picked, and `dl`
+does the same for a command whose program is an agent by name:
 
 ```bash
 aid blooop/devlaunch@fix/42        # exports HERDR_AGENT=claude
 aid --codex blooop/devlaunch       # exports HERDR_AGENT=codex
+dl blooop/devlaunch -- claude      # exports HERDR_AGENT=claude
+dl blooop/devlaunch -- make test   # exports nothing: make is not an agent
 ```
 
 Nothing else changes and nothing has to be turned on. A herdr pane running the
@@ -745,6 +748,26 @@ for a name nothing reads.
 A line that starts no agent writes nothing, and that includes a retired spelling
 `dl` is about to refuse. There is no session there for anyone to classify.
 
+### What `dl` reads, and what it refuses to guess
+
+`dl` did not pick the agent, so it reads the command it was handed. Leading
+`NAME=value` assignments are the shell's rather than the program's and are stepped
+over, the program is compared by its last path component so `/usr/local/bin/claude`
+and `claude` answer alike, and everything past the program is ignored because
+nothing after it can change which agent starts.
+
+Only a name on the list `dl` and `aid` share is a name it will write, which is the
+one part of this worth arguing about. `dl <ws> -- make test` could as easily export
+`HERDR_AGENT=make`, and that would be worse than the silence it gets: a manager
+would be told the pane holds an agent it has never heard of, look for detection
+rules under that label, and find none. So the list is the list of agents devlaunch
+knows, `aid`'s own table is held against it by a test, and a command naming
+anything else is a command `dl` says nothing about.
+
+It is still a reading and not a parse. A command holding a pipe or a `&&` gets the
+answer for its first program, which is the one whose screen the pane holds when it
+starts, and a command that reaches an agent halfway through a chain is not named.
+
 ### What this does not do
 
 **It is one manager's variable.** `HERDR_AGENT` is herdr's name, and one of the
@@ -758,12 +781,14 @@ absence is the whole of the detection. A manager with an equivalent override nee
 that override set some other way; a manager with none is still blind, and no
 amount of cooperation from `dl` would change that.
 
-**Plain `dl` sets nothing**, because plain `dl` has no agent to name. `dl <ws> --
-claude` typed out by hand is your command, and reading an agent back out of a
-command tail would be a guess. Export the variable yourself on a line like that:
+**An agent started inside the workspace is still invisible.** `dl <ws>` opens a
+shell, and a `claude` you type at that shell is a process in the container, which
+no host manager can see and which `dl` cannot know about in advance. Only a command
+`dl` was handed names an agent, so start the agent from the host side of the line:
 
 ```bash
-HERDR_AGENT=claude dl blooop/devlaunch -- claude
+dl blooop/devlaunch -- claude      # named
+dl blooop/devlaunch               # then typing claude inside: not named
 ```
 
 **Nothing is forwarded into the container.** The variable is set on the host, for
