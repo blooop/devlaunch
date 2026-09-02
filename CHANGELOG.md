@@ -73,6 +73,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `DEVLAUNCH_NO_CLAUDE_TOKEN=1` says do not put a credential in this container,
   which is a different sentence from "make me answer the theme picker".
 
+- **`aid` no longer leaves the herdr tab unnamed for as long as you take to type
+  the prompt.** Naming happens on the launch, and `aid` with no prompt on the line
+  does not launch straight away: it boots the workspace in the background and asks
+  for the prompt while it does, which is the point of that mode. The tab kept
+  whatever it showed before for that whole window, which is exactly the window a
+  person is scanning the tab strip to find the pane they are typing into.
+
+  Measured on live herdr 0.8.2, with `dl` and `aid` built from one commit:
+
+  | launch | tab label |
+  |---|---|
+  | `dl blooop/rocker@nb1` | `rocker@nb1` within 6s |
+  | `aid --claude blooop/rocker@nb1 'prompt'` | `rocker@nb1` within 6s |
+  | `aid blooop/rocker@nb1` | unchanged for the whole editor window, 40s in |
+  | the same tab, after the prompt was submitted | `rocker@nb1` within 6s |
+
+  So `aid` was not broken, it was late, and only in the one mode that waits. It
+  names both halves itself now, after the boot spawns and before the banner. The
+  boot child cannot do it: its stdout and stderr are a log file, so `naming_gate`
+  refuses it a name, and rightly, because an OSC escape written into a log is not a
+  title.
+
+  **The name is what the spec says rather than what it resolves to.** The launch's
+  title is a fact about the spec that resolved, which costs a record lookup and,
+  for an `owner/repo` with no ref, a `git ls-remote` for the default branch; an
+  editor may not wait behind either. So `owner/repo@ref` is named `repo@ref` and
+  agrees with the launch, `owner/repo` is named `repo` and the launch appends the
+  branch, an existing workspace name is its own name, and a path or a source URL is
+  not named at all because nothing in the spec text says what it will be called.
+  A tab reading `rocker` while you type and `rocker@main` afterwards beats one
+  reading `7`.
+
+  The tab and the pane are still never given different answers. `names_for` returns
+  both halves, so there is no way to ask a host for half of its answer. It does not
+  make the pair unforgeable, and does not need to: both enums are `pub` because the
+  sink matches on them, and the only two producers are that function and the launch
+  path above it.
+
+  The name is derived through `plan`, which is the parse boundary rather than a
+  second reading of one, so a spec `dl` will refuse is not named either. Deriving it
+  from `spec::parse` alone named `..` and `-weird` on a tab for a launch that then
+  failed with `UnsafeName`, and herdr persists `custom_name`.
+
 ## [0.28.0] - 2026-09-02
 
 ### Added

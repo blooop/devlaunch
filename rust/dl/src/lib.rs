@@ -280,6 +280,106 @@ pub fn interactive_terminal() -> bool {
     tty && !ssh::tty_disabled_by_environment()
 }
 
+/// Name the terminal and the herdr tab for `spec`, before anything is launched.
+///
+/// Exported for `aid`, and for one call in it. With no prompt on the line aid opens
+/// the prompt editor and boots the workspace behind it, so the launch that would
+/// name the pane has not happened yet and does not for as long as the typing takes.
+/// Measured on live herdr 0.8.2: `aid blooop/rocker@nb1` left its tab reading the
+/// label it already had for the whole editor window, 40 seconds in, and renamed it
+/// to `rocker@nb1` within 6 seconds of the prompt being submitted. `dl` on the same
+/// build, and `aid` with a prompt on the line, both named it within 6 seconds.
+///
+/// **The name is what the spec says, not what it resolves to,** and the difference
+/// is deliberate. The launch's title is a fact about the spec that resolved, which
+/// costs a record lookup and, for an `owner/repo` with no ref, a `git ls-remote` to
+/// learn the default branch. An editor may not wait behind either, so this reads
+/// the triple syntactically:
+///
+/// | spec | named | the launch later says |
+/// |---|---|---|
+/// | `owner/repo@ref` | `repo@ref` | the same, unless a record holds a legacy id |
+/// | `owner/repo` | `repo` | `repo@<default branch>` |
+/// | an existing workspace name | itself | the same |
+/// | anything else `plan` cannot classify | itself | the launch refuses it |
+/// | a path, or a source URL | nothing | the leaf devpod resolves |
+///
+/// So two of the four rows are corrected by the launch a moment later, and that is
+/// the trade: a tab that reads `rocker` while you type and `rocker@main` afterwards
+/// beats one that reads `7`. Both names go through
+/// [`names_for`](devlaunch_core::flows::launch::names_for), so the tab and the pane
+/// are never given different answers at either point.
+///
+/// Best effort and silent, like every other naming write: nothing here is worth a
+/// line, and a `spec` this cannot make sense of is simply not named.
+pub fn name_before_launch(spec: &str) {
+    use devlaunch_core::flows::launch::{Host, LaunchNotice, names_for};
+    use devlaunch_core::notices::Notices as _;
+
+    let Some(named) = early_name(spec) else {
+        return;
+    };
+    let Ok(cache) = session::cache_dir() else {
+        return;
+    };
+    let (title, herdr_tab) = names_for(&Host::from_process(cache), &named);
+    let mut saying = render::Saying;
+    saying.say(LaunchNotice::TerminalTitle(title));
+    saying.say(LaunchNotice::HerdrTab(herdr_tab));
+}
+
+/// What `spec` states it is called, without resolving anything.
+///
+/// Split out from [`name_before_launch`] because it is the whole of the decision
+/// and the rest of that function is two writes: a test can state a spec and read
+/// the name, where the writes need a terminal and a herdr. `None` is "say nothing",
+/// and the table in [`name_before_launch`] is the contract.
+fn early_name(spec: &str) -> Option<String> {
+    use devlaunch_core::domain::spec::{SpecIdentity, identity};
+    use devlaunch_core::domain::workspace_id::WorkspaceId;
+    use devlaunch_core::flows::launch::{Plan, plan};
+
+    // Through `plan`, which is the parse boundary rather than a second reading of
+    // one: it refuses an owner or repo that is not a safe git name, which is what
+    // stops a tab being named `..` or `-weird` for a launch that then refuses the
+    // same spec. `spec::parse` alone admits both -- its pattern takes any
+    // `[A-Za-z0-9_.-]+` for a repo -- and naming in front of the boundary is a
+    // label herdr then persists past the launch that never happened.
+    match plan(spec).ok()? {
+        Plan::Triple {
+            owner,
+            repo,
+            branch: Some(branch),
+            ..
+        } => WorkspaceId::new(&owner, &repo, &branch)
+            .ok()
+            .map(|workspace| workspace.label()),
+        // No ref, so no triple and no label to derive. The repo alone is what the
+        // spec states, and the launch appends the branch it resolves -- but rendered
+        // the way the launch will render it. `SpecIdentity::RepoLabel` is that
+        // rendering, and core's answer for this exact row: `slug`ged, so the case
+        // and the dots and the underscores match `WorkspaceId::label`'s repo part,
+        // and capped, which nothing downstream is -- `sanitize_title` filters
+        // control characters and trims and has no opinion about length.
+        Plan::Triple { branch: None, .. } => match identity(spec).ok()? {
+            SpecIdentity::RepoLabel(label) => Some(label),
+            _ => None,
+        },
+        // `plan`'s fallback, which is wider than "a workspace name": anything not a
+        // triple, a path or a git source lands here, a mistyped triple included.
+        // Passed through unvalidated because `Plan::Existing { name }` is exactly
+        // what the launch titles the workspace, so this is the only answer that
+        // agrees with it. The cost is a label in front of a launch that then finds
+        // no such workspace -- see the test.
+        Plan::Existing { name } => Some(name),
+        // A path, a URL, a host path or an scp-style remote. devpod names a path
+        // after the directory it resolves, which is the filesystem's answer and not
+        // this module's, and a source after an id derived from the source. Neither
+        // is recoverable from the spec text, so nothing is said.
+        Plan::Creatable { .. } => None,
+    }
+}
+
 /// Read one submission from a cooked-mode terminal: the line the user ends with
 /// Enter, plus whatever input was already buffered at that moment — a multi-line
 /// paste — joined as the newlines it arrived with. Empty on a bare Enter or an
@@ -631,5 +731,132 @@ mod drained_signals {
              one's behaviour at the binary boundary, and only then update this \
              expectation."
         );
+    }
+}
+
+#[cfg(test)]
+mod early_name_tests {
+    use super::early_name;
+
+    #[test]
+    fn a_triple_is_named_the_way_the_launch_will_name_it() {
+        // The row that has to be exact, because it is the common one and because a
+        // name the launch then changes is a tab that flickers. `repo@ref`, which is
+        // `WorkspaceId::label`, which is what `Placement::title` carries.
+        assert_eq!(
+            early_name("blooop/rocker@nb1").as_deref(),
+            Some("rocker@nb1")
+        );
+        assert_eq!(
+            early_name("blooop/devlaunch@main").as_deref(),
+            Some("devlaunch@main")
+        );
+        // Measured on live herdr 0.8.2: `aid blooop/rocker@nb1` named the tab
+        // `rocker@nb1` during the editor and the launch afterwards named it
+        // `rocker@nb1` again, so nothing moved.
+    }
+
+    #[test]
+    fn a_repo_with_no_ref_is_named_the_repo_and_the_launch_adds_the_branch() {
+        // The row where the two deliberately differ. Deriving the label needs the
+        // default branch, which needs a record or a `git ls-remote`, and the editor
+        // opens in front of both. Measured: the tab read `rocker` for the whole
+        // editor window and `rocker@main` within 6s of the prompt being submitted.
+        assert_eq!(early_name("blooop/rocker").as_deref(), Some("rocker"));
+    }
+
+    #[test]
+    fn an_existing_workspace_name_is_its_own_name() {
+        // What the launch's bare-name arm does, so these agree by construction.
+        assert_eq!(
+            early_name("rocker-nb1-pjke").as_deref(),
+            Some("rocker-nb1-pjke")
+        );
+    }
+
+    #[test]
+    fn nothing_is_said_for_a_spec_whose_name_only_resolution_knows() {
+        // `plan` calls these `Creatable`: a path is named after the directory devpod
+        // resolves and a source URL after an id derived from the source, neither of
+        // which is in the spec text. Saying nothing leaves the tab as it was, which
+        // is what happened before this existed.
+        for spec in [
+            "./somewhere",
+            "/abs/path",
+            "~/under-home",
+            "github.com/blooop/rocker",
+            "https://github.com/blooop/rocker.git",
+        ] {
+            assert_eq!(early_name(spec), None, "{spec}");
+        }
+    }
+
+    #[test]
+    fn plans_fallback_arm_is_named_whatever_the_launch_would_call_it() {
+        // The arm is wider than "a workspace name", because it is `plan`'s fallback:
+        // anything that is not a triple, a path or a git source lands here, a
+        // mistyped triple included. `plan` does not validate it and neither does
+        // this, deliberately -- `Plan::Existing { name }` is what the launch titles
+        // the workspace, so passing it through is the only answer that agrees.
+        //
+        // What that costs is a label in front of a launch that then finds no such
+        // workspace, and herdr persists `custom_name`, so it stays until the next
+        // launch in that tab. Gating it would need core's `is_safe_name`, which is
+        // `pub(crate)`; a second copy of the rule here is the thing this tree
+        // refuses everywhere else, and the harm is a tab label after a typo.
+        for spec in [
+            "rocker-nb1-pjke",
+            "git@github.com:blooop/rocker.git",
+            "blooop/rocker@",
+            "blooop/rocker@my branch",
+        ] {
+            assert_eq!(early_name(spec).as_deref(), Some(spec), "{spec}");
+        }
+    }
+
+    #[test]
+    fn a_spec_the_launch_will_refuse_is_not_named() {
+        // `plan` is the parse boundary: it refuses an owner or repo that is not a
+        // safe git name before anything builds a path out of them, and `x/..`
+        // resolving to the repos directory itself is the reason it is there. Naming
+        // from in front of that boundary put `..` and `-weird` on a tab for a launch
+        // that then failed with `UnsafeName`, and herdr persists `custom_name`, so
+        // the bogus label outlived the launch that never happened.
+        for spec in [
+            "blooop/..",
+            "blooop/.",
+            "blooop/-weird",
+            "blooop/rocker@../../etc",
+        ] {
+            assert_eq!(early_name(spec), None, "{spec}");
+        }
+    }
+
+    #[test]
+    fn a_repo_with_no_ref_is_rendered_the_way_the_launch_renders_it() {
+        // The launch reaches this row through `WorkspaceId::label`, whose repo part
+        // is `slug(repo)`. The raw repo is not that: it keeps the case, the dots and
+        // the underscores, so the early name and the launch's disagreed in more than
+        // the branch suffix this row is meant to be missing.
+        assert_eq!(
+            early_name("blooop/Rocker.git").as_deref(),
+            Some("rocker-git")
+        );
+        assert_eq!(early_name("blooop/my_repo").as_deref(), Some("my-repo"));
+        // And capped, which nothing downstream does: `sanitize_title` filters
+        // control characters and trims, and has no opinion about length, so an
+        // uncapped repo reached the escape and the tab label at whatever width the
+        // spec was typed at.
+        let long = early_name(&format!("blooop/{}", "z".repeat(200))).expect("a name");
+        assert!(long.len() <= 47, "uncapped at {} chars", long.len());
+    }
+
+    #[test]
+    fn a_triple_no_workspace_id_can_be_built_from_is_not_named() {
+        // `WorkspaceId::new` is the parse boundary that refuses an unsafe owner, repo
+        // or ref. A spec it rejects must not be named from here either: the launch
+        // will refuse it, and a tab named after something that never launched is
+        // worse than a tab left alone.
+        assert_eq!(early_name("blooop/rocker@../../etc"), None);
     }
 }

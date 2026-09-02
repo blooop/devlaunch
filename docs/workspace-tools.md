@@ -756,6 +756,45 @@ Unlike the escape, the rename **sticks**. herdr persists `custom_name`, so a tab
 named by a launch keeps that name after the workspace is closed, until something
 renames it again.
 
+### The window `aid` used to leave unnamed
+
+Naming happens on the launch, and `aid` with no prompt on the line does not launch
+straight away: it boots the workspace in the background and asks for the prompt
+while it does, which is the whole point of that mode. So there was a window with a
+booting container, a person typing, and a tab still showing whatever it showed
+before. Measured on live herdr 0.8.2, with `dl` and `aid` built from one commit:
+
+| launch | tab label |
+|---|---|
+| `dl blooop/rocker@nb1` | `rocker@nb1` within 6s |
+| `aid --claude blooop/rocker@nb1 'prompt'` | `rocker@nb1` within 6s |
+| `aid blooop/rocker@nb1` | unchanged for the whole editor window, 40s in |
+| the same tab, after the prompt was submitted | `rocker@nb1` within 6s |
+
+`aid` names both halves itself now, before the banner and after the boot spawns,
+through the same pair the launch uses. The boot child cannot do it: its stdout and
+stderr are a log file, so the gate refuses it a name, and correctly, because an OSC
+escape written into a log is not a title.
+
+**The name is what the spec says rather than what it resolves to,** because
+resolving it costs a record lookup and, for an `owner/repo` with no ref, a
+`git ls-remote` for the default branch. An editor may not wait behind either.
+
+| spec | named while you type | the launch then says |
+|---|---|---|
+| `owner/repo@ref` | `repo@ref` | the same |
+| `owner/repo` | `repo` | `repo@<default branch>` |
+| an existing workspace name | itself | the same |
+| a path, or a source URL | nothing | the leaf devpod resolves |
+
+So two rows are corrected a moment later, and a tab reading `rocker` while you type
+and `rocker@main` afterwards beats one reading `7`. A spec that names nothing
+`dl` will accept is not named at all, because the name is derived through the same
+`plan` that refuses it.
+
+The tab and the pane are still never given different answers: both are written
+together at both points, from one call that has no way to return half an answer.
+
 ## Telling a session manager which agent is running
 
 Session managers like [herdr](https://herdr.dev), and the tmux-and-worktree family

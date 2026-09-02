@@ -2495,6 +2495,41 @@ impl HerdrTabRename {
     }
 }
 
+/// Both names for `name` on this host: the escape and the tab rename, together.
+///
+/// For a caller that has something to name *before* it has a launch to take the
+/// name from. `aid` is the one: with no prompt on the line it opens the prompt
+/// editor first and boots the workspace behind it, deliberately, so the minute a
+/// container takes to come up and the minute a prompt takes to write are the same
+/// minute -- and for the whole of that minute there was no launch yet and so no
+/// name, on the tab a person is scanning to find the pane they are typing into.
+///
+/// **One call returning both, rather than two the caller pairs up.** The invariant
+/// this serves is the one [`attach_workspace`]'s caller states: the tab and the pane
+/// go through one [`naming_gate`] and one [`sanitize_title`], so they cannot be
+/// given different names or disagree about whether to have one.
+///
+/// What this buys is exact and worth not overstating: **there is no way to ask this
+/// host for half of its answer.** It does not make the pair unforgeable -- both
+/// enums are `pub` and their variants with them, because the sink in `dl` matches on
+/// them, so anything could hand-build a [`TerminalTitle::Write`] with no rename
+/// beside it. Making that impossible would mean private variants and constructor
+/// functions, which is a different change; nothing needs it, because the only two
+/// producers are this function and the launch path above it.
+///
+/// What an early name and the launch's later one *may* differ in is the name
+/// itself, and that is not a violation of the above: both are written as a pair, so
+/// the tab and the pane always agree with each other. See [`Placement::title`] for
+/// why the launch's is the authoritative one -- a title is a fact about the spec
+/// that resolved, and resolving it costs a record lookup and sometimes a
+/// `git ls-remote`, neither of which an editor may wait behind.
+pub fn names_for(host: &Host, name: &str) -> (TerminalTitle, HerdrTabRename) {
+    (
+        TerminalTitle::from_host(host, name),
+        HerdrTabRename::from_host(host, name),
+    )
+}
+
 /// The program name a `PATH` lookup is left to resolve when herdr exported no
 /// [`HERDR_BIN_VAR`].
 ///
@@ -5874,6 +5909,47 @@ mod tests {
             herdr_tab_id: Some("w8:tB".to_owned()),
             ..titling()
         }
+    }
+
+    #[test]
+    fn names_for_hands_back_a_pair_that_cannot_disagree() {
+        // The reason it returns both rather than exposing two constructors: a caller
+        // outside this module could otherwise ask for a title without a rename, and
+        // the "tab and pane are never given different answers" invariant would be
+        // one call site's discipline instead of a property.
+        let (title, tab) = names_for(&herding(), "rocker@nb1");
+        assert_eq!(
+            title.osc(),
+            Some("\x1b]2;rocker@nb1\x07"),
+            "the escape names it"
+        );
+        assert_eq!(
+            tab.argv(),
+            Some(vec!["herdr", "tab", "rename", "w8:tB", "rocker@nb1"]),
+            "and the rename names it the same"
+        );
+
+        // Both off together, through the one gate, under each way of having no name.
+        for host in [
+            Host {
+                no_title: Some("1".to_owned()),
+                ..herding()
+            },
+            Host {
+                stderr_tty: false,
+                ..herding()
+            },
+        ] {
+            let (title, tab) = names_for(&host, "rocker@nb1");
+            assert_eq!(title, TerminalTitle::Off);
+            assert_eq!(tab, HerdrTabRename::Off);
+        }
+
+        // A host that is not in herdr still gets its escape: the tab is the half
+        // that needs a tab id, and the pair is not all-or-nothing across *targets*.
+        let (title, tab) = names_for(&titling(), "rocker@nb1");
+        assert!(title.osc().is_some());
+        assert_eq!(tab, HerdrTabRename::Off);
     }
 
     #[test]
