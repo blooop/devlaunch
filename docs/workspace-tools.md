@@ -85,6 +85,46 @@ The cost is that the access token is short-lived, hours rather than days, and a
 variable cannot be refreshed in place. This is the same caveat the GitHub token
 has, for the same reason: see "When the token changes" above.
 
+### The wizard in front of it
+
+A token is not the only thing standing between `claude` and a prompt. Claude Code
+asks, before it consults a credential of any kind, whether first-time setup has
+been done in this config directory, and what it asks is `hasCompletedOnboarding`
+in `.claude.json`. A container whose config directory nothing has ever written
+answers no, so it shows the theme picker and then `Select login method` while
+holding a forwarded token that already works.
+
+The split is what made this confusing to diagnose. `dl <ws> -- claude -p "say OK"`
+answers from the forwarded token in the same workspace, in the same second, that
+the interactive `claude` asks you to log in: print mode never asks the onboarding
+question. So "the token is not arriving" and "the token is arriving and the wizard
+is in front of it" look identical from the outside and are fixed by opposite
+things.
+
+The setup pass therefore seeds that one key, in a config directory that has no
+`.claude.json` at all. It records a fact and carries no secret. There is no
+environment variable that turns the gate off; the flag in that file is the only
+thing it reads.
+
+**Only where the file is absent,** which is the whole of the condition and is what
+keeps it from needing the ownership question the next section answers. A directory
+somebody else owns arrives with the host's own `.claude.json` sitting in it, a repo
+that bind-mounts `~/.claude` and this repo's own devcontainer among them, so there
+is nothing to seed and nothing of yours is edited. Claude Code merges its own keys
+over a file it finds, so seeding ahead of its first run costs that run nothing.
+
+**Neither opt-out reaches it,** and both would be the wrong owner.
+`DEVLAUNCH_NO_TOOLS=1` is about installing tools, and seeding a boolean installs
+nothing. `DEVLAUNCH_NO_CLAUDE_TOKEN=1` says do not put your credential in this
+container, which is a different sentence from "make me answer the theme picker":
+a workspace opted out still reaches its login screen, because there is no
+credential rather than because a flag was missing.
+
+Which repos this was actually visible in: the ones with no `.devcontainer/` of
+their own. They get devpod's fallback image and a virgin config directory, where a
+repo whose devcontainer mounts `~/.claude` was reading a `.claude.json` that had
+answered the question on the host months ago.
+
 ### Who gets the Claude token
 
 Fewer things than get the GitHub one, deliberately. The GitHub token goes into

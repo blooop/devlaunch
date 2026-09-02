@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`claude` in a workspace no longer opens the first-run wizard in front of a
+  working token.** The setup pass now seeds `hasCompletedOnboarding` into a Claude
+  config directory that has no `.claude.json` in it at all.
+
+  The forwarded `CLAUDE_CODE_OAUTH_TOKEN` was arriving and was valid the whole
+  time. What nobody had measured is that Claude Code asks two questions and only
+  one of them is about a credential: before it consults a credential of any kind
+  the interactive TUI asks whether first-time setup has been done in this config
+  directory, and the only thing it asks is that flag in `.claude.json`. A container
+  whose config directory nothing has ever written answers no, so it showed the
+  theme picker and then `Select login method` while holding a token that already
+  worked.
+
+  **What made it hard to see is that print mode never asks.** In the same
+  workspace, in the same second, `dl <ws> -- claude -p "say OK"` answered `OK` and
+  the interactive `claude` asked for a login, so "the token is not arriving" and
+  "the token is arriving and a wizard is standing in front of it" looked identical
+  from the outside and have opposite fixes. Measured against Claude Code 2.1.258 on
+  `blooop/rocker`, a repo with no `.devcontainer/` of its own: devpod's fallback
+  image gives it a virgin config directory, where a repo whose devcontainer mounts
+  `~/.claude` was reading an answer the host had given months ago. That is why this
+  looked like it only happened to some repos.
+
+  **Only where the file is absent,** which is the whole of the condition and is what
+  lets it sit in front of the probe that decides who owns the directory. A directory
+  somebody else owns arrives with the host's own `.claude.json` in it, so there is
+  nothing to seed and nothing of the host's is edited: merging a key into a file
+  that is already there would need JSON in a POSIX shell and would be a write into
+  the host's real config, on precisely the mounts the Claude client declines to
+  forward over. It records one boolean and carries no secret. There is no
+  environment variable that turns the gate off.
+
+  Neither opt-out reaches it, and both would be the wrong owner.
+  `DEVLAUNCH_NO_TOOLS=1` is about installing tools and this installs none;
+  `DEVLAUNCH_NO_CLAUDE_TOKEN=1` says do not put a credential in this container,
+  which is a different sentence from "make me answer the theme picker".
+
 ## [0.27.0] - 2026-09-01
 
 ### Added
