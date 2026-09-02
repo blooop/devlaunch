@@ -37,12 +37,26 @@
 //! - Every session re-reads the host's credential, which is what makes
 //!   refresh-on-start free.
 //!
+//! # Which credential, on a host that has moved it
+//!
+//! `$CLAUDE_CONFIG_DIR` is honoured here as Claude Code honours it, and as the
+//! container-side probe in [`crate::flows::provision`] has always honoured it. The
+//! host side reading `$HOME/.claude` regardless was an asymmetry with one visible
+//! symptom: a host that had moved its configuration reported [`NoToken::NotLoggedIn`]
+//! while holding a perfectly good login.
+//!
+//! The order is opt-out, then any exported `CLAUDE_CODE_OAUTH_TOKEN`, then
+//! `$CLAUDE_CONFIG_DIR`, then `$HOME/.claude`. The exported token stays above the
+//! variable because both are ambient and that hatch is what lets a `dl` inside a
+//! workspace forward what it was handed; see [`config_dir`] for why the variable
+//! *replaces* the default rather than being tried ahead of it.
+//!
 //! It also means a session devlaunch did not open — `devpod ssh` by hand, VS Code
 //! through `dl <ws> code` — does not get it. Those already have the host's real
 //! `claude` available to them by other means, and widening this to cover them
 //! would mean widening it to cover `postCreateCommand` too.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use super::gh::{Forwarding, forwarding_disabled};
 use crate::runner::EnvSpec;
@@ -55,8 +69,28 @@ pub(crate) const TOKEN_VAR: &str = "CLAUDE_CODE_OAUTH_TOKEN";
 /// Set this to opt a machine out of forwarding the Claude login entirely.
 pub(crate) const DISABLE_VAR: &str = "DEVLAUNCH_NO_CLAUDE_TOKEN";
 
-/// Where the host keeps the credential, relative to `$HOME`.
-const CREDENTIALS_RELPATH: &str = ".claude/.credentials.json";
+/// `$CLAUDE_CONFIG_DIR`: Claude Code's own name for where its configuration lives.
+///
+/// Honoured rather than set, the way [`super::ssh::CONFIG_VAR`] is: Claude Code reads
+/// this before `$HOME/.claude`, so a host that has moved its configuration has moved
+/// the credential too, and reading `$HOME/.claude` regardless would inspect a
+/// directory Claude Code does not use. The container side of this has always honoured
+/// it -- see [`crate::flows::provision`]'s `claude_config_lines`, whose
+/// `CLAUDE_CONFIG_DIR:-$HOME/.claude` is the same rule in shell -- and the host side
+/// ignoring it was the asymmetry this closes.
+const CONFIG_DIR_VAR: &str = "CLAUDE_CONFIG_DIR";
+
+/// The configuration directory's name under `$HOME`, when the variable says nothing.
+///
+/// Deliberately *not* shared with [`crate::flows::provision`]'s `CLAUDE_CONFIG_RELPATH`,
+/// which spells the same string about the *container*. Two machines, two facts: that one
+/// is Claude Code's default inside a container devlaunch did not build, this one is a
+/// path on the host devlaunch is running on. A comment in each names the other, which is
+/// the right amount of coupling for a coincidence of spelling.
+const CONFIG_RELPATH: &str = ".claude";
+
+/// The credential file's name inside whichever directory the above resolves to.
+const CREDENTIALS_FILENAME: &str = ".credentials.json";
 
 /// The key the OAuth credential sits under, and the field wanted from it.
 const OAUTH_KEY: &str = "claudeAiOauth";
@@ -115,6 +149,12 @@ pub(crate) struct HostEnv {
     /// what lets a `dl` running inside a workspace pass its own forwarded token
     /// further down — the same courtesy [`super::gh::HostEnv`] extends.
     pub(crate) token: Option<String>,
+    /// `CLAUDE_CONFIG_DIR`, read *after* the exported token and *before* `$HOME`.
+    ///
+    /// Below the token because both are ambient, and the existing hatch above has to
+    /// keep winning so a `dl` launched from inside a workspace still forwards what it
+    /// was given. Above `$HOME` because it is what Claude Code itself prefers.
+    pub(crate) config_dir: Option<String>,
 }
 
 impl HostEnv {
@@ -123,6 +163,7 @@ impl HostEnv {
         Self {
             disable: crate::osext::env_str(DISABLE_VAR),
             token: crate::osext::env_str(TOKEN_VAR),
+            config_dir: crate::osext::env_str(CONFIG_DIR_VAR),
         }
     }
 }
@@ -155,7 +196,8 @@ pub(crate) enum TokenLookup {
 ///
 /// `home` is a parameter and not a read of `$HOME` so a test can state the host it
 /// means. No subprocess and no timing span, unlike [`super::gh::resolve_token`]:
-/// this is one file read, and there is no CLI to ask.
+/// this is one file read, and there is no CLI to ask. Which directory that read lands
+/// in is [`config_dir`]'s decision.
 pub(crate) fn resolve_token(home: Option<&Path>, host: &HostEnv) -> TokenLookup {
     if forwarding_disabled(host.disable.as_deref()) {
         return TokenLookup::Missing(NoToken::OptedOut);
@@ -163,10 +205,10 @@ pub(crate) fn resolve_token(home: Option<&Path>, host: &HostEnv) -> TokenLookup 
     if let Some(token) = host.token.as_deref().and_then(Token::parse) {
         return TokenLookup::Found(token);
     }
-    let Some(home) = home else {
+    let Some(dir) = config_dir(home, host) else {
         return TokenLookup::Missing(NoToken::NotLoggedIn);
     };
-    let path = home.join(CREDENTIALS_RELPATH);
+    let path = dir.join(CREDENTIALS_FILENAME);
     let Ok(text) = std::fs::read_to_string(&path) else {
         // Not distinguished from "no such file", because the two are the same
         // answer for the same reason: on macOS the credential is in the login
@@ -177,6 +219,25 @@ pub(crate) fn resolve_token(home: Option<&Path>, host: &HostEnv) -> TokenLookup 
     match token_from_credentials(&text) {
         Some(token) => TokenLookup::Found(token),
         None => TokenLookup::Missing(NoToken::Unreadable(path.display().to_string())),
+    }
+}
+
+/// The directory this host keeps its Claude configuration in, if it names one.
+///
+/// `$CLAUDE_CONFIG_DIR` when it names something, `$HOME/.claude` otherwise, and
+/// nothing at all on a machine with no home directory and no variable -- which is a
+/// real state, since `dl` runs with `XDG_CACHE_HOME` set and no home.
+///
+/// **The variable replaces the default rather than being tried before it.** Claude Code
+/// does not fall back from `$CLAUDE_CONFIG_DIR` to `$HOME/.claude`, and a fallback here
+/// would forward a credential out of a directory Claude Code is not reading -- the same
+/// defect as ignoring the variable, and harder to see, because it only shows up on a
+/// host with two logins. An empty value counts as unset, matching
+/// [`crate::domain::xdg`]'s rule and what a shell exporting a bare variable means.
+fn config_dir(home: Option<&Path>, host: &HostEnv) -> Option<PathBuf> {
+    match host.config_dir.as_deref() {
+        Some(value) if !value.is_empty() => Some(PathBuf::from(value)),
+        _ => home.map(|home| home.join(CONFIG_RELPATH)),
     }
 }
 
@@ -317,6 +378,131 @@ mod tests {
         }
     }
 
+    /// A credential file at an arbitrary directory, as `$CLAUDE_CONFIG_DIR` would name.
+    fn credential_dir_holding(token: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("a scratch config dir");
+        std::fs::write(
+            dir.path().join(CREDENTIALS_FILENAME),
+            format!(r#"{{"claudeAiOauth":{{"accessToken":"{token}"}}}}"#),
+        )
+        .expect("a credential");
+        dir
+    }
+
+    #[test]
+    fn the_host_honours_claude_config_dir() {
+        // The asymmetry this closes: the container-side probe has always read this
+        // variable and the host side did not, so a host that moved its configuration
+        // reported NotLoggedIn while sitting on a perfectly good login.
+        let moved = credential_dir_holding("not-a-real-moved-token");
+        let host = HostEnv {
+            config_dir: Some(moved.path().display().to_string()),
+            ..HostEnv::default()
+        };
+        assert_eq!(
+            resolve_token(None, &host),
+            TokenLookup::Found(Token("not-a-real-moved-token".to_owned()))
+        );
+    }
+
+    #[test]
+    fn the_config_dir_is_read_instead_of_home_rather_than_as_well() {
+        // Claude Code does not fall back from `$CLAUDE_CONFIG_DIR` to `$HOME/.claude`,
+        // and neither does this: falling back would forward a credential out of a
+        // directory Claude Code is not reading, which is the same defect as ignoring
+        // the variable, only harder to see. Two accounts on one host is exactly when
+        // it would bite.
+        let home = logged_in("not-a-real-home-token");
+        let moved = credential_dir_holding("not-a-real-moved-token");
+        let host = HostEnv {
+            config_dir: Some(moved.path().display().to_string()),
+            ..HostEnv::default()
+        };
+        assert_eq!(
+            resolve_token(Some(home.path()), &host),
+            TokenLookup::Found(Token("not-a-real-moved-token".to_owned()))
+        );
+
+        // And an empty one names no directory at all, which is what the XDG rule
+        // already says elsewhere and what a shell exporting a bare variable means.
+        let empty = HostEnv {
+            config_dir: Some(String::new()),
+            ..HostEnv::default()
+        };
+        assert_eq!(
+            resolve_token(Some(home.path()), &empty),
+            TokenLookup::Found(Token("not-a-real-home-token".to_owned()))
+        );
+    }
+
+    #[test]
+    fn a_config_dir_naming_nothing_is_not_logged_in_rather_than_a_fallback() {
+        // Ambient rather than typed, so its absence is the quiet arm and not a
+        // warning: the same reason a missing `$HOME/.claude` is NotLoggedIn.
+        let empty_dir = tempfile::tempdir().expect("a scratch config dir");
+        let home = logged_in("not-a-real-home-token");
+        let host = HostEnv {
+            config_dir: Some(empty_dir.path().display().to_string()),
+            ..HostEnv::default()
+        };
+        assert_eq!(
+            resolve_token(Some(home.path()), &host),
+            TokenLookup::Missing(NoToken::NotLoggedIn)
+        );
+    }
+
+    #[test]
+    fn an_inherited_token_beats_the_config_dir() {
+        // Both are ambient, and the exported token keeps winning so that a `dl`
+        // launched from inside a workspace forwards the one it was handed.
+        let moved = credential_dir_holding("not-a-real-moved-token");
+        let host = HostEnv {
+            token: Some("not-a-real-exported-token".to_owned()),
+            config_dir: Some(moved.path().display().to_string()),
+            ..HostEnv::default()
+        };
+        assert_eq!(
+            resolve_token(None, &host),
+            TokenLookup::Found(Token("not-a-real-exported-token".to_owned()))
+        );
+    }
+
+    #[test]
+    fn the_opt_out_is_read_before_the_config_dir_is() {
+        // Set, therefore meant. A machine that has opted out has no account to choose.
+        let moved = credential_dir_holding("not-a-real-moved-token");
+        let host = HostEnv {
+            disable: Some("1".to_owned()),
+            config_dir: Some(moved.path().display().to_string()),
+            ..HostEnv::default()
+        };
+        assert_eq!(
+            resolve_token(None, &host),
+            TokenLookup::Missing(NoToken::OptedOut)
+        );
+    }
+
+    #[test]
+    fn the_refresh_token_still_does_not_travel_from_a_config_dir() {
+        // The module's whole reason for reading the file rather than shipping it,
+        // asserted on the new path as well as the old one.
+        let dir = tempfile::tempdir().expect("a scratch config dir");
+        std::fs::write(
+            dir.path().join(CREDENTIALS_FILENAME),
+            r#"{"claudeAiOauth":{"accessToken":"not-a-real-access-token",
+               "refreshToken":"not-a-real-refresh-token"}}"#,
+        )
+        .expect("a credential");
+        let host = HostEnv {
+            config_dir: Some(dir.path().display().to_string()),
+            ..HostEnv::default()
+        };
+        let TokenLookup::Found(token) = resolve_token(None, &host) else {
+            panic!("the credential should have been read");
+        };
+        assert!(!token.as_str().contains("refresh"), "{token:?}");
+    }
+
     #[test]
     fn a_host_that_exported_one_itself_passes_it_further_down() {
         // A `dl` running inside a workspace has the variable and no credential file,
@@ -360,7 +546,11 @@ mod tests {
         ] {
             let home = tempfile::tempdir().expect("a scratch home");
             std::fs::create_dir_all(home.path().join(".claude")).expect("a config dir");
-            std::fs::write(home.path().join(CREDENTIALS_RELPATH), text).expect("a file");
+            std::fs::write(
+                home.path().join(CONFIG_RELPATH).join(CREDENTIALS_FILENAME),
+                text,
+            )
+            .expect("a file");
             assert!(
                 matches!(
                     resolve_token(Some(home.path()), &HostEnv::default()),
