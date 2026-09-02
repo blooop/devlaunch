@@ -124,6 +124,9 @@ HERDR_RS = CORE / "clients" / "herdr.rs"
 AID = Path(__file__).resolve().parent.parent.parent / "rust" / "aid" / "src"
 AID_MAIN_RS = AID / "main.rs"
 AID_REWRITE_RS = AID / "rewrite.rs"
+LAUNCH_RS = CORE / "flows" / "launch.rs"
+DL = Path(__file__).resolve().parent.parent.parent / "rust" / "dl" / "src"
+DL_PANE_SHELL_RS = DL / "pane_shell.rs"
 
 
 def _visible_str_const(source: str, name: str, path: Path) -> str:
@@ -175,3 +178,43 @@ def aid_agent_names() -> Tuple[str, ...]:
     names = tuple(re.findall(r'^\s{8}"([^"]+)",$', source[start:end], re.MULTILINE))
     assert names, f"{AID_REWRITE_RS.name} declares AGENTS with no agent names in it"
     return names
+
+
+def core_session_manager_tab_var() -> str:
+    """The variable the pane shell reads to learn which tab it was spawned in.
+
+    Declared in `flows/launch.rs` rather than beside herdr's other exports: the
+    tab rename got there first, and one declaration in the less tidy place beats
+    two in the right ones.
+    """
+    return _visible_str_const(_read(LAUNCH_RS), "HERDR_TAB_VAR", LAUNCH_RS)
+
+
+def core_herdr_program() -> str:
+    """The manager's own binary name, for a host that exports no path to it."""
+    return _visible_str_const(_read(LAUNCH_RS), "HERDR_BIN_FALLBACK", LAUNCH_RS)
+
+
+def core_pane_questions() -> Tuple[Tuple[str, ...], ...]:
+    """The two argvs core builds to ask herdr what a tab holds.
+
+    Read out of the two builders rather than out of a table, because the builders
+    are what actually runs: a table beside them would be a fourth copy of the same
+    words with nothing diffing it against the third.
+    """
+    source = _read(HERDR_RS)
+    found = []
+    for name in ("pane_list_argv", "process_info_argv"):
+        start = source.find(f"pub(crate) fn {name}(")
+        assert start != -1, f"{HERDR_RS.name} no longer declares `fn {name}`"
+        end = source.find("\n}", start)
+        assert end != -1, f"`fn {name}` in {HERDR_RS.name} is not closed at column zero"
+        words = tuple(re.findall(r'"([^"]*)"\.to_owned\(\)', source[start:end]))
+        assert words, f"`fn {name}` in {HERDR_RS.name} builds an argv with no literals in it"
+        found.append(words)
+    return tuple(found)
+
+
+def dl_pane_shell_name() -> str:
+    """The name `dl --install` links, and herdr's `default_shell` points at."""
+    return _visible_str_const(_read(DL_PANE_SHELL_RS), "NAME", DL_PANE_SHELL_RS)
