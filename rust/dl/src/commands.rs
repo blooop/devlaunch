@@ -130,16 +130,23 @@ pub(crate) fn dispatch(
         // indistinguishable from one typed by hand -- same launch, same terminal
         // title, same agent reporting, same everything a manager reads.
         Command::HerdrShell => match session_manager::pane_destination(runner) {
-            PaneDestination::Workspace(workspace_id) => dispatch(
-                runner,
-                cache,
-                refresh,
-                Command::Workspace {
-                    target: workspace_id,
-                    verb: Verb::Attach { rm: RmOnExit::No },
-                    devcontainer: None,
-                },
-            ),
+            PaneDestination::Workspace(workspace_id) => {
+                let ending = dispatch(
+                    runner,
+                    cache,
+                    refresh,
+                    Command::Workspace {
+                        target: workspace_id,
+                        verb: Verb::Attach { rm: RmOnExit::No },
+                        devcontainer: None,
+                    },
+                );
+                if pane_shell::no_session_ran(ending) {
+                    become_the_host_shell()
+                } else {
+                    ending
+                }
+            }
             PaneDestination::HostShell => become_the_host_shell(),
         },
         // The two arms that name a verb are the two that can be `rme`, and the
@@ -189,6 +196,10 @@ pub(crate) fn dispatch(
 pub(crate) fn without_a_cache_directory(command: Command) -> Ending {
     match command {
         Command::Version => render_version(),
+        // A pane is not a place to refuse. Everything else here reads the cache and
+        // says why it cannot; this opens the shell it would have opened anyway,
+        // which is the same promise it keeps for every other failure.
+        Command::HerdrShell => become_the_host_shell(),
         _ => refuse_startup(&StartupError::NoHomeDirectory),
     }
 }
