@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`dl <ws> -- <agent>` now names the agent to a session manager too.** 0.27 gave
+  that to `aid` alone, and the docs told you to prefix the variable yourself on a
+  plain `dl` line. Now `dl` reads the command it was handed: when the program is an
+  agent devlaunch knows by name, the ssh child carries `HERDR_AGENT=<agent>`, and
+  [herdr](https://herdr.dev) reports the workspace agent as idle, working and
+  blocked exactly as it does for `aid`.
+
+  Reading the command is not the guess 0.27's docs said it would be, with one
+  restriction that is the whole design: only a name on the list `dl` and `aid`
+  share is written. `dl <ws> -- make test` could as easily export
+  `HERDR_AGENT=make`, and that is worse than silence, because a manager would then
+  look for detection rules under a label it has never heard of and find none. The
+  reading itself steps over leading `NAME=value` assignments, compares the program
+  by its last path component, and ignores everything after it.
+
+  Measured against herdr 0.8.2 rather than argued: `dl <ws> -- claude` in a herdr
+  pane with nothing exported went from no agent at all to `claude`, idle, and then
+  working while the agent worked. The same run confirmed the mechanism 0.27 rests
+  on, which no test in either tree can reach: `dl`'s own row carries nothing
+  because a `setenv` after start does not rewrite `/proc/<pid>/environ`, and the
+  `ssh` child it spawns carries the name. herdr reads a descendant's environment,
+  which is what makes the child enough.
+
+  An agent started *inside* the workspace is still invisible, and no host-side
+  variable can fix that: `dl <ws>` then typing `claude` at the container's shell is
+  a process no host manager can see. Start the agent from the host side of the
+  line, or use `aid`.
+
 ### Fixed
 
 - **`claude` in a workspace no longer opens the first-run wizard in front of a

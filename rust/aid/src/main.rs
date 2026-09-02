@@ -53,6 +53,13 @@ use rewrite::UsageError;
 /// Detecting herdr first (`HERDR_ENV=1`) was the alternative and buys nothing —
 /// the detection is a second thing to be wrong about, and being wrong about it
 /// fails in the direction this whole issue is about.
+///
+/// The name is spelled here and once more in core, which writes the same variable
+/// for a `dl <ws> -- <agent>` whose command is an agent by name
+/// (`devlaunch-core/src/clients/herdr.rs`). Two copies because core's is
+/// `pub(crate)` and this is a different binary; `test/unit/test_session_manager.py`
+/// diffs the two spellings, which is what the standing rule in CLAUDE.md asks of a
+/// second copy of a fact.
 const SESSION_MANAGER_AGENT_VAR: &str = "HERDR_AGENT";
 
 fn main() {

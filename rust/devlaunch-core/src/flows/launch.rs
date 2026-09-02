@@ -66,6 +66,7 @@ use crate::clients::claude;
 use crate::clients::devpod::{self, Call, ContainerState, ListingUnreadable, NotRun, Patience};
 use crate::clients::devpod_home::{CreateRecord, DevpodHome, create_record};
 use crate::clients::gh::{self, GhEvent, StagedToken, Token, TokenLookup};
+use crate::clients::herdr;
 use crate::clients::ssh;
 use crate::domain::locks::{self, Contention, LockError};
 use crate::domain::metadata::MetadataStorage;
@@ -1967,14 +1968,24 @@ pub(crate) fn workspace_ssh(
                 .map_err(SessionRefused::Unquotable)?,
         ),
     };
+    // Read off the command dl was handed, not the payload: the payload is already
+    // wrapped in a `cd` and possibly in zellij, and the question is what program
+    // the person asked for.
+    let agent = command.and_then(herdr::agent_in);
     // The already-cached options, never a fresh `devpod context options`: this is
     // on the warm path, where that round trip costs more than the pty it decides.
     let options = already_cached_options(session.host, SystemTime::now());
     let terminal = terminal_for(session.host, &options, workspace_id);
     match route(payload.as_ref(), &terminal, workspace_id, notices) {
-        Route::Terminal { payload, config } => {
-            ssh_with_terminal(session, workspace_id, payload, config, workdir, notices)
-        }
+        Route::Terminal { payload, config } => ssh_with_terminal(
+            session,
+            workspace_id,
+            payload,
+            config,
+            workdir,
+            agent,
+            notices,
+        ),
         Route::DevpodAttach => {
             devpod_session(session, workspace_id, None, workdir, forward, notices)
         }
@@ -2050,11 +2061,18 @@ fn ssh_with_terminal(
     payload: &RemotePayload,
     config: &Path,
     workdir: Option<&str>,
+    agent: Option<&str>,
     notices: &mut dyn Notices<LaunchNotice>,
 ) -> Result<Session, SessionRefused> {
-    let forwarding = claude::extend_openssh_forwarding(
-        gh::openssh_forwarding(session.forwarded_token(notices)),
-        session.forwarded_claude().as_ref(),
+    // The agent's name goes on last and reaches only the environment, so the
+    // permit list `Reuse::derive` keys the control socket on is the same list the
+    // two credentials built (`clients::herdr`).
+    let forwarding = herdr::extend_openssh_forwarding(
+        claude::extend_openssh_forwarding(
+            gh::openssh_forwarding(session.forwarded_token(notices)),
+            session.forwarded_claude().as_ref(),
+        ),
+        agent,
     );
     // Derived from the permit list that is about to be sent, not from one read
     // again somewhere else: a master filters `SendEnv` against its own list in
@@ -6508,6 +6526,50 @@ mod tests {
             &mut notices,
         );
         (session, notices, said)
+    }
+
+    /// The wiring `clients::herdr`'s own tests cannot reach.
+    ///
+    /// Its unit tests know that `claude` is an agent and that the name belongs in
+    /// the environment rather than in argv; only this one knows the launch flow
+    /// actually asks. The environment is where it has to land: a session manager
+    /// reads `/proc/<pid>/environ` of the pane's processes, and argv is also the
+    /// one place another user on the host could read it from.
+    #[test]
+    fn a_command_that_names_an_agent_names_it_to_the_ssh_child() {
+        let scene = Scene::new().on_a_terminal(&["myws"]).with_running("myws");
+
+        let _ = a_session(&scene, Some("claude 'fix the bug'"));
+
+        let calls = scene.runner.calls_to("ssh");
+        let call = calls.last().expect("an openssh session");
+        assert_eq!(
+            call.invocation()
+                .env
+                .entries
+                .get(herdr::AGENT_VAR)
+                .map(String::as_str),
+            Some("claude"),
+        );
+        assert!(
+            !call.argv().iter().any(|arg| arg.contains(herdr::AGENT_VAR)),
+            "the name must not travel in argv: {:?}",
+            call.argv()
+        );
+    }
+
+    /// The other half, and the one that keeps a manager honest: a command that is
+    /// not an agent must leave the launch exactly as it was, rather than claiming
+    /// the pane holds an agent nothing has detection rules for.
+    #[test]
+    fn an_ordinary_command_names_no_agent() {
+        let scene = Scene::new().on_a_terminal(&["myws"]).with_running("myws");
+
+        let _ = a_session(&scene, Some("make test"));
+
+        let calls = scene.runner.calls_to("ssh");
+        let call = calls.last().expect("an openssh session");
+        assert_eq!(call.invocation().env.entries.get(herdr::AGENT_VAR), None);
     }
 
     #[test]

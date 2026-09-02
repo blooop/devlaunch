@@ -114,3 +114,64 @@ def timing_json_prefix() -> str:
 def timing_total_epoch() -> str:
     """What the document's `total` is measured over, as it reports it."""
     return _str_const(_read(TIMING_RS), "TOTAL_EPOCH", TIMING_RS)
+
+
+# ---------------------------------------------------------------------------
+# what a session manager is told, which two binaries spell separately
+# ---------------------------------------------------------------------------
+
+HERDR_RS = CORE / "clients" / "herdr.rs"
+AID = Path(__file__).resolve().parent.parent.parent / "rust" / "aid" / "src"
+AID_MAIN_RS = AID / "main.rs"
+AID_REWRITE_RS = AID / "rewrite.rs"
+
+
+def _visible_str_const(source: str, name: str, path: Path) -> str:
+    """`[pub[(crate)]] const NAME: &str = "...";`, whatever its visibility.
+
+    Separate from `_str_const` because the two constants this reads differ in
+    exactly that: core's is `pub(crate)` and aid's is private, and a reader that
+    insisted on one spelling would pass by returning nothing about the other.
+    """
+    match = re.search(
+        rf'(?:pub(?:\(crate\))?\s+)?const {re.escape(name)}: &str = "([^"]*)";', source
+    )
+    assert match, f"{path.name} no longer declares a `const {name}: &str`"
+    return match.group(1)
+
+
+def core_session_manager_agent_var() -> str:
+    """The variable core writes for a `dl <ws> -- <agent>` that names an agent."""
+    return _visible_str_const(_read(HERDR_RS), "AGENT_VAR", HERDR_RS)
+
+
+def aid_session_manager_agent_var() -> str:
+    """The variable aid writes for the session it opens."""
+    return _visible_str_const(_read(AID_MAIN_RS), "SESSION_MANAGER_AGENT_VAR", AID_MAIN_RS)
+
+
+def core_agent_names() -> Tuple[str, ...]:
+    """The agents core will name to a session manager, as `AGENT_NAMES` lists them."""
+    source = _read(HERDR_RS)
+    match = re.search(r"const AGENT_NAMES: &\[&str\] = &\[([^\]]*)\];", source)
+    assert match, f"{HERDR_RS.name} no longer declares `const AGENT_NAMES: &[&str]`"
+    names = tuple(re.findall(r'"([^"]+)"', match.group(1)))
+    assert names, f"{HERDR_RS.name} declares AGENT_NAMES with no names in it"
+    return names
+
+
+def aid_agent_names() -> Tuple[str, ...]:
+    """The keys of aid's own agent table, which knows far more than their names.
+
+    Read from the `const AGENTS: &[(&str, Agent)]` block rather than from
+    `agent_names()`, because the table is the thing that decides which agents exist
+    and the function is only its sorted keys.
+    """
+    source = _read(AID_REWRITE_RS)
+    start = source.find("const AGENTS: &[(&str, Agent)] = &[")
+    assert start != -1, f"{AID_REWRITE_RS.name} no longer declares `const AGENTS`"
+    end = source.find("\n];", start)
+    assert end != -1, f"`const AGENTS` in {AID_REWRITE_RS.name} is not closed at column zero"
+    names = tuple(re.findall(r'^\s{8}"([^"]+)",$', source[start:end], re.MULTILINE))
+    assert names, f"{AID_REWRITE_RS.name} declares AGENTS with no agent names in it"
+    return names
