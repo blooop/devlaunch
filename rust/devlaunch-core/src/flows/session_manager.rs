@@ -285,11 +285,15 @@ pub(crate) struct Forward {
 impl Forward {
     /// Take the forward down.
     ///
-    /// `SIGTERM` and not `SIGKILL`: OpenSSH removes the remote listen path on a
-    /// clean exit, and a killed forward leaves a dead socket in the container that
-    /// the next launch has to unlink. It is unlinked either way
-    /// (`StreamLocalBindUnlink=yes`), so this is tidiness rather than correctness,
+    /// `SIGTERM` and not `SIGKILL`, and it is tidiness rather than correctness,
     /// which is why nothing here waits to see it happen.
+    ///
+    /// Not for the reason this comment used to give. OpenSSH removes a remote
+    /// listen path on a clean exit, but the path here is not OpenSSH's: the remote
+    /// end is devpod's own Go server, and devlaunch#549 measured that the socket
+    /// survives the forward either way. What the container is left holding is a
+    /// socket file with nobody behind it -- which is why the hook cannot treat
+    /// `[ -S ]` as proof anyone is listening, and does not.
     pub(crate) fn stop(self, runner: &dyn Runner) {
         let _ = kill::signal(runner, Signal::Terminate, &NonEmpty::one(self.pid));
     }

@@ -791,6 +791,19 @@ absence is the whole of the detection. A manager with an equivalent override nee
 that override set some other way; a manager with none is still blind, and no
 amount of cooperation from `dl` would change that.
 
+Reading two of herdr's exports is still a small thing to know about it. The
+container-side half below is not: it speaks herdr's socket protocol, installs
+herdr's binary and writes a hook that calls herdr's own subcommands. The
+plan had been a facility that knew no manager's name -- a list of variables to
+forward and a socket to carry, with the manager-specific part left outside `dl`
+entirely. What retired it was a measurement rather than a change of mind
+([#549](https://github.com/blooop/devlaunch/issues/549)): a general container has
+no python3, no jq, no socat and no nc, so there is nothing in there for a generic
+facility to hand the socket *to*. Something has to speak the protocol, and the
+only thing that can is the manager's own binary, lent in and driven by a hook that
+knows its subcommands. A second manager is a second client module beside
+`clients/herdr.rs`, which is the cost that buys.
+
 **It only covers an agent named on `dl`'s own command line.** `dl <ws>` opens a
 shell, and a `claude` you type at that shell is a process inside the container that
 no host manager can see. Naming it is impossible from out here, so that case is
