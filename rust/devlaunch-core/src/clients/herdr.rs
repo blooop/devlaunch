@@ -629,6 +629,63 @@ mod tests {
         }
     }
 
+    /// `--seq` has to be a number, and a `date` without `%N` does not fail to give
+    /// one -- it succeeds and gives something else.
+    ///
+    /// busybox's `date` prints `%N` back unexpanded and exits 0, so `date +%s%N ||
+    /// echo 0` yields `1756300000%N`. herdr cannot order by that, and every report
+    /// from the container is discarded with the pane left empty and nothing said.
+    #[test]
+    fn the_sequence_number_is_digits_even_where_date_has_no_nanoseconds() {
+        let dir = tempfile::tempdir().expect("a scratch directory");
+        let hook = dir.path().join("herdr-hook.sh");
+        std::fs::write(&hook, HOOK).expect("the hook");
+        let socket = dir.path().join("herdr.sock");
+        let _listener = std::os::unix::net::UnixListener::bind(&socket).expect("a socket");
+        let executable = |name: &str, body: &str| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, body).expect("a stub");
+            std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+                .expect("an executable stub");
+            path
+        };
+        // A `date` that has never heard of %N, as busybox's has not.
+        executable("date", "#!/bin/sh\necho 1756300000%N\n");
+        let reported = dir.path().join("argv");
+        let binary = executable(
+            "herdr",
+            &format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > {}\n",
+                reported.display()
+            ),
+        );
+
+        let status = std::process::Command::new("sh")
+            .arg(&hook)
+            .arg("working")
+            .env("PATH", format!("{}:/usr/bin:/bin", dir.path().display()))
+            .env("HERDR_ENV", "1")
+            .env("HERDR_PANE_ID", "w1:p3")
+            .env("HERDR_SOCKET_PATH", &socket)
+            .env("HERDR_BIN_PATH", &binary)
+            .stdin(std::process::Stdio::null())
+            .status()
+            .expect("the hook runs under sh");
+        assert_eq!(status.code(), Some(0));
+
+        let argv = std::fs::read_to_string(&reported).expect("the stub was called");
+        let args: Vec<&str> = argv.lines().collect();
+        let seq = args
+            .iter()
+            .position(|arg| *arg == "--seq")
+            .and_then(|at| args.get(at + 1))
+            .expect("the report carries a --seq");
+        assert!(
+            !seq.is_empty() && seq.chars().all(|c| c.is_ascii_digit()),
+            "herdr was handed a --seq it cannot order by: {seq:?}"
+        );
+    }
+
     /// The credentials already on the line survive: this extends a forwarding, it
     /// does not replace one.
     #[test]
@@ -1091,8 +1148,11 @@ BIN="${HERDR_BIN_PATH:-/usr/local/bin/herdr}"
 cat >/dev/null 2>&1
 
 # Nanoseconds since the epoch: herdr orders reports by --seq, and two hooks can
-# land inside one second.
-seq=$(date +%s%N 2>/dev/null || echo 0)
+# land inside one second. Filtered to digits rather than trusted, because a `date`
+# without %N prints the format string back -- 17563000000%N -- and *succeeds*, so
+# an `|| echo 0` never fires and herdr is handed a --seq it cannot read.
+seq=$(date +%s%N 2>/dev/null | tr -dc 0-9)
+[ -n "$seq" ] || seq=0
 
 # Run the reporter, never `exec` it: an `exec` makes the reporter's exit status
 # this hook's, and Claude Code reads a hook's status. A socket file whose other
