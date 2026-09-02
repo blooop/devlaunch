@@ -534,6 +534,48 @@ mod tests {
         );
     }
 
+    /// The report's own failure must not become the hook's, which needs the hook
+    /// to be *run* rather than read.
+    ///
+    /// The `-S` guard above passes on a socket file whose other end has gone, and
+    /// that file outlives the forward: devpod's server creates the listen path and
+    /// does not remove it (devlaunch#549 measured exactly this). So a hook firing
+    /// after a forward has died connects to a corpse, herdr exits non-zero, and an
+    /// `exec` hands that status to Claude Code as the hook's own.
+    #[test]
+    fn a_report_that_cannot_be_delivered_still_leaves_the_hook_silent() {
+        let dir = tempfile::tempdir().expect("a scratch directory");
+        let hook = dir.path().join("herdr-hook.sh");
+        std::fs::write(&hook, HOOK).expect("the hook");
+        // A socket file with nobody behind it: what the container is left holding
+        // when the forward goes down.
+        let socket = dir.path().join("herdr.sock");
+        let _listener = std::os::unix::net::UnixListener::bind(&socket).expect("a socket");
+        // A manager binary that refuses, as one that cannot reach its socket does.
+        let binary = dir.path().join("herdr");
+        std::fs::write(&binary, "#!/bin/sh\nexit 3\n").expect("the stub");
+        std::fs::set_permissions(&binary, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .expect("an executable stub");
+
+        for state in ["idle", "working", "blocked", "release"] {
+            let status = std::process::Command::new("sh")
+                .arg(&hook)
+                .arg(state)
+                .env("HERDR_ENV", "1")
+                .env("HERDR_PANE_ID", "w1:p3")
+                .env("HERDR_SOCKET_PATH", &socket)
+                .env("HERDR_BIN_PATH", &binary)
+                .stdin(std::process::Stdio::null())
+                .status()
+                .expect("the hook runs under sh");
+            assert_eq!(
+                status.code(),
+                Some(0),
+                "reporting {state} to a dead socket cost the agent's turn"
+            );
+        }
+    }
+
     /// The credentials already on the line survive: this extends a forwarding, it
     /// does not replace one.
     #[test]
@@ -954,8 +996,10 @@ pub(crate) fn managed_settings() -> String {
 /// present in this repo's containers through a bind mount, can never fire there:
 /// its first act is `command -v python3`.
 ///
-/// Every guard is a silent `exit 0`. A hook that fails loudly costs the agent's
-/// session, and every condition here is an ordinary "no manager is listening".
+/// Every path out is a silent `exit 0`, the guards and the report alike. A hook
+/// that fails loudly costs the agent's session -- Claude Code reads a hook's exit
+/// status, and treats 2 on `UserPromptSubmit` as a reason to discard the prompt --
+/// and every condition here is an ordinary "no manager is listening".
 pub(crate) const HOOK: &str = r#"#!/bin/sh
 # Installed by devlaunch. Reports this agent's lifecycle to the session manager
 # on the host, over the unix socket dl forwarded into this container.
@@ -974,12 +1018,17 @@ cat >/dev/null 2>&1
 # land inside one second.
 seq=$(date +%s%N 2>/dev/null || echo 0)
 
+# Run the reporter, never `exec` it: an `exec` makes the reporter's exit status
+# this hook's, and Claude Code reads a hook's status. A socket file whose other
+# end has gone -- which outlives the forward, since devpod's own server creates it
+# and does not clean it up -- passes the `-S` guard above and then fails to
+# connect, so this is reachable in the ordinary course of a day.
 case "${1:-}" in
   release)
-    exec "$BIN" pane release-agent "$HERDR_PANE_ID" --source devlaunch:claude >/dev/null 2>&1
+    "$BIN" pane release-agent "$HERDR_PANE_ID" --source devlaunch:claude >/dev/null 2>&1
     ;;
   idle|working|blocked)
-    exec "$BIN" pane report-agent "$HERDR_PANE_ID" --source devlaunch:claude \
+    "$BIN" pane report-agent "$HERDR_PANE_ID" --source devlaunch:claude \
       --agent claude --state "$1" --seq "$seq" >/dev/null 2>&1
     ;;
 esac
