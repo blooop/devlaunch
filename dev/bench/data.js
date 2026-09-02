@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788382918568,
+  "lastUpdate": 1788385036602,
   "repoUrl": "https://github.com/blooop/devlaunch",
   "entries": {
     "devlaunch launch stages": [
@@ -11126,6 +11126,93 @@ window.BENCHMARK_DATA = {
             "range": "± 0.443395",
             "unit": "s",
             "extra": "runs=5/5 wall=8.410346s v0.26.1, Linux-X64"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "blooop@gmail.com",
+            "name": "Austin Gregg-Smith",
+            "username": "blooop"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f2392e0d718ef914fd829d5206d543eb2ac9cdf4",
+          "message": "Merge pull request #556 from blooop/feat/herdr-visibility\n\nfeat(dl): let an agent inside a workspace report to the manager outside it",
+          "timestamp": "2026-09-02T22:34:16+01:00",
+          "tree_id": "23a03b484cdcc17f1cb831d27f9607848c0f8ae9",
+          "url": "https://github.com/blooop/devlaunch/commit/f2392e0d718ef914fd829d5206d543eb2ac9cdf4"
+        },
+        "date": 1788385035459,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "warm / attach",
+            "value": 1.324748,
+            "range": "± 0.090728",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / devpod-up",
+            "value": 0.329893,
+            "range": "± 0.0044",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / host-prep",
+            "value": 0.000043,
+            "range": "± 0.000001",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / total",
+            "value": 1.659424,
+            "range": "± 0.093169",
+            "unit": "s",
+            "extra": "runs=5/5 wall=1.661452s v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / attach",
+            "value": 1.321361,
+            "range": "± 0.04054",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / devpod-up",
+            "value": 3.21356,
+            "range": "± 1.128734",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / host-prep",
+            "value": 0.326641,
+            "range": "± 0.015723",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / tools",
+            "value": 3.847666,
+            "range": "± 0.152306",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / total",
+            "value": 8.618076,
+            "range": "± 1.26615",
+            "unit": "s",
+            "extra": "runs=5/5 wall=8.620477s v0.26.1, Linux-X64"
           }
         ]
       }
