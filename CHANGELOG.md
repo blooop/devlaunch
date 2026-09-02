@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`dl --claude-profile <name>` forwards a named Claude login instead of the
+  default one**, for the case one credential cannot serve: two accounts on one
+  machine, and a workspace that wants the one your host is not signed in to. Profiles
+  are directories under `<config>/devlaunch/claude-profiles/`, each holding the
+  `.credentials.json` a `claude` login writes. devlaunch reads them and has no writer,
+  so creating one is Claude Code's job with its own `CLAUDE_CONFIG_DIR`.
+
+  **A named profile that holds no credential stops the launch, and that refusal is the
+  feature.** It does not fall back to the default login. Two accounts on one machine is
+  what profiles are for, so a typo that silently forwarded the other one would be worse
+  than a launch that fails: the launch you see, and the wrong account you find out about
+  later and somewhere else. The name is checked at the boundary as a single directory
+  component, so `--claude-profile ../../etc` is refused by the rule rather than becoming
+  a traversal that fails later on a read.
+
+  Read above an exported `CLAUDE_CODE_OAUTH_TOKEN`, unlike `$CLAUDE_CONFIG_DIR`, because
+  a profile was typed on this command line for this launch and nothing ambient should
+  beat an explicit argument. `DEVLAUNCH_NO_CLAUDE_TOKEN` still comes first: a machine
+  that has opted out has no account to choose.
+
+  **Not stored with the workspace**, unlike `--devcontainer`, so no workspace can
+  quietly forward an account chosen weeks ago. Profiles live under the config directory
+  and never the cache, so `--purge` and `--prune` cannot reach a login;
+  `DEVLAUNCH_CLAUDE_PROFILES_DIR` moves them for a scratch run. Completion offers the
+  profiles that exist, read off the disk rather than the completion cache, because a
+  profile made a minute ago has to complete now.
+
+  It is not the claude.ai account a container's `claude` is paired to for Remote
+  Control, and it does not weaken the check that leaves a repo's own mounted Claude
+  config alone: `Foreign` forwards nothing, profile or no profile. `aid` passes the flag
+  through. A verb that forwards no login says it is ignoring it, as `--devcontainer`
+  does; a global command refuses it.
+
 ### Fixed
 
 - **`$CLAUDE_CONFIG_DIR` is now honoured on the host, so a host that has moved its

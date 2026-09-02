@@ -140,6 +140,13 @@ pub(crate) fn dispatch(
                         target: workspace_id,
                         verb: Verb::Attach { rm: RmOnExit::No },
                         devcontainer: None,
+                        // Nothing to inherit, for the same reason `devcontainer` is
+                        // `None`: a profile is named per launch and deliberately not
+                        // stored with the workspace, so a pane opened beside an agent
+                        // has no record of which login started it and gets the default
+                        // one. Consistent with "indistinguishable from one typed by
+                        // hand", since a hand-typed `dl <ws>` names no profile either.
+                        claude_profile: None,
                     },
                 );
                 if pane_shell::no_session_ran(ending) {
@@ -154,7 +161,11 @@ pub(crate) fn dispatch(
         // hangup is asked *here* rather than inside either of them: a picked batch
         // is one command over several workspaces, and the shell it was typed in is
         // hung up once, when the last of them has gone. See [`crate::hangup`].
-        Command::Select { verb, devcontainer } => {
+        Command::Select {
+            verb,
+            devcontainer,
+            claude_profile,
+        } => {
             let after = verb.after_removal();
             let ending = render_select(
                 runner,
@@ -163,6 +174,7 @@ pub(crate) fn dispatch(
                 refresh,
                 verb,
                 devcontainer.as_ref(),
+                claude_profile.as_deref(),
             );
             hangup::after_the_command(after, ending)
         }
@@ -170,6 +182,7 @@ pub(crate) fn dispatch(
             target,
             verb,
             devcontainer,
+            claude_profile,
         } => {
             let after = verb.after_removal();
             let ending = render_workspace(
@@ -180,6 +193,7 @@ pub(crate) fn dispatch(
                 &target,
                 verb,
                 devcontainer.as_ref(),
+                claude_profile.as_deref(),
                 // A target named on the command line is resolved by the launch
                 // itself; only the picker arrives knowing more than it says.
                 None,
@@ -632,6 +646,7 @@ fn render_workspace<'r>(
     target: &str,
     verb: Verb,
     devcontainer: Option<&DevcontainerPath>,
+    claude_profile: Option<&str>,
     recognised: Option<WorkspaceId>,
 ) -> Ending {
     // The open's own notices are said where they happen, by the same printer every
@@ -647,14 +662,17 @@ fn render_workspace<'r>(
     match launch::family(&verb) {
         Family::Stop => {
             devcontainer_ignored(devcontainer.is_some(), word);
+            claude_profile_ignored(claude_profile.is_some(), word);
             render_stop(runner, context, refresh, &mut cold, target)
         }
         Family::Kill => {
             devcontainer_ignored(devcontainer.is_some(), word);
+            claude_profile_ignored(claude_profile.is_some(), word);
             render_kill(runner, context, cache, refresh, &mut cold, target, word)
         }
         Family::Remove { force } => {
             devcontainer_ignored(devcontainer.is_some(), word);
+            claude_profile_ignored(claude_profile.is_some(), word);
             render_remove(
                 runner,
                 context,
@@ -677,6 +695,7 @@ fn render_workspace<'r>(
                 target,
                 &launched,
                 devcontainer,
+                claude_profile,
                 recognised,
             );
             after_the_session(runner, context, cache, refresh, &mut cold, target, rm, ran)
@@ -803,6 +822,19 @@ fn after_the_session<'r>(
 
 /// A config choice a verb that opens no workspace cannot honour, said rather than
 /// discarded.
+/// Say that `--claude-profile` was given to a verb that forwards no Claude login.
+///
+/// Reported rather than refused, which is the line `devcontainer_ignored` already
+/// draws for the same three families: a global command has no workspace for the flag
+/// to be about, while `dl <ws> stop --claude-profile work` names a real workspace and
+/// a flag that does nothing to it. Refusing that would break a recalled line for no
+/// gain, and silence would let somebody believe an account had been chosen.
+fn claude_profile_ignored(given: bool, verb: &str) {
+    if given {
+        eprintln!("Ignoring --claude-profile: '{verb}' forwards no Claude login.");
+    }
+}
+
 fn devcontainer_ignored(given: bool, verb: &str) {
     if given {
         eprintln!("Ignoring --devcontainer: it does not apply to '{verb}'.");
@@ -1457,6 +1489,7 @@ fn render_select<'r>(
     refresh: &mut Refresh<'_>,
     verb: Verb,
     devcontainer: Option<&DevcontainerPath>,
+    claude_profile: Option<&str>,
 ) -> Ending {
     let workspaces = match context.workspaces() {
         Err(refused) => return refuse_listing(&refused),
@@ -1494,6 +1527,7 @@ fn render_select<'r>(
                     &pick.workspace_id,
                     verb.clone(),
                     devcontainer,
+                    claude_profile,
                     // The picker knows what it drew: this row's clone said it is
                     // this triple, and the launch it is about to start knows only
                     // the id. See `Launch::recognised_as`.

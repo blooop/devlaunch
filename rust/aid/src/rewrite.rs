@@ -161,9 +161,22 @@ const REMOTE_CONTROL_NO: &[&str] = &["0", "false", "off", "no"];
 ///
 /// aid splits its own command line before handing it to dl and has to tell such a
 /// value from the workspace spec. Python keeps the list in `dl.py`
-/// (`DL_VALUE_OPTIONS`) next to the parsing it describes, and it is one entry long;
-/// here it is the one thing aid knows about dl's grammar.
-const DL_VALUE_OPTIONS: &[&str] = &["--devcontainer"];
+/// (`DL_VALUE_OPTIONS`) next to the parsing it describes; here it is the one thing
+/// aid knows about dl's grammar.
+///
+/// A flag missing from this list is not passed through wrongly, it is read as *prompt
+/// text*, because everything after the workspace is the prompt. `aid --claude-profile
+/// work owner/repo fix it` would send `dl` a prompt beginning "work". That is why the
+/// list is here rather than inferred.
+///
+/// **`--claude-profile` chooses which host credential `dl` forwards, and nothing
+/// else.** It is not the claude.ai login the container's own `claude` is paired to
+/// for Remote Control, which lives in the container with the rest of the agent's
+/// state (docs/cli.md, "It needs a claude.ai login inside the workspace"). So
+/// `aid --claude-profile work` still lists its session under whichever account the
+/// container is signed in to. Two credentials, and this one is the token forwarded
+/// into the session.
+const DL_VALUE_OPTIONS: &[&str] = &["--devcontainer", "--claude-profile"];
 
 /// The modifier the suffix options take, peeled only in their company.
 ///

@@ -283,6 +283,23 @@ dl 0.29.0
 Projects with several variants, compose sidecars, or a host-side `initializeCommand` are covered
 in [docs/devcontainer-projects.md](docs/devcontainer-projects.md).
 
+`--claude-profile <name>` forwards a named Claude login instead of the default one, for
+workspaces where you want a different account than the one `claude` on your host is signed in to:
+
+```bash
+dl blooop/devlaunch --claude-profile work
+```
+
+Profiles live in `<config>/devlaunch/claude-profiles/<name>/`, each holding the
+`.credentials.json` that a `claude` login writes. Create one by pointing Claude Code's own
+`CLAUDE_CONFIG_DIR` at the directory and logging in there; `dl` reads these and never writes them.
+
+Unlike `--devcontainer` it is **not** stored with the workspace, so it applies to the launch you
+typed it on and no workspace ever forwards an account chosen weeks ago. A name that holds no
+credential stops the launch and says so rather than falling back to your default login, which is
+the whole point of naming one. [docs/workspace-tools.md](docs/workspace-tools.md) has the
+precedence order and what a profile does not change.
+
 `dl --help` is the complete reference and is kept in step with the binary by a test.
 
 ## aid: an agent instead of a shell
@@ -318,6 +335,7 @@ the question and launches one-shot, so scripts behave as they always have.
 | `--no-remote-control`, `--no-remote` | Start a plain local session. Remote Control is on by default for `claude`: the session is named after the workspace and can be read and steered from claude.ai/code or the Claude app. It needs a claude.ai login in the container |
 | `--remote-control`, `--remote` | Ask for Remote Control by name. `claude` has it already; beside `--codex` or `--gemini` this says they have not got it and stops |
 | `--devcontainer <variant\|path>` | Passed through to `dl` |
+| `--claude-profile <name>` | Passed through to `dl`: which host Claude login to forward. Not the claude.ai account the container's `claude` is paired to for Remote Control |
 
 **The trade, stated plainly.** `claude` starts with `--dangerously-skip-permissions`, because the
 agent is already inside a disposable container holding only this repo, and the per-tool prompts
@@ -418,11 +436,12 @@ Images are yours: `docker system df` is what shows those.
 | `DEVLAUNCH_TIMING=1\|json` | Write a timing summary to stderr. See [docs/performance.md](docs/performance.md) |
 | `DEVPOD_SSH_CONFIG=<path>` | devpod's own, honoured rather than set: it is where `devpod up` publishes host aliases, so it is where `dl` looks for them. See [docs/cli.md](docs/cli.md) |
 | `CLAUDE_CONFIG_DIR=<path>` | Claude Code's own, honoured rather than set: it is where the host keeps its Claude configuration, so it is where `dl` reads the login to forward. It replaces `~/.claude` rather than being tried before it, exactly as Claude Code treats it. See [docs/workspace-tools.md](docs/workspace-tools.md) |
+| `DEVLAUNCH_CLAUDE_PROFILES_DIR=<path>` | Where `--claude-profile` looks. Defaults to `<config>/devlaunch/claude-profiles`. Under the config directory and never the cache, so `dl --purge` cannot reach a login |
 
 Every switch here reads the same values: anything but empty, `0`, `false` or `no` counts as
-set. On a "no" variable that means turn it off; on an opt-in one it means turn it on. Six
-rows are not switches and do not follow it: `DEVLAUNCH_AID_AGENT`, `DEVPOD_SSH_CONFIG` and
-`CLAUDE_CONFIG_DIR` take a value, `DEVLAUNCH_TIMING` counts only empty and `0` as off, so `false` and `no`
+set. On a "no" variable that means turn it off; on an opt-in one it means turn it on. Seven
+rows are not switches and do not follow it: `DEVLAUNCH_AID_AGENT`, `DEVPOD_SSH_CONFIG`,
+`CLAUDE_CONFIG_DIR` and `DEVLAUNCH_CLAUDE_PROFILES_DIR` take a value, `DEVLAUNCH_TIMING` counts only empty and `0` as off, so `false` and `no`
 turn it on, `DEVLAUNCH_AID_REMOTE_CONTROL` takes `1`/`true`/`on`/`yes` or
 `0`/`false`/`off`/`no` and refuses anything else rather than guessing, and `HERDR_AGENT` is
 the one written rather than read, so a value of your own survives only a line that starts
