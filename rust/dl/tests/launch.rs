@@ -668,6 +668,7 @@ fn a_cold_triple_prepares_a_clone_creates_the_workspace_and_attaches() {
             ),
             &format!("{COLD}: the hostname setup stage did not report; it may not have run."),
             &format!("{COLD}: the title setup stage did not report; it may not have run."),
+            &format!("{COLD}: the onboarding setup stage did not report; it may not have run."),
             &format!("SSH command: devpod ssh {COLD}"),
         ]
     );
@@ -778,6 +779,7 @@ fn up_on_a_running_workspace_says_so_and_still_provisions_the_tools() {
             // a launch that resolved a triple: the name it installs is the workspace
             // id, which every arm has. See `Launch::titled`.
             &format!("{MAIN}: the title setup stage did not report; it may not have run."),
+            &format!("{MAIN}: the onboarding setup stage did not report; it may not have run."),
         ]
     );
     assert_eq!(

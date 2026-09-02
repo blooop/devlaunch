@@ -72,6 +72,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `DEVLAUNCH_NO_TOOLS=1` is about installing tools and this installs none;
   `DEVLAUNCH_NO_CLAUDE_TOKEN=1` says do not put a credential in this container,
   which is a different sentence from "make me answer the theme picker".
+
 ## [0.28.0] - 2026-09-02
 
 ### Added
