@@ -65,6 +65,11 @@ pub devlaunch_core::api::LaunchNotice::PixiCacheNotADirectory::source: std::path
 pub devlaunch_core::api::LaunchNotice::PixiCacheNotCreated
 pub devlaunch_core::api::LaunchNotice::PixiCacheNotCreated::reason: alloc::string::String
 pub devlaunch_core::api::LaunchNotice::PixiCacheNotCreated::source: std::path::PathBuf
+pub devlaunch_core::api::LaunchNotice::SessionManagerReady
+pub devlaunch_core::api::LaunchNotice::SessionManagerReady::pane_id: alloc::string::String
+pub devlaunch_core::api::LaunchNotice::SessionManagerReady::socket: alloc::string::String
+pub devlaunch_core::api::LaunchNotice::SessionManagerUnavailable
+pub devlaunch_core::api::LaunchNotice::SessionManagerUnavailable::reason: alloc::string::String
 pub devlaunch_core::api::LaunchNotice::SshCommand
 pub devlaunch_core::api::LaunchNotice::SshCommand::argv: alloc::vec::Vec<alloc::string::String>
 pub devlaunch_core::api::LaunchNotice::SshConfigUnlocatable
@@ -540,6 +545,11 @@ pub devlaunch_core::flows::launch::LaunchNotice::PixiCacheNotADirectory::source:
 pub devlaunch_core::flows::launch::LaunchNotice::PixiCacheNotCreated
 pub devlaunch_core::flows::launch::LaunchNotice::PixiCacheNotCreated::reason: alloc::string::String
 pub devlaunch_core::flows::launch::LaunchNotice::PixiCacheNotCreated::source: std::path::PathBuf
+pub devlaunch_core::flows::launch::LaunchNotice::SessionManagerReady
+pub devlaunch_core::flows::launch::LaunchNotice::SessionManagerReady::pane_id: alloc::string::String
+pub devlaunch_core::flows::launch::LaunchNotice::SessionManagerReady::socket: alloc::string::String
+pub devlaunch_core::flows::launch::LaunchNotice::SessionManagerUnavailable
+pub devlaunch_core::flows::launch::LaunchNotice::SessionManagerUnavailable::reason: alloc::string::String
 pub devlaunch_core::flows::launch::LaunchNotice::SshCommand
 pub devlaunch_core::flows::launch::LaunchNotice::SshCommand::argv: alloc::vec::Vec<alloc::string::String>
 pub devlaunch_core::flows::launch::LaunchNotice::SshConfigUnlocatable
