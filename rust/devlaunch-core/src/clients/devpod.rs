@@ -259,6 +259,53 @@ pub(crate) fn says_it_is_blocked(line: &str) -> bool {
     line.contains("Trying to lock workspace")
 }
 
+/// The globs devpod's injected shell script tests `uname -a` against to decide
+/// it is on an ARM machine.
+///
+/// Transcribed from `is_arm` in devpod's `pkg/inject/inject.sh`, whose four
+/// patterns are `*arm*`, `*arm64*`, `*aarch*` and `*aarch64*`. Two of those are
+/// subsumed by the other two -- anything holding `arm64` holds `arm` -- and they
+/// are kept anyway, because this is a mirror of somebody else's list and a
+/// mirror that has been tidied is one nobody can diff against the original.
+const DEVPOD_ARM_GLOBS: [&str; 4] = ["arm", "arm64", "aarch", "aarch64"];
+
+/// Whether devpod would read a container named this way as an ARM machine.
+///
+/// **This is a bug in devpod that devlaunch walks into by name** (devlaunch#560).
+/// `uname -a` prints the *nodename* along with the machine, so the test above is
+/// satisfied by a hostname as readily as by an architecture, and
+/// `createBinaryLoader` in `pkg/agent/inject.go` takes the boolean straight
+/// through to `arch = "arm64"`. The wrong agent downloads, `performVersionCheck`
+/// cannot execute it, and the launch dies with `exit status 126` -- "not
+/// executable", which is true and names neither the architecture nor the string
+/// that chose it.
+///
+/// devlaunch is one of the ways the string gets there: the setup pass runs
+/// `sudo hostname <workspace-id>` in every container it opens, and a workspace id
+/// is derived from the branch. So `feature/armature` becomes
+/// `devlaunch-feature-armature-<hash>` becomes a container that reads as ARM, and
+/// every branch holding `alarm`, `warm`, `charm`, `swarm`, `harm` or `farm` is the
+/// same trap.
+///
+/// Asked of the workspace id rather than of a `uname -a` this process cannot see,
+/// which is what makes it a *prediction* and the reason its one caller phrases the
+/// answer as a possibility. dl runs `devpod up` as a passthrough -- an image build
+/// belongs on the user's terminal -- so devpod's own sentence is never read, and a
+/// reader has to be told what to look for in it rather than told it happened.
+///
+/// The fix is upstream and one line: glob `uname -m`, which prints the machine
+/// alone. `blooop/devpod`'s `fix/detect-arch-with-uname-m` carries it.
+///
+/// **Case-sensitive, because a shell `case` is.** Nothing is folded here even
+/// though a workspace id arrives lowercased by [`slug`](crate::domain::workspace_id)
+/// and so could not carry an `ARM` anyway: this predicate answers "would devpod's
+/// script match", and a fold would make it answer something devpod does not ask.
+pub fn reads_as_arm(container_name: &str) -> bool {
+    DEVPOD_ARM_GLOBS
+        .iter()
+        .any(|glob| container_name.contains(glob))
+}
+
 /// An outcome, split into "it ran, this is what came back" and "it did not".
 ///
 /// One function over all four arms rather than a `_ =>` at each call site: the
@@ -2369,5 +2416,59 @@ mod tests {
             status(&fake, "myws", Patience::AsLongAsItTakes).expect_err("devpod is absent"),
             StatusUnreadable::NotRun(NotRun::NotInstalled)
         );
+    }
+
+    // ------------------------------------------- devpod's own arch detection
+
+    #[test]
+    fn a_name_holding_arm_anywhere_reads_as_arm_because_the_glob_is_a_substring() {
+        // devlaunch#560 §3. Not a word match and not a prefix: devpod's script
+        // globs `*arm*`, so an ordinary English branch name is enough. Every name
+        // below is one somebody would write without a thought about architecture.
+        for name in [
+            "devlaunch-feature-armature-17uu",
+            "app-alarm-clock-3j1t",
+            "dl-warm-start-np10",
+            "x-charm-1",
+            "x-swarm-1",
+            "x-harm-1",
+            "x-farm-1",
+            "repo-aarch-notes-1",
+        ] {
+            assert!(reads_as_arm(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_name_with_no_arm_in_it_reads_as_nothing() {
+        for name in [
+            "devlaunch-main-3j1t",
+            "devlaunch-feature-auth-np10",
+            "",
+            // The letters, out of order and separated: a substring is a substring.
+            "mar-ram-amr",
+        ] {
+            assert!(!reads_as_arm(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn the_glob_is_not_folded_because_a_shell_case_is_not() {
+        // A faithful mirror of somebody else's `case` matters more here than being
+        // generous: devpod would not match this, so neither may the prediction. A
+        // workspace id cannot carry it anyway -- `slug` lowercases -- which is
+        // exactly why a fold would be an untestable kindness.
+        assert!(!reads_as_arm("devlaunch-ARM-3j1t"));
+    }
+
+    #[test]
+    fn the_same_predicate_answers_for_a_machine_as_for_a_hostname() {
+        // `uname -a` prints both, which is the whole bug, so one glob covers both
+        // questions and the caller that asks "is this host itself ARM" needs no
+        // second list.
+        assert!(reads_as_arm("aarch64"));
+        assert!(reads_as_arm("arm64"));
+        assert!(reads_as_arm("armv7l"));
+        assert!(!reads_as_arm("x86_64"));
     }
 }

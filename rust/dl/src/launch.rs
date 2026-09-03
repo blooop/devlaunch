@@ -280,6 +280,13 @@ fn ran(outcome: Result<Launched, LaunchAborted>, cache: &Path) -> Ran {
             {
                 eprintln!("{hint}");
             }
+            // The architecture this binary was built for, which is the host's:
+            // read here rather than inside the renderer, so the renderer stays a
+            // function of its arguments and a test can ask it about a host it is
+            // not running on.
+            if let Some(hint) = render::arm_agent_hint(&refused, std::env::consts::ARCH) {
+                eprintln!("{hint}");
+            }
             match refused {
                 // devpod's own status back, and nothing printed: its diagnostics
                 // are already on this process's stderr, since the call inherits
@@ -291,7 +298,7 @@ fn ran(outcome: Result<Launched, LaunchAborted>, cache: &Path) -> Ran {
                 // point: a build that failed in `postCreateCommand` leaves the
                 // container running and the clone cut, so this is exactly the
                 // workspace an unattended `--rm` line is there to collect.
-                LaunchRefusal::UpRefused { exit } => Ran {
+                LaunchRefusal::UpRefused { exit, .. } => Ran {
                     ending: Ending::Child(exit),
                     reached: Reached::TheWorkspace,
                 },

@@ -10,6 +10,7 @@ that defines the fixture.
     launch_scenario.py <root> <devpod_shim.py> [--warm] [--stopped] [--gh]
                                               [--no-devpod] [--no-workspaces]
                                               [--stale-checkout] [--dotfiles]
+                                              [--arm-branch]
 
 The base world, under the root it is given:
 
@@ -38,6 +39,12 @@ explain another's world:
   the clone's `HEAD` is behind its own `refs/remotes/origin/main`, which is a fact
   the clone holds and no launch of a workspace devpod already knows goes looking
   for.
+- `--arm-branch`: a third branch on `origin.git`, `armature`, with no clone and no
+  record -- so `dl blooop/devlaunch@armature` is a cold launch whose derived id
+  contains `arm`. Beside `--fail-up` that is the world blooop/devlaunch#560 §3 is
+  about: devpod's injected script globs `uname -a` for `arm` and `uname -a` carries
+  the hostname dl sets from that id, so the name alone decides which agent binary
+  gets downloaded. The branch name is an ordinary English word on purpose.
 - `--dotfiles`: `devpod context options` names a dotfiles repository, which is the
   only place dl reads one from. Without it the fake devpod answers `{}`, so a
   launch forwards no `--dotfiles` flag -- which is the state a fortnight of #560
@@ -78,6 +85,11 @@ MAIN_LEAF = MAIN_WS
 
 # The branch with no clone and no record: the cold launch's.
 COLD_BRANCH = "cold"
+
+# The branch whose derived id contains `arm`, for the fixture of the same name.
+# An ordinary word: the point of #560 §3 is that nobody writing this name is
+# thinking about a processor architecture.
+ARM_BRANCH = "armature"
 
 # A token of the shape every GitHub token has, so the fake `gh` is believed.
 TOKEN = "gho_devlaunchtesttoken0123456789"
@@ -181,6 +193,8 @@ def build(root: pathlib.Path, shim: pathlib.Path, wanted: set) -> None:
     git(seed, "add", "-A")
     git(seed, "commit", "-q", "-m", "seed")
     git(seed, "branch", COLD_BRANCH)
+    if "arm-branch" in wanted:
+        git(seed, "branch", ARM_BRANCH)
     origin = root / "origin.git"
     git(root, "clone", "-q", "--bare", "seed", "origin.git")
 
@@ -296,6 +310,7 @@ def build(root: pathlib.Path, shim: pathlib.Path, wanted: set) -> None:
 
 FIXTURES = {
     "warm",
+    "arm-branch",
     "stopped",
     "stale-checkout",
     "dotfiles",

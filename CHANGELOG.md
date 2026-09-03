@@ -49,15 +49,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   attach that runs no `up` prints neither line, because it asked devpod for
   nothing.
 
-- **`docs/cli.md` now names the cause of `inject agent … exit status 126`.** devpod
-  picks its agent binary by globbing `uname -a` for `arm`, and `uname -a` carries
-  the container's hostname, so a workspace whose branch contains `alarm`, `warm`,
-  `charm`, `swarm`, `harm` or `armature` gets the arm64 agent on an x86 host and a
-  launch that dies saying only "not executable". `dl` writes the workspace id into
-  that hostname itself, so it is one of the ways the name gets there. The entry
-  carries the one-line check, the way to unblock a container that is already in
-  that state, and the reason a recreate undoes it. The match itself is devpod's and
-  is not fixed here.
+- **A failed `up` of a workspace whose id contains `arm` names the agent binary
+  devpod picked.** devpod chooses which agent to inject by globbing `uname -a` for
+  `arm`, and `uname -a` carries the container's hostname, so a workspace whose
+  branch contains `alarm`, `warm`, `charm`, `swarm`, `harm` or `armature` gets the
+  arm64 agent on an x86 host and a launch that dies saying only `exit status 126`,
+  which means "not executable" and names neither the architecture nor the word that
+  chose it. `dl` writes the workspace id into that hostname itself, so it is one of
+  the ways the name gets there.
+
+  **The line is a conditional, and deliberately.** `devpod up` runs with `dl`'s own
+  terminal, because an image build's progress belongs on your screen rather than
+  through a pipe, so `dl` never reads devpod's message: what it holds when the
+  build fails is an exit code and a name. That is enough to know the trap is set
+  and not enough to know it fired, so the sentence says what to look for in
+  devpod's own output above it instead of asserting what happened. An `up` that
+  failed on an image pull for a workspace called `alarm-clock` gets one sentence it
+  can ignore, and a host whose own architecture is ARM gets none, because there
+  devpod's guess is the right one.
+
+  `docs/cli.md` carries the whole diagnosis: the one-line check for any running
+  container, the `docker cp` that unblocks one already in that state, and why a
+  recreate undoes it. The match itself is devpod's, upstream, and is not fixed
+  here.
 
 ### Changed
 

@@ -10,7 +10,7 @@ use std::io;
 use std::path::Path;
 use std::process;
 
-use devlaunch_core::clients::devpod::{ListingUnreadable, NotAListing, NotRun, Workspace};
+use devlaunch_core::clients::devpod::{self, ListingUnreadable, NotAListing, NotRun, Workspace};
 use devlaunch_core::clients::devpod_home::RepointFailure;
 use devlaunch_core::clients::gh::{GhEvent, GhUnavailable};
 use devlaunch_core::clients::git::Failure as GitFailure;
@@ -3028,6 +3028,50 @@ pub(crate) fn launch_refusal(refused: &LaunchRefusal) -> Option<String> {
     }
 }
 
+/// The second line a `devpod up` refused over the wrong agent binary deserves, or
+/// nothing to add.
+///
+/// **What it can and cannot claim, which is the whole design of the sentence**
+/// (devlaunch#560 §3). devpod picks its injected agent by globbing `uname -a` for
+/// `arm`, and `uname -a` carries the container's hostname, so a container named
+/// after a branch holding `arm` gets the arm64 agent and the launch dies with
+/// devpod's `inject agent: … exit status 126`. dl walks into this by name: its
+/// setup pass sets the container's hostname to the workspace id.
+///
+/// dl does not see that sentence. `devpod up` runs as a passthrough, because an
+/// image build's progress belongs on the user's terminal and not through a pipe,
+/// so what dl holds is a nonzero exit and the workspace id. That is enough to
+/// predict the trap and not enough to confirm it fired, and the line says so in
+/// those words: it tells the reader what to look for in devpod's own output above
+/// it rather than asserting what happened. An `up` that failed on an image pull
+/// for a workspace that happens to be called `alarm-clock` gets one conditional
+/// sentence it can discard on sight, which is the price of not piping the build.
+///
+/// Silent on every other refusal, and silent on a host whose *own* architecture
+/// reads as ARM -- there devpod's guess is right and the failure is something
+/// else. Both questions go through [`devpod::reads_as_arm`], since "would that
+/// glob match" is one predicate whether it is asked of a hostname or of a machine.
+///
+/// Pure like everything else here: the architecture is read by the caller and
+/// passed in.
+pub(crate) fn arm_agent_hint(refused: &LaunchRefusal, host_arch: &str) -> Option<String> {
+    let LaunchRefusal::UpRefused { workspace_id, .. } = refused else {
+        return None;
+    };
+    if !devpod::reads_as_arm(workspace_id) || devpod::reads_as_arm(host_arch) {
+        return None;
+    }
+    Some(format!(
+        "If devpod said 'inject agent' and 'exit status 126' above, this is why: the workspace id \
+         {workspace_id} contains 'arm', devpod picks its agent binary by matching 'uname -a' \
+         against '*arm*', and 'uname -a' includes the container's hostname — which dl sets to \
+         that id. So devpod fetched the arm64 agent for a container on a host reporting \
+         {host_arch}, and could not execute it. Rename the branch, or copy the right binary in \
+         with 'docker cp \"$(command -v devpod)\" <container>:/usr/local/bin/devpod' and \
+         reconnect; a recreate wipes that."
+    ))
+}
+
 /// The second line a wrong-owner spec deserves, or nothing to add.
 ///
 /// The case it answers is a mistyped or half-remembered *owner* —
@@ -4051,6 +4095,92 @@ mod tests {
         assert_eq!(or_list(&three), "'a/r', 'b/r' or 'c/r'");
     }
 
+    // ------------------------------- the agent binary devpod picked by hostname
+
+    fn up_refused(workspace_id: &str) -> LaunchRefusal {
+        LaunchRefusal::UpRefused {
+            workspace_id: workspace_id.to_owned(),
+            exit: Exit::Code(1),
+        }
+    }
+
+    #[test]
+    fn a_failed_up_of_an_arm_named_workspace_names_the_trap_as_a_possibility() {
+        // devlaunch#560 §3. The sentence has to be conditional and has to say what
+        // to look for, because dl runs the `up` as a passthrough and never reads
+        // devpod's message: what it holds is a nonzero exit and a name. Asserting
+        // that the failure *was* the 126 would be dl claiming to have read
+        // something it did not.
+        let line = arm_agent_hint(&up_refused("devlaunch-feature-armature-17uu"), "x86_64")
+            .expect("a hint");
+
+        assert!(line.starts_with("If devpod said"), "{line}");
+        assert!(line.contains("exit status 126"), "{line}");
+        assert!(
+            line.contains("devlaunch-feature-armature-17uu"),
+            "the name that chose the binary: {line}"
+        );
+        assert!(
+            line.contains("uname -a") && line.contains("hostname"),
+            "the mechanism, so the reader can check it: {line}"
+        );
+        assert!(
+            line.contains("docker cp"),
+            "the way out that does not rebuild: {line}"
+        );
+        assert!(
+            line.contains("a recreate wipes that"),
+            "and why not to reach for recreate: {line}"
+        );
+        assert!(
+            line.contains("a host reporting x86_64"),
+            "the architecture is the caller's to supply, and it reaches the line: {line}"
+        );
+    }
+
+    #[test]
+    fn a_host_that_is_itself_arm_gets_no_hint_because_devpods_guess_was_right() {
+        // On aarch64 the arm64 agent is the correct one, so a failed `up` here is
+        // some other failure and this line would send the reader after nothing.
+        for arch in ["aarch64", "arm64", "armv7l"] {
+            assert_eq!(
+                arm_agent_hint(&up_refused("devlaunch-feature-armature-17uu"), arch),
+                None,
+                "{arch}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_failed_up_of_an_ordinary_workspace_keeps_devpods_own_wording_alone() {
+        // The refusal renders nothing of dl's own (devpod's diagnostics are already
+        // on this process's stderr), and this must not become the exception.
+        assert_eq!(
+            arm_agent_hint(&up_refused("devlaunch-main-3j1t"), "x86_64"),
+            None
+        );
+        assert_eq!(launch_refusal(&up_refused("devlaunch-main-3j1t")), None);
+    }
+
+    #[test]
+    fn no_other_refusal_gains_the_hint_however_the_workspace_is_named() {
+        // Only a refused `up` injects an agent on the way to failing. A stop that
+        // refused, or a session that could not be opened, is a different failure
+        // and an explanation of devpod's arch detection would be a wrong answer
+        // rather than an unhelpful one.
+        let refusals = [
+            LaunchRefusal::StopRefused {
+                exit: Exit::Code(9),
+            },
+            LaunchRefusal::UnknownWorkspace {
+                name: "devlaunch-alarm-1".to_owned(),
+            },
+        ];
+        for refused in refusals {
+            assert_eq!(arm_agent_hint(&refused, "x86_64"), None, "{refused:?}");
+        }
+    }
+
     fn table(rows: Vec<TableRow>) -> WorkspaceTable {
         WorkspaceTable::Rows(NonEmpty::of(rows).expect("at least one row"))
     }
@@ -4318,6 +4448,7 @@ mod tests {
         // branch at the call site.
         assert_eq!(
             launch_refusal(&LaunchRefusal::UpRefused {
+                workspace_id: "myws".to_owned(),
                 exit: Exit::Code(7)
             }),
             None

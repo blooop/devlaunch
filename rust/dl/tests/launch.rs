@@ -40,6 +40,12 @@ const MAIN: &str = "devlaunch-main-3j1t";
 /// The same for `blooop/devlaunch@cold`, which nothing has ever launched.
 const COLD: &str = "devlaunch-cold-8iyb";
 
+/// The same for `blooop/devlaunch@armature`, the `--arm-branch` fixture's branch.
+/// The `arm` in the middle of it is the whole point: it is there because somebody
+/// named a branch after a word, and devpod's agent injection reads it as a
+/// processor (blooop/devlaunch#560 §3).
+const ARM: &str = "devlaunch-armature-cyi9";
+
 /// The repository root, from the crate this test is compiled into.
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1646,6 +1652,73 @@ fn a_devpod_up_that_refuses_hands_its_own_status_back_and_adds_nothing() {
             .iter()
             .any(|call| call.starts_with(&format!("devpod ssh {MAIN}"))),
         "a refused up still attached"
+    );
+}
+
+#[test]
+fn a_failed_up_of_an_arm_named_workspace_names_the_agent_binary_devpod_picked() {
+    // blooop/devlaunch#560 §3, as far as dl can reach it. devpod globs `uname -a`
+    // for `arm` to choose which agent binary to inject, `uname -a` prints the
+    // nodename beside the machine, and dl's setup pass sets that nodename to the
+    // workspace id — so `armature` is enough to get the arm64 agent on an x86
+    // host, and the launch dies with `exit status 126`, which reads as "not
+    // executable" and names neither the architecture nor the word that chose it.
+    //
+    // dl cannot confirm that is what happened: `devpod up` is a passthrough, so
+    // what dl holds is a nonzero exit and a name. The line is therefore a
+    // conditional pointing at devpod's own output above it, and it lands after
+    // that output for exactly that reason.
+    let world = World::with(&["--arm-branch", "--fail-up"]);
+    let run = world.dl(&["blooop/devlaunch@armature"]);
+    // devpod's status, unchanged: the hint is a line, not a different ending.
+    run.exited(7);
+
+    let lines = run.stderr_lines();
+    let devpod = lines
+        .iter()
+        .position(|line| *line == "devpod: image pull failed")
+        .unwrap_or_else(|| panic!("devpod said nothing: {lines:?}"));
+    // On a host that is itself ARM devpod's guess is right and dl says nothing, so
+    // the assertion follows the binary rather than assuming the runner.
+    if devlaunch_core::clients::devpod::reads_as_arm(std::env::consts::ARCH) {
+        assert_eq!(
+            lines.len(),
+            devpod + 1,
+            "an ARM host was told its own architecture was a mistake: {lines:?}"
+        );
+        return;
+    }
+    assert_eq!(
+        lines.get(devpod + 1).copied(),
+        Some(
+            format!(
+                "If devpod said 'inject agent' and 'exit status 126' above, this is why: the \
+                 workspace id {ARM} contains 'arm', devpod picks its agent binary by matching \
+                 'uname -a' against '*arm*', and 'uname -a' includes the container's hostname — \
+                 which dl sets to that id. So devpod fetched the arm64 agent for a container on \
+                 a host reporting {}, and could not execute it. Rename the branch, or copy the \
+                 right binary in with 'docker cp \"$(command -v devpod)\" \
+                 <container>:/usr/local/bin/devpod' and reconnect; a recreate wipes that.",
+                std::env::consts::ARCH
+            )
+            .as_str()
+        ),
+        "{lines:?}"
+    );
+}
+
+#[test]
+fn an_ordinary_workspace_whose_up_failed_gets_no_arm_explanation() {
+    // The negative that keeps the line from being noise on every failed build.
+    // `devlaunch-cold-8iyb` holds no `arm`, so the same failure says only what
+    // devpod said.
+    let world = World::with(&["--fail-up"]);
+    let run = world.dl(&["blooop/devlaunch@cold"]);
+    run.exited(7);
+    assert!(
+        !run.err.contains("inject agent"),
+        "{}",
+        run.stderr_lines().join("\n")
     );
 }
 

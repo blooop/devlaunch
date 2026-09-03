@@ -677,6 +677,24 @@ branch contains `alarm`, `warm`, `charm`, `swarm`, `harm`, `farm` or `armature` 
 a candidate, and `dl`'s own setup pass puts the workspace id into the hostname, so
 `dl` is one of the ways the name gets there.
 
+`dl` says this itself when an `up` refuses for a workspace whose id contains
+`arm`, and says it as a conditional:
+
+```
+If devpod said 'inject agent' and 'exit status 126' above, this is why: the workspace id
+devlaunch-feature-armature-17uu contains 'arm', devpod picks its agent binary by matching
+'uname -a' against '*arm*', ...
+```
+
+**It is a conditional because `dl` never reads devpod's message.** `devpod up`
+runs with `dl`'s own terminal, so an image build's progress goes straight to you
+rather than through `dl`, and what `dl` holds when the build fails is an exit code
+and a workspace id. That is enough to know the trap is set and not enough to know
+it fired, so the line tells you what to look for in devpod's output above it. An
+`up` that failed on an image pull for a workspace called `alarm-clock` gets one
+sentence it can ignore. Nothing is said on a host whose own architecture is ARM,
+where devpod's guess is the right one.
+
 ```bash
 # the mechanism, in any running container
 docker exec <container> sh -c 'case "$(uname -a)" in *arm*) echo ARM;; *) echo NOT;; esac'
