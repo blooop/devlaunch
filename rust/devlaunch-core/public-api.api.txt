@@ -41,6 +41,11 @@ pub devlaunch_core::api::LaunchNotice::AlreadyRunningAttaching::workspace_id: al
 pub devlaunch_core::api::LaunchNotice::BroughtUpBySibling
 pub devlaunch_core::api::LaunchNotice::BroughtUpBySibling::workspace_id: alloc::string::String
 pub devlaunch_core::api::LaunchNotice::Cache(devlaunch_core::flows::repo_manager::CacheNotice)
+pub devlaunch_core::api::LaunchNotice::CheckoutBehind
+pub devlaunch_core::api::LaunchNotice::CheckoutBehind::ahead: u32
+pub devlaunch_core::api::LaunchNotice::CheckoutBehind::behind: u32
+pub devlaunch_core::api::LaunchNotice::CheckoutBehind::branch: alloc::string::String
+pub devlaunch_core::api::LaunchNotice::CheckoutBehind::workspace_id: alloc::string::String
 pub devlaunch_core::api::LaunchNotice::CreateNeverFinished
 pub devlaunch_core::api::LaunchNotice::CreateNeverFinished::workspace_id: alloc::string::String
 pub devlaunch_core::api::LaunchNotice::DevcontainerIgnoredRunning
@@ -48,6 +53,10 @@ pub devlaunch_core::api::LaunchNotice::DevcontainerIgnoredRunning::spec: alloc::
 pub devlaunch_core::api::LaunchNotice::DevcontainerIgnoredRunning::workspace_id: alloc::string::String
 pub devlaunch_core::api::LaunchNotice::DevpodSessionFailed
 pub devlaunch_core::api::LaunchNotice::DevpodSessionFailed::exit: devlaunch_runner::Exit
+pub devlaunch_core::api::LaunchNotice::DotfilesForwarded
+pub devlaunch_core::api::LaunchNotice::DotfilesForwarded::script: core::option::Option<alloc::string::String>
+pub devlaunch_core::api::LaunchNotice::DotfilesForwarded::url: alloc::string::String
+pub devlaunch_core::api::LaunchNotice::DotfilesNotConfigured
 pub devlaunch_core::api::LaunchNotice::HerdrTab(devlaunch_core::flows::launch::HerdrTabRename)
 pub devlaunch_core::api::LaunchNotice::LaunchLockUnavailable
 pub devlaunch_core::api::LaunchNotice::LaunchLockUnavailable::reason: alloc::string::String
@@ -521,6 +530,11 @@ pub devlaunch_core::flows::launch::LaunchNotice::AlreadyRunningAttaching::worksp
 pub devlaunch_core::flows::launch::LaunchNotice::BroughtUpBySibling
 pub devlaunch_core::flows::launch::LaunchNotice::BroughtUpBySibling::workspace_id: alloc::string::String
 pub devlaunch_core::flows::launch::LaunchNotice::Cache(devlaunch_core::flows::repo_manager::CacheNotice)
+pub devlaunch_core::flows::launch::LaunchNotice::CheckoutBehind
+pub devlaunch_core::flows::launch::LaunchNotice::CheckoutBehind::ahead: u32
+pub devlaunch_core::flows::launch::LaunchNotice::CheckoutBehind::behind: u32
+pub devlaunch_core::flows::launch::LaunchNotice::CheckoutBehind::branch: alloc::string::String
+pub devlaunch_core::flows::launch::LaunchNotice::CheckoutBehind::workspace_id: alloc::string::String
 pub devlaunch_core::flows::launch::LaunchNotice::CreateNeverFinished
 pub devlaunch_core::flows::launch::LaunchNotice::CreateNeverFinished::workspace_id: alloc::string::String
 pub devlaunch_core::flows::launch::LaunchNotice::DevcontainerIgnoredRunning
@@ -528,6 +542,10 @@ pub devlaunch_core::flows::launch::LaunchNotice::DevcontainerIgnoredRunning::spe
 pub devlaunch_core::flows::launch::LaunchNotice::DevcontainerIgnoredRunning::workspace_id: alloc::string::String
 pub devlaunch_core::flows::launch::LaunchNotice::DevpodSessionFailed
 pub devlaunch_core::flows::launch::LaunchNotice::DevpodSessionFailed::exit: devlaunch_runner::Exit
+pub devlaunch_core::flows::launch::LaunchNotice::DotfilesForwarded
+pub devlaunch_core::flows::launch::LaunchNotice::DotfilesForwarded::script: core::option::Option<alloc::string::String>
+pub devlaunch_core::flows::launch::LaunchNotice::DotfilesForwarded::url: alloc::string::String
+pub devlaunch_core::flows::launch::LaunchNotice::DotfilesNotConfigured
 pub devlaunch_core::flows::launch::LaunchNotice::HerdrTab(devlaunch_core::flows::launch::HerdrTabRename)
 pub devlaunch_core::flows::launch::LaunchNotice::LaunchLockUnavailable
 pub devlaunch_core::flows::launch::LaunchNotice::LaunchLockUnavailable::reason: alloc::string::String

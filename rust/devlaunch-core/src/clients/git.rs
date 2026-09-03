@@ -24,11 +24,11 @@
 //!
 //! # Two families, and the difference is load-bearing
 //!
-//! - **[`Git::head_branch`], [`Git::status_porcelain`], [`Git::unpushed_commits`]**
-//!   name their repository with `--git-dir` *and* `--work-tree`, so git's
-//!   discovery is off and an unusable `.git` is a refusal rather than a confident
-//!   answer about an ancestor repository. That is devlaunch#171, and
-//!   [`Git::about`] carries the whole of the reasoning.
+//! - **[`Git::head_branch`], [`Git::status_porcelain`], [`Git::unpushed_commits`],
+//!   [`Git::ahead_behind`]** name their repository with `--git-dir` *and*
+//!   `--work-tree`, so git's discovery is off and an unusable `.git` is a refusal
+//!   rather than a confident answer about an ancestor repository. That is
+//!   devlaunch#171, and [`Git::about`] carries the whole of the reasoning.
 //! - **Everything else** operates on a repository this process just created or
 //!   just cloned, and selects it with `cwd` exactly as Python did. Their argv is
 //!   preserved to the letter — parity is judged on argv through the shim log — so
@@ -484,6 +484,43 @@ impl<'r> Git<'r> {
     /// the caller reads them the same way.
     pub(crate) fn head_branch(&self, clone: &Path) -> GitAnswer<String> {
         self.about(clone, &["rev-parse", "--abbrev-ref", "HEAD"])
+    }
+
+    /// How far *clone*'s `HEAD` is from *reference*, both ways, as
+    /// `rev-list --left-right --count HEAD...<reference>`.
+    ///
+    /// One spawn for both numbers, and the three dots are what buy the second
+    /// one: the symmetric difference counts each side's commits the other has not
+    /// got, so a checkout that has moved *and* fallen behind is two facts.
+    /// `HEAD..<ref>` answers "behind" alone and reads a diverged clone as merely
+    /// stale, which is the wrong thing to tell somebody about their own commits.
+    ///
+    /// **Nothing here reaches the network, and the answer says only what the
+    /// clone knows.** *reference* is a remote-*tracking* ref, so it stands where
+    /// the last fetch into this clone left it: a caller may say how the checkout
+    /// compares to that, and may not say anything about the remote now. Build it
+    /// with [`refs_remotes`] rather than by hand.
+    ///
+    /// Three outcomes because there are three. A refusal is git unable to answer
+    /// — an unusable `.git`, or a ref this clone has not got, which `rev-list`
+    /// exits 128 naming. `Said(None)` is git answering something this reader does
+    /// not recognise, kept apart from a refusal because it is a fact about this
+    /// file rather than about the clone. `Said(Some(_))` is the pair.
+    pub(crate) fn ahead_behind(
+        &self,
+        clone: &Path,
+        reference: &str,
+    ) -> GitAnswer<Option<AheadBehind>> {
+        self.about(
+            clone,
+            &[
+                "rev-list",
+                "--left-right",
+                "--count",
+                &format!("HEAD...{reference}"),
+            ],
+        )
+        .map(|counts| ahead_behind_in_counts(&counts))
     }
 
     /// The porcelain status of *clone*: one line per changed path, untracked
@@ -1578,6 +1615,36 @@ pub(crate) fn head_branch_in_symref(output: &str) -> Option<String> {
         .filter_map(|reference| reference.strip_prefix(REFS_HEADS))
         .find(|branch| !branch.is_empty())
         .map(str::to_owned)
+}
+
+/// How two commits stand to one another, in commits each has that the other has
+/// not.
+///
+/// A pair rather than one signed number, because the two halves are read
+/// differently: `behind` is work the checkout has not got, `ahead` is work that
+/// exists nowhere else. A single figure could not say which, and zero for both is
+/// the ordinary answer rather than a missing one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct AheadBehind {
+    /// Commits `HEAD` has that the ref has not.
+    pub(crate) ahead: u32,
+    /// Commits the ref has that `HEAD` has not.
+    pub(crate) behind: u32,
+}
+
+/// The pair `rev-list --left-right --count A...B` printed, if this is that.
+///
+/// git prints the left count, a tab and the right count, so `HEAD...<ref>` puts
+/// `HEAD`'s own commits first. `None` for anything else — a count git could not
+/// produce, a rewording, a shape this does not recognise — because a caller that
+/// went on to interpolate a half-read number would be inventing the figure it
+/// reports.
+pub(crate) fn ahead_behind_in_counts(output: &str) -> Option<AheadBehind> {
+    let (left, right) = output.trim().split_once('\t')?;
+    Some(AheadBehind {
+        ahead: left.trim().parse().ok()?,
+        behind: right.trim().parse().ok()?,
+    })
 }
 
 /// Whether git-lfs is installed.

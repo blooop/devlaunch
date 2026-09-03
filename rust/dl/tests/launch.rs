@@ -374,6 +374,134 @@ fn a_warm_triple_asks_devpod_about_the_derived_id_and_stops_there() {
             format!("devpod ssh {MAIN}"),
         ]
     );
+    // A checkout that agrees with the ref it was fetched to is the ordinary case
+    // and gets no line of its own: the stale-checkout report below is what a triple
+    // gains, and a hot attach that gained a sentence for saying nothing was wrong
+    // would be worse than one that said nothing.
+    assert_eq!(
+        run.stderr_lines(),
+        [
+            &format!("Workspace {MAIN} is already running, attaching...") as &str,
+            &format!("SSH command: devpod ssh {MAIN}"),
+        ]
+    );
+}
+
+#[test]
+fn a_warm_triple_whose_checkout_is_behind_says_how_far_and_still_runs_no_git_fetch() {
+    // blooop/devlaunch#560, from the outside. The session it closes: a branch was
+    // pushed to repeatedly, `dl <owner>/<repo>@<branch>` attached to the container
+    // that was already up, and the checkout inside it was an old commit. Every line
+    // dl printed was true and none of it was that.
+    //
+    // The count comes out of dl's own clone -- one `rev-list` against a local
+    // repository -- so the two devpod calls below are still the whole of what this
+    // launch spends on devpod, and the git call it adds reaches no network. That
+    // negative is the point of asserting the calls again here: the fix was chosen
+    // *over* a fetch on attach, which is devlaunch#144's settled decision.
+    let world = World::with(&["--warm", "--stale-checkout"]);
+    let run = world.dl(&["blooop/devlaunch@main"]);
+    run.exited(0);
+    assert_eq!(
+        run.stderr_lines(),
+        [
+            &format!(
+                "Workspace {MAIN}: its checkout is 2 commits behind origin/main as this \
+                 workspace last fetched it, and a launch of a workspace devpod already has \
+                 fetches nothing. Run 'git fetch' inside it, or 'dl <workspace> rm' and launch \
+                 again, if you meant to run against the branch as it is now."
+            ) as &str,
+            &format!("Workspace {MAIN} is already running, attaching..."),
+            &format!("SSH command: devpod ssh {MAIN}"),
+        ]
+    );
+    assert_eq!(
+        world.calls().exact(&world.root),
+        [
+            format!("devpod status {MAIN} --output json"),
+            format!("devpod ssh {MAIN}"),
+        ]
+    );
+}
+
+/// How far behind `origin/main` the warm workspace's checkout is, asked of the
+/// clone the same way `dl` asks.
+///
+/// A test reads this rather than trusting a verb's description of itself: the
+/// claim being pinned below is that `reset` leaves the checkout where it was, and
+/// the only evidence for that is the clone.
+fn commits_behind(world: &World) -> String {
+    let clone = world.path(&format!("cache/devlaunch/repos/blooop/devlaunch/{MAIN}"));
+    let done = Command::new("git")
+        .args(["rev-list", "--count", "HEAD..refs/remotes/origin/main"])
+        .current_dir(&clone)
+        .envs([
+            ("GIT_CONFIG_GLOBAL", "/dev/null"),
+            ("GIT_CONFIG_SYSTEM", "/dev/null"),
+        ])
+        .output()
+        .expect("git is installed");
+    assert!(
+        done.status.success(),
+        "git rev-list in {}: {}",
+        clone.display(),
+        String::from_utf8_lossy(&done.stderr)
+    );
+    String::from_utf8_lossy(&done.stdout).trim().to_owned()
+}
+
+#[test]
+fn reset_reports_the_stale_checkout_it_is_about_to_rebuild_over_and_leaves_it_alone() {
+    // The half of blooop/devlaunch#560 §1 that cost the reporter a session: `reset`
+    // is documented as a clean slate, so it looks like the answer to a checkout
+    // that is out of date, and it is not one. It rides the same warm arm -- devpod
+    // already knows the workspace -- and `--reset` removes a devpod-managed source,
+    // which dl does not have: dl hands devpod its own local folder. So the
+    // container is rebuilt and the code in it does not move.
+    //
+    // Both halves are asserted, because the fix is that the launch *says* so while
+    // still not doing it: the line is there, the flag is there, and the clone is
+    // exactly as far behind afterwards as before.
+    let world = World::with(&["--stopped", "--stale-checkout"]);
+    assert_eq!(commits_behind(&world), "2", "the world this test needs");
+
+    let run = world.dl(&["blooop/devlaunch@main", "reset"]);
+    run.exited(0);
+
+    assert!(
+        run.stderr_lines()
+            .iter()
+            .any(|line| line.contains("2 commits behind origin/main")),
+        "{:?}",
+        run.stderr_lines()
+    );
+    assert!(
+        up_argv(&world).contains("--reset"),
+        "the rebuild still happened: {}",
+        up_argv(&world)
+    );
+    assert_eq!(
+        commits_behind(&world),
+        "2",
+        "reset moved the checkout, which is a promise it has never kept"
+    );
+}
+
+#[test]
+fn a_bare_workspace_name_reports_no_checkout_however_stale_it_is() {
+    // The shape that has to stay silent, and the same world that makes the triple
+    // speak. A bare name carries no triple, so there is no branch to name and no
+    // clone path to derive -- and a report has to name a branch to mean anything.
+    let world = World::with(&["--warm", "--stale-checkout"]);
+    let run = world.dl(&[MAIN]);
+    run.exited(0);
+    assert_eq!(
+        run.stderr_lines(),
+        [
+            &format!("Workspace {MAIN} is already running, attaching...") as &str,
+            &format!("SSH command: devpod ssh {MAIN}"),
+        ]
+    );
 }
 
 #[test]
@@ -650,10 +778,10 @@ fn a_cold_triple_prepares_a_clone_creates_the_workspace_and_attaches() {
     // devpod's own line, on stdout because the `up` inherits this process's streams.
     assert_eq!(run.out, format!("Workspace {COLD} is ready\n"));
     // The host's own work first, said as it happens: the one targeted fetch, what the
-    // branch step found, and the clone about to be cut. Then the setup stages,
-    // which report nothing because the fake devpod's `ssh` runs no remote command —
-    // the same answer a real container with no `readlink` gives, named rather than
-    // passed over.
+    // branch step found, and the clone about to be cut. Then what the `up` asked
+    // devpod for, and then the setup stages, which report nothing because the fake
+    // devpod's `ssh` runs no remote command — the same answer a real container with
+    // no `readlink` gives, named rather than passed over.
     //
     // Two stages and not three: this launch set no `DEVLAUNCH_ZELLIJ`, so it never
     // asked for zellij and pays nothing for it (#391). `dl <spec> --` with the
@@ -666,6 +794,8 @@ fn a_cold_triple_prepares_a_clone_creates_the_workspace_and_attaches() {
             &format!(
                 "Creating workspace clone at {{ROOT}}/cache/devlaunch/repos/blooop/devlaunch/{COLD}"
             ),
+            "dotfiles: none set in devpod context options, so this up asked for none. 'devpod \
+             context set-options DOTFILES_URL=<repo>' is the only place dl reads it from.",
             &format!("{COLD}: the hostname setup stage did not report; it may not have run."),
             &format!("{COLD}: the title setup stage did not report; it may not have run."),
             &format!("{COLD}: the onboarding setup stage did not report; it may not have run."),
@@ -954,6 +1084,41 @@ fn recreate_and_reset_each_pass_their_own_flag_and_then_attach() {
 // ===========================================================================
 // dotfiles
 // ===========================================================================
+
+#[test]
+fn an_up_says_which_dotfiles_it_asked_devpod_for_and_the_argv_agrees() {
+    // blooop/devlaunch#560's second section. dl forwards `--dotfiles` from `devpod
+    // context options` and from nowhere else — not the process environment, and not
+    // `~/.devpod/config.yaml`, which dl only ever stats — and it used to do that
+    // silently either way. Three plausible causes and no observation to cut between
+    // them is what made "the dotfiles never landed" a fortnight rather than an
+    // afternoon.
+    //
+    // The line and the flag are asserted in one test on purpose: what a reader
+    // needs is not a sentence but a *checkable* one, and the two can only be
+    // trusted to agree if a single test fails when they stop agreeing.
+    const URL: &str = "https://github.com/blooop/dotfiles";
+    let world = World::with(&["--dotfiles"]);
+    let run = world.dl(&["blooop/devlaunch@cold"]);
+    run.exited(0);
+
+    assert!(
+        run.stderr_lines().contains(
+            &format!(
+                "dotfiles: {URL} (devpod context options), passed to devpod up; devpod installs \
+                 them when it creates the container."
+            )
+            .as_str()
+        ),
+        "{:?}",
+        run.stderr_lines()
+    );
+    assert!(
+        up_argv(&world).contains(&format!("--dotfiles {URL}")),
+        "the line said it was passed: {}",
+        up_argv(&world)
+    );
+}
 
 #[test]
 fn dotfiles_refreshes_a_running_workspace_without_bringing_anything_up() {
@@ -1460,7 +1625,19 @@ fn a_devpod_up_that_refuses_hands_its_own_status_back_and_adds_nothing() {
     let world = World::with(&["--stopped", "--fail-up"]);
     let run = world.dl(&[MAIN]);
     run.exited(7);
-    assert_eq!(run.err, "devpod: image pull failed\n");
+    // devpod's own sentence, and nothing after it: what the refusal costs a reader
+    // is devpod's line and the exit code, with no wrapper of dl's own. The line in
+    // front of it is not about the refusal — it is what this `up` asked devpod for
+    // before devpod refused (#560) — and it has to stay in front of the failure
+    // rather than after it, because it describes a request and not a result.
+    assert_eq!(
+        run.stderr_lines(),
+        [
+            "dotfiles: none set in devpod context options, so this up asked for none. 'devpod \
+             context set-options DOTFILES_URL=<repo>' is the only place dl reads it from.",
+            "devpod: image pull failed",
+        ]
+    );
     // No session: there is no container to attach to.
     assert!(
         !world

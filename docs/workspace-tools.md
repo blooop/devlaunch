@@ -1262,6 +1262,33 @@ own layer, so `dl <workspace> stop` and a fresh `up` keep the root-owned
 directory; `dl <workspace> recreate` gets a new layer where `~/.cache` is the
 user's own again.
 
+### Where the dotfiles setting comes from, and how to see it
+
+`dl` forwards `--dotfiles` and `--dotfiles-script` to `devpod up` from
+`devpod context options` and from nowhere else. Not from the process environment:
+exporting `DOTFILES_URL` in your shell sets nothing. Not from
+`~/.devpod/config.yaml` either, which `dl` only ever stats, to decide when its own
+copy of those options has gone stale. And `~/.cache/devlaunch/context-options.json`
+is that copy rather than an input, so hand-writing devpod's nested shape into it
+sets nothing and reports nothing: the read fails silently and `dl` asks devpod,
+which is the only answer that ever counted.
+
+```bash
+devpod context set-options DOTFILES_URL=https://github.com/you/dotfiles
+devpod context options --output json      # the one question dl asks
+```
+
+Every `devpod up` `dl` runs now says which of the two it did, so the flag and the
+line cannot disagree:
+
+```
+dotfiles: https://github.com/you/dotfiles (devpod context options), passed to devpod up; devpod installs them when it creates the container.
+dotfiles: none set in devpod context options, so this up asked for none. 'devpod context set-options DOTFILES_URL=<repo>' is the only place dl reads it from.
+```
+
+An attach that runs no `up` prints neither, because it asked devpod for nothing
+either way.
+
 ### Refreshing dotfiles on attach
 
 Under chezmoi, the refresh is `chezmoi update`. If that fails **and** the

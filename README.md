@@ -204,7 +204,7 @@ there to answer. [docs/cli.md](docs/cli.md) has the rest.
 | `dl <ws> code` | Open it in VS Code |
 | `dl <ws> restart` | Stop and start, no rebuild |
 | `dl <ws> recreate` | Recreate the container |
-| `dl <ws> reset` | Clean slate: remove everything, recreate |
+| `dl <ws> reset` | Recreate the container and its volumes from scratch (not the checkout) |
 | `dl <ws> dotfiles` | Refresh dotfiles (`chezmoi update`) |
 | `dl <ws> -- <cmd>` | Run one command inside it |
 | `dl <ws> --rm` | Open it, and delete it when the session ends |

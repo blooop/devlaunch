@@ -655,7 +655,9 @@ Workspace commands (dl <workspace> <verb>, or dl <verb> <workspace>):
   code                               Open it in VS Code
   restart                            Stop and start it (no rebuild)
   recreate                           Recreate the container
-  reset                              Clean slate: remove everything, recreate
+  reset                              Recreate the container and its volumes from
+                                     scratch. Not the checkout: rm is the only
+                                     verb that refreshes git state
   dotfiles                           Refresh dotfiles (chezmoi update)
   -- <command>                       Run one command inside it
 

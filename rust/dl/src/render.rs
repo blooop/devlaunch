@@ -2532,6 +2532,30 @@ pub(crate) fn launch_notice(notice: &LaunchNotice) -> Option<String> {
             format!("Workspace {workspace_id} was brought up by another dl run.")
         }
 
+        // --- the dotfiles (info; devlaunch#560, no Python line)
+        //
+        // Both arms name where the setting comes from, because that is the half
+        // nobody could find: `DOTFILES_URL` is read out of `devpod context
+        // options` and out of nothing else -- not the process environment, and not
+        // `~/.devpod/config.yaml`, which dl only ever stats. A reader who has just
+        // exported the variable and seen no dotfiles needs the sentence to say
+        // which question was actually asked.
+        LaunchNotice::DotfilesForwarded { url, script } => {
+            let with = match script {
+                Some(script) => format!(", script {script}"),
+                None => String::new(),
+            };
+            format!(
+                "dotfiles: {url}{with} (devpod context options), passed to devpod up; devpod \
+                 installs them when it creates the container."
+            )
+        }
+        LaunchNotice::DotfilesNotConfigured => "dotfiles: none set in devpod context options, so \
+                                                this up asked for none. 'devpod context \
+                                                set-options DOTFILES_URL=<repo>' is the only \
+                                                place dl reads it from."
+            .to_owned(),
+
         // --- the token (warning; gh_auth.py 84/94/105/139)
         LaunchNotice::NoGitHubToken(event) => no_github_token(event),
         LaunchNotice::TokenNotStaged { reason } => format!(
@@ -2588,6 +2612,30 @@ pub(crate) fn launch_notice(notice: &LaunchNotice) -> Option<String> {
         // --- the launch's own arms (info, bar the last; dl.py 4869/4762/4844/4871)
         LaunchNotice::AlreadyRunningAttaching { workspace_id } => {
             format!("Workspace {workspace_id} is already running, attaching...")
+        }
+        // A warning, and the one line on this path that is dl's own reading of a
+        // repository rather than a report of something dl did. Every clause is
+        // about the clone: "last fetched to" is what a remote-tracking ref is, and
+        // no wording here may imply a look at the remote, because there was none.
+        LaunchNotice::CheckoutBehind {
+            workspace_id,
+            branch,
+            ahead,
+            behind,
+        } => {
+            let mine = if *ahead == 0 {
+                String::new()
+            } else {
+                format!(" (and {ahead} of its own it has not pushed)")
+            };
+            let commits = if *behind == 1 { "commit" } else { "commits" };
+            format!(
+                "Workspace {workspace_id}: its checkout is {behind} {commits} behind \
+                 origin/{branch} as this workspace last fetched it{mine}, and a launch of a \
+                 workspace devpod already has fetches nothing. Run 'git fetch' inside it, or \
+                 'dl <workspace> rm' and launch again, if you meant to run against the branch \
+                 as it is now."
+            )
         }
         LaunchNotice::CreateNeverFinished { workspace_id } => format!(
             "Workspace {workspace_id} was never finished setting up — devpod recorded no result \
@@ -3925,6 +3973,56 @@ mod tests {
         assert_eq!(
             launch_notice(&LaunchNotice::HerdrTab(HerdrTabRename::Off)),
             None
+        );
+    }
+
+    #[test]
+    fn the_stale_checkout_line_claims_the_clone_and_never_the_remote() {
+        // devlaunch#560. The wording is the deliverable here: the fact was
+        // available locally the whole time, and a line that read as though dl had
+        // looked at the remote would be a claim it did not pay for and cannot back.
+        let line = launch_notice(&LaunchNotice::CheckoutBehind {
+            workspace_id: "devlaunch-main-3j1t".to_owned(),
+            branch: "main".to_owned(),
+            ahead: 0,
+            behind: 37,
+        })
+        .expect("a sentence");
+
+        assert!(line.contains("37 commits behind origin/main"), "{line}");
+        assert!(
+            line.contains("as this workspace last fetched it"),
+            "the ref is of whatever age the last fetch left it: {line}"
+        );
+        assert!(
+            line.contains("fetches nothing"),
+            "why nothing else was going to say so: {line}"
+        );
+        assert!(
+            !line.contains("of its own"),
+            "nothing was ahead, so nothing is said about commits that are: {line}"
+        );
+    }
+
+    #[test]
+    fn a_diverged_checkout_is_told_which_commits_are_its_own() {
+        // The reader's own unpushed work, named as theirs. "37 behind" alone reads
+        // as though the four were something that happened to them.
+        let line = launch_notice(&LaunchNotice::CheckoutBehind {
+            workspace_id: "devlaunch-main-3j1t".to_owned(),
+            branch: "release/1.0".to_owned(),
+            ahead: 4,
+            behind: 1,
+        })
+        .expect("a sentence");
+
+        assert!(
+            line.contains("1 commit behind origin/release/1.0"),
+            "singular for one: {line}"
+        );
+        assert!(
+            line.contains("(and 4 of its own it has not pushed)"),
+            "{line}"
         );
     }
 
