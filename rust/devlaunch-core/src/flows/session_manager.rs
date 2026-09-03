@@ -438,6 +438,32 @@ fn destination_for(runner: &dyn Runner, host: PaneEnv<'_>) -> PaneDestination {
     PaneDestination::HostShell
 }
 
+/// Tell the manager which Claude account this pane's session is running as.
+///
+/// Display only: it sets a metadata token herdr renders as `$profile`, and touches no
+/// lifecycle state, so it cannot disturb the idle/working/blocked the hook reports.
+///
+/// **Reported and then tolerated**, like everything else in this flow. A herdr that is
+/// gone, too old for `report-metadata`, or simply slow costs a label and never a
+/// session, so the outcome is deliberately dropped.
+///
+/// Called with `None` as well as with a name, because a pane is reused and a stale
+/// label is worse than none: see [`herdr::profile_metadata_argv`].
+pub(crate) fn report_profile(
+    runner: &dyn Runner,
+    reporting: &herdr::Reporting,
+    profile: Option<&str>,
+) {
+    let mut budget = Budget::of(herdr::ANSWER_WITHIN);
+    let program = reporting.host_binary().display().to_string();
+    let _ = ask(
+        runner,
+        &program,
+        &herdr::profile_metadata_argv(reporting.pane_id(), profile),
+        &mut budget,
+    );
+}
+
 /// What is left of the time the whole question may take.
 ///
 /// A budget rather than a deadline, because the [`Runner`] seam takes a duration
@@ -1169,6 +1195,70 @@ mod tests {
         herdr::ForegroundProcess {
             argv: Some(argv(words)),
         }
+    }
+
+    #[test]
+    fn the_profile_label_is_set_and_cleared_in_herdrs_own_words() {
+        // Verified against herdr 0.8.2's `pane report-metadata --help`, not guessed:
+        // `[OPTIONS] --source <ID> <PANE_ID>`, where a metadata token is set with
+        // `--token` as `NAME=VALUE` and cleared with `--clear-token`. The pane id
+        // goes first, as the hook gives it to `report-agent`, which is the
+        // invocation measured against a live herdr.
+        assert_eq!(
+            herdr::profile_metadata_argv("pane-7", Some("work")),
+            argv(&[
+                "pane",
+                "report-metadata",
+                "pane-7",
+                "--source",
+                "devlaunch:claude",
+                "--token",
+                "profile=work",
+            ])
+        );
+        // No profile clears the label rather than leaving one. A pane is reused, and a
+        // sidebar claiming an account the running session is not using is the
+        // mislabelling `--claude-profiles` exists to prevent, moved somewhere more
+        // visible.
+        assert_eq!(
+            herdr::profile_metadata_argv("pane-7", None),
+            argv(&[
+                "pane",
+                "report-metadata",
+                "pane-7",
+                "--source",
+                "devlaunch:claude",
+                "--clear-token",
+                "profile",
+            ])
+        );
+    }
+
+    #[test]
+    fn the_hook_reports_under_the_source_this_module_names() {
+        // Two copies of one string: this module's argv builders and the hook, which
+        // spells it as a shell literal because it is a shell script. CLAUDE.md's
+        // standing rule asks for a test beside the second copy, and this is it.
+        assert!(
+            herdr::HOOK.contains(herdr::REPORT_SOURCE),
+            "the hook no longer reports under {}",
+            herdr::REPORT_SOURCE
+        );
+    }
+
+    #[test]
+    fn a_profile_label_costs_a_label_and_never_a_session() {
+        // Reported and then tolerated, like everything else in this flow. A herdr that
+        // is not installed, is too old for `report-metadata`, or simply refuses must
+        // cost the label and never the session. The signature is most of the guarantee
+        // -- there is no outcome for a caller to branch on -- and this is the other
+        // half: the unscripted and missing cases both return rather than panicking.
+        let reporting = reporting();
+        report_profile(&ScriptedRunner::new(), &reporting, Some("work"));
+        report_profile(&ScriptedRunner::new(), &reporting, None);
+        let absent =
+            ScriptedRunner::new().with_missing(reporting.host_binary().display().to_string());
+        report_profile(&absent, &reporting, Some("work"));
     }
 
     #[test]

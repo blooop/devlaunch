@@ -2232,6 +2232,15 @@ fn begin_reporting(
                 pane_id: reporting.pane_id().to_owned(),
                 socket: reporting.container_socket(),
             });
+            // Which account this session runs as, so the manager's sidebar says so
+            // rather than leaving the name of a directory as the only clue. Called
+            // even when no profile was named, because a pane is reused and a stale
+            // label is worse than none.
+            session_manager::report_profile(
+                session.runner,
+                &reporting,
+                session.host.claude.profile.as_deref(),
+            );
             Some((reporting, forward))
         }
         session_manager::Prepared::Refused { reason } => {
