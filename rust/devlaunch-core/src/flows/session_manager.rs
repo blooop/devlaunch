@@ -335,7 +335,18 @@ pub(crate) fn start_forward(
 // binary surface -- not part of the frozen wf API (#251 §7)
 pub enum PaneDestination {
     /// The tab holds a live devlaunch session, in this workspace.
-    Workspace(String),
+    Workspace {
+        workspace_id: String,
+        /// The Claude profile the session beside this pane was launched with, when
+        /// its `dl` argv names one.
+        ///
+        /// Read rather than remembered, which is what lets it exist at all: a
+        /// profile is named per launch and deliberately **not** stored with the
+        /// workspace, so there is nothing on disk for a new pane to inherit. The
+        /// live sibling process is the only record, and herdr is already being
+        /// asked what that pane is running.
+        claude_profile: Option<String>,
+    },
     /// Open an ordinary shell on this host.
     HostShell,
 }
@@ -415,7 +426,13 @@ fn destination_for(runner: &dyn Runner, host: PaneEnv<'_>) -> PaneDestination {
             continue;
         };
         if let Some(workspace_id) = workspace_among(&info) {
-            return PaneDestination::Workspace(workspace_id);
+            return PaneDestination::Workspace {
+                workspace_id,
+                // Asked of the *same* pane, so one pane answers both questions and a
+                // tab holding two sessions cannot pair one session's workspace with
+                // another's account.
+                claude_profile: profile_among(&info).map(str::to_owned),
+            };
         }
     }
     PaneDestination::HostShell
@@ -526,6 +543,49 @@ fn workspace_among(info: &herdr::PaneProcessInfo) -> Option<String> {
 ///
 /// The program is compared by its last path component, so a `/usr/bin/ssh` and a
 /// bare `ssh` answer alike, exactly as [`herdr::agent_in`] does it.
+/// The Claude profile a pane's processes name, if one of them was given one.
+///
+/// Asked only of a pane that has already named a workspace, so the question is
+/// "which account is *this devlaunch session* running as" rather than a scan of the
+/// machine. That coupling is the guard: an unrelated pane is never consulted.
+///
+/// **Elements are compared whole, and the scan stops at the first bare `--`.** Both
+/// matter for one case. `aid <ws> add --claude-profile support to the docs` becomes a
+/// `dl` line whose prompt is a single argument containing that text, and the ssh
+/// transport carries the same string as one payload argument; neither is an argv
+/// *element* equal to `--claude-profile`, so neither is read as a flag. The `--` stop
+/// says the same thing a second way, and cheaply.
+///
+/// Deliberately not gated on the program name. `dl` on a host may be `dl`, `dl-next`
+/// or an absolute path, and matching that family by prefix is exactly the fuzzy test
+/// that made [`ssh_host`] necessary. The pane-level coupling above is the stronger
+/// guard and needs no such guess.
+fn profile_among(info: &herdr::PaneProcessInfo) -> Option<&str> {
+    info.foreground_processes
+        .iter()
+        .filter_map(|process| process.argv.as_deref())
+        .find_map(profile_named_by)
+}
+
+/// The profile one argv names, in either of clap's two spellings.
+fn profile_named_by(argv: &[String]) -> Option<&str> {
+    let mut rest = argv.iter();
+    while let Some(argument) = rest.next() {
+        if argument == "--" {
+            // Everything after this belongs to the command the workspace runs, and a
+            // prompt is allowed to contain anything at all.
+            return None;
+        }
+        if let Some(value) = argument.strip_prefix("--claude-profile=") {
+            return (!value.is_empty()).then_some(value);
+        }
+        if argument == "--claude-profile" {
+            return rest.next().map(String::as_str).filter(|v| !v.is_empty());
+        }
+    }
+    None
+}
+
 fn workspace_named_by(argv: &[String]) -> Option<&str> {
     let program = argv.first()?.rsplit('/').next()?;
     if program == devpod::PROGRAM {
@@ -1104,6 +1164,102 @@ mod tests {
     /// and their output is fed to the reader. Break either builder and this fails;
     /// without it the pane shell would quietly stop finding workspaces and no test
     /// in the tree would notice.
+    /// One foreground process running `words`, beside the existing `argv` helper.
+    fn process(words: &[&str]) -> herdr::ForegroundProcess {
+        herdr::ForegroundProcess {
+            argv: Some(argv(words)),
+        }
+    }
+
+    #[test]
+    fn a_profile_is_read_out_of_the_line_that_named_it() {
+        // Both of clap's spellings, since `dl` accepts either and a recalled line may
+        // hold either.
+        assert_eq!(
+            profile_named_by(&argv(&["dl", "ws", "--claude-profile", "work"])),
+            Some("work")
+        );
+        assert_eq!(
+            profile_named_by(&argv(&["dl", "--claude-profile=work", "ws"])),
+            Some("work")
+        );
+        // A line that named none, which is almost every line.
+        assert_eq!(profile_named_by(&argv(&["dl", "ws"])), None);
+        // A flag with nothing after it is clap's error to report, not a profile.
+        assert_eq!(
+            profile_named_by(&argv(&["dl", "ws", "--claude-profile"])),
+            None
+        );
+        assert_eq!(
+            profile_named_by(&argv(&["dl", "--claude-profile=", "ws"])),
+            None
+        );
+    }
+
+    #[test]
+    fn a_prompt_that_mentions_the_flag_is_not_a_profile() {
+        // The case that decides how this is written. `aid <ws> add --claude-profile
+        // support to the docs` becomes a dl line whose prompt is one argument holding
+        // that text, and the ssh transport carries the same string as one payload
+        // argument. Elements are compared whole, so neither is a flag; the `--` stop
+        // says it a second way.
+        assert_eq!(
+            profile_named_by(&argv(&[
+                "dl",
+                "ws",
+                "--",
+                "claude",
+                "add --claude-profile support to the docs",
+            ])),
+            None
+        );
+        assert_eq!(
+            profile_named_by(&argv(&[
+                "ssh",
+                "ws.devpod",
+                "claude 'add --claude-profile support'",
+            ])),
+            None
+        );
+        // And a real flag *before* the `--` is still read, so the stop is a stop and
+        // not a refusal.
+        assert_eq!(
+            profile_named_by(&argv(&[
+                "dl",
+                "--claude-profile",
+                "work",
+                "ws",
+                "--",
+                "claude",
+                "--claude-profile decoy",
+            ])),
+            Some("work")
+        );
+    }
+
+    #[test]
+    fn the_profile_comes_from_the_pane_that_named_the_workspace() {
+        // One pane answers both questions, so a tab holding two sessions cannot pair
+        // one session's workspace with another's account. The workspace comes off the
+        // transport process and the profile off `dl`, which are two processes in the
+        // same pane.
+        let info = herdr::PaneProcessInfo {
+            foreground_processes: vec![
+                process(&["dl", "ws", "--claude-profile", "work"]),
+                process(&["ssh", "-F", "cfg", "ws-3j1t.devpod", "payload"]),
+            ],
+        };
+        assert_eq!(profile_among(&info), Some("work"));
+    }
+
+    #[test]
+    fn a_pane_with_no_profile_on_its_line_reports_none() {
+        let info = herdr::PaneProcessInfo {
+            foreground_processes: vec![process(&["dl", "ws"]), process(&["ssh", "ws.devpod"])],
+        };
+        assert_eq!(profile_among(&info), None);
+    }
+
     #[test]
     fn both_transports_name_the_workspace_they_were_built_for() {
         let workspace_id = "devlaunch-main-3j1t";
@@ -1236,7 +1392,10 @@ mod tests {
         );
         assert_eq!(
             destination(&runner, in_pane_of("w1:t1")),
-            PaneDestination::Workspace("devlaunch-main-3j1t".to_owned())
+            PaneDestination::Workspace {
+                workspace_id: "devlaunch-main-3j1t".to_owned(),
+                claude_profile: None,
+            }
         );
     }
 
@@ -1307,7 +1466,10 @@ mod tests {
         );
         assert_eq!(
             destination(&runner, in_pane_of("w1:t1")),
-            PaneDestination::Workspace("ws-3j1t".to_owned())
+            PaneDestination::Workspace {
+                workspace_id: "ws-3j1t".to_owned(),
+                claude_profile: None,
+            }
         );
     }
 

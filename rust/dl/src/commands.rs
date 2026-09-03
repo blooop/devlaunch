@@ -133,7 +133,10 @@ pub(crate) fn dispatch(
         // indistinguishable from one typed by hand -- same launch, same terminal
         // title, same agent reporting, same everything a manager reads.
         Command::HerdrShell => match session_manager::pane_destination(runner) {
-            PaneDestination::Workspace(workspace_id) => {
+            PaneDestination::Workspace {
+                workspace_id,
+                claude_profile,
+            } => {
                 let ending = dispatch(
                     runner,
                     cache,
@@ -142,13 +145,13 @@ pub(crate) fn dispatch(
                         target: workspace_id,
                         verb: Verb::Attach { rm: RmOnExit::No },
                         devcontainer: None,
-                        // Nothing to inherit, for the same reason `devcontainer` is
-                        // `None`: a profile is named per launch and deliberately not
-                        // stored with the workspace, so a pane opened beside an agent
-                        // has no record of which login started it and gets the default
-                        // one. Consistent with "indistinguishable from one typed by
-                        // hand", since a hand-typed `dl <ws>` names no profile either.
-                        claude_profile: None,
+                        // Inherited from the live sibling rather than from disk: a
+                        // profile is named per launch and not stored with the
+                        // workspace, so the running session is the only record of
+                        // which account it is. Without this a pane opened beside an
+                        // agent authenticated as a different account than the agent,
+                        // which is the one way this feature could mislead quietly.
+                        claude_profile,
                     },
                 );
                 if pane_shell::no_session_ran(ending) {
