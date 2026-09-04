@@ -174,7 +174,8 @@ pub fn from_process() -> Vec<ProfileSummary> {
 }
 
 fn row(name: String, path: PathBuf) -> ProfileSummary {
-    let state = if claude::has_credential(&path) {
+    let authed = claude::has_credential(&path);
+    let state = if authed {
         ProfileState::Authed
     } else {
         ProfileState::NoCredential
@@ -183,7 +184,17 @@ fn row(name: String, path: PathBuf) -> ProfileSummary {
         name,
         path: path.clone(),
         state,
-        account: claude::account_at(&path),
+        // **Only read when there is a credential.** A profile whose login was removed
+        // keeps its `.claude.json`, and reading that would put an email on a row that
+        // cannot launch anything -- against the contract the account column states
+        // ("a profile with no credential has nobody to name") and, worse, into
+        // `note_shared_accounts`, which would then report it as a spare copy of a
+        // working profile. It is neither: it is a directory nobody is logged in to.
+        //
+        // Carried by the type rather than filtered at each reader, so the invariant
+        // holds for `--claude-profiles`, for the grouping, and for anything that reads
+        // a `ProfileSummary` later.
+        account: authed.then(|| claude::account_at(&path)).flatten(),
         // Filled in by `note_shared_accounts` once the whole listing exists: it is a
         // fact about a row's neighbours, so no row can answer it alone.
         shares_account_with: Vec::new(),
@@ -219,6 +230,59 @@ mod tests {
             .expect("an account file");
         }
         dir
+    }
+
+    /// A login that was removed leaves its state file behind, and the row must not
+    /// read it.
+    ///
+    /// Review catch. `.credentials.json` is what a logout or a cleanup removes;
+    /// `.claude.json` stays, holding the account that *used* to be signed in. Reading
+    /// it put an email on a row whose own `authed` column said "no credential", which
+    /// contradicts the sentence the account column is written around.
+    #[test]
+    fn a_profile_with_no_credential_names_nobody_even_with_a_state_file_left_behind() {
+        let root = tempfile::tempdir().expect("a root");
+        profile(root.path(), "stale", false, Some("who@example.com"));
+
+        let rows = summarise(Some(root.path()), None);
+        let row = rows
+            .iter()
+            .find(|row| row.name == "stale")
+            .expect("the profile is listed");
+        assert_eq!(row.state, ProfileState::NoCredential);
+        assert_eq!(
+            row.account, None,
+            "a directory nobody is logged in to has no account to name"
+        );
+    }
+
+    /// And the half that made it worse than a cosmetic slip.
+    #[test]
+    fn a_logged_out_profile_is_not_reported_as_a_spare_copy_of_a_working_one() {
+        // Same account in both state files, and only one of them has a credential.
+        // Grouping on the stale one would print "base and stale are the same account,
+        // so all but one are spare" -- which reads as "delete one of these two", about
+        // a pair where one is not usable at all and the other is the only login.
+        let root = tempfile::tempdir().expect("a root");
+        let live = profile(root.path(), "base", true, Some("me@example.com"));
+        let dead = profile(root.path(), "stale", false, Some("me@example.com"));
+        for dir in [&live, &dead] {
+            std::fs::write(
+                dir.join(".claude.json"),
+                r#"{"oauthAccount":{"emailAddress":"me@example.com","accountUuid":"one-uuid"}}"#,
+            )
+            .expect("a state file");
+        }
+
+        let rows = summarise(Some(root.path()), None);
+        for row in &rows {
+            assert!(
+                row.shares_account_with.is_empty(),
+                "{} was grouped with {:?}",
+                row.name,
+                row.shares_account_with
+            );
+        }
     }
 
     #[test]
