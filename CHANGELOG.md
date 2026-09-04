@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`$CLAUDE_CONFIG_DIR` is now honoured on the host, so a host that has moved its
+  Claude configuration forwards its login instead of reporting itself as not logged
+  in.** Claude Code reads that variable before `~/.claude`, and the probe `dl` runs
+  inside a container has always read it too, because a devcontainer feature may set
+  it. Only the host side did not, and the symptom was silent: `claude` in every
+  workspace asked for a login while the host was authenticated, with nothing to say
+  why, because "no credential file at `~/.claude`" is also the ordinary macOS state
+  and so is deliberately not warned about.
+
+  The variable **replaces** `~/.claude` rather than being tried ahead of it, which
+  is how Claude Code treats it. Falling back would forward a credential out of a
+  directory Claude Code is not reading, and that is the same defect one level down:
+  invisible until the host has two logins, at which point it forwards the wrong one.
+  An empty value counts as unset, and the value is read as bytes rather than as
+  text, so a configuration directory whose name is not valid UTF-8 is opened as
+  named instead of being mangled into one that cannot be found. An exported
+  `CLAUDE_CODE_OAUTH_TOKEN` still wins over both, so a `dl` inside a workspace keeps
+  passing its own token further down, and `DEVLAUNCH_NO_CLAUDE_TOKEN` still beats
+  everything.
+
 ## [0.29.0] - 2026-09-02
 
 ### Added

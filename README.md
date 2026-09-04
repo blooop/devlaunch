@@ -349,8 +349,9 @@ anything to its `devcontainer.json`.
 - **Your Claude login.** `claude` starts in the container without asking you to log in again. The
   host's access token is forwarded as `CLAUDE_CODE_OAUTH_TOKEN`, only into the sessions `dl` itself
   opens, so a `postCreateCommand` from a repo you did not write never sees it. Nothing is written
-  to the container's disk. A repo whose own devcontainer bind-mounts `~/.claude` is detected and
-  left alone. `DEVLAUNCH_NO_CLAUDE_TOKEN=1` skips it. A workspace that existed before this feature
+  to the container's disk. The token is read from `$CLAUDE_CONFIG_DIR` when your host sets one and
+  from `~/.claude` otherwise, which is the order Claude Code itself reads them in. A repo whose own
+  devcontainer bind-mounts `~/.claude` is detected and left alone. `DEVLAUNCH_NO_CLAUDE_TOKEN=1` skips it. A workspace that existed before this feature
   needs one `dl <workspace> up` before it picks the login up, and so does a workspace rebuilt by
   a `devpod up` devlaunch did not run; workspaces created since do not.
 - **`gh` and `claude` on `PATH`.** If the image has them, nothing happens. If not, `dl` streams
@@ -416,11 +417,12 @@ Images are yours: `docker system df` is what shows those.
 | `HERDR_AGENT=<agent>` | Written, not read: an `aid` launch that starts an agent, or a `dl <ws> -- <agent>` whose command is one, names it here so a session manager can see it. See [docs/workspace-tools.md](docs/workspace-tools.md) |
 | `DEVLAUNCH_TIMING=1\|json` | Write a timing summary to stderr. See [docs/performance.md](docs/performance.md) |
 | `DEVPOD_SSH_CONFIG=<path>` | devpod's own, honoured rather than set: it is where `devpod up` publishes host aliases, so it is where `dl` looks for them. See [docs/cli.md](docs/cli.md) |
+| `CLAUDE_CONFIG_DIR=<path>` | Claude Code's own, honoured rather than set: it is where the host keeps its Claude configuration, so it is where `dl` reads the login to forward. It replaces `~/.claude` rather than being tried before it, exactly as Claude Code treats it. See [docs/workspace-tools.md](docs/workspace-tools.md) |
 
 Every switch here reads the same values: anything but empty, `0`, `false` or `no` counts as
-set. On a "no" variable that means turn it off; on an opt-in one it means turn it on. Five
-rows are not switches and do not follow it: `DEVLAUNCH_AID_AGENT` and `DEVPOD_SSH_CONFIG`
-take a value, `DEVLAUNCH_TIMING` counts only empty and `0` as off, so `false` and `no`
+set. On a "no" variable that means turn it off; on an opt-in one it means turn it on. Six
+rows are not switches and do not follow it: `DEVLAUNCH_AID_AGENT`, `DEVPOD_SSH_CONFIG` and
+`CLAUDE_CONFIG_DIR` take a value, `DEVLAUNCH_TIMING` counts only empty and `0` as off, so `false` and `no`
 turn it on, `DEVLAUNCH_AID_REMOTE_CONTROL` takes `1`/`true`/`on`/`yes` or
 `0`/`false`/`off`/`no` and refuses anything else rather than guessing, and `HERDR_AGENT` is
 the one written rather than read, so a value of your own survives only a line that starts

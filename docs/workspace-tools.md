@@ -58,8 +58,9 @@ stays in place, including one it was given before you set
 ## Claude authentication
 
 `claude` starts in every workspace `dl` opens without asking for a login. The
-host's access token is read from `~/.claude/.credentials.json` and forwarded as
-`CLAUDE_CODE_OAUTH_TOKEN`. Only the variable's name reaches a command line, which
+host's access token is read from its Claude configuration directory, which is
+`$CLAUDE_CONFIG_DIR` when the host sets one and `~/.claude` otherwise, and
+forwarded as `CLAUDE_CODE_OAUTH_TOKEN`. Only the variable's name reaches a command line, which
 is the discipline the GitHub token keeps too, by a different route: that one is
 staged in a private file because `devpod up` needs it, and this one rides
 `--send-env` on the session, so the value travels in the environment and no file
@@ -71,6 +72,44 @@ repo whose own devcontainer bind-mounts `~/.claude` had a working `claude` and a
 working status line; a repo with no `.devcontainer/` at all had neither, and the
 reported symptom was a blank status bar in a workspace where `claude-statusline`
 was installed and the `settings.json` naming it had never been applied.
+
+### Which credential, on a host that has moved it
+
+`$CLAUDE_CONFIG_DIR` is Claude Code's own name for where its configuration lives,
+and `dl` honours it rather than setting it, the way it honours `DEVPOD_SSH_CONFIG`.
+The full order a launch reads:
+
+1. `DEVLAUNCH_NO_CLAUDE_TOKEN`, which forwards nothing at all.
+2. Any `CLAUDE_CODE_OAUTH_TOKEN` the host has already exported. This is what lets a
+   `dl` running inside a workspace pass the token it was given further down, so a
+   workspace can launch a workspace.
+3. `$CLAUDE_CONFIG_DIR/.credentials.json`, or `~/.claude/.credentials.json` when
+   the variable is unset. One step, not two: see below.
+
+**The variable replaces the default rather than being tried ahead of it.** Claude
+Code does not fall back from `$CLAUDE_CONFIG_DIR` to `~/.claude`, and neither does
+this. A fallback would forward a credential out of a directory Claude Code is not
+reading, which is the same defect as ignoring the variable and harder to notice,
+because it only shows itself on a host with two logins. So a `$CLAUDE_CONFIG_DIR`
+that names a directory holding no credential is a host that is not logged in, and
+the launch forwards nothing rather than the other account. It does that silently,
+which is deliberate and is the same silence a missing `~/.claude` gets: on macOS
+the credential lives in the login keychain and no file is the ordinary state, so a
+warning there would fire on every correctly configured Mac.
+
+An empty value counts as unset, which is what a shell exporting a bare variable
+means and the rule the XDG directories already follow here. The value is read as
+bytes rather than as text, so a directory whose name is not valid UTF-8 is opened
+as named.
+
+The exported token stays above the variable because both are ambient, and the
+nested-workspace case has to keep working when no variable is set.
+
+This closes an asymmetry rather than adding a feature. The probe `dl` runs inside a
+container has always read `$CLAUDE_CONFIG_DIR`, because a devcontainer feature may
+set it and Claude Code honours it there too. The host side read `~/.claude`
+regardless, so a host that had moved its configuration reported itself as not
+logged in while holding a perfectly good login.
 
 ### A variable, not the credential file
 
