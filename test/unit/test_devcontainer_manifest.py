@@ -681,3 +681,45 @@ def test_the_devcontainer_installs_the_committed_lock_rather_than_solving_its_ow
             "create is free to discard the committed lock, solve its own environment over the "
             "network, and rewrite pixi.lock while it does it"
         )
+
+
+def test_the_agent_socket_is_bound_from_the_variable_that_names_it(devcontainer, mounts):
+    """The agent socket mount reads $SSH_AUTH_SOCK, not a guess at where it is.
+
+    This was ``${localEnv:HOME}/.ssh/agent.sock``, and the manifest said so with
+    a comment calling it "an assumption ... but a pre-existing one". It is not a
+    path any agent picks by itself: gpg-agent (a YubiKey OpenPGP setup) listens
+    on ``$XDG_RUNTIME_DIR/gnupg/S.gpg-agent.ssh`` and ``ssh-agent(1)`` on a
+    ``/tmp/ssh-XXXX`` mktemp path, so on such a host ``devpod up`` refused the
+    create outright with ``bind mount source path does not exist`` -- before the
+    container existed, which reads as a broken tool rather than as this file
+    naming a path the host never had.
+
+    ``init-host.sh`` cannot paper over it the way it does for ``known_hosts``:
+    that one is ``touch``ed into existence, and there is no touching a socket
+    into being an agent.
+    """
+    agent_socket = devcontainer["containerEnv"]["SSH_AUTH_SOCK"]
+    sources = {mount.get("source") for mount in mounts if mount.get("target") == agent_socket}
+    assert sources == {"${localEnv:SSH_AUTH_SOCK}"}, (
+        f"the agent socket must be bound from ${{localEnv:SSH_AUTH_SOCK}}; found {sources}"
+    )
+
+
+def test_the_host_hook_heals_the_socket_it_is_mounted_from(devcontainer, mounts):
+    """The heal list names the path the manifest actually binds.
+
+    Two hand-maintained copies of one fact: the mount source here, and the loop
+    in ``init-host.sh`` that detaches a stale one. They disagreed the moment the
+    mount moved, and a heal aimed at a path nothing mounts is a heal that never
+    fires -- silently, since a stale mount only bites a *nested* create.
+    """
+    hook = (REPO_ROOT / ".devcontainer" / "claude-code" / "init-host.sh").read_text()
+    agent_socket = devcontainer["containerEnv"]["SSH_AUTH_SOCK"]
+    source = next(mount["source"] for mount in mounts if mount.get("target") == agent_socket)
+    # "${localEnv:SSH_AUTH_SOCK}" in the manifest is "$SSH_AUTH_SOCK" in the shell.
+    variable = source.removeprefix("${localEnv:").removesuffix("}")
+    assert f"${{{variable}:-" in hook or f"${variable}" in hook, (
+        f"init-host.sh does not heal a stale mount at ${variable}, which is what "
+        "the manifest binds the agent socket from"
+    )

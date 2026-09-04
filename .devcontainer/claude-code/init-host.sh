@@ -120,9 +120,20 @@ heal_stale_file_mount() {
     rm -f "$saved"
 }
 
+# The agent socket is named by $SSH_AUTH_SOCK and not as a path under ~/.ssh,
+# because that is the mount's source now: the consuming manifest binds
+# ${localEnv:SSH_AUTH_SOCK}, since ~/.ssh/agent.sock is where almost no agent
+# actually listens (gpg-agent answers under $XDG_RUNTIME_DIR, ssh-agent(1) on a
+# /tmp/ssh-XXXX path). The fallback keeps the old path in the list rather than
+# dropping it, so a container created before that change still has its stale
+# socket mount healed. Run *inside* a container this repo built, $SSH_AUTH_SOCK
+# is /home/vscode/.ssh/agent.sock, which is exactly the mount that can be stale
+# there -- so the variable is the right name to heal at both ends, which the
+# hardcoded path was only ever by coincidence.
 for mounted_file in "$HOME/.claude/CLAUDE.md" "$HOME/.claude/settings.json" \
     "$HOME/.claude/.credentials.json" "$HOME/.claude/.claude.json" \
-    "$HOME/.ssh/known_hosts" "$HOME/.ssh/agent.sock"; do
+    "$HOME/.ssh/known_hosts" "$HOME/.ssh/agent.sock" \
+    "${SSH_AUTH_SOCK:-$HOME/.ssh/agent.sock}"; do
     heal_stale_file_mount "$mounted_file"
 done
 #
