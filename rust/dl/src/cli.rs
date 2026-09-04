@@ -610,9 +610,9 @@ pub(crate) struct Cli {
     #[arg(long, value_name = "VARIANT|PATH")]
     devcontainer: Option<String>,
     /// Forward a named Claude login instead of the default one. Profiles live in
-    /// `<config>/devlaunch/claude-profiles/<name>/`. Per launch: unlike
-    /// `--devcontainer` it is not stored with the workspace, so a workspace never
-    /// forwards an account chosen weeks ago.
+    /// `~/.claude-profiles/<name>/`, or under `CLAUDE_PROFILES_DIR`; dl reads them
+    /// and never creates one. Per launch: unlike `--devcontainer` it is not stored
+    /// with the workspace, so a workspace never forwards an account chosen weeks ago.
     #[arg(long = "claude-profile", value_name = "NAME")]
     claude_profile: Option<String>,
     /// Delete the workspace once the session ends, like `docker run --rm`. Only
