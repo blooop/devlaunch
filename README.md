@@ -258,6 +258,7 @@ instead. [docs/cli.md](docs/cli.md) has the full `--rm` contract, including whic
 | `dl --purge` | Remove devlaunch's own workspaces and caches |
 | `dl --install` | Install shell completions, and the `dl-herdr-shell` name a herdr pane opens through |
 | `dl --refresh` | Rebuild the completion cache now |
+| `dl --claude-profiles` | List the Claude logins `--claude-profile` can name, and the account each is signed in as |
 | `dl --version` | Print the version |
 | `dl --herdr-shell` | The shell a new [herdr](https://herdr.dev) pane opens: inside the workspace its tab holds, or on this host |
 | `dl --help`, `-h` | Print help |

@@ -65,7 +65,7 @@ _dl_completion() {
     # The retired spellings (--stop, --autorm) are absent by rule rather than by
     # hand: the grammar marks them `hide = true`, and the test drops every hidden
     # flag, so a spelling this build only still answers for is never offered.
-    local global_opts="--ls --install --refresh --prune --reconcile --purge --herdr-shell --rm --devcontainer --claude-profile --help -h --version"
+    local global_opts="--ls --install --refresh --prune --reconcile --purge --herdr-shell --rm --devcontainer --claude-profile --claude-profiles --help -h --version"
     if [[ "$cmd" == aid ]]; then
         global_opts="--claude --codex --gemini --devcontainer --claude-profile --help -h --version"
     fi
@@ -94,12 +94,32 @@ _dl_completion() {
         # its default directory. `default` is offered because it is a name the resolver
         # answers for without any directory existing.
         local profiles_root="${DEVLAUNCH_CLAUDE_PROFILES_DIR:-${CLAUDE_PROFILES_DIR:-$HOME/.claude-profiles}}"
-        local profiles="default" pdir
+        local profiles="default" pdir pname
         if [[ -d "${profiles_root}" ]]; then
             for pdir in "${profiles_root}"/*/; do
                 [[ -d "$pdir" ]] || continue
                 pdir="${pdir%/}"
-                profiles+=" ${pdir##*/}"
+                pname="${pdir##*/}"
+                # `ProfileName::parse`'s grammar, a second time: one directory
+                # component of ASCII letters, digits, '.', '_' and '-', not starting
+                # with '.' or '-'. Offering more than that is offering a completion the
+                # launch refuses -- press tab, get `-flag` or `my profile`, and the
+                # refusal is about a name you did not type by hand.
+                #
+                # The glob already hides the leading dot (it matches no dot-directory),
+                # so the visible half of this is the leading '-' and the character set.
+                # Both are checked anyway rather than relying on the glob, because the
+                # rule is what has to agree and not the accident that enforces part of
+                # it. `test_the_completion_offers_only_names_a_launch_accepts` in
+                # test_bash_completion.py is the diff that keeps the two in step.
+                # The character set is spelled out rather than written as ranges,
+                # and that is not fussiness: `[[ =~ ]]` honours LC_COLLATE, so
+                # `[A-Za-z]` matches `é` in a UTF-8 locale and this offered
+                # `unicode-é` while `ProfileName::parse` -- which asks
+                # `is_ascii_alphanumeric` -- refuses it. The test below caught it.
+                [[ "$pname" =~ ^[abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-]+$ ]] || continue
+                [[ "$pname" == [-.]* ]] && continue
+                profiles+=" ${pname}"
             done
         fi
         COMPREPLY=( $(compgen -W "${profiles}" -- ${cur}) )

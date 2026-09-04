@@ -28,6 +28,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a `default/` directory, so a picker has something to select and a recalled line has a
   way to say "not the profile I used last time".
 
+- **`dl --claude-profiles` lists those logins with the account behind each one**, because
+  a profile's name is chosen by a person and verified by nothing. A profile called `work`
+  holding a personal login reads as correct right up until work is pushed from the wrong
+  identity, which is the failure profiles exist to prevent; the name is what you type and
+  the account column is what you get. Read from the three fields of `.claude.json` worth
+  showing (email, organisation, seat tier), and it distinguishes a profile with no
+  credential from one whose state file says nothing.
+
+  **Two names for one directory are one login, not a spare copy of one.** The
+  redundancy footnote says "all but one are spare", so a group has to mean separate
+  directories you could delete one of. `CLAUDE_CONFIG_DIR=~/.claude-profiles/work`
+  makes the `default` row and the `work` row the same directory, the same state file
+  and the same account id, and grouping on the id alone named the only login on the
+  host; a symlinked profile directory got there the same way, since the walk follows
+  symlinks. A directory is now counted once, so both rows are still listed with the
+  same account against each and no deletion is advised. `path` is not in the listing,
+  which is why nothing on screen let a reader catch this.
+
+  **A profiles directory that cannot be read says so** instead of listing as a host
+  with no profiles. Only `NotFound` is silent, because a root nothing has created yet
+  is the ordinary state of most hosts; a root that is unreadable, or a plain file where
+  the directory should be, told a host with five profiles that it had none.
+
+  **No token is read to build it.** The `authed` column is the credential file's
+  existence and never its contents, so a listing has not touched a secret. It is also
+  the way to find a profile created and never logged in to, since a launch naming one of
+  those refuses.
+
+  It also names the profiles that are **two names for one account**, which is the other
+  thing a name cannot tell you: two profiles of one account render identically to two
+  colleagues who share an organisation, so the redundant one is invisible exactly where
+  you are choosing between them. Grouped on the account's own id and never on a display
+  field, since a shared organisation is two people; a profile naming no account joins no
+  group, because two blanks are not the same account. Said once per group as a footnote
+  rather than per row as a column, because it is a fact about a pair.
+
+  A profile name beginning with a dot is now refused as well as unlisted. A `<root>/*/`
+  glob matches no dot-directory, so neither the listing nor the completion would ever
+  show one, and a profile you can launch but never see is a trap. That is marginally
+  stricter than the `^[A-Za-z0-9._-]+$` the managing tool validates with, and it makes
+  the resolver, the listing and the completion agree.
+
   **A named profile that holds no credential stops the launch, and that refusal is the
   feature.** It does not fall back to the default login. Two accounts on one machine is
   what profiles are for, so a typo that silently forwarded the other one would be worse

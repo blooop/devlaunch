@@ -386,6 +386,8 @@ pub(crate) enum Command {
     List { output: ListOutput, sizes: Sizes },
     /// `dl --repos` — the known `owner/repo` strings, for completion.
     Repos,
+    /// `dl --claude-profiles` — the Claude logins `--claude-profile` can name.
+    ClaudeProfiles,
     /// `dl --completion-data` — the whole completion cache, as one JSON line.
     CompletionData,
     /// `dl --update-cache [--force]` — the silent background refresh.
@@ -582,6 +584,11 @@ pub(crate) struct Cli {
     #[arg(long, hide = true)]
     autorm: bool,
 
+    /// List the Claude logins `--claude-profile` can name, and the account each is
+    /// signed in as. Reads them; never writes.
+    #[arg(long = "claude-profiles", group = "what")]
+    claude_profiles: bool,
+
     /// The known `owner/repo` strings, one per line (for shell completion).
     #[arg(long, group = "what", hide = true)]
     repos: bool,
@@ -751,6 +758,7 @@ enum Chosen {
     Purge,
     Version,
     Repos,
+    ClaudeProfiles,
     CompletionData,
     UpdateCache,
     HerdrShell,
@@ -769,6 +777,7 @@ impl Cli {
             (self.purge, Chosen::Purge),
             (self.version, Chosen::Version),
             (self.repos, Chosen::Repos),
+            (self.claude_profiles, Chosen::ClaudeProfiles),
             (self.completion_data, Chosen::CompletionData),
             (self.update_cache, Chosen::UpdateCache),
             (self.herdr_shell, Chosen::HerdrShell),
@@ -938,6 +947,7 @@ fn global_command(cli: &Cli, chosen: Chosen) -> Result<Command, GrammarError> {
         Chosen::Purge => Command::Purge { yes: cli.yes },
         Chosen::Version => Command::Version,
         Chosen::Repos => Command::Repos,
+        Chosen::ClaudeProfiles => Command::ClaudeProfiles,
         Chosen::CompletionData => Command::CompletionData,
         Chosen::UpdateCache => Command::UpdateCache { force: cli.force },
         Chosen::HerdrShell => Command::HerdrShell,
@@ -954,6 +964,7 @@ fn flag_of(chosen: Chosen) -> &'static str {
         Chosen::Purge => "--purge",
         Chosen::Version => "--version",
         Chosen::Repos => "--repos",
+        Chosen::ClaudeProfiles => "--claude-profiles",
         Chosen::CompletionData => "--completion-data",
         Chosen::UpdateCache => "--update-cache",
         Chosen::HerdrShell => "--herdr-shell",
@@ -1854,6 +1865,24 @@ mod tests {
                 why: DevcontainerRefError::Missing
             })
         );
+    }
+
+    #[test]
+    fn listing_the_profiles_is_a_command_of_its_own() {
+        // A global command, so it takes no workspace and no modifier: the two flags
+        // read alike and mean opposite things, one naming a login to use and one
+        // asking which exist.
+        assert_eq!(parse(&["--claude-profiles"]), Ok(Command::ClaudeProfiles));
+        assert_eq!(
+            parse(&["--claude-profiles", "--claude-profile", "work"]),
+            Err(GrammarError::ClaudeProfileNotAllowed {
+                command: "--claude-profiles"
+            })
+        );
+        assert!(matches!(
+            parse(&["--claude-profiles", "ws"]),
+            Err(GrammarError::TargetNotAllowed { .. })
+        ));
     }
 
     #[test]
