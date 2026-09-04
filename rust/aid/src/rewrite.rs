@@ -518,6 +518,25 @@ struct Suffix<'a> {
     prompt_tail: Vec<String>,
 }
 
+impl<'a> Suffix<'a> {
+    /// The whole line and nothing peeled, which is what a line with no trailing run
+    /// means.
+    ///
+    /// Named, and beside the fields, because arity is all the compiler checks: a
+    /// sixth field defaulted to the wrong thing compiles clean and changes what every
+    /// line does. This is also why the peel answers a `Suffix` and not an `Option` of
+    /// one -- two spellings of "nothing was peeled" are two places to get it wrong.
+    fn nothing_peeled(argv: &'a [String]) -> Self {
+        Suffix {
+            line: argv,
+            options: Vec::new(),
+            remote_control: None,
+            agent: None,
+            prompt_tail: Vec::new(),
+        }
+    }
+}
+
 /// Split a trailing run of dl flags off the end of a command line.
 ///
 /// The one exception to "everything after the spec is prompt", and bounded three
@@ -557,13 +576,14 @@ struct Suffix<'a> {
 /// emitting the modifier on its own would put it at index 1 and answer `Unknown
 /// command '--force'` about a line where `--force` was never dl's business.
 ///
-/// Answers `None` rather than an empty suffix, so the caller has no "peeled
-/// nothing" case to tell from "peeled something".
+/// Answers a [`Suffix::nothing_peeled`] rather than a `None`, so the caller has no
+/// "peeled nothing" case to tell from "peeled something": one line with the run
+/// taken off, whether or not there was a run to take.
 ///
 /// **Divergence row 30**, aid's half: Python joined every post-spec word into the
 /// prompt with no exception, so `aid <ws> <prompt> --rm` asked an agent to read
 /// `--rm`.
-fn peel_suffix(argv: &[String]) -> Option<Suffix<'_>> {
+fn peel_suffix(argv: &[String]) -> Suffix<'_> {
     let is_suffix = |word: &str| {
         SUFFIX_OPTIONS.contains(&word)
             || SUFFIX_RETIRED.contains(&word)
@@ -586,7 +606,7 @@ fn peel_suffix(argv: &[String]) -> Option<Suffix<'_>> {
         && !names(NO_REMOTE_CONTROL_FLAGS)
         && !run.iter().any(|word| agent_flag(word).is_some())
     {
-        return None;
+        return Suffix::nothing_peeled(argv);
     }
     // Modifiers held back and appended, so an option always precedes one — see the
     // positional argument above. Typed order is kept *within* each group.
@@ -618,13 +638,13 @@ fn peel_suffix(argv: &[String]) -> Option<Suffix<'_>> {
         options.append(&mut modifiers);
         Vec::new()
     };
-    Some(Suffix {
+    Suffix {
         line: &argv[..at],
         options,
         remote_control,
         agent,
         prompt_tail,
-    })
+    }
 }
 
 /// Split an aid command line into agent, dl options, workspace spec, and the task.
@@ -647,17 +667,13 @@ pub(crate) fn parse_aid_args(
     // `DEVLAUNCH_AID_REMOTE_CONTROL` that is neither a yes nor a no.
     let mut agent = default_agent(environment.agent)?;
     let mut remote_control = default_remote_control(environment.remote_control)?;
-    let (line, trailing, trailing_remote_control, trailing_agent, prompt_tail) =
-        match peel_suffix(argv) {
-            Some(suffix) => (
-                suffix.line,
-                suffix.options,
-                suffix.remote_control,
-                suffix.agent,
-                suffix.prompt_tail,
-            ),
-            None => (argv, Vec::new(), None, None, Vec::new()),
-        };
+    let Suffix {
+        line,
+        options: trailing,
+        remote_control: trailing_remote_control,
+        agent: trailing_agent,
+        prompt_tail,
+    } = peel_suffix(argv);
     let mut dl_options: Vec<String> = Vec::new();
     let mut spec: Option<String> = None;
     let mut at = 0;

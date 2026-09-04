@@ -30,6 +30,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   changes downstream is the agent Remote Control is settled against, so
   `aid owner/repo fix it --remote --codex` is refused by name before anything boots.
 
+### Fixed
+
+- **A lone `--force` on an `aid` line no longer dies in `dl`'s verb slot.**
+  `aid <ws> fix it --no-remote --force` emitted `dl <ws> --force -- <agent>`, and dl
+  reads the word after the workspace as the verb, so the line answered `Unknown
+  command '--force'` about a flag that was never dl's business. `--force` is peeled
+  so dl can refuse the *pair* it forms with `--rm`; a run held open by a flag `aid`
+  consumes rather than forwards carries no such pair, so the modifier goes back on
+  the end of the prompt instead. That is the rule a `--force` on its own has always
+  been read by. Found reviewing the change above, which made the same hole reachable
+  as `--codex --force`.
+
 ## [0.29.0] - 2026-09-02
 
 ### Added
