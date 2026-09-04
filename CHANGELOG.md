@@ -106,6 +106,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   warning. `aid` passes the flag through. A verb that forwards no login says it is
   ignoring it, as `--devcontainer` does; a global command refuses it.
 
+- **A pane's row in [herdr](https://herdr.dev) says which account the agent in it is
+  running as**, reported as the display label `profile=<name>`. A profile is chosen per
+  launch and forwarded per session, so two tabs side by side can be two different
+  accounts with nothing on screen to tell them apart, and the failure that matters here
+  is not noticing: work pushed from the wrong identity is found out about later and
+  somewhere else. Reported under devlaunch's own source name, so it sits beside herdr's
+  labels rather than overwriting one, and cleared rather than left stale when a launch
+  forwards the default login.
+
+  **A pane opened beside an agent inherits the profile that agent started with.** The
+  pane shell already opens in the workspace its tab holds; a workspace is not an account,
+  so it read the default login while the agent one pane over ran as another. It is read
+  from the agent's own argv rather than from a note kept anywhere, for the reason the
+  pane shell keeps nothing: the argv is what is true, and a record would be a second copy
+  of it that can go stale. An exact element match, and it stops at a bare `--`, so a
+  prompt that contains the words `--claude-profile work` is a prompt.
+
+  **Nothing is inherited across a boundary.** A pane in a tab holding no agent has no
+  account to inherit and gets the default login, and the environment of an agent already
+  running is fixed at exec, so switching profile reaches the next session and never the
+  one on screen.
+
 ### Fixed
 
 - **`$CLAUDE_CONFIG_DIR` is now honoured on the host, so a host that has moved its
