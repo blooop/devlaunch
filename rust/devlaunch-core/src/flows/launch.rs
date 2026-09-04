@@ -157,6 +157,16 @@ pub(crate) const WORKSPACE_ID_VAR: &str = "DEVLAUNCH_WORKSPACE_ID";
 /// the refresh is best-effort and the shell arrives either way.
 pub(crate) const DOTFILES_ATTACH_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// How often a `devpod up` that has printed nothing is reported as still running.
+///
+/// Long enough that a launch which is talking never reaches it — devpod's own
+/// steps are seconds apart, so most of a cold launch passes with nothing said
+/// about the silence — and short enough that the five minutes devlaunch#576
+/// measured reads as ten lines rather than as two. Not a knob: what a knob would
+/// tune is how often a line nobody needs is printed, and the answer to not
+/// needing it is that it does not appear.
+pub(crate) const UP_QUIET_REPORT: Duration = Duration::from_secs(30);
+
 /// How long a cached copy of devpod's context options is believed.
 pub(crate) const CONTEXT_OPTIONS_TTL: Duration = Duration::from_secs(3600);
 
@@ -419,6 +429,15 @@ pub enum LaunchNotice {
     /// wait. Handed over *before* the blocking acquisition, which is the only
     /// moment at which "this run is now waiting" can be reported at all.
     WaitingForSiblingLaunch { workspace_id: String },
+    /// `devpod up` has printed nothing for this long and is still running.
+    ///
+    /// Said every [`UP_QUIET_REPORT`] while the silence lasts, and the duration is
+    /// measured from the last thing devpod said rather than from the start of the
+    /// call — so it is the age of the step devpod is on, and it restarts when
+    /// devpod moves to the next one. That restart is the whole of what tells a
+    /// long step from a wedged one, and neither is a thing dl can diagnose: what
+    /// it can do is stop them looking identical (devlaunch#576).
+    UpHasGoneQuiet { quiet: Duration },
     /// The launch lock could not be taken, so this `up` is unserialized. Nothing
     /// worth failing a launch over: serialization guards a race that may not even
     /// be happening.
@@ -1540,7 +1559,21 @@ fn up_under_stage(
     // The build runs for minutes in the foreground; it leads a process group of
     // its own so a Ctrl-C (or `kill -INT <pid>`) tears the whole build down with
     // `dl` rather than orphaning it holding the launch lock.
-    let exit = devpod::run(context.runner(), &Call::new(args).leading_its_own_group())?;
+    //
+    // Watched rather than a plain passthrough, and the trade is stated where it is
+    // paid: devpod's stderr becomes a pipe, so it is no longer a terminal to
+    // devpod and loses whatever devpod does with one. What it buys is the only
+    // thing that tells a long step from a wedged one -- a measurement of the gaps
+    // between devpod's lines. `postCreateCommand` steps go quiet for minutes at a
+    // time and nothing said the launch was alive while they did (devlaunch#576).
+    // stdin and stdout are still this process's, so the terminal devpod puts into
+    // raw mode is untouched.
+    let exit = devpod::run_watching_silence(
+        context.runner(),
+        &Call::new(args).leading_its_own_group(),
+        UP_QUIET_REPORT,
+        &mut |quiet| notices.say(LaunchNotice::UpHasGoneQuiet { quiet }),
+    )?;
     // `up` creates and starts workspaces, so any snapshot of `devpod list` taken
     // before it is now out of date.
     context.forget_workspaces();

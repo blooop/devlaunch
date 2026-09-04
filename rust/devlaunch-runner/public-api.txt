@@ -137,6 +137,11 @@ pub fn devlaunch_runner::Invocation::default() -> devlaunch_runner::Invocation
 impl core::fmt::Debug for devlaunch_runner::Invocation
 pub fn devlaunch_runner::Invocation::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_runner::Invocation
+pub struct devlaunch_runner::Lines<F>(pub F)
+impl<F: core::ops::function::FnMut(&str)> devlaunch_runner::SessionOutput for devlaunch_runner::Lines<F>
+pub fn devlaunch_runner::Lines<F>::line(&mut self, &str)
+pub fn devlaunch_runner::Lines<F>::quiet(&mut self, core::time::Duration)
+pub fn devlaunch_runner::Lines<F>::quiet_interval(&self) -> core::option::Option<core::time::Duration>
 pub struct devlaunch_runner::OsFailure
 pub devlaunch_runner::OsFailure::errno: core::option::Option<i32>
 pub devlaunch_runner::OsFailure::kind: core::io::error::ErrorKind
@@ -166,6 +171,7 @@ pub fn devlaunch_runner::ProcessRunner::capture(&self, &devlaunch_runner::SpawnS
 pub fn devlaunch_runner::ProcessRunner::detach(&self, &devlaunch_runner::Invocation) -> devlaunch_runner::DetachOutcome
 pub fn devlaunch_runner::ProcessRunner::passthrough(&self, &devlaunch_runner::SpawnSpec) -> devlaunch_runner::Outcome
 pub fn devlaunch_runner::ProcessRunner::session(&self, &devlaunch_runner::SpawnSpec, &mut dyn core::ops::function::FnMut(&str)) -> devlaunch_runner::Outcome
+pub fn devlaunch_runner::ProcessRunner::watched_session(&self, &devlaunch_runner::SpawnSpec, &mut dyn devlaunch_runner::SessionOutput) -> devlaunch_runner::Outcome
 pub struct devlaunch_runner::SpawnSpec
 pub devlaunch_runner::SpawnSpec::invocation: devlaunch_runner::Invocation
 pub devlaunch_runner::SpawnSpec::own_group: bool
@@ -196,8 +202,18 @@ pub fn devlaunch_runner::Runner::capture(&self, &devlaunch_runner::SpawnSpec) ->
 pub fn devlaunch_runner::Runner::detach(&self, &devlaunch_runner::Invocation) -> devlaunch_runner::DetachOutcome
 pub fn devlaunch_runner::Runner::passthrough(&self, &devlaunch_runner::SpawnSpec) -> devlaunch_runner::Outcome
 pub fn devlaunch_runner::Runner::session(&self, &devlaunch_runner::SpawnSpec, &mut dyn core::ops::function::FnMut(&str)) -> devlaunch_runner::Outcome
+pub fn devlaunch_runner::Runner::watched_session(&self, &devlaunch_runner::SpawnSpec, &mut dyn devlaunch_runner::SessionOutput) -> devlaunch_runner::Outcome
 impl devlaunch_runner::Runner for devlaunch_runner::ProcessRunner
 pub fn devlaunch_runner::ProcessRunner::capture(&self, &devlaunch_runner::SpawnSpec) -> devlaunch_runner::Outcome<devlaunch_runner::CapturedText>
 pub fn devlaunch_runner::ProcessRunner::detach(&self, &devlaunch_runner::Invocation) -> devlaunch_runner::DetachOutcome
 pub fn devlaunch_runner::ProcessRunner::passthrough(&self, &devlaunch_runner::SpawnSpec) -> devlaunch_runner::Outcome
 pub fn devlaunch_runner::ProcessRunner::session(&self, &devlaunch_runner::SpawnSpec, &mut dyn core::ops::function::FnMut(&str)) -> devlaunch_runner::Outcome
+pub fn devlaunch_runner::ProcessRunner::watched_session(&self, &devlaunch_runner::SpawnSpec, &mut dyn devlaunch_runner::SessionOutput) -> devlaunch_runner::Outcome
+pub trait devlaunch_runner::SessionOutput
+pub fn devlaunch_runner::SessionOutput::line(&mut self, &str)
+pub fn devlaunch_runner::SessionOutput::quiet(&mut self, core::time::Duration)
+pub fn devlaunch_runner::SessionOutput::quiet_interval(&self) -> core::option::Option<core::time::Duration>
+impl<F: core::ops::function::FnMut(&str)> devlaunch_runner::SessionOutput for devlaunch_runner::Lines<F>
+pub fn devlaunch_runner::Lines<F>::line(&mut self, &str)
+pub fn devlaunch_runner::Lines<F>::quiet(&mut self, core::time::Duration)
+pub fn devlaunch_runner::Lines<F>::quiet_interval(&self) -> core::option::Option<core::time::Duration>

@@ -458,12 +458,76 @@ pub trait Runner: Sync {
     /// of a remote exit status) is held back rather than shown.
     fn session(&self, spec: &SpawnSpec, on_stderr_line: &mut dyn FnMut(&str)) -> Outcome;
 
+    /// [`Runner::session`], with the *silences* reported as well as the lines.
+    ///
+    /// The one thing a caller cannot work out for itself from a line sink: a
+    /// callback that is not being called says nothing, and "devpod has printed
+    /// nothing for five minutes" is exactly what a launch wants to be able to
+    /// say (devlaunch#576). Only something sitting on the read can time it.
+    ///
+    /// **Defaulted, so this is not a second mechanism.** A runner that has not
+    /// been taught to watch a clock still runs the call and still delivers every
+    /// line; the only thing lost is the tick. That is what the fakes and
+    /// wrappers in this tree take. [`ProcessRunner`] overrides it and expresses
+    /// [`Runner::session`] in terms of it, so there is one loop and `session` is
+    /// the narrower view of it rather than a copy.
+    fn watched_session(&self, spec: &SpawnSpec, output: &mut dyn SessionOutput) -> Outcome {
+        self.session(spec, &mut |line| output.line(line))
+    }
+
     /// Start a child in a session of its own with null stdio, and do not wait.
     ///
     /// Takes an [`Invocation`] rather than a [`SpawnSpec`]: a child nothing
     /// waits for cannot have a timeout, and one that survives this process
     /// cannot be reading its stdin, so neither field has a meaning to give.
     fn detach(&self, what: &Invocation) -> DetachOutcome;
+}
+
+/// What a session tells its caller: the lines the child wrote, and the silences
+/// between them.
+///
+/// One trait and not two callbacks, because they are one observation of one
+/// stream: a caller handed them separately could pass a line sink and a silence
+/// sink that disagreed about which call they were watching. Both are `&mut self`
+/// on one value, so there is one watcher per session by construction.
+pub trait SessionOutput {
+    /// One line the child wrote to stderr, without its newline.
+    fn line(&mut self, line: &str);
+
+    /// How often to report a silence, or `None` to never report one.
+    ///
+    /// `None` is the default and is what every caller that only wants the lines
+    /// gets: the read then blocks with no deadline of its own, exactly as it did
+    /// before silences were reported at all, so a session that runs for an hour
+    /// wakes for the hour's worth of output and nothing else.
+    fn quiet_interval(&self) -> Option<Duration> {
+        None
+    }
+
+    /// The child has written nothing for `quiet`.
+    ///
+    /// Called on [`SessionOutput::quiet_interval`] while the child is silent and
+    /// never while it is talking: the measurement restarts at zero after every
+    /// [`SessionOutput::line`], so what this reports is the gap since the last
+    /// thing the child said and not the age of the call.
+    fn quiet(&mut self, quiet: Duration);
+}
+
+/// A watcher that only wants the lines: [`Runner::session`]'s sink, as a
+/// [`SessionOutput`].
+///
+/// Named rather than written as a closure at each site, because the interesting
+/// half of it is the half that is missing: it reports no silences and asks for
+/// no interval, so wrapping a plain line sink in one cannot accidentally start a
+/// clock.
+pub struct Lines<F>(pub F);
+
+impl<F: FnMut(&str)> SessionOutput for Lines<F> {
+    fn line(&mut self, line: &str) {
+        (self.0)(line);
+    }
+
+    fn quiet(&mut self, _quiet: Duration) {}
 }
 
 /// The production runner: [`std::process::Command`], and nothing else.
@@ -537,52 +601,13 @@ impl Runner for ProcessRunner {
     }
 
     fn passthrough(&self, spec: &SpawnSpec) -> Outcome {
-        // Whether this child leads a process group of its own is the caller's
-        // decision, carried on the spec (see [`SpawnSpec::own_group`]).
-        //
-        // `devpod up` sets it: it is the one long-running foreground child, and
-        // the one a Ctrl-C used to orphan — `dl`'s `_exit(130)` released the
-        // launch lock while the build carried on holding it (concurrency review
-        // F3). Leading its own group lets `dl`'s interrupt handler `killpg` the
-        // build before it exits, so the build comes down with `dl` rather than
-        // outliving it, even when the interrupt arrived as `kill -INT <pid>`.
-        //
-        // An interactive `ssh -t` (the other passthrough caller) must NOT: a
-        // child in a group of its own is no longer the controlling terminal's
-        // foreground group, so its first read of the PTY earns a SIGTTIN and the
-        // session hangs. It stays in this process's group, which is also what
-        // the Python original did — as do `session`'s and `capture`'s children,
-        // for the same reason.
-        let ending = if spec.own_group {
-            let mut child = match start(spec, Stdio::inherit(), Stdio::inherit(), OwnGroup::Yes) {
-                Ok(child) => child,
-                Err(outcome) => return outcome.retyped(),
-            };
-            // The child led its own group from its `pre_exec`, so its pgid is its
-            // pid; set it from the parent too to close the fork-to-exec window.
-            let pgid = child.id() as i32;
-            // SAFETY: `setpgid` on our own just-spawned child; EACCES (already
-            // exec'd) or ESRCH (already gone) are both fine — the child's own
-            // `pre_exec` establishes the group regardless.
-            unsafe {
-                libc::setpgid(pgid, pgid);
-            }
-            interrupt::note_foreground_child(pgid);
-            let ending = wait(&mut child, spec.timeout);
-            // Reaped now, so the handler must not signal a possibly-recycled pgid.
-            interrupt::clear_foreground_child();
-            ending
-        } else {
-            // The child stays in this process's group. Its "pgid" would be this
-            // process's own group, so it must NOT be noted for the interrupt
-            // handler — a `killpg` on it would fell `dl` and the whole foreground
-            // group. Just spawn, wait, and return.
-            let mut child = match start(spec, Stdio::inherit(), Stdio::inherit(), OwnGroup::No) {
-                Ok(child) => child,
-                Err(outcome) => return outcome.retyped(),
-            };
-            wait(&mut child, spec.timeout)
+        let (mut child, note) = match start_foreground(spec, Stdio::inherit(), Stdio::inherit()) {
+            Ok(started) => started,
+            Err(outcome) => return outcome.retyped(),
         };
+        let ending = wait(&mut child, spec.timeout);
+        // Reaped now, so the handler must not signal a possibly-recycled pgid.
+        drop(note);
         // The child had this process's stdout, so it had the terminal, so it may
         // have left modes switched on that only it was ever going to switch off —
         // and if it was killed rather than exited, it certainly did. Undone here,
@@ -598,8 +623,14 @@ impl Runner for ProcessRunner {
     }
 
     fn session(&self, spec: &SpawnSpec, on_stderr_line: &mut dyn FnMut(&str)) -> Outcome {
-        let mut child = match start(spec, Stdio::inherit(), Stdio::piped(), OwnGroup::No) {
-            Ok(child) => child,
+        // The narrower view of the one loop, not a copy of it: `Lines` asks for no
+        // interval, so the read blocks exactly as it always did.
+        self.watched_session(spec, &mut Lines(on_stderr_line))
+    }
+
+    fn watched_session(&self, spec: &SpawnSpec, output: &mut dyn SessionOutput) -> Outcome {
+        let (mut child, note) = match start_foreground(spec, Stdio::inherit(), Stdio::piped()) {
+            Ok(started) => started,
             Err(outcome) => return outcome.retyped(),
         };
         // The lines are read on a thread and handed over here as they arrive,
@@ -634,13 +665,38 @@ impl Runner for ProcessRunner {
         };
 
         let deadline = spec.timeout.map(|limit| Instant::now() + limit);
+        // Asked once. A watcher that changed its mind between reads would move the
+        // tick the loop is already waiting on, which is a silence reported at an
+        // interval nobody chose.
+        let tick = output.quiet_interval();
         let mut timed_out = false;
         if let Some(lines) = lines {
+            // When the child last said something, which is what a silence is
+            // measured from -- not the start of the call. It restarts at every
+            // line, so a step that takes five minutes is reported as five minutes
+            // and a call that has been talking all along is never reported at all.
+            let mut last_spoke = Instant::now();
+            // Tracked apart from `last_spoke`, and it has to be: a tick does not
+            // make the child speak, so an interval measured from `last_spoke`
+            // would be in the past the instant after it fired and every read would
+            // return immediately -- a spin that reports the same silence thousands
+            // of times a second. This one is pushed forward by each report.
+            let mut next_tick = tick.map(|tick| last_spoke + tick);
             loop {
-                let received = match deadline {
+                // The nearer of the two clocks. The deadline kills the child and
+                // the tick does not, so a read that could have been either has to
+                // wake for whichever comes first and work out afterwards which it
+                // was -- from the time, not from the wake.
+                let wake = match (deadline, next_tick) {
+                    (None, None) => None,
+                    (Some(deadline), None) => Some(deadline),
+                    (None, Some(next_tick)) => Some(next_tick),
+                    (Some(deadline), Some(next_tick)) => Some(deadline.min(next_tick)),
+                };
+                let received = match wake {
                     None => lines.recv().map_err(|_| Waited::Closed),
-                    Some(deadline) => {
-                        let left = deadline.saturating_duration_since(Instant::now());
+                    Some(wake) => {
+                        let left = wake.saturating_duration_since(Instant::now());
                         lines.recv_timeout(left).map_err(|error| match error {
                             mpsc::RecvTimeoutError::Timeout => Waited::Elapsed,
                             mpsc::RecvTimeoutError::Disconnected => Waited::Closed,
@@ -648,11 +704,26 @@ impl Runner for ProcessRunner {
                     }
                 };
                 match received {
-                    Ok(line) => on_stderr_line(&line),
+                    Ok(line) => {
+                        last_spoke = Instant::now();
+                        next_tick = tick.map(|tick| last_spoke + tick);
+                        output.line(&line);
+                    }
                     Err(Waited::Closed) => break,
                     Err(Waited::Elapsed) => {
-                        timed_out = true;
-                        break;
+                        // Whose deadline elapsed, asked of the clock rather than
+                        // of which value went into the wake: a tick that fires in
+                        // the same millisecond as the timeout must still kill the
+                        // child, and a timeout that has not arrived must not.
+                        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                            timed_out = true;
+                            break;
+                        }
+                        // From now rather than from the tick that just fired, so a
+                        // slow watcher delays the next report instead of banking a
+                        // backlog of them to deliver back to back.
+                        next_tick = tick.map(|tick| Instant::now() + tick);
+                        output.quiet(last_spoke.elapsed());
                     }
                 }
             }
@@ -667,6 +738,8 @@ impl Runner for ProcessRunner {
                 deadline.map(|d| d.saturating_duration_since(Instant::now())),
             )
         };
+        // Reaped now, so the handler must not signal a possibly-recycled pgid.
+        drop(note);
         // The reader is joined only when the pipe closed of its own accord (the
         // loop broke on Closed, so the thread is already on its way out). On a
         // timeout it is abandoned: a descendant in a session of its own can hold
@@ -801,6 +874,73 @@ fn command(what: &Invocation) -> Command {
 enum OwnGroup {
     No,
     Yes,
+}
+
+/// The interrupt handler's note about a foreground child's process group,
+/// withdrawn when this is dropped.
+///
+/// A guard and not a second call, because there are two methods that have to
+/// remember to withdraw it and the moment they must do it in is the same: the
+/// child has been reaped, so its pgid can be recycled, and a handler that
+/// signalled it after that would be signalling somebody else. `false` is a child
+/// in this process's own group, which is never noted at all.
+struct ForegroundNote(bool);
+
+impl Drop for ForegroundNote {
+    fn drop(&mut self) {
+        if self.0 {
+            interrupt::clear_foreground_child();
+        }
+    }
+}
+
+/// Spawn a long-running foreground child in the process group the spec asks for.
+///
+/// Whether the child leads a group of its own is the caller's decision, carried
+/// on the spec (see [`SpawnSpec::own_group`]). One place for the dance rather
+/// than one per method, because [`Runner::passthrough`] and [`Runner::session`]
+/// both run a child that holds the terminal for minutes, and a second
+/// hand-written copy of the parent-side `setpgid` is a copy that can be subtly
+/// wrong in whichever method nobody was thinking about at the time.
+///
+/// `devpod up` sets it: it is the one long-running foreground child, and the one
+/// a Ctrl-C used to orphan — `dl`'s `_exit(130)` released the launch lock while
+/// the build carried on holding it (concurrency review F3). Leading its own group
+/// lets `dl`'s interrupt handler `killpg` the build before it exits, so the build
+/// comes down with `dl` rather than outliving it, even when the interrupt arrived
+/// as `kill -INT <pid>`.
+///
+/// An interactive `ssh -t` must NOT: a child in a group of its own is no longer
+/// the controlling terminal's foreground group, so its first read of the PTY
+/// earns a SIGTTIN and the session hangs. It stays in this process's group, which
+/// is also what the Python original did — as does `capture`'s child, for the same
+/// reason.
+fn start_foreground(
+    spec: &SpawnSpec,
+    stdout: Stdio,
+    stderr: Stdio,
+) -> Result<(Child, ForegroundNote), NoChild> {
+    if !spec.own_group {
+        // The child stays in this process's group. Its "pgid" would be this
+        // process's own group, so it must NOT be noted for the interrupt handler
+        // — a `killpg` on it would fell `dl` and the whole foreground group.
+        return Ok((
+            start(spec, stdout, stderr, OwnGroup::No)?,
+            ForegroundNote(false),
+        ));
+    }
+    let child = start(spec, stdout, stderr, OwnGroup::Yes)?;
+    // The child led its own group from its `pre_exec`, so its pgid is its pid;
+    // set it from the parent too to close the fork-to-exec window.
+    let pgid = child.id() as i32;
+    // SAFETY: `setpgid` on our own just-spawned child; EACCES (already exec'd) or
+    // ESRCH (already gone) are both fine — the child's own `pre_exec` establishes
+    // the group regardless.
+    unsafe {
+        libc::setpgid(pgid, pgid);
+    }
+    interrupt::note_foreground_child(pgid);
+    Ok((child, ForegroundNote(true)))
 }
 
 /// Spawn `spec`, or say why there is no child.

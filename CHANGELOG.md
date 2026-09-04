@@ -155,6 +155,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   passing its own token further down, and `DEVLAUNCH_NO_CLAUDE_TOKEN` still beats
   everything.
 
+- **A `devpod up` that has gone quiet says so, every 30 seconds, with the number
+  going up.** A cold launch spends minutes on a single `postCreateCommand` step
+  and said nothing while it did. Measured on one host: two consecutive lines
+  **5m01s apart**, with nothing in between to say the launch was alive, which
+  step it was on, or how long that step had been running. The same launch warm
+  was 21.6s in total, so the ratio between the two is about 16x and a reader had
+  no way to tell from the terminal which one they were in.
+
+  ```
+  11:42:52  Pixi task (ui-install-locked): npm --prefix frontend ci
+  Still working: devpod has printed nothing for 30s.
+  Still working: devpod has printed nothing for 1m00s.
+  ...
+  11:47:53  added 585 packages in 5m
+  ```
+
+  **The measurement restarts at every line devpod writes**, so it is the age of
+  the step devpod is on and not the age of the launch, and its restarting is the
+  whole of what tells a long step from a wedged one. Neither is something `dl` can
+  diagnose; what it can do is stop them looking identical. A launch that is
+  talking never produces one of these, because devpod's own steps are seconds
+  apart, which keeps the line off a warm launch entirely and off most of a cold
+  one.
+
+  Worth being clear about attribution: **the five minutes are the repository's own
+  `postCreateCommand`, not devlaunch's work.** `dl` cannot make `npm ci` faster and
+  does not try.
+
+  Written as whole lines rather than one refreshed in place, deliberately. `dl`
+  echoes devpod's output but does not compose it, so a line rewritten with a
+  carriage return could not be relied on to be the last thing written and would
+  be overtyped by devpod's next; and a whole line is the only shape that also
+  survives stderr being a file, which is what it is in CI and in the log `aid`'s
+  background boot replays from.
+
+### Changed
+
+- **`devpod up` runs as a watched session rather than a plain passthrough**, which
+  is what makes the line above possible: only something sitting on the read can
+  time a silence, since a line sink that is not being called says nothing. The
+  trade is that `devpod up`'s stderr is a pipe now and no longer a terminal to
+  devpod. stdin and stdout are untouched, so the terminal devpod puts into raw
+  mode is exactly as it was.
+
+  **The process group is untouched too, and that is the part that mattered.** The
+  build still leads a group of its own, so a Ctrl-C (or `kill -INT`, or a closed
+  terminal) still takes it down with `dl` rather than orphaning it holding the
+  launch lock, which is concurrency review F3 and has its own suite. The
+  parent-side `setpgid` and the note the interrupt handler reads were one method's
+  private business and are now a helper both foreground methods take, so there is
+  one copy of it rather than a second that could be subtly wrong in whichever
+  method nobody was thinking about.
+
 ## [0.29.0] - 2026-09-02
 
 ### Added
