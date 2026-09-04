@@ -3491,6 +3491,28 @@ mod tests {
         assert_eq!(header_state, row_state, "{lines:#?}");
     }
 
+    /// Width is a count of characters, not of bytes.
+    ///
+    /// `ünïcødé` is seven characters and eleven bytes, and `{:<width$}` pads by
+    /// characters. So a byte width does not misalign anything -- every row is padded
+    /// to the same wrong number -- it just opens a gap four columns wider than the
+    /// longest name. Asserting the rows agree with each other would pass either way,
+    /// which is why this asserts the width itself.
+    #[test]
+    fn a_multi_byte_name_is_measured_in_characters() {
+        let lines = claude_profile_lines(&[
+            profile("ünïcødé", claude_profiles::ProfileState::Authed, None, &[]),
+            profile("plain", claude_profiles::ProfileState::Authed, None, &[]),
+        ]);
+        // Seven characters and the two spaces between columns.
+        let header_state = lines[0].find("STATE").expect("a STATE column");
+        assert_eq!(lines[0][..header_state].chars().count(), 9, "{lines:#?}");
+        for row in &lines[1..] {
+            let at = row.find("authed").expect("a state word");
+            assert_eq!(row[..at].chars().count(), 9, "{lines:#?}");
+        }
+    }
+
     #[test]
     fn a_short_name_does_not_shrink_the_column_below_the_header() {
         let lines = claude_profile_lines(&[profile(
