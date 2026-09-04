@@ -343,8 +343,8 @@ pub enum Reclaimed {
 
 /// Unlink `lock_path`, but only while holding the lock it is.
 ///
-/// The only unlink in devlaunch, and the reason [`hold_lock_watching`]
-/// revalidates. Two properties make it safe, and neither is sufficient alone:
+/// The reason [`hold_lock_watching`] revalidates, and it revalidates for the same
+/// reason. Three properties make it safe, and none is sufficient alone:
 ///
 /// - **It never creates.** A sweep that opened with `O_CREAT` would manufacture
 ///   the file it then reports removing, so a path already reclaimed would come
@@ -355,19 +355,44 @@ pub enum Reclaimed {
 ///   for it acquires a doomed inode, sees the path no longer names it, and queues
 ///   again against the live one. That second half is the acquisition's, not this
 ///   function's, which is why the two were written together.
+/// - **It unlinks only the inode it locked.** The flock proves nothing about the
+///   *path*: an inode already unlinked has no holders, so locking one always
+///   succeeds, and the unlink that followed would take away whatever the path
+///   names by then. `a_sweep_does_not_unlink_a_file_that_replaced_the_one_it_locked`
+///   is the case, and devlaunch is not the only unlinker — `dl --purge` removes
+///   the cache directory entire (`lifecycle::purge`, and docs/cleanup.md says so),
+///   holding no lock at all.
 ///
 /// A sweep never queues ([`run_if_lock_free`]'s argument, verbatim): waiting for a
 /// launch would be housekeeping taxing the path it exists to keep clear.
 pub fn reclaim(lock_path: &Path) -> Reclaimed {
+    reclaim_between(lock_path, || {})
+}
+
+/// [`reclaim`], with a seam at the one instant that decides whether it is correct.
+///
+/// `between` runs after the open and before the flock, which is the window the
+/// third property above is about. A race is not a thing a test can win by running
+/// it often, so the test drives the interleaving instead of hoping for it.
+fn reclaim_between(lock_path: &Path, between: impl FnOnce()) -> Reclaimed {
     let file = match OpenOptions::new().read(true).write(true).open(lock_path) {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Reclaimed::AlreadyGone,
         Err(error) => return Reclaimed::Refused(error.into()),
     };
+    between();
     match flock(&file, FlockOperation::NonBlockingLockExclusive) {
         Ok(()) => {}
         Err(errno) if would_block(errno) => return Reclaimed::Held,
         Err(errno) => return Reclaimed::Refused(io::Error::from(errno).into()),
+    }
+    // The lock is on an inode; the unlink below is on a path. Between the open and
+    // here the path can have been unlinked and re-created, and the flock would have
+    // succeeded anyway, because the inode this holds is detached and detached inodes
+    // have no other holders. Unlinking then takes away a file somebody else created,
+    // locked and revalidated -- and two launches of one workspace get in.
+    if !still_named_by(&file, lock_path) {
+        return Reclaimed::AlreadyGone;
     }
     let _guard = LockGuard {
         file,
@@ -944,6 +969,45 @@ mod tests {
         assert!(lock.exists());
     }
 
+    /// The case `a_reclaim_and_an_acquisition_do_not_both_get_in` cannot reach.
+    ///
+    /// That one starts the acquisition first, so reclaim's flock is refused and the
+    /// sweep never gets as far as the unlink. Here the sweep opens *first* and the
+    /// path is replaced under it, which is what `--purge` unlinking the cache
+    /// directory does, and what any second sweep does. The flock then succeeds --
+    /// nothing holds a detached inode -- and an unlink by path would take away the
+    /// live holder's file, leaving two launches of one workspace holding the lock.
+    #[test]
+    fn a_sweep_does_not_unlink_a_file_that_replaced_the_one_it_locked() {
+        let dir = temp_dir();
+        let lock = dir.path().join("swapped.lock");
+        drop(hold_lock(&lock).expect("creating the file"));
+        let doomed = lock.metadata().expect("a stat").ino();
+
+        let mut holder = None;
+        let outcome = reclaim_between(&lock, || {
+            // The swap, in the window between the sweep's open and its flock.
+            std::fs::remove_file(&lock).expect("unlinking the file the sweep opened");
+            let live = spawn_holder(&lock);
+            wait_until(|| lock.exists() && lock.metadata().expect("a stat").ino() != doomed);
+            wait_until(|| lock_is_held(&lock));
+            holder = Some(live);
+        });
+
+        let mut holder = holder.expect("the replacement's holder");
+        assert_eq!(outcome, Reclaimed::AlreadyGone);
+        assert!(
+            lock.exists(),
+            "the sweep unlinked a file it never held the lock on"
+        );
+        assert!(
+            lock_is_held(&lock),
+            "the replacement's holder still holds it"
+        );
+        holder.kill().expect("killing the holder");
+        holder.wait().expect("reaping the holder");
+    }
+
     // --- helpers ---------------------------------------------------------
 
     /// A second *process* holding an exclusive lock on `lock` until killed.
@@ -965,6 +1029,14 @@ mod tests {
             .stderr(Stdio::null())
             .spawn()
             .expect("a shell and flock(1) from util-linux, for the cross-process claims")
+    }
+
+    /// Whether somebody else holds `lock` right now.
+    ///
+    /// `run_if_lock_free` answers without queuing, which is what makes it usable as
+    /// a probe: a held lock comes back `Ok(None)` on the first refused flock.
+    fn lock_is_held(lock: &Path) -> bool {
+        run_if_lock_free(lock, || ()).expect("no error").is_none()
     }
 
     /// Poll `condition` until it holds, or fail rather than hang.
