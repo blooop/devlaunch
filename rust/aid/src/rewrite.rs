@@ -507,6 +507,15 @@ struct Suffix<'a> {
     /// and unlike [`Self::options`]: an agent flag is aid's own, and dl has never
     /// heard of it.
     agent: Option<&'static str>,
+    /// Modifiers the run turned out to have nothing to modify, which go back on the
+    /// end of the prompt.
+    ///
+    /// A `--force` is peeled so dl can refuse the *pair* it forms with `--rm`. A run
+    /// held open by a flag aid consumes rather than forwards has no pair in it, so
+    /// forwarding the modifier alone would put it at index 1, where dl reads it as a
+    /// verb. Handed back here instead, which is the rule a `--force` on its own has
+    /// always been read by.
+    prompt_tail: Vec<String>,
 }
 
 /// Split a trailing run of dl flags off the end of a command line.
@@ -540,6 +549,13 @@ struct Suffix<'a> {
 /// option ahead of it puts it at index 2, where dl reads it as the modifier and
 /// refuses the pair by name. Reordering two flags is safe in a way reordering words
 /// is not: clap takes them in any order, and only the positional recovery cares.
+///
+/// **Where there is no option to come ahead of it, the modifier is not forwarded at
+/// all** and goes back on the end of the prompt ([`Suffix::prompt_tail`]). A run can
+/// be held open by a flag aid consumes rather than forwards -- an agent flag or a
+/// remote-control one -- and such a run carries no pair for dl to refuse, so
+/// emitting the modifier on its own would put it at index 1 and answer `Unknown
+/// command '--force'` about a line where `--force` was never dl's business.
 ///
 /// Answers `None` rather than an empty suffix, so the caller has no "peeled
 /// nothing" case to tell from "peeled something".
@@ -593,12 +609,21 @@ fn peel_suffix(argv: &[String]) -> Option<Suffix<'_>> {
             options.push(word.clone());
         }
     }
-    options.append(&mut modifiers);
+    // Only where there is an option for them to ride with. A run whose every
+    // forwardable word was consumed by aid has no pair for dl to refuse, and a lone
+    // modifier emitted after the spec lands in the verb slot.
+    let prompt_tail = if options.is_empty() {
+        std::mem::take(&mut modifiers)
+    } else {
+        options.append(&mut modifiers);
+        Vec::new()
+    };
     Some(Suffix {
         line: &argv[..at],
         options,
         remote_control,
         agent,
+        prompt_tail,
     })
 }
 
@@ -622,15 +647,17 @@ pub(crate) fn parse_aid_args(
     // `DEVLAUNCH_AID_REMOTE_CONTROL` that is neither a yes nor a no.
     let mut agent = default_agent(environment.agent)?;
     let mut remote_control = default_remote_control(environment.remote_control)?;
-    let (line, trailing, trailing_remote_control, trailing_agent) = match peel_suffix(argv) {
-        Some(suffix) => (
-            suffix.line,
-            suffix.options,
-            suffix.remote_control,
-            suffix.agent,
-        ),
-        None => (argv, Vec::new(), None, None),
-    };
+    let (line, trailing, trailing_remote_control, trailing_agent, prompt_tail) =
+        match peel_suffix(argv) {
+            Some(suffix) => (
+                suffix.line,
+                suffix.options,
+                suffix.remote_control,
+                suffix.agent,
+                suffix.prompt_tail,
+            ),
+            None => (argv, Vec::new(), None, None, Vec::new()),
+        };
     let mut dl_options: Vec<String> = Vec::new();
     let mut spec: Option<String> = None;
     let mut at = 0;
@@ -693,7 +720,12 @@ pub(crate) fn parse_aid_args(
     // looks like. Settled before the task is built, so the `RemoteControl` the task
     // carries is one an agent row supplied the flag for.
     let remote_control = remote_control.settle(&agent)?;
-    let prompt = line[at.min(line.len())..].join(" ");
+    let prompt = line[at.min(line.len())..]
+        .iter()
+        .chain(prompt_tail.iter())
+        .map(String::as_str)
+        .collect::<Vec<&str>>()
+        .join(" ");
     let retired = names_a_retired_spelling(&trailing);
     Ok(AidArgs {
         spec,
@@ -1473,6 +1505,39 @@ mod tests {
             built.iter().position(|word| word == "--force"),
             Some(2),
             "--force reached dl's verb slot: {built:?}"
+        );
+    }
+
+    #[test]
+    fn a_modifier_with_no_option_to_modify_is_prompt_text_whatever_peeled_the_run() {
+        // `--force` is peeled so that dl can refuse the *pair* it forms with `--rm`.
+        // A run held open by a flag aid consumes has no pair in it, so forwarding the
+        // modifier alone put it at index 1 and got `Unknown command '--force'` about a
+        // line whose `--force` was never dl's business. It is prompt text, which is
+        // the rule a `--force` on its own has always been read by.
+        for argv in [
+            vec!["owner/repo", "fix it", "--codex", "--force"],
+            vec!["owner/repo", "fix it", "--force", "--codex"],
+        ] {
+            let chosen = parsed(&argv);
+            assert_eq!(chosen.agent(), Some("codex"), "{argv:?}");
+            assert_eq!(prompt(&chosen), "fix it --force", "{argv:?}");
+            assert!(chosen.spec_options.is_empty(), "{argv:?}");
+            let built = build_dl_args(&chosen).expect("an agent line");
+            assert!(
+                !built.iter().any(|word| word == "--force"),
+                "--force reached dl at all: {built:?}"
+            );
+        }
+        // The same run held open by the other flag aid consumes rather than forwards.
+        let switched_off = parsed(&["owner/repo", "fix it", "--no-remote", "--force"]);
+        assert_eq!(prompt(&switched_off), "fix it --force");
+        assert!(switched_off.spec_options.is_empty());
+        // And the pair itself is untouched: a real dl option in the run is what the
+        // modifier rides with, and dl is what refuses the two of them together.
+        assert_eq!(
+            parsed(&["owner/repo", "fix it", "--codex", "--rm", "--force"]).spec_options,
+            ["--rm", "--force"]
         );
     }
 
