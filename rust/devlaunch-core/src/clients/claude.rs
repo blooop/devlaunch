@@ -140,6 +140,44 @@ impl Token {
     }
 }
 
+/// A value that can be one directory component under the profiles root.
+///
+/// Its own type for [`Token`]'s reason: the check belongs at the boundary, once. A
+/// name is joined onto a path, so anything that could climb out of the profiles root
+/// or name something other than a leaf is refused rather than cleaned up.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ProfileName(String);
+
+impl ProfileName {
+    /// `raw` if it can be a leaf directory name, else nothing.
+    ///
+    /// The same flat-ASCII set [`Token::parse`] accepts, minus anything that is not a
+    /// plain visible leaf: empty, and a leading `.` or `-`. A separator of either kind
+    /// and a NUL are excluded by the set itself.
+    ///
+    /// A leading `-` goes because a name that looks like a flag reads as one everywhere
+    /// it is later printed or passed on. A leading `.` goes for two reasons at once: it
+    /// subsumes `.` and `..`, which are the spellings that would climb out of the root,
+    /// and it keeps the rule one clause a refusal can state. `.work` was accepted
+    /// before this and read from `<root>/.work/`, so `--claude-profile 'has space'` was
+    /// refused with "cannot begin with '.' or '-'" -- a sentence the validator did not
+    /// enforce. Refusing a hidden directory costs nothing: nothing creates one, and a
+    /// profile is a thing a person types.
+    pub(crate) fn parse(raw: &str) -> Option<Self> {
+        let flat = !raw.is_empty()
+            && !raw.starts_with('-')
+            && !raw.starts_with('.')
+            && raw
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'));
+        flat.then(|| Self(raw.to_owned()))
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 /// The values on the host this decision reads.
 ///
 /// Parameters rather than reads of the process environment, exactly as
@@ -168,6 +206,14 @@ pub(crate) struct HostEnv {
     /// defect wearing the fix's clothes. [`crate::domain::xdg`]'s `resolve` takes an
     /// `OsString` for the same reason, and it is the rule this arm already cites.
     pub(crate) config_dir: Option<OsString>,
+    /// `--claude-profile`, if one was typed.
+    ///
+    /// **The one field here that is not a read of the environment**, which is what
+    /// puts it above [`Self::token`]: it was typed on this command line, for this
+    /// launch, and nothing ambient should beat an explicit argument. A nested `dl`
+    /// naming a profile means it, and the inherited token is exactly what it is
+    /// overriding. [`HostEnv::from_process`] leaves it `None` for that reason.
+    pub(crate) profile: Option<String>,
 }
 
 impl HostEnv {
@@ -178,6 +224,10 @@ impl HostEnv {
             token: crate::osext::env_str(TOKEN_VAR),
             // `var_os` rather than `osext::env_str`: see the field's own note.
             config_dir: std::env::var_os(CONFIG_DIR_VAR),
+            // Not a read of the environment, deliberately: a profile is typed on a
+            // command line and reaches this struct from the CLI, which is what puts
+            // it above the ambient token. See [`Self::profile`].
+            profile: None,
         }
     }
 }
@@ -197,6 +247,21 @@ pub(crate) enum NoToken {
     NotLoggedIn,
     /// The file is there and did not yield a token.
     Unreadable(String),
+    /// A profile was named and yielded no token.
+    ///
+    /// Its own arm rather than [`Self::Unreadable`], because this is the one refusal
+    /// that must **stop** a launch's forwarding rather than quietly leaving it
+    /// unforwarded. The user named an account; forwarding the default one instead is
+    /// the mistake profiles exist to prevent, and it is invisible until the day it
+    /// pushes to the wrong place. Carries the name so the message can quote what was
+    /// typed, which is a profile name and never a credential.
+    ProfileUnreadable { name: String, path: String },
+    /// A profile name that could not be a directory component.
+    ///
+    /// Refused at the boundary rather than sanitised, for [`Token::parse`]'s reason:
+    /// `--claude-profile ../../etc` must be a refusal naming the rule, not a
+    /// traversal that happens to fail later on a read.
+    ProfileNotAName(String),
 }
 
 /// The host's Claude token, or why there is none.
@@ -212,9 +277,20 @@ pub(crate) enum TokenLookup {
 /// means. No subprocess and no timing span, unlike [`super::gh::resolve_token`]:
 /// this is one file read, and there is no CLI to ask. Which directory that read lands
 /// in is [`config_dir`]'s decision.
-pub(crate) fn resolve_token(home: Option<&Path>, host: &HostEnv) -> TokenLookup {
+pub(crate) fn resolve_token(
+    home: Option<&Path>,
+    profiles_root: Option<&Path>,
+    host: &HostEnv,
+) -> TokenLookup {
     if forwarding_disabled(host.disable.as_deref()) {
         return TokenLookup::Missing(NoToken::OptedOut);
+    }
+    if let Some(named) = host
+        .profile
+        .as_deref()
+        .filter(|named| *named != DEFAULT_PROFILE)
+    {
+        return from_profile(named, profiles_root);
     }
     if let Some(token) = host.token.as_deref().and_then(Token::parse) {
         return TokenLookup::Found(token);
@@ -233,6 +309,50 @@ pub(crate) fn resolve_token(home: Option<&Path>, host: &HostEnv) -> TokenLookup 
     match token_from_credentials(&text) {
         Some(token) => TokenLookup::Found(token),
         None => TokenLookup::Missing(NoToken::Unreadable(path.display().to_string())),
+    }
+}
+
+/// The profile name that means "the login this host uses anyway".
+///
+/// `claude-as default` runs `claude` with no `CLAUDE_CONFIG_DIR` at all rather than
+/// looking for a directory of that name, and this matches it: `--claude-profile
+/// default` resolves the unnamed credential below and **never** consults
+/// `<root>/default/`, even if one exists. Worth having as a word rather than as the
+/// absence of a flag, because a picker needs something to select and a recalled line
+/// needs a way to say "not the profile I used last time".
+const DEFAULT_PROFILE: &str = "default";
+
+/// The token a named profile holds, or the reason it holds none.
+///
+/// **Nothing here falls through to another credential**, and that is the whole point
+/// of the feature. Two accounts on one machine is what profiles are for, so a typo
+/// that silently forwarded the other one would be worse than a launch that stops: the
+/// launch you can see, and the wrong account you find out about later, somewhere else.
+fn from_profile(named: &str, profiles_root: Option<&Path>) -> TokenLookup {
+    let Some(name) = ProfileName::parse(named) else {
+        return TokenLookup::Missing(NoToken::ProfileNotAName(named.to_owned()));
+    };
+    // No root resolves on a machine that names no home directory and set no override.
+    // A profile was still typed, so this is that refusal and not `NotLoggedIn`.
+    let Some(root) = profiles_root else {
+        return TokenLookup::Missing(NoToken::ProfileUnreadable {
+            name: name.as_str().to_owned(),
+            path: String::new(),
+        });
+    };
+    let path = root.join(name.as_str()).join(CREDENTIALS_FILENAME);
+    let unreadable = || {
+        TokenLookup::Missing(NoToken::ProfileUnreadable {
+            name: name.as_str().to_owned(),
+            path: path.display().to_string(),
+        })
+    };
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return unreadable();
+    };
+    match token_from_credentials(&text) {
+        Some(token) => TokenLookup::Found(token),
+        None => unreadable(),
     }
 }
 
@@ -345,7 +465,7 @@ mod tests {
         // holds a refresh token, and a container that refreshed one could rotate the
         // host's own login away. Only the access token is ever named.
         let home = logged_in("not-a-real-access-token");
-        let found = resolve_token(Some(home.path()), &HostEnv::default());
+        let found = resolve_token(Some(home.path()), None, &HostEnv::default());
         assert_eq!(
             found,
             TokenLookup::Found(Token("not-a-real-access-token".to_owned()))
@@ -367,7 +487,7 @@ mod tests {
             ..HostEnv::default()
         };
         assert_eq!(
-            resolve_token(Some(home.path()), &host),
+            resolve_token(Some(home.path()), None, &host),
             TokenLookup::Missing(NoToken::OptedOut)
         );
     }
@@ -384,7 +504,7 @@ mod tests {
             };
             assert!(
                 matches!(
-                    resolve_token(Some(home.path()), &host),
+                    resolve_token(Some(home.path()), None, &host),
                     TokenLookup::Found(_)
                 ),
                 "{falsey:?}"
@@ -403,6 +523,251 @@ mod tests {
         dir
     }
 
+    /// A profiles root holding one named profile whose credential carries `token`.
+    fn profiles_root_with(name: &str, token: &str) -> tempfile::TempDir {
+        let root = tempfile::tempdir().expect("a scratch profiles root");
+        let dir = root.path().join(name);
+        std::fs::create_dir_all(&dir).expect("a profile dir");
+        std::fs::write(
+            dir.join(CREDENTIALS_FILENAME),
+            format!(r#"{{"claudeAiOauth":{{"accessToken":"{token}"}}}}"#),
+        )
+        .expect("a credential");
+        root
+    }
+
+    #[test]
+    fn a_named_profile_is_read_from_its_own_directory() {
+        let root = profiles_root_with("work", "not-a-real-work-token");
+        let host = HostEnv {
+            profile: Some("work".to_owned()),
+            ..HostEnv::default()
+        };
+        assert_eq!(
+            resolve_token(None, Some(root.path()), &host),
+            TokenLookup::Found(Token("not-a-real-work-token".to_owned()))
+        );
+    }
+
+    #[test]
+    fn the_default_profile_names_the_unnamed_credential() {
+        // `claude-as default` runs claude with no CLAUDE_CONFIG_DIR rather than looking
+        // for a directory called default, and this matches it. A picker needs a word for
+        // "the ordinary login", and a recalled line needs a way to say "not the profile
+        // I used last time".
+        let home = logged_in("not-a-real-home-token");
+        let root = profiles_root_with("default", "not-a-real-directory-token");
+        let host = HostEnv {
+            profile: Some("default".to_owned()),
+            ..HostEnv::default()
+        };
+        // The home credential, and emphatically not `<root>/default/`, which exists
+        // here precisely so the test can tell the two apart.
+        assert_eq!(
+            resolve_token(Some(home.path()), Some(root.path()), &host),
+            TokenLookup::Found(Token("not-a-real-home-token".to_owned()))
+        );
+    }
+
+    #[test]
+    fn the_default_profile_still_honours_the_config_dir_and_the_opt_out() {
+        // It resolves the unnamed credential, so it picks up everything that decides
+        // which one that is rather than jumping straight to `$HOME/.claude`.
+        let moved = credential_dir_holding("not-a-real-moved-token");
+        let host = HostEnv {
+            profile: Some("default".to_owned()),
+            config_dir: Some(moved.path().into()),
+            ..HostEnv::default()
+        };
+        assert_eq!(
+            resolve_token(None, None, &host),
+            TokenLookup::Found(Token("not-a-real-moved-token".to_owned()))
+        );
+        let opted_out = HostEnv {
+            disable: Some("1".to_owned()),
+            profile: Some("default".to_owned()),
+            ..HostEnv::default()
+        };
+        assert_eq!(
+            resolve_token(None, None, &opted_out),
+            TokenLookup::Missing(NoToken::OptedOut)
+        );
+    }
+
+    #[test]
+    fn a_named_profile_that_yields_nothing_refuses_rather_than_falling_back() {
+        // The most important test in the feature. Two accounts on one machine is what
+        // profiles are for, so a typo must stop the launch rather than forward the
+        // other account: the launch you see, the wrong account you find out about
+        // later and somewhere else.
+        let home = logged_in("not-a-real-home-token");
+        let root = profiles_root_with("work", "not-a-real-work-token");
+        for named in ["typo", "work2"] {
+            let host = HostEnv {
+                profile: Some(named.to_owned()),
+                ..HostEnv::default()
+            };
+            let lookup = resolve_token(Some(home.path()), Some(root.path()), &host);
+            assert!(
+                matches!(
+                    &lookup,
+                    TokenLookup::Missing(NoToken::ProfileUnreadable { name, .. }) if name == named
+                ),
+                "{named}: {lookup:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_profile_whose_credential_is_junk_refuses_under_its_own_name() {
+        // Distinguished from `Unreadable`, which is the same file failing on the
+        // unnamed path: a profile was asked for, so the refusal says which one.
+        let root = tempfile::tempdir().expect("a scratch profiles root");
+        let dir = root.path().join("work");
+        std::fs::create_dir_all(&dir).expect("a profile dir");
+        std::fs::write(dir.join(CREDENTIALS_FILENAME), "not json at all").expect("a file");
+        let host = HostEnv {
+            profile: Some("work".to_owned()),
+            ..HostEnv::default()
+        };
+        assert!(matches!(
+            resolve_token(None, Some(root.path()), &host),
+            TokenLookup::Missing(NoToken::ProfileUnreadable { .. })
+        ));
+    }
+
+    #[test]
+    fn a_named_profile_beats_an_inherited_token_and_the_config_dir() {
+        // Typed on this command line, for this launch, so nothing ambient beats it.
+        // A nested `dl` naming a profile means it, and the inherited token is exactly
+        // what it is overriding.
+        let root = profiles_root_with("work", "not-a-real-work-token");
+        let moved = credential_dir_holding("not-a-real-moved-token");
+        let host = HostEnv {
+            token: Some("not-a-real-exported-token".to_owned()),
+            config_dir: Some(moved.path().into()),
+            profile: Some("work".to_owned()),
+            ..HostEnv::default()
+        };
+        assert_eq!(
+            resolve_token(None, Some(root.path()), &host),
+            TokenLookup::Found(Token("not-a-real-work-token".to_owned()))
+        );
+    }
+
+    #[test]
+    fn the_opt_out_is_read_before_the_profile_is() {
+        // Set, therefore meant: a machine that has opted out has no account to choose,
+        // so the opt-out stays first even against an explicit argument.
+        let root = profiles_root_with("work", "not-a-real-work-token");
+        let host = HostEnv {
+            disable: Some("1".to_owned()),
+            profile: Some("work".to_owned()),
+            ..HostEnv::default()
+        };
+        assert_eq!(
+            resolve_token(None, Some(root.path()), &host),
+            TokenLookup::Missing(NoToken::OptedOut)
+        );
+    }
+
+    #[test]
+    fn a_profile_name_that_is_not_a_leaf_is_refused_by_name() {
+        // Refused at the boundary, and no read is attempted: the point is that a name
+        // which could climb out of the profiles root never reaches a path join.
+        let root = profiles_root_with("work", "not-a-real-work-token");
+        for named in [
+            "",
+            ".",
+            "..",
+            "../..",
+            "a/b",
+            "/etc",
+            "..\\windows",
+            "-flag",
+            "has space",
+            "n\u{0}ul",
+            // A hidden directory, refused so that the one sentence a refusal prints
+            // is true of every name it refuses. `.work` used to be accepted and read
+            // from `<root>/.work/`, while `dl` told anyone refused for an unrelated
+            // reason that a name "cannot begin with '.' or '-'".
+            ".work",
+            ".hidden",
+        ] {
+            let host = HostEnv {
+                profile: Some(named.to_owned()),
+                ..HostEnv::default()
+            };
+            let lookup = resolve_token(None, Some(root.path()), &host);
+            assert!(
+                matches!(&lookup, TokenLookup::Missing(NoToken::ProfileNotAName(n)) if n == named),
+                "{named:?}: {lookup:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_ordinary_profile_name_is_accepted() {
+        // The other half of the rule above, so it cannot be tightened into refusing
+        // everything and still pass.
+        for named in ["work", "work-2", "work_2", "Work.2", "a"] {
+            assert_eq!(
+                ProfileName::parse(named).as_ref().map(ProfileName::as_str),
+                Some(named),
+                "{named:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_profile_with_no_root_to_look_in_refuses_as_a_profile() {
+        // A machine that names no home directory and set no override. A profile was
+        // still typed, so this is that refusal rather than `NotLoggedIn`.
+        let host = HostEnv {
+            profile: Some("work".to_owned()),
+            ..HostEnv::default()
+        };
+        assert!(matches!(
+            resolve_token(None, None, &host),
+            TokenLookup::Missing(NoToken::ProfileUnreadable { .. })
+        ));
+    }
+
+    #[test]
+    fn the_refresh_token_does_not_travel_from_a_profile_either() {
+        let root = tempfile::tempdir().expect("a scratch profiles root");
+        let dir = root.path().join("work");
+        std::fs::create_dir_all(&dir).expect("a profile dir");
+        std::fs::write(
+            dir.join(CREDENTIALS_FILENAME),
+            r#"{"claudeAiOauth":{"accessToken":"not-a-real-access-token",
+               "refreshToken":"not-a-real-refresh-token"}}"#,
+        )
+        .expect("a credential");
+        let host = HostEnv {
+            profile: Some("work".to_owned()),
+            ..HostEnv::default()
+        };
+        let TokenLookup::Found(token) = resolve_token(None, Some(root.path()), &host) else {
+            panic!("the profile credential should have been read");
+        };
+        assert!(!token.as_str().contains("refresh"), "{token:?}");
+    }
+
+    #[test]
+    fn a_profile_refusal_never_prints_a_token() {
+        // `ProfileUnreadable` carries a name and a path, and both are safe. This is
+        // the guard against someone later adding the value to the message.
+        let root = tempfile::tempdir().expect("a scratch profiles root");
+        let host = HostEnv {
+            profile: Some("work".to_owned()),
+            token: Some("not-a-real-secret-token".to_owned()),
+            ..HostEnv::default()
+        };
+        let lookup = resolve_token(None, Some(root.path()), &host);
+        assert!(!format!("{lookup:?}").contains("secret"), "{lookup:?}");
+    }
+
     #[test]
     fn the_host_honours_claude_config_dir() {
         // The asymmetry this closes: the container-side probe has always read this
@@ -414,7 +779,7 @@ mod tests {
             ..HostEnv::default()
         };
         assert_eq!(
-            resolve_token(None, &host),
+            resolve_token(None, None, &host),
             TokenLookup::Found(Token("not-a-real-moved-token".to_owned()))
         );
     }
@@ -433,7 +798,7 @@ mod tests {
             ..HostEnv::default()
         };
         assert_eq!(
-            resolve_token(Some(home.path()), &host),
+            resolve_token(Some(home.path()), None, &host),
             TokenLookup::Found(Token("not-a-real-moved-token".to_owned()))
         );
 
@@ -444,7 +809,7 @@ mod tests {
             ..HostEnv::default()
         };
         assert_eq!(
-            resolve_token(Some(home.path()), &empty),
+            resolve_token(Some(home.path()), None, &empty),
             TokenLookup::Found(Token("not-a-real-home-token".to_owned()))
         );
     }
@@ -460,7 +825,7 @@ mod tests {
             ..HostEnv::default()
         };
         assert_eq!(
-            resolve_token(Some(home.path()), &host),
+            resolve_token(Some(home.path()), None, &host),
             TokenLookup::Missing(NoToken::NotLoggedIn)
         );
     }
@@ -476,7 +841,7 @@ mod tests {
             ..HostEnv::default()
         };
         assert_eq!(
-            resolve_token(None, &host),
+            resolve_token(None, None, &host),
             TokenLookup::Found(Token("not-a-real-exported-token".to_owned()))
         );
     }
@@ -491,7 +856,7 @@ mod tests {
             ..HostEnv::default()
         };
         assert_eq!(
-            resolve_token(None, &host),
+            resolve_token(None, None, &host),
             TokenLookup::Missing(NoToken::OptedOut)
         );
     }
@@ -511,7 +876,7 @@ mod tests {
             config_dir: Some(dir.path().into()),
             ..HostEnv::default()
         };
-        let TokenLookup::Found(token) = resolve_token(None, &host) else {
+        let TokenLookup::Found(token) = resolve_token(None, None, &host) else {
             panic!("the credential should have been read");
         };
         assert!(!token.as_str().contains("refresh"), "{token:?}");
@@ -544,7 +909,7 @@ mod tests {
             ..HostEnv::default()
         };
         assert_eq!(
-            resolve_token(None, &host),
+            resolve_token(None, None, &host),
             TokenLookup::Found(Token("not-a-real-moved-token".to_owned()))
         );
 
@@ -555,7 +920,7 @@ mod tests {
             ..HostEnv::default()
         };
         assert_eq!(
-            resolve_token(None, &lossy),
+            resolve_token(None, None, &lossy),
             TokenLookup::Missing(NoToken::NotLoggedIn)
         );
     }
@@ -569,7 +934,7 @@ mod tests {
             ..HostEnv::default()
         };
         assert_eq!(
-            resolve_token(None, &host),
+            resolve_token(None, None, &host),
             TokenLookup::Found(Token("not-a-real-exported-token".to_owned()))
         );
     }
@@ -580,11 +945,11 @@ mod tests {
         // case. Both are ordinary and neither is worth a warning on every launch.
         let home = tempfile::tempdir().expect("a scratch home");
         assert_eq!(
-            resolve_token(Some(home.path()), &HostEnv::default()),
+            resolve_token(Some(home.path()), None, &HostEnv::default()),
             TokenLookup::Missing(NoToken::NotLoggedIn)
         );
         assert_eq!(
-            resolve_token(None, &HostEnv::default()),
+            resolve_token(None, None, &HostEnv::default()),
             TokenLookup::Missing(NoToken::NotLoggedIn)
         );
     }
@@ -610,7 +975,7 @@ mod tests {
             .expect("a file");
             assert!(
                 matches!(
-                    resolve_token(Some(home.path()), &HostEnv::default()),
+                    resolve_token(Some(home.path()), None, &HostEnv::default()),
                     TokenLookup::Missing(NoToken::Unreadable(_))
                 ),
                 "{text:?}"

@@ -7,6 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`dl --claude-profile <name>` forwards a named Claude login instead of the
+  default one**, for the case one credential cannot serve: two accounts on one
+  machine, and a workspace that wants the one your host is not signed in to. Profiles
+  are directories under `~/.claude-profiles/`, or wherever `CLAUDE_PROFILES_DIR` points,
+  each holding the `.credentials.json` a `claude` login writes and each a
+  `CLAUDE_CONFIG_DIR` of its own, which is what makes the logins independent.
+
+  **That layout and that variable belong to the tool managing the profiles, and `dl`
+  only reads them.** The first version of this invented a devlaunch-shaped root under
+  the config directory, which was a third location for one concept and would have asked
+  anyone with working profiles to log every account in again somewhere new. There is no
+  writer here: creating, seeding and deleting a profile stay with whatever made the
+  directory. `DEVLAUNCH_CLAUDE_PROFILES_DIR` still wins over `CLAUDE_PROFILES_DIR`, so a
+  scratch run reads its own profiles rather than the real credentials.
+
+  `--claude-profile default` resolves the login you would get anyway and never consults
+  a `default/` directory, so a picker has something to select and a recalled line has a
+  way to say "not the profile I used last time".
+
+  **A named profile that holds no credential stops the launch, and that refusal is the
+  feature.** It does not fall back to the default login. Two accounts on one machine is
+  what profiles are for, so a typo that silently forwarded the other one would be worse
+  than a launch that fails: the launch you see, and the wrong account you find out about
+  later and somewhere else. The name is checked at the boundary as a single directory
+  component, so `--claude-profile ../../etc` is refused by the rule rather than becoming
+  a traversal that fails later on a read. A leading `.` is refused along with a leading
+  `-`, which subsumes `.` and `..` and makes the one sentence a refusal prints true of
+  every name it refuses: `.work` was accepted and read from `<root>/.work/` while the
+  message said a name "cannot begin with '.' or '-'".
+
+  Read above an exported `CLAUDE_CODE_OAUTH_TOKEN`, unlike `$CLAUDE_CONFIG_DIR`, because
+  a profile was typed on this command line for this launch and nothing ambient should
+  beat an explicit argument. `DEVLAUNCH_NO_CLAUDE_TOKEN` still comes first: a machine
+  that has opted out has no account to choose.
+
+  **Not stored with the workspace**, unlike `--devcontainer`, so no workspace can
+  quietly forward an account chosen weeks ago. Profiles live outside everything devlaunch owns
+  so `--purge` and `--prune`, which walk devlaunch's cache, were never in reach of a
+  login. Completion offers the profiles that exist plus `default`, read off the disk
+  rather than the completion cache, because a profile made a minute ago has to complete
+  now.
+
+  It is not the claude.ai account a container's `claude` is paired to for Remote
+  Control, and it does not weaken the check that leaves a repo's own mounted Claude
+  config alone: `Foreign` forwards nothing, profile or no profile. **It does say so,
+  though.** That check sits above the profile arm on purpose, and it is reached with a
+  profile named on three ordinary paths: a repo whose devcontainer mounts its own Claude
+  config, a workspace older than the provisioning record, and `DEVLAUNCH_NO_TOOLS` or a
+  probe report that would not parse. A launch that ignored an explicit
+  `--claude-profile` in silence there was the same wrong-account-found-out-later outcome
+  the refusal exists to prevent, so it warns once and forwards nothing. A launch that
+  named no profile stays quiet, since a host that does not use Claude has earned no
+  warning. `aid` passes the flag through. A verb that forwards no login says it is
+  ignoring it, as `--devcontainer` does; a global command refuses it.
+
 ### Fixed
 
 - **`$CLAUDE_CONFIG_DIR` is now honoured on the host, so a host that has moved its

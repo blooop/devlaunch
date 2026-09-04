@@ -141,6 +141,7 @@ pub(crate) fn render_launch<'r>(
     target: &str,
     verb: &LaunchVerb,
     devcontainer: Option<&DevcontainerPath>,
+    claude_profile: Option<&str>,
     recognised: Option<WorkspaceId>,
 ) -> Ran {
     // A path or git source whose derived id is empty — `dl /`, `//`, `/.`, `/..`,
@@ -164,7 +165,11 @@ pub(crate) fn render_launch<'r>(
             reached: Reached::Nothing,
         };
     }
-    let host = Host::from_process(cache);
+    // Named on this line and applied to this run only: it is deliberately not
+    // stored with the workspace, unlike `--devcontainer`, so no workspace can
+    // silently forward an account chosen weeks ago. The name is carried as typed;
+    // `clients::claude` owns the check and the refusal.
+    let host = Host::from_process(cache).with_claude_profile(claude_profile.map(str::to_owned));
     // The pass's events stream through a sink of their own, and it is the same
     // printer as the launch's notices: one line on stderr at the moment core makes
     // the event, which is Python's order. A cold install streams hundreds of

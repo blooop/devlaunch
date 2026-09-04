@@ -111,6 +111,74 @@ set it and Claude Code honours it there too. The host side read `~/.claude`
 regardless, so a host that had moved its configuration reported itself as not
 logged in while holding a perfectly good login.
 
+### Naming a profile
+
+`--claude-profile <name>` forwards a named login instead of the default one, for the
+case the order above cannot serve: two accounts on one machine, and a workspace
+that wants the one your host is not signed in to.
+
+```bash
+dl owner/repo --claude-profile work
+```
+
+The name is one directory under `~/.claude-profiles/`, holding the
+`.credentials.json` a `claude` login writes. Each such directory is a
+`CLAUDE_CONFIG_DIR` of its own, which is what makes the logins independent.
+
+**That is somebody else's directory and `dl` only reads it.** The layout and the
+`CLAUDE_PROFILES_DIR` variable belong to the tool that manages them, honoured here
+rather than set, the same arrangement `dl` has with devpod's own
+`DEVPOD_SSH_CONFIG`. An earlier version of this feature invented a devlaunch-shaped
+root under the config directory, and that was wrong: it made a third location for one
+concept and would have asked anyone with working profiles to log every account in
+again somewhere new.
+
+So there is no writer. Creating a profile, seeding the config it shares with your main
+login, and deleting it belong to whatever made the directory; `dl` reads one file out
+of it. By hand that is `CLAUDE_CONFIG_DIR=~/.claude-profiles/work claude`, then a
+login.
+
+Nothing `dl` deletes can reach them. `dl --purge` removes devlaunch's cache entire and
+`dl --prune` walks the clones inside it, and a login was never in either path.
+
+Two variables, in this order: `DEVLAUNCH_CLAUDE_PROFILES_DIR` is devlaunch's own and
+wins, which is what lets a scratch run read and complete its own profiles rather than
+the real credentials; `CLAUDE_PROFILES_DIR` is the managing tool's and is honoured
+next.
+
+`--claude-profile default` resolves the login you would get anyway and never consults
+a `default/` directory. It exists as a word because a picker needs something to
+select, and a recalled line needs a way to say "not the profile I used last time".
+
+**A named profile that holds no credential stops the launch.** It does not fall back
+to your default login, and that refusal is the feature rather than a rough edge. Two
+accounts on one machine is what profiles are for, so a typo that silently forwarded
+the other one would be worse than a launch that fails: the launch you see, and the
+wrong account you find out about later and somewhere else. The opt-out still comes
+first, because a machine that has opted out has no account to choose.
+
+It is read **above** an exported `CLAUDE_CODE_OAUTH_TOKEN`, unlike
+`$CLAUDE_CONFIG_DIR`, and the difference is where the two come from. A profile was
+typed on this command line for this launch, so nothing ambient should beat it, and a
+nested `dl` naming a profile is overriding exactly the token it inherited.
+
+**Not stored with the workspace**, unlike `--devcontainer`. A profile describes this
+session and not the container, so storing it would mean a workspace quietly
+forwarding an account chosen weeks ago. Pass it per launch, or export
+`CLAUDE_CODE_OAUTH_TOKEN` in a shell profile if that is the shape you want.
+
+Two things it does not change. It is not the claude.ai account the container's own
+`claude` is paired to for **Remote Control**, which lives in the container with the
+rest of the agent's state, so `aid --claude-profile work` still lists its session
+under whichever account the container is signed in to. And it does not weaken the
+check below: a repo whose devcontainer owns its Claude config forwards nothing,
+profile or no profile.
+
+A verb that forwards no login at all (`stop`, `kill`, `rm`, `rme`) says it is
+ignoring the flag rather than failing, the way `--devcontainer` does there. A global
+command such as `--ls` refuses it outright, because there is no workspace for it to
+be about.
+
 ### A variable, not the credential file
 
 Claude Code authenticates from `CLAUDE_CODE_OAUTH_TOKEN` alone, with an otherwise

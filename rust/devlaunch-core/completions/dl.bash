@@ -65,9 +65,9 @@ _dl_completion() {
     # The retired spellings (--stop, --autorm) are absent by rule rather than by
     # hand: the grammar marks them `hide = true`, and the test drops every hidden
     # flag, so a spelling this build only still answers for is never offered.
-    local global_opts="--ls --install --refresh --prune --reconcile --purge --herdr-shell --rm --devcontainer --help -h --version"
+    local global_opts="--ls --install --refresh --prune --reconcile --purge --herdr-shell --rm --devcontainer --claude-profile --help -h --version"
     if [[ "$cmd" == aid ]]; then
-        global_opts="--claude --codex --gemini --devcontainer --help -h --version"
+        global_opts="--claude --codex --gemini --devcontainer --claude-profile --help -h --version"
     fi
 
     # Workspace subcommands
@@ -77,8 +77,34 @@ _dl_completion() {
     # two different requests, docker's `rm` and `run --rm`.
     local ws_cmds="up stop kill rm rme code restart recreate reset dotfiles --rm --"
 
-    # Options that take a value; a variant name or a path follows them.
-    local value_opts="--devcontainer"
+    # Options that take a value; a variant name, a profile name or a path follows.
+    local value_opts="--devcontainer --claude-profile"
+
+    # After --claude-profile, offer the profile directories that exist. Read off the
+    # disk rather than out of the completion cache, deliberately: profiles are
+    # created by hand and rarely, the cache is rebuilt by commands that change
+    # *workspaces*, and a profile you made a minute ago has to complete now. It is one
+    # readdir of a directory holding a handful of entries.
+    #
+    # A mistyped name is a hard refusal at launch rather than a fallback to the default
+    # login, which is what makes completing these worth the readdir.
+    if [[ "${prev}" == "--claude-profile" ]]; then
+        # The same three sources `domain::xdg::claude_profiles_root` reads, in the same
+        # order: devlaunch's own scratch override, then claude-as's own variable, then
+        # its default directory. `default` is offered because it is a name the resolver
+        # answers for without any directory existing.
+        local profiles_root="${DEVLAUNCH_CLAUDE_PROFILES_DIR:-${CLAUDE_PROFILES_DIR:-$HOME/.claude-profiles}}"
+        local profiles="default" pdir
+        if [[ -d "${profiles_root}" ]]; then
+            for pdir in "${profiles_root}"/*/; do
+                [[ -d "$pdir" ]] || continue
+                pdir="${pdir%/}"
+                profiles+=" ${pdir##*/}"
+            done
+        fi
+        COMPREPLY=( $(compgen -W "${profiles}" -- ${cur}) )
+        return 0
+    fi
 
     # After --devcontainer, offer the repo's variant directories (and paths).
     if [[ " ${value_opts} " == *" ${prev} "* ]]; then

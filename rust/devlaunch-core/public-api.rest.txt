@@ -641,6 +641,7 @@ impl core::fmt::Debug for devlaunch_core::domain::xdg::NoHomeDirectory
 pub fn devlaunch_core::domain::xdg::NoHomeDirectory::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Copy for devlaunch_core::domain::xdg::NoHomeDirectory
 impl core::marker::StructuralPartialEq for devlaunch_core::domain::xdg::NoHomeDirectory
+pub fn devlaunch_core::domain::xdg::claude_profiles_root() -> core::result::Result<std::path::PathBuf, devlaunch_core::domain::xdg::NoHomeDirectory>
 pub fn devlaunch_core::domain::xdg::clone_root_in(&std::path::Path) -> std::path::PathBuf
 pub fn devlaunch_core::domain::xdg::config_home() -> core::result::Result<std::path::PathBuf, devlaunch_core::domain::xdg::NoHomeDirectory>
 pub fn devlaunch_core::domain::xdg::devlaunch_cache() -> core::result::Result<std::path::PathBuf, devlaunch_core::domain::xdg::NoHomeDirectory>
@@ -1399,6 +1400,19 @@ pub fn devlaunch_core::flows::launch::BranchNotNamed::eq(&self, &devlaunch_core:
 impl core::fmt::Debug for devlaunch_core::flows::launch::BranchNotNamed
 pub fn devlaunch_core::flows::launch::BranchNotNamed::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::launch::BranchNotNamed
+pub enum devlaunch_core::flows::launch::ClaudeProfileProblem
+pub devlaunch_core::flows::launch::ClaudeProfileProblem::NoCredential
+pub devlaunch_core::flows::launch::ClaudeProfileProblem::NoCredential::directory: alloc::string::String
+pub devlaunch_core::flows::launch::ClaudeProfileProblem::NoRoot
+pub devlaunch_core::flows::launch::ClaudeProfileProblem::NotAName
+impl core::clone::Clone for devlaunch_core::flows::launch::ClaudeProfileProblem
+pub fn devlaunch_core::flows::launch::ClaudeProfileProblem::clone(&self) -> devlaunch_core::flows::launch::ClaudeProfileProblem
+impl core::cmp::Eq for devlaunch_core::flows::launch::ClaudeProfileProblem
+impl core::cmp::PartialEq for devlaunch_core::flows::launch::ClaudeProfileProblem
+pub fn devlaunch_core::flows::launch::ClaudeProfileProblem::eq(&self, &devlaunch_core::flows::launch::ClaudeProfileProblem) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::launch::ClaudeProfileProblem
+pub fn devlaunch_core::flows::launch::ClaudeProfileProblem::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::launch::ClaudeProfileProblem
 pub enum devlaunch_core::flows::launch::HerdrTabRename
 pub devlaunch_core::flows::launch::HerdrTabRename::Off
 pub devlaunch_core::flows::launch::HerdrTabRename::Run
@@ -1560,6 +1574,9 @@ pub fn devlaunch_core::flows::launch::Session::fmt(&self, &mut core::fmt::Format
 impl core::marker::Copy for devlaunch_core::flows::launch::Session
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::launch::Session
 pub enum devlaunch_core::flows::launch::SessionRefused
+pub devlaunch_core::flows::launch::SessionRefused::ClaudeProfile
+pub devlaunch_core::flows::launch::SessionRefused::ClaudeProfile::name: alloc::string::String
+pub devlaunch_core::flows::launch::SessionRefused::ClaudeProfile::problem: devlaunch_core::flows::launch::ClaudeProfileProblem
 pub devlaunch_core::flows::launch::SessionRefused::Devpod(devlaunch_core::clients::devpod::NotRun)
 pub devlaunch_core::flows::launch::SessionRefused::Ssh(devlaunch_core::clients::ssh::NotRun)
 pub devlaunch_core::flows::launch::SessionRefused::Unquotable(devlaunch_core::flows::launch::UnquotableCommand)
