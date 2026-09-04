@@ -337,8 +337,10 @@ pub(crate) fn run_if_lock_free<T>(
 pub enum Reclaimed {
     /// Nothing held it, and it is gone.
     Removed,
-    /// Something holds it: a launch keyed by this lock is running right now. The
-    /// file stays, which is the whole of what "fail towards keeping" costs here.
+    /// The file stays, which is the whole of what "fail towards keeping" costs
+    /// here. Ordinarily because a launch keyed by this lock is running right now;
+    /// also when the path kept being replaced under the sweep, which is a sweep
+    /// declining to guess rather than a holder it saw.
     Held,
     /// There was no such file. What a sweep run twice says the second time.
     AlreadyGone,
@@ -377,41 +379,63 @@ pub fn reclaim(lock_path: &Path) -> Reclaimed {
 
 /// [`reclaim`], with a seam at the one instant that decides whether it is correct.
 ///
-/// `between` runs after the open and before the flock, which is the window the
-/// third property above is about. A race is not a thing a test can win by running
-/// it often, so the test drives the interleaving instead of hoping for it.
+/// `between` runs after the first open and before its flock, which is the window
+/// the third property above is about. A race is not a thing a test can win by
+/// running it often, so the test drives the interleaving instead of hoping for it.
+/// It runs once, so the retry below meets an undisturbed path, as a real sweep's
+/// second attempt does.
 fn reclaim_between(lock_path: &Path, between: impl FnOnce()) -> Reclaimed {
-    let file = match OpenOptions::new().read(true).write(true).open(lock_path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Reclaimed::AlreadyGone,
-        Err(error) => return Reclaimed::Refused(error.into()),
-    };
-    between();
-    match flock(&file, FlockOperation::NonBlockingLockExclusive) {
-        Ok(()) => {}
-        Err(errno) if would_block(errno) => return Reclaimed::Held,
-        Err(errno) => return Reclaimed::Refused(io::Error::from(errno).into()),
+    let mut between = Some(between);
+    for _ in 0..ACQUIRE_ATTEMPTS {
+        let file = match OpenOptions::new().read(true).write(true).open(lock_path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Reclaimed::AlreadyGone;
+            }
+            Err(error) => return Reclaimed::Refused(error.into()),
+        };
+        if let Some(between) = between.take() {
+            between();
+        }
+        match flock(&file, FlockOperation::NonBlockingLockExclusive) {
+            Ok(()) => {}
+            Err(errno) if would_block(errno) => return Reclaimed::Held,
+            Err(errno) => return Reclaimed::Refused(io::Error::from(errno).into()),
+        }
+        // The lock is on an inode; the unlink below is on a path. Between the open
+        // and here the path can have been unlinked and re-created, and the flock
+        // would have succeeded anyway, because the inode this holds is detached and
+        // detached inodes have no other holders. Unlinking then takes away a file
+        // somebody else created, locked and revalidated -- and two launches of one
+        // workspace get in.
+        //
+        // Re-opened rather than reported, for [`run_if_lock_free`]'s reason and for
+        // one of this function's own: every arm of [`Reclaimed`] is a claim about
+        // the file the path names *now*, and a sweep that returned here would have
+        // to answer for a file it never looked at. `AlreadyGone` in particular says
+        // "there was no such file", which is exactly what this is not.
+        if !still_named_by(&file, lock_path) {
+            drop(file);
+            continue;
+        }
+        let _guard = LockGuard {
+            file,
+            contention: Contention::WalkedIn,
+        };
+        return match std::fs::remove_file(lock_path) {
+            Ok(()) => Reclaimed::Removed,
+            // Somebody else's sweep got there between the open and the unlink. The
+            // file is gone, which is what was asked for; whose unlink it was is not
+            // a distinction any caller acts on.
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Reclaimed::AlreadyGone,
+            Err(error) => Reclaimed::Refused(error.into()),
+        };
     }
-    // The lock is on an inode; the unlink below is on a path. Between the open and
-    // here the path can have been unlinked and re-created, and the flock would have
-    // succeeded anyway, because the inode this holds is detached and detached inodes
-    // have no other holders. Unlinking then takes away a file somebody else created,
-    // locked and revalidated -- and two launches of one workspace get in.
-    if !still_named_by(&file, lock_path) {
-        return Reclaimed::AlreadyGone;
-    }
-    let _guard = LockGuard {
-        file,
-        contention: Contention::WalkedIn,
-    };
-    match std::fs::remove_file(lock_path) {
-        Ok(()) => Reclaimed::Removed,
-        // Somebody else's sweep got there between the open and the unlink. The
-        // file is gone, which is what was asked for; whose unlink it was is not a
-        // distinction any caller acts on.
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Reclaimed::AlreadyGone,
-        Err(error) => Reclaimed::Refused(error.into()),
-    }
+    // The path was replaced under this sweep [`ACQUIRE_ATTEMPTS`] times running,
+    // which needs something creating lock files faster than a sweep can read them.
+    // Keeping the file is the safe answer and the one the bound exists to reach:
+    // the alternative is a loop whose exit is another process losing interest.
+    Reclaimed::Held
 }
 
 /// Whether `file` is still the file `lock_path` names.
@@ -1001,7 +1025,9 @@ mod tests {
         });
 
         let mut holder = holder.expect("the replacement's holder");
-        assert_eq!(outcome, Reclaimed::AlreadyGone);
+        // `Held`, not `AlreadyGone`: the sweep re-opens rather than reporting on a
+        // file it never looked at, so what comes back describes the live one.
+        assert_eq!(outcome, Reclaimed::Held);
         assert!(
             lock.exists(),
             "the sweep unlinked a file it never held the lock on"
@@ -1012,6 +1038,29 @@ mod tests {
         );
         holder.kill().expect("killing the holder");
         holder.wait().expect("reaping the holder");
+    }
+
+    /// The other half of the retry: a replacement nobody holds is still stale.
+    ///
+    /// Returning on the mismatch would leave this file standing every run, which is
+    /// the leak devlaunch#575 is about -- and would report it `AlreadyGone`, naming
+    /// a file that is right there. The sweep was asked to reclaim the lock at this
+    /// path, so it re-asks the path.
+    #[test]
+    fn a_sweep_reclaims_an_unheld_replacement_rather_than_leaving_it() {
+        let dir = temp_dir();
+        let lock = dir.path().join("swapped-free.lock");
+        drop(hold_lock(&lock).expect("creating the file"));
+        let doomed = lock.metadata().expect("a stat").ino();
+
+        let outcome = reclaim_between(&lock, || {
+            std::fs::remove_file(&lock).expect("unlinking the file the sweep opened");
+            drop(hold_lock(&lock).expect("creating the replacement"));
+            assert_ne!(lock.metadata().expect("a stat").ino(), doomed);
+        });
+
+        assert_eq!(outcome, Reclaimed::Removed);
+        assert!(!lock.exists(), "the replacement was stale too");
     }
 
     // --- helpers ---------------------------------------------------------
