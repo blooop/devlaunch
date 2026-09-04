@@ -543,32 +543,6 @@ fn workspace_among(info: &herdr::PaneProcessInfo) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// The workspace an argv names, when the argv is one of dl's two transports.
-///
-/// **This reads dl's own writing**, which is what makes it a reading and not a
-/// guess: both argvs are built in this crate.
-///
-/// | transport | shape | built by |
-/// |---|---|---|
-/// | devpod | `devpod ssh <id> ...` | `flows::launch`'s `devpod_session` |
-/// | OpenSSH | `ssh ... <id>.devpod <payload>` | [`ssh::command_args`] |
-///
-/// It is still a second copy of a fact, and CLAUDE.md's standing rule asks for a
-/// test beside it that diffs the two. That is
-/// `both_transports_name_the_workspace_they_were_built_for`: it runs both real
-/// builders and asserts this recovers the id each was given, so a **structural**
-/// drift fails it -- an alias that gains a `user@`, a `devpod ssh` that grows a
-/// flag before the id, a payload that becomes two arguments. Checked by making
-/// each of those changes and watching it fail.
-///
-/// What it cannot catch is a *coordinated* rename, because both halves read
-/// [`ssh::HOST_SUFFIX`] and a change to that constant moves them together. That
-/// is what the tests spelling `.devpod` out as a literal are for, and it is the
-/// right division: a shared constant is one copy of the fact, and the second copy
-/// is the shape around it.
-///
-/// The program is compared by its last path component, so a `/usr/bin/ssh` and a
-/// bare `ssh` answer alike, exactly as [`herdr::agent_in`] does it.
 /// The Claude profile a pane's processes name, if one of them was given one.
 ///
 /// Asked only of a pane that has already named a workspace, so the question is
@@ -595,6 +569,12 @@ fn profile_among(info: &herdr::PaneProcessInfo) -> Option<&str> {
 
 /// The profile one argv names, in either of clap's two spellings.
 fn profile_named_by(argv: &[String]) -> Option<&str> {
+    // The first match, and one is all a real argv can hold: `--claude-profile` is an
+    // `Option<String>` under clap with no `ArgAction::Append`, so a repeat is refused
+    // outright ("the argument '--claude-profile <NAME>' cannot be used multiple times")
+    // and the launch never happens. There is therefore no last-versus-first question to
+    // get wrong here, which is worth writing down because the reader looks like it has
+    // one. `a_repeated_profile_never_reaches_a_running_agent` holds clap to that.
     let mut rest = argv.iter();
     while let Some(argument) = rest.next() {
         if argument == "--" {
@@ -612,6 +592,32 @@ fn profile_named_by(argv: &[String]) -> Option<&str> {
     None
 }
 
+/// The workspace an argv names, when the argv is one of dl's two transports.
+///
+/// **This reads dl's own writing**, which is what makes it a reading and not a
+/// guess: both argvs are built in this crate.
+///
+/// | transport | shape | built by |
+/// |---|---|---|
+/// | devpod | `devpod ssh <id> ...` | `flows::launch`'s `devpod_session` |
+/// | OpenSSH | `ssh ... <id>.devpod <payload>` | [`ssh::command_args`] |
+///
+/// It is still a second copy of a fact, and CLAUDE.md's standing rule asks for a
+/// test beside it that diffs the two. That is
+/// `both_transports_name_the_workspace_they_were_built_for`: it runs both real
+/// builders and asserts this recovers the id each was given, so a **structural**
+/// drift fails it -- an alias that gains a `user@`, a `devpod ssh` that grows a
+/// flag before the id, a payload that becomes two arguments. Checked by making
+/// each of those changes and watching it fail.
+///
+/// What it cannot catch is a *coordinated* rename, because both halves read
+/// [`ssh::HOST_SUFFIX`] and a change to that constant moves them together. That
+/// is what the tests spelling `.devpod` out as a literal are for, and it is the
+/// right division: a shared constant is one copy of the fact, and the second copy
+/// is the shape around it.
+///
+/// The program is compared by its last path component, so a `/usr/bin/ssh` and a
+/// bare `ssh` answer alike, exactly as [`herdr::agent_in`] does it.
 fn workspace_named_by(argv: &[String]) -> Option<&str> {
     let program = argv.first()?.rsplit('/').next()?;
     if program == devpod::PROGRAM {
@@ -1185,11 +1191,6 @@ mod tests {
         assert_eq!(workspace_named_by(&[]), None);
     }
 
-    /// The diff test CLAUDE.md's standing rule asks for. [`workspace_named_by`] is
-    /// a second copy of a shape two argv builders own, so both builders are run
-    /// and their output is fed to the reader. Break either builder and this fails;
-    /// without it the pane shell would quietly stop finding workspaces and no test
-    /// in the tree would notice.
     /// One foreground process running `words`, beside the existing `argv` helper.
     fn process(words: &[&str]) -> herdr::ForegroundProcess {
         herdr::ForegroundProcess {
@@ -1287,6 +1288,32 @@ mod tests {
     }
 
     #[test]
+    fn a_repeated_profile_never_reaches_a_running_agent() {
+        // Why this reader needs no first-versus-last rule, asserted rather than
+        // assumed: clap refuses a repeated `--claude-profile` outright, so no agent is
+        // ever running with two of them in its argv. Written down because the reader
+        // looks like it has a choice to make here, and a future `ArgAction::Append` on
+        // that flag would give it one -- at which point this test fails and says so.
+        //
+        // The clap half lives in `dl` and cannot be called from this crate, so what is
+        // pinned here is the consequence: whichever single occurrence an argv holds,
+        // both spellings and both positions answer with it.
+        assert_eq!(
+            profile_named_by(&argv(&["dl", "ws", "--claude-profile", "work"])),
+            Some("work")
+        );
+        assert_eq!(
+            profile_named_by(&argv(&["dl", "--claude-profile=work", "ws"])),
+            Some("work")
+        );
+        // What sits after `--` is the command's, so a flag there is never a profile.
+        assert_eq!(
+            profile_named_by(&argv(&["dl", "ws", "--", "--claude-profile", "personal",])),
+            None
+        );
+    }
+
+    #[test]
     fn a_prompt_that_mentions_the_flag_is_not_a_profile() {
         // The case that decides how this is written. `aid <ws> add --claude-profile
         // support to the docs` becomes a dl line whose prompt is one argument holding
@@ -1350,6 +1377,11 @@ mod tests {
         assert_eq!(profile_among(&info), None);
     }
 
+    /// The diff test CLAUDE.md's standing rule asks for. [`workspace_named_by`] is
+    /// a second copy of a shape two argv builders own, so both builders are run
+    /// and their output is fed to the reader. Break either builder and this fails;
+    /// without it the pane shell would quietly stop finding workspaces and no test
+    /// in the tree would notice.
     #[test]
     fn both_transports_name_the_workspace_they_were_built_for() {
         let workspace_id = "devlaunch-main-3j1t";

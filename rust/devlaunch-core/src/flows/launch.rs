@@ -2182,6 +2182,27 @@ fn begin_reporting(
     reporting: herdr::Reporting,
     notices: &mut dyn Notices<LaunchNotice>,
 ) -> Option<(herdr::Reporting, session_manager::Forward)> {
+    // Which account this session runs as, so the manager's sidebar says so rather than
+    // leaving the name of a directory as the only clue. Called even when no profile was
+    // named, because a pane is reused and a stale label is worse than none.
+    //
+    // **First, and before every early return below.** This sat in the `Ready` arm at
+    // the bottom, which is one exit out of five: no ssh config, no published alias, a
+    // forward that would not start and a container that refused all return `None` from
+    // here, and every one of them still opens a session (the notices they raise are
+    // never fatal). So a pane that had run `dl ws --claude-profile work` and was reused
+    // for a `dl ws2` whose alias devpod had not published yet kept asserting
+    // `profile=work` over a session on the default login -- exactly the stale label the
+    // clearing exists to prevent, on the paths where clearing never ran.
+    //
+    // Safe this early because the label is host-side: `report_profile` runs herdr's own
+    // binary against a pane id, and needs neither the forward nor a prepared container.
+    session_manager::report_profile(
+        session.runner,
+        &reporting,
+        session.host.claude.profile.as_deref(),
+    );
+
     // The alias, resolved without asking whether dl is on a terminal.
     //
     // Deliberately not [`Terminal`], which answers a different question and is
@@ -2232,15 +2253,6 @@ fn begin_reporting(
                 pane_id: reporting.pane_id().to_owned(),
                 socket: reporting.container_socket(),
             });
-            // Which account this session runs as, so the manager's sidebar says so
-            // rather than leaving the name of a directory as the only clue. Called
-            // even when no profile was named, because a pane is reused and a stale
-            // label is worse than none.
-            session_manager::report_profile(
-                session.runner,
-                &reporting,
-                session.host.claude.profile.as_deref(),
-            );
             Some((reporting, forward))
         }
         session_manager::Prepared::Refused { reason } => {
@@ -6924,6 +6936,55 @@ mod tests {
                 .iter()
                 .any(|notice| matches!(notice, LaunchNotice::ClaudeProfileNotForwarded { .. })),
             "{notices:?}"
+        );
+    }
+
+    /// A Scene whose pane reports to a session manager, and which resolves no ssh
+    /// alias, so `begin_reporting` takes one of its four early returns.
+    ///
+    /// The five herdr variables are what `Reporting::resolve` asks for; the `Scene`
+    /// leaves `ssh_config` unset, which is the "no ssh config" arm.
+    fn reporting_in_a_pane(mut scene: Scene) -> Scene {
+        scene.host.herdr = crate::clients::herdr::HostEnv {
+            enabled: Some("1".to_owned()),
+            in_pane: Some("1".to_owned()),
+            pane_id: Some("w1:p3".to_owned()),
+            socket: Some("/run/herdr.sock".to_owned()),
+            binary: Some("/opt/herdr/bin/herdr".to_owned()),
+        };
+        scene
+    }
+
+    #[test]
+    fn the_profile_label_is_reported_even_when_the_manager_cannot_be_reached() {
+        // The stale-label clear used to sit in `begin_reporting`'s `Ready` arm, which
+        // is one exit out of five. No ssh config, no published alias, a forward that
+        // would not start and a container that refused all return early, and every one
+        // of them still opens the session -- so a pane that had run
+        // `dl ws --claude-profile work` and was then reused for a launch that took one
+        // of those paths kept asserting `profile=work` over a session on another
+        // account. Reported first now, before any of them.
+        let scene = reporting_in_a_pane(
+            Scene::new()
+                .on_a_terminal(&["myws"])
+                .with_running("myws")
+                .naming_a_claude_profile("work", true),
+        );
+
+        let _ = a_session_on_our_own_claude(&scene, Some("claude"));
+
+        let labelled: Vec<Vec<String>> = scene
+            .runner
+            .calls_to("/opt/herdr/bin/herdr")
+            .iter()
+            .map(|call| call.invocation().argv().to_vec())
+            .filter(|argv| argv.iter().any(|word| word == "report-metadata"))
+            .collect();
+        assert!(
+            labelled
+                .iter()
+                .any(|argv| argv.iter().any(|word| word.contains("profile=work"))),
+            "no profile label was reported: {labelled:?}"
         );
     }
 

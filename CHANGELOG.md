@@ -113,7 +113,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is not noticing: work pushed from the wrong identity is found out about later and
   somewhere else. Reported under devlaunch's own source name, so it sits beside herdr's
   labels rather than overwriting one, and cleared rather than left stale when a launch
-  forwards the default login.
+  forwards the default login. The label is reported before anything that can go wrong
+  with the manager's socket, because a launch whose forward never starts still opens a
+  session: reporting it last would have cleared a stale label on one path out of five
+  and left `profile=work` standing over a session on another account on the other four.
 
   **A pane opened beside an agent inherits the profile that agent started with.** The
   pane shell already opens in the workspace its tab holds; a workspace is not an account,
