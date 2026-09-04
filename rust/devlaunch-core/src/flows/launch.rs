@@ -1908,6 +1908,49 @@ pub enum SessionRefused {
     UnsafeRequest(ssh::UnsafeRequest),
     /// The command could not be made into a shell word.
     Unquotable(UnquotableCommand),
+    /// A named Claude profile yielded no token, so the launch stops here.
+    ///
+    /// **The one credential lookup on this path that refuses rather than shrugging.**
+    /// Every other way of having no Claude token leaves the session unforwarded and
+    /// says nothing, deliberately: a host that never ran `claude`, a macOS host whose
+    /// login is in the keychain, and an opted-out host are all ordinary. A profile is
+    /// different because the user named an account *for this launch*, and the two
+    /// silent outcomes are both worse than stopping -- forwarding the default login
+    /// means working as the wrong identity, and forwarding nothing means an agent that
+    /// asks for a login while the account it was told to use sits on disk.
+    ///
+    /// Carries the name as typed and the directory searched. Neither is a secret: a
+    /// profile name is a directory component the user chose, and the path is where a
+    /// credential would be rather than anything read out of one.
+    ClaudeProfile {
+        /// The profile name, as typed.
+        name: String,
+        /// Which way it failed, because the three want different sentences.
+        problem: ClaudeProfileProblem,
+    },
+}
+
+/// Why a named Claude profile yielded nothing.
+///
+/// Three arms rather than one string, because the fix differs: one is a rule about the
+/// name, one is a host with nowhere to look, and one is a directory with no login in it
+/// -- and only the third has somewhere to point at.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ClaudeProfileProblem {
+    /// The name could not be a single directory component.
+    NotAName,
+    /// This host resolves no profiles directory at all: no home directory and no
+    /// override. A profile was still typed, so this is a refusal rather than the
+    /// ordinary "not logged in".
+    NoRoot,
+    /// The directory resolved and held no readable credential.
+    NoCredential {
+        /// The directory searched, which is also the `CLAUDE_CONFIG_DIR` a `claude`
+        /// login into this profile would need. Not the credential file: a message
+        /// telling somebody to point `CLAUDE_CONFIG_DIR` at a `.json` file would be
+        /// wrong, and the directory is the thing they can act on.
+        directory: String,
+    },
 }
 
 /// What a session is opened through.
@@ -1956,17 +1999,54 @@ impl<'a> SessionContext<'a> {
     /// into that would override a credential that can refresh itself with one that
     /// cannot -- Claude Code prefers the variable over the file. `None` is not
     /// knowing, which gets the same answer for the same reason.
-    fn forwarded_claude(&self) -> Option<claude::Token> {
+    /// The Claude token this session forwards, or the refusal that stops it.
+    ///
+    /// # Why one of the misses is an error and the rest are not
+    ///
+    /// `Ok(None)` is the ordinary "nothing to forward": no credential file, a macOS
+    /// keychain login, `DEVLAUNCH_NO_CLAUDE_TOKEN`, or a mounted config this container
+    /// owns rather than the host. None of those is worth a word, and warning about
+    /// them would fire on every launch of a host that simply does not use Claude.
+    ///
+    /// A **named profile** that yields nothing is the exception, and
+    /// [`claude::NoToken::ProfileUnreadable`] says why where it is declared: the user
+    /// named an account for this launch, so the two silent outcomes are both wrong in
+    /// a way that surfaces later and somewhere else.
+    ///
+    /// Note the order: the `Foreign` check comes first, so a container with its own
+    /// mounted Claude config still forwards nothing and still refuses nothing. That is
+    /// deliberate and is not this arm's business -- forwarding the host's short-lived
+    /// token over a credential that can refresh itself is the case `ClaudeConfig`
+    /// exists to prevent, and it is wrong whether or not a profile was named.
+    fn forwarded_claude(&self) -> Result<Option<claude::Token>, SessionRefused> {
         if self.claude_seen.get() != Some(ClaudeConfig::Ours) {
-            return None;
+            return Ok(None);
         }
         match claude::resolve_token(
             self.host.home.as_deref(),
             self.host.claude_profiles_root.as_deref(),
             &self.host.claude,
         ) {
-            claude::TokenLookup::Found(token) => Some(token),
-            claude::TokenLookup::Missing(_) => None,
+            claude::TokenLookup::Found(token) => Ok(Some(token)),
+            claude::TokenLookup::Missing(claude::NoToken::ProfileUnreadable { name, path }) => {
+                // `path` is the credential *file* the client looked for, and empty when
+                // no root resolved at all. A message wants the directory: it is what
+                // `CLAUDE_CONFIG_DIR` takes, and it is what the user made.
+                let problem = match Path::new(&path).parent() {
+                    Some(directory) if !path.is_empty() => ClaudeProfileProblem::NoCredential {
+                        directory: directory.display().to_string(),
+                    },
+                    _ => ClaudeProfileProblem::NoRoot,
+                };
+                Err(SessionRefused::ClaudeProfile { name, problem })
+            }
+            claude::TokenLookup::Missing(claude::NoToken::ProfileNotAName(name)) => {
+                Err(SessionRefused::ClaudeProfile {
+                    name,
+                    problem: ClaudeProfileProblem::NotAName,
+                })
+            }
+            claude::TokenLookup::Missing(_) => Ok(None),
         }
     }
 }
@@ -2158,9 +2238,13 @@ fn devpod_session(
         args.push("--command".to_owned());
         args.push(payload.as_str().to_owned());
     }
+    // Resolved before the argv is built, so a refusal costs no process: `?` here
+    // leaves devpod unrun rather than spawning a session that would forward the wrong
+    // account.
+    let claude_token = session.forwarded_claude()?;
     let forwarding = claude::extend_ssh_forwarding(
         gh::ssh_forwarding(session.forwarded_token(notices)),
-        session.forwarded_claude().as_ref(),
+        claude_token.as_ref(),
     );
     args.extend(forwarding.args.iter().cloned());
     // `--set-env` and not `--send-env`: these are the container's own paths for a
@@ -2214,10 +2298,11 @@ fn ssh_with_terminal(
     // permit list `Reuse::derive` keys the control socket on is the same list the
     // two credentials built (`clients::herdr`). The manager's coordinates, unlike
     // the name, do cross the transport and so do join that list.
+    let claude_token = session.forwarded_claude()?;
     let forwarding = herdr::extend_openssh_forwarding(
         claude::extend_openssh_forwarding(
             gh::openssh_forwarding(session.forwarded_token(notices)),
-            session.forwarded_claude().as_ref(),
+            claude_token.as_ref(),
         ),
         visible.agent,
     );
@@ -4321,6 +4406,33 @@ mod tests {
         fn with_running(self, workspace_id: &str) -> Self {
             self.runner
                 .add_workspace(workspace_id, WorkspaceState::Running);
+            self
+        }
+
+        /// A host that was told to forward a named Claude profile.
+        ///
+        /// `logged_in` is the whole point of the switch: a profile directory that
+        /// exists with no `.credentials.json` in it is the ordinary state right after
+        /// something created one, and it is the state a typo produces too.
+        fn naming_a_claude_profile(mut self, name: &str, logged_in: bool) -> Self {
+            let root = self.dir.path().join("claude-profiles");
+            let profile = root.join(name);
+            std::fs::create_dir_all(&profile).expect("a profile directory");
+            if logged_in {
+                // `not-a-real-token` and not a realistic `sk-ant-...`, matching what
+                // the rest of this repo's fixtures use. A literal shaped like an
+                // Anthropic key is flagged by the secret scanner on every pull request
+                // that carries it, and a fixture is not worth a standing false positive
+                // -- `Token::parse` accepts any flat ASCII string, so the shape buys
+                // the test nothing.
+                std::fs::write(
+                    profile.join(".credentials.json"),
+                    r#"{"claudeAiOauth":{"accessToken":"not-a-real-token-from-the-profile"}}"#,
+                )
+                .expect("a credential");
+            }
+            self.host.claude_profiles_root = Some(root);
+            self.host.claude.profile = Some(name.to_owned());
             self
         }
 
@@ -6677,6 +6789,144 @@ mod tests {
             &mut notices,
         );
         (session, notices, said)
+    }
+
+    /// A session on a container whose Claude config is its own.
+    ///
+    /// [`ClaudeSeen`] starts empty and empty forwards nothing, so a test that wants to
+    /// watch the credential path at all has to say a pass answered. That is not a
+    /// convenience: it is the same reason the refusal cannot fire before provisioning
+    /// has looked, and a helper that hid it would let a test pass while asserting
+    /// nothing.
+    fn a_session_on_our_own_claude(
+        scene: &Scene,
+        command: Option<&str>,
+    ) -> Result<Session, SessionRefused> {
+        let token = HostToken::new();
+        let mut notices = no_notices();
+        let claude_seen = ClaudeSeen::new();
+        claude_seen.set(Some(ClaudeConfig::Ours));
+        let context = SessionContext::new(&scene.runner, &scene.host, &token, &claude_seen);
+        workspace_ssh(&context, "myws", command, None, &mut |_| {}, &mut notices)
+    }
+
+    /// The refusal `clients::claude` builds and nothing used to read.
+    ///
+    /// `NoToken::ProfileUnreadable` is documented where it is declared as "the one
+    /// refusal that must stop a launch", and it was constructed, carried and dropped:
+    /// `forwarded_claude` mapped every `Missing` to `None`, so `--claude-profile
+    /// typo` started a session forwarding no token at all while the flag reported
+    /// nothing. Every unit test around it passed, because they all asked
+    /// `resolve_token` and none asked the launch.
+    #[test]
+    fn a_named_profile_with_no_credential_stops_the_session() {
+        let scene = Scene::new()
+            .on_a_terminal(&["myws"])
+            .with_running("myws")
+            .naming_a_claude_profile("work", false);
+
+        match a_session_on_our_own_claude(&scene, Some("claude")) {
+            Err(SessionRefused::ClaudeProfile { name, problem }) => {
+                assert_eq!(name, "work");
+                match problem {
+                    ClaudeProfileProblem::NoCredential { directory } => assert!(
+                        directory.ends_with("claude-profiles/work"),
+                        // The directory and not the credential file: this string is
+                        // what the message hands back as a `CLAUDE_CONFIG_DIR`.
+                        "{directory}"
+                    ),
+                    other => panic!("expected NoCredential, got {other:?}"),
+                }
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_refused_profile_spawns_nothing_at_all() {
+        // The half that makes it a refusal rather than a message: the token is resolved
+        // before the argv is built, so nothing reaches ssh or devpod. A session that
+        // started and then complained would already have an agent in it asking for a
+        // login.
+        let scene = Scene::new()
+            .on_a_terminal(&["myws"])
+            .with_running("myws")
+            .naming_a_claude_profile("work", false);
+
+        let _ = a_session_on_our_own_claude(&scene, Some("claude"));
+
+        assert!(scene.runner.calls_to("ssh").is_empty(), "openssh was run");
+        assert!(
+            scene
+                .runner
+                .calls_to("devpod")
+                .iter()
+                .all(|call| { call.invocation().argv().get(1).map(String::as_str) != Some("ssh") }),
+            "devpod ssh was run"
+        );
+    }
+
+    #[test]
+    fn a_named_profile_that_is_logged_in_forwards_its_own_token() {
+        // The other side of the same branch, so the refusal cannot be satisfied by
+        // refusing everything.
+        let scene = Scene::new()
+            .on_a_terminal(&["myws"])
+            .with_running("myws")
+            .naming_a_claude_profile("work", true);
+
+        a_session_on_our_own_claude(&scene, Some("claude")).expect("a session");
+
+        let calls = scene.runner.calls_to("ssh");
+        let call = calls.last().expect("an openssh session");
+        assert_eq!(
+            call.invocation()
+                .env
+                .entries
+                .get("CLAUDE_CODE_OAUTH_TOKEN")
+                .map(String::as_str),
+            Some("not-a-real-token-from-the-profile"),
+        );
+    }
+
+    #[test]
+    fn an_ordinary_missing_login_stays_silent_and_starts_the_session() {
+        // The behaviour the refusal must not swallow. A host that never ran `claude`,
+        // a macOS host whose login is in the keychain and an opted-out host are all
+        // ordinary, and none of them named an account for this launch. Warning here
+        // would fire on every launch of every host that does not use Claude.
+        let scene = Scene::new().on_a_terminal(&["myws"]).with_running("myws");
+
+        a_session_on_our_own_claude(&scene, Some("echo hi")).expect("a session");
+
+        let calls = scene.runner.calls_to("ssh");
+        let call = calls.last().expect("an openssh session");
+        assert!(
+            !call
+                .invocation()
+                .env
+                .entries
+                .contains_key("CLAUDE_CODE_OAUTH_TOKEN"),
+            "nothing to forward, and nothing forwarded",
+        );
+    }
+
+    #[test]
+    fn a_profile_name_that_could_not_be_a_directory_names_the_rule() {
+        let mut scene = Scene::new().on_a_terminal(&["myws"]).with_running("myws");
+        scene.host.claude_profiles_root = Some(scene.dir.path().join("claude-profiles"));
+        scene.host.claude.profile = Some("../../etc".to_owned());
+
+        match a_session_on_our_own_claude(&scene, Some("claude")) {
+            Err(SessionRefused::ClaudeProfile { name, problem }) => {
+                assert_eq!(name, "../../etc");
+                // No directory, because the name was refused before one was built from
+                // it. A path here would mean a traversal had been composed and only
+                // then failed on a read.
+                assert_eq!(problem, ClaudeProfileProblem::NotAName);
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
     }
 
     /// The wiring `clients::herdr`'s own tests cannot reach.

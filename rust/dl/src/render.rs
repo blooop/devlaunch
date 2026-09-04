@@ -33,8 +33,8 @@ use devlaunch_core::flows::kill::{
     TableUnreadable,
 };
 use devlaunch_core::flows::launch::{
-    BranchNotNamed, ColdRefused, LaunchAborted, LaunchNotice, LaunchRefusal, NotPrepared,
-    SessionRefused,
+    BranchNotNamed, ClaudeProfileProblem, ColdRefused, LaunchAborted, LaunchNotice, LaunchRefusal,
+    NotPrepared, SessionRefused,
 };
 use devlaunch_core::flows::lifecycle::{
     Insistence, KeptBecause, LifecycleNotice, NotAdopted, Promotion, PrunePlan, PruneReport,
@@ -3175,6 +3175,38 @@ fn session_refusal(refused: &SessionRefused) -> String {
         SessionRefused::Ssh(SshNotRun::Blocked(failure)) => {
             format!("error: ssh could not be run ({})", os_error_phrase(failure))
         }
+        // Names what was typed, where it was looked, and the one command that fixes
+        // it. The directory is worth printing because the usual cause is a profile
+        // that exists with nothing logged in to it, which reads as "the profile is
+        // right there, why can dl not see it".
+        //
+        // The last sentence is the part that is not obvious from the failure: dl
+        // could have forwarded the default login and did not, on purpose.
+        SessionRefused::ClaudeProfile {
+            name,
+            problem: ClaudeProfileProblem::NoCredential { directory },
+        } => format!(
+            "error: --claude-profile {name}: no Claude credential in {directory}. Log \
+             that profile in with 'CLAUDE_CONFIG_DIR={directory} claude', or drop the \
+             flag to forward the default login. Refusing rather than forwarding a \
+             different account."
+        ),
+        SessionRefused::ClaudeProfile {
+            name,
+            problem: ClaudeProfileProblem::NotAName,
+        } => format!(
+            "error: --claude-profile {}: a profile name is one directory component of \
+             letters, digits, '.', '_' and '-', and cannot begin with '.' or '-'.",
+            python_repr(name)
+        ),
+        SessionRefused::ClaudeProfile {
+            name,
+            problem: ClaudeProfileProblem::NoRoot,
+        } => format!(
+            "error: --claude-profile {name}: this host resolves no Claude profiles \
+             directory, because it names no home directory and set neither \
+             CLAUDE_PROFILES_DIR nor DEVLAUNCH_CLAUDE_PROFILES_DIR."
+        ),
     }
 }
 
@@ -3263,6 +3295,84 @@ mod tests {
     use devlaunch_core::flows::listing::{SourceDescription, SourceKind};
 
     use super::*;
+
+    /// The three sentences a refused `--claude-profile` produces.
+    ///
+    /// Worth pinning as text rather than as "it errored", because the whole argument
+    /// for refusing instead of falling back is that the person reading this can act on
+    /// it. A refusal nobody can act on is a worse outcome than the silent fallback it
+    /// replaced.
+    #[test]
+    fn a_refused_profile_says_what_to_do_about_it() {
+        let no_credential = session_refusal(&SessionRefused::ClaudeProfile {
+            name: "work".to_owned(),
+            problem: ClaudeProfileProblem::NoCredential {
+                directory: "/home/me/.claude-profiles/work".to_owned(),
+            },
+        });
+        assert!(
+            no_credential.starts_with("error: --claude-profile work: "),
+            "{no_credential}"
+        );
+        // The directory, twice: once as where it looked and once inside the command
+        // that fixes it. `CLAUDE_CONFIG_DIR` takes a directory, so a message naming
+        // the credential file here would be telling somebody to point it at a .json.
+        assert!(
+            no_credential.contains("CLAUDE_CONFIG_DIR=/home/me/.claude-profiles/work claude"),
+            "{no_credential}"
+        );
+        // And the fact that is not deducible from the failure itself.
+        assert!(
+            no_credential.contains("Refusing rather than forwarding"),
+            "{no_credential}"
+        );
+
+        let not_a_name = session_refusal(&SessionRefused::ClaudeProfile {
+            name: "../../etc".to_owned(),
+            problem: ClaudeProfileProblem::NotAName,
+        });
+        // Quoted, so a name full of dots and slashes reads as one argument rather than
+        // as prose that happens to contain them.
+        assert!(not_a_name.contains("'../../etc'"), "{not_a_name}");
+        assert!(
+            not_a_name.contains("one directory component"),
+            "{not_a_name}"
+        );
+
+        let no_root = session_refusal(&SessionRefused::ClaudeProfile {
+            name: "work".to_owned(),
+            problem: ClaudeProfileProblem::NoRoot,
+        });
+        // Names both variables, because a host in this state has set neither and
+        // either one answers it.
+        assert!(no_root.contains("CLAUDE_PROFILES_DIR"), "{no_root}");
+        assert!(
+            no_root.contains("DEVLAUNCH_CLAUDE_PROFILES_DIR"),
+            "{no_root}"
+        );
+    }
+
+    #[test]
+    fn no_refusal_message_carries_a_credential() {
+        // The refusal is built from a name the user typed and a directory they made,
+        // and neither is a secret -- but this is the one path that has a token in
+        // scope one call away, so it is worth an assertion rather than a reading.
+        for problem in [
+            ClaudeProfileProblem::NotAName,
+            ClaudeProfileProblem::NoRoot,
+            ClaudeProfileProblem::NoCredential {
+                directory: "/home/me/.claude-profiles/work".to_owned(),
+            },
+        ] {
+            let said = session_refusal(&SessionRefused::ClaudeProfile {
+                name: "work".to_owned(),
+                problem,
+            });
+            assert!(!said.contains("sk-ant"), "{said}");
+            assert!(!said.contains("accessToken"), "{said}");
+            assert!(!said.contains(".credentials.json"), "{said}");
+        }
+    }
 
     fn row(id: &str, kind: SourceKind, detail: &str, size: SizeCell, when: LastUsed) -> TableRow {
         TableRow {
