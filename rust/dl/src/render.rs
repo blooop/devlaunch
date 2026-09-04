@@ -26,6 +26,7 @@ use devlaunch_core::flows::agent_worktrees::{
     Collectable, Standing as WorktreeStanding, WorktreePromotion, WorktreeReport, WorktreeSweep,
 };
 use devlaunch_core::flows::branch_manager::BranchError;
+use devlaunch_core::flows::claude_profiles;
 use devlaunch_core::flows::completion_cache::CompletionData;
 use devlaunch_core::flows::disk_usage::describe_usage;
 use devlaunch_core::flows::kill::{
@@ -139,6 +140,121 @@ pub(crate) fn table_lines(table: &WorkspaceTable, sizes: Sizes) -> Vec<String> {
             cell.detail,
             sized(&cell.size),
             cell.last_used,
+        ));
+    }
+    lines
+}
+
+/// `dl --claude-profiles`, as lines to print.
+///
+/// **The account matters more than the name**, which is why the listing exists: a
+/// profile's directory name is chosen by a person and verified by nothing, so a
+/// profile called `work` holding a personal login reads as correct right up until
+/// the work is pushed from the wrong identity. The name is what you type; the
+/// account column is what you get.
+///
+/// Here rather than in `commands.rs` for the reason `table_lines` is here: the
+/// column decisions are the interesting part and they are worth a test. The two
+/// that matter are the `-` against `unknown` distinction below and the footnote's
+/// grouping.
+pub(crate) fn claude_profile_lines(rows: &[claude_profiles::ProfileSummary]) -> Vec<String> {
+    if rows.is_empty() {
+        return Vec::new();
+    }
+    let width = rows
+        .iter()
+        .map(|row| row.name.chars().count())
+        .max()
+        .unwrap_or(0)
+        .max("NAME".len());
+
+    let mut lines = vec![format!("{:<width$}  {:<13}  ACCOUNT", "NAME", "STATE")];
+    for row in rows {
+        let state = match row.state {
+            claude_profiles::ProfileState::Authed => "authed",
+            claude_profiles::ProfileState::NoCredential => "not logged in",
+        };
+        lines.push(format!(
+            "{:<width$}  {state:<13}  {}",
+            row.name,
+            account_column(row)
+        ));
+    }
+    lines.extend(shared_account_notes(rows));
+    lines
+}
+
+/// The sentence for a listing with no rows at all.
+///
+/// A real state rather than a defensive branch: no home directory and no
+/// `$CLAUDE_CONFIG_DIR`, which is `dl` running under `XDG_CACHE_HOME` alone, so there
+/// is no unnamed login to head the listing. The profiles root is a separate variable
+/// and can still be set to somewhere that exists; an empty one adds no rows either.
+pub(crate) fn no_claude_profiles() -> String {
+    "No Claude configuration directory on this machine, so no profiles to list.".to_owned()
+}
+
+/// The account column: what the state file says, or why it says nothing.
+fn account_column(row: &claude_profiles::ProfileSummary) -> String {
+    let Some(account) = &row.account else {
+        // Two different absences, and the difference is worth a word: a profile with
+        // no credential has nobody to name, while one that is logged in and unnameable
+        // means Claude Code's state file was absent or has moved on from the shape
+        // this reads. Neither is an error and neither stops a launch.
+        return match row.state {
+            claude_profiles::ProfileState::NoCredential => "-".to_owned(),
+            claude_profiles::ProfileState::Authed => "unknown".to_owned(),
+        };
+    };
+    [
+        account.email.as_deref(),
+        account.organization.as_deref(),
+        account.seat_tier.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(" · ")
+}
+
+/// Name the profiles that are two names for one account.
+///
+/// A footnote rather than a column, because it is a fact about a *pair* and a column
+/// would have to repeat it once per row while still not saying which pair. And worth
+/// saying at all because the columns cannot: two profiles of one account render
+/// identically to two colleagues who share an organisation, so the redundant one is
+/// invisible exactly where a person is choosing between them.
+///
+/// One line per group rather than per profile, and only for groups the listing itself
+/// found, so nothing is claimed about a profile whose state file named no account.
+fn shared_account_notes(rows: &[claude_profiles::ProfileSummary]) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut said: Vec<String> = Vec::new();
+    for row in rows {
+        if row.shares_account_with.is_empty() {
+            continue;
+        }
+        let mut group: Vec<&str> = row
+            .shares_account_with
+            .iter()
+            .map(String::as_str)
+            .chain(std::iter::once(row.name.as_str()))
+            .collect();
+        group.sort_unstable();
+        let key = group.join(" ");
+        // Both members of a pair carry the note, and the pair is one fact.
+        if said.contains(&key) {
+            continue;
+        }
+        said.push(key);
+        let names = group
+            .iter()
+            .map(|name| format!("'{name}'"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        lines.push(String::new());
+        lines.push(format!(
+            "{names} are the same account, so all but one are spare."
         ));
     }
     lines
@@ -3301,6 +3417,209 @@ mod tests {
     use devlaunch_core::flows::listing::{SourceDescription, SourceKind};
 
     use super::*;
+
+    /// A profile row, with only the fields the columns read.
+    fn profile(
+        name: &str,
+        state: claude_profiles::ProfileState,
+        account: Option<claude_profiles::Account>,
+        shares_with: &[&str],
+    ) -> claude_profiles::ProfileSummary {
+        claude_profiles::ProfileSummary {
+            name: name.to_owned(),
+            path: PathBuf::from("/profiles").join(name),
+            state,
+            account,
+            shares_account_with: shares_with.iter().map(|n| (*n).to_owned()).collect(),
+        }
+    }
+
+    fn account(
+        email: Option<&str>,
+        organization: Option<&str>,
+        seat_tier: Option<&str>,
+    ) -> claude_profiles::Account {
+        claude_profiles::Account {
+            email: email.map(str::to_owned),
+            organization: organization.map(str::to_owned),
+            seat_tier: seat_tier.map(str::to_owned),
+            account_uuid: None,
+        }
+    }
+
+    #[test]
+    fn the_profile_listing_has_a_header_and_a_row_each() {
+        let lines = claude_profile_lines(&[
+            profile(
+                "default",
+                claude_profiles::ProfileState::Authed,
+                Some(account(Some("me@example.com"), Some("Acme"), Some("max"))),
+                &[],
+            ),
+            profile(
+                "work",
+                claude_profiles::ProfileState::Authed,
+                Some(account(Some("me@acme.example"), None, Some("team"))),
+                &[],
+            ),
+        ]);
+        assert_eq!(lines.len(), 3, "{lines:#?}");
+        assert!(lines[0].starts_with("NAME"), "{}", lines[0]);
+        assert!(lines[0].ends_with("ACCOUNT"), "{}", lines[0]);
+        assert!(lines[1].contains("authed"), "{}", lines[1]);
+        // The three fields worth showing, joined and in order.
+        assert!(
+            lines[1].contains("me@example.com · Acme · max"),
+            "{}",
+            lines[1]
+        );
+        // A missing organisation closes up rather than leaving a gap.
+        assert!(lines[2].contains("me@acme.example · team"), "{}", lines[2]);
+    }
+
+    #[test]
+    fn the_name_column_is_as_wide_as_the_widest_name() {
+        let lines = claude_profile_lines(&[profile(
+            "a-rather-long-profile-name",
+            claude_profiles::ProfileState::Authed,
+            None,
+            &[],
+        )]);
+        // Header and row agree, which is the whole of what the width is for.
+        let header_state = lines[0].find("STATE").expect("a STATE column");
+        let row_state = lines[1].find("authed").expect("a state word");
+        assert_eq!(header_state, row_state, "{lines:#?}");
+    }
+
+    /// Width is a count of characters, not of bytes.
+    ///
+    /// `ünïcødé` is seven characters and eleven bytes, and `{:<width$}` pads by
+    /// characters. So a byte width does not misalign anything -- every row is padded
+    /// to the same wrong number -- it just opens a gap four columns wider than the
+    /// longest name. Asserting the rows agree with each other would pass either way,
+    /// which is why this asserts the width itself.
+    #[test]
+    fn a_multi_byte_name_is_measured_in_characters() {
+        let lines = claude_profile_lines(&[
+            profile("ünïcødé", claude_profiles::ProfileState::Authed, None, &[]),
+            profile("plain", claude_profiles::ProfileState::Authed, None, &[]),
+        ]);
+        // Seven characters and the two spaces between columns.
+        let header_state = lines[0].find("STATE").expect("a STATE column");
+        assert_eq!(lines[0][..header_state].chars().count(), 9, "{lines:#?}");
+        for row in &lines[1..] {
+            let at = row.find("authed").expect("a state word");
+            assert_eq!(row[..at].chars().count(), 9, "{lines:#?}");
+        }
+    }
+
+    #[test]
+    fn a_short_name_does_not_shrink_the_column_below_the_header() {
+        let lines = claude_profile_lines(&[profile(
+            "w",
+            claude_profiles::ProfileState::Authed,
+            None,
+            &[],
+        )]);
+        let header_state = lines[0].find("STATE").expect("a STATE column");
+        let row_state = lines[1].find("authed").expect("a state word");
+        assert_eq!(header_state, row_state, "{lines:#?}");
+    }
+
+    /// The distinction the account column exists to draw.
+    ///
+    /// Two absences that read the same in a table and mean different things: a
+    /// profile with no credential has nobody to name, and one that is logged in with
+    /// no readable account means Claude Code's state file was absent or has moved on
+    /// from the shape this reads. Neither is an error and neither stops a launch, so
+    /// the only thing that distinguishes them for a reader is this word.
+    #[test]
+    fn the_two_ways_of_naming_nobody_are_different_words() {
+        let lines = claude_profile_lines(&[
+            profile(
+                "fresh",
+                claude_profiles::ProfileState::NoCredential,
+                None,
+                &[],
+            ),
+            profile("odd", claude_profiles::ProfileState::Authed, None, &[]),
+        ]);
+        assert!(lines[1].contains("not logged in"), "{}", lines[1]);
+        assert!(lines[1].trim_end().ends_with('-'), "{}", lines[1]);
+        assert!(lines[2].contains("authed"), "{}", lines[2]);
+        assert!(lines[2].trim_end().ends_with("unknown"), "{}", lines[2]);
+    }
+
+    #[test]
+    fn two_profiles_of_one_account_are_named_once_as_a_footnote() {
+        let lines = claude_profile_lines(&[
+            profile(
+                "base",
+                claude_profiles::ProfileState::Authed,
+                Some(account(Some("me@example.com"), None, None)),
+                &["bear"],
+            ),
+            profile(
+                "bear",
+                claude_profiles::ProfileState::Authed,
+                Some(account(Some("me@example.com"), None, None)),
+                &["base"],
+            ),
+        ]);
+        let notes: Vec<&String> = lines
+            .iter()
+            .filter(|line| line.contains("same account"))
+            .collect();
+        // **Once**, though both rows carry the note: it is a fact about a pair.
+        assert_eq!(notes.len(), 1, "{lines:#?}");
+        assert_eq!(
+            notes[0],
+            &"'base', 'bear' are the same account, so all but one are spare.".to_owned()
+        );
+        // Preceded by a blank line, so it reads as a footnote rather than a row.
+        let index = lines
+            .iter()
+            .position(|line| line.contains("same account"))
+            .expect("the note");
+        assert_eq!(lines[index - 1], "");
+    }
+
+    #[test]
+    fn the_footnote_names_the_group_in_a_stable_order() {
+        // Sorted, so the sentence does not reorder itself between runs depending on
+        // which member of the pair the listing reached first.
+        let lines = claude_profile_lines(&[profile(
+            "zeta",
+            claude_profiles::ProfileState::Authed,
+            Some(account(Some("me@example.com"), None, None)),
+            &["alpha", "mid"],
+        )]);
+        assert!(
+            lines.iter().any(|line| line
+                == "'alpha', 'mid', 'zeta' are the same account, so all but one are spare."),
+            "{lines:#?}"
+        );
+    }
+
+    #[test]
+    fn a_listing_with_nothing_shared_carries_no_footnote() {
+        let lines = claude_profile_lines(&[profile(
+            "work",
+            claude_profiles::ProfileState::Authed,
+            Some(account(Some("me@example.com"), None, None)),
+            &[],
+        )]);
+        assert_eq!(lines.len(), 2, "{lines:#?}");
+        assert!(!lines.iter().any(|line| line.contains("same account")));
+    }
+
+    #[test]
+    fn no_rows_render_no_lines_at_all() {
+        // The caller says why on stderr instead; a header over nothing would read as
+        // a listing that found nothing, which is a different claim.
+        assert!(claude_profile_lines(&[]).is_empty());
+        assert!(no_claude_profiles().contains("no profiles to list"));
+    }
 
     /// The three sentences a refused `--claude-profile` produces.
     ///
