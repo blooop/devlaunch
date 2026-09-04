@@ -4865,7 +4865,20 @@ fi
         // And the verdict those mounts earn, which is `Ours` on a machine with nothing
         // mounted near the scratch dir and on one whose only match is a mount rooted at
         // `/` -- the `/tmp` case, which `cfg_dir_is_foreign` already excludes by name.
-        let want = if cfg_dir_is_foreign(cfg_dir, Some("/nowhere"), &expected.join(" ")) {
+        //
+        // **Derived from `claudehome`, because that is the argument `parse` passes.**
+        // It read `claudedir` first, which is the wrong one and is a flake of the same
+        // family as the constant this test replaced: the scan is *about* the config
+        // directory, but the containment question `cfg_dir_is_foreign` asks is against
+        // the *home*. The two differ by `.claude`, so a mount rooted inside `$HOME` and
+        // outside `$HOME/.claude` earns `Ours` from `parse` and `Foreign` from a
+        // derivation given `claudedir` -- and nothing on a GitHub runner or on this
+        // machine has such a mount, so the disagreement would have waited for somebody
+        // else's filesystem.
+        let cfg_home = found
+            .get(CLAUDE_HOME_KEY)
+            .expect("the probe named the config home");
+        let want = if cfg_dir_is_foreign(cfg_home, Some("/nowhere"), &expected.join(" ")) {
             ClaudeConfig::Foreign
         } else {
             ClaudeConfig::Ours
