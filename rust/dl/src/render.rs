@@ -156,8 +156,7 @@ pub(crate) fn table_lines(table: &WorkspaceTable, sizes: Sizes) -> Vec<String> {
 /// Here rather than in `commands.rs` for the reason `table_lines` is here: the
 /// column decisions are the interesting part and they are worth a test. The two
 /// that matter are the `-` against `unknown` distinction below and the footnote's
-/// grouping, and both lived in a file with no test module at all until codecov
-/// pointed at 65 uncovered lines on this change.
+/// grouping.
 pub(crate) fn claude_profile_lines(rows: &[claude_profiles::ProfileSummary]) -> Vec<String> {
     if rows.is_empty() {
         return Vec::new();
