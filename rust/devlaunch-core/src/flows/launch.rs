@@ -3773,7 +3773,14 @@ pub enum LaunchRefusal {
         error: NotPrepared,
     },
     /// `devpod up` refused. devpod has already said why on the user's stderr.
-    UpRefused { exit: Exit },
+    ///
+    /// `workspace_id` is carried for the renderer's sake and not for the exit
+    /// code, which is `exit` alone. dl runs the `up` as a passthrough, so devpod's
+    /// own sentence is the whole of what a reader gets and dl never sees its text;
+    /// the id is the one thing dl knows about the failure that devpod's sentence
+    /// does not spell out, and one failure mode is decided by it -- see
+    /// [`devpod::reads_as_arm`].
+    UpRefused { workspace_id: String, exit: Exit },
     /// The stop half of a `restart` refused, so nothing was started.
     StopRefused { exit: Exit },
     /// No session could be composed or handed over.
@@ -4273,7 +4280,10 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
             )
             .map_err(LaunchAborted::DevpodNotRun)?;
             if let UpOutcome::Refused { exit } = outcome {
-                return Ok(Launched::Refused(LaunchRefusal::UpRefused { exit }));
+                return Ok(Launched::Refused(LaunchRefusal::UpRefused {
+                    workspace_id: placement.workspace_id().to_owned(),
+                    exit,
+                }));
             }
         }
         let session = SessionContext::new(
@@ -4317,7 +4327,10 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
         .map_err(LaunchAborted::DevpodNotRun)?;
         let refused = match outcome {
             UpOutcome::Started | UpOutcome::SkippedSiblingWon => None,
-            UpOutcome::Refused { exit } => Some(LaunchRefusal::UpRefused { exit }),
+            UpOutcome::Refused { exit } => Some(LaunchRefusal::UpRefused {
+                workspace_id: placement.workspace_id().to_owned(),
+                exit,
+            }),
         };
         // Asked here rather than by whoever renders the refusal, because *when* it is
         // asked is Python's control flow rather than a rendering decision: for `up`
@@ -10312,6 +10325,7 @@ mod tests {
             assert_eq!(
                 launched,
                 Ok(Launched::Refused(LaunchRefusal::UpRefused {
+                    workspace_id: "myws".to_owned(),
                     exit: Exit::Code(7)
                 })),
                 "{verb:?}"

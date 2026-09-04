@@ -118,6 +118,7 @@ pub fn devlaunch_core::clients::devpod::Workspace::eq(&self, &devlaunch_core::cl
 impl core::fmt::Debug for devlaunch_core::clients::devpod::Workspace
 pub fn devlaunch_core::clients::devpod::Workspace::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::clients::devpod::Workspace
+pub fn devlaunch_core::clients::devpod::reads_as_arm(&str) -> bool
 pub mod devlaunch_core::clients::devpod_home
 pub enum devlaunch_core::clients::devpod_home::RepointFailure
 pub devlaunch_core::clients::devpod_home::RepointFailure::NotADevpodRecord
@@ -1514,6 +1515,7 @@ pub devlaunch_core::flows::launch::LaunchRefusal::UnknownWorkspace::name: alloc:
 pub devlaunch_core::flows::launch::LaunchRefusal::UnsafeSpec(devlaunch_core::domain::workspace_id::UnsafeName)
 pub devlaunch_core::flows::launch::LaunchRefusal::UpRefused
 pub devlaunch_core::flows::launch::LaunchRefusal::UpRefused::exit: devlaunch_runner::Exit
+pub devlaunch_core::flows::launch::LaunchRefusal::UpRefused::workspace_id: alloc::string::String
 impl core::clone::Clone for devlaunch_core::flows::launch::LaunchRefusal
 pub fn devlaunch_core::flows::launch::LaunchRefusal::clone(&self) -> devlaunch_core::flows::launch::LaunchRefusal
 impl core::cmp::Eq for devlaunch_core::flows::launch::LaunchRefusal
