@@ -34,7 +34,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   than a launch that fails: the launch you see, and the wrong account you find out about
   later and somewhere else. The name is checked at the boundary as a single directory
   component, so `--claude-profile ../../etc` is refused by the rule rather than becoming
-  a traversal that fails later on a read.
+  a traversal that fails later on a read. A leading `.` is refused along with a leading
+  `-`, which subsumes `.` and `..` and makes the one sentence a refusal prints true of
+  every name it refuses: `.work` was accepted and read from `<root>/.work/` while the
+  message said a name "cannot begin with '.' or '-'".
 
   Read above an exported `CLAUDE_CODE_OAUTH_TOKEN`, unlike `$CLAUDE_CONFIG_DIR`, because
   a profile was typed on this command line for this launch and nothing ambient should
@@ -50,9 +53,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   It is not the claude.ai account a container's `claude` is paired to for Remote
   Control, and it does not weaken the check that leaves a repo's own mounted Claude
-  config alone: `Foreign` forwards nothing, profile or no profile. `aid` passes the flag
-  through. A verb that forwards no login says it is ignoring it, as `--devcontainer`
-  does; a global command refuses it.
+  config alone: `Foreign` forwards nothing, profile or no profile. **It does say so,
+  though.** That check sits above the profile arm on purpose, and it is reached with a
+  profile named on three ordinary paths: a repo whose devcontainer mounts its own Claude
+  config, a workspace older than the provisioning record, and `DEVLAUNCH_NO_TOOLS` or a
+  probe report that would not parse. A launch that ignored an explicit
+  `--claude-profile` in silence there was the same wrong-account-found-out-later outcome
+  the refusal exists to prevent, so it warns once and forwards nothing. A launch that
+  named no profile stays quiet, since a host that does not use Claude has earned no
+  warning. `aid` passes the flag through. A verb that forwards no login says it is
+  ignoring it, as `--devcontainer` does; a global command refuses it.
 
 ### Fixed
 

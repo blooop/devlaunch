@@ -151,15 +151,22 @@ pub(crate) struct ProfileName(String);
 impl ProfileName {
     /// `raw` if it can be a leaf directory name, else nothing.
     ///
-    /// The same flat-ASCII set [`Token::parse`] accepts, minus the three spellings
-    /// that are not leaves: empty, `.` and `..`. A separator of either kind, a NUL and
-    /// a leading `-` are excluded by the set itself, the last one because a name that
-    /// looks like a flag reads as one everywhere it is later printed or passed on.
+    /// The same flat-ASCII set [`Token::parse`] accepts, minus anything that is not a
+    /// plain visible leaf: empty, and a leading `.` or `-`. A separator of either kind
+    /// and a NUL are excluded by the set itself.
+    ///
+    /// A leading `-` goes because a name that looks like a flag reads as one everywhere
+    /// it is later printed or passed on. A leading `.` goes for two reasons at once: it
+    /// subsumes `.` and `..`, which are the spellings that would climb out of the root,
+    /// and it keeps the rule one clause a refusal can state. `.work` was accepted
+    /// before this and read from `<root>/.work/`, so `--claude-profile 'has space'` was
+    /// refused with "cannot begin with '.' or '-'" -- a sentence the validator did not
+    /// enforce. Refusing a hidden directory costs nothing: nothing creates one, and a
+    /// profile is a thing a person types.
     pub(crate) fn parse(raw: &str) -> Option<Self> {
         let flat = !raw.is_empty()
             && !raw.starts_with('-')
-            && raw != "."
-            && raw != ".."
+            && !raw.starts_with('.')
             && raw
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'));
@@ -569,7 +576,7 @@ mod tests {
         let moved = credential_dir_holding("not-a-real-moved-token");
         let host = HostEnv {
             profile: Some("default".to_owned()),
-            config_dir: Some(moved.path().display().to_string()),
+            config_dir: Some(moved.path().into()),
             ..HostEnv::default()
         };
         assert_eq!(
@@ -638,7 +645,7 @@ mod tests {
         let moved = credential_dir_holding("not-a-real-moved-token");
         let host = HostEnv {
             token: Some("not-a-real-exported-token".to_owned()),
-            config_dir: Some(moved.path().display().to_string()),
+            config_dir: Some(moved.path().into()),
             profile: Some("work".to_owned()),
             ..HostEnv::default()
         };
@@ -680,6 +687,12 @@ mod tests {
             "-flag",
             "has space",
             "n\u{0}ul",
+            // A hidden directory, refused so that the one sentence a refusal prints
+            // is true of every name it refuses. `.work` used to be accepted and read
+            // from `<root>/.work/`, while `dl` told anyone refused for an unrelated
+            // reason that a name "cannot begin with '.' or '-'".
+            ".work",
+            ".hidden",
         ] {
             let host = HostEnv {
                 profile: Some(named.to_owned()),
@@ -896,7 +909,7 @@ mod tests {
             ..HostEnv::default()
         };
         assert_eq!(
-            resolve_token(None, &host),
+            resolve_token(None, None, &host),
             TokenLookup::Found(Token("not-a-real-moved-token".to_owned()))
         );
 
@@ -907,7 +920,7 @@ mod tests {
             ..HostEnv::default()
         };
         assert_eq!(
-            resolve_token(None, &lossy),
+            resolve_token(None, None, &lossy),
             TokenLookup::Missing(NoToken::NotLoggedIn)
         );
     }

@@ -41,6 +41,8 @@ pub devlaunch_core::api::LaunchNotice::AlreadyRunningAttaching::workspace_id: al
 pub devlaunch_core::api::LaunchNotice::BroughtUpBySibling
 pub devlaunch_core::api::LaunchNotice::BroughtUpBySibling::workspace_id: alloc::string::String
 pub devlaunch_core::api::LaunchNotice::Cache(devlaunch_core::flows::repo_manager::CacheNotice)
+pub devlaunch_core::api::LaunchNotice::ClaudeProfileNotForwarded
+pub devlaunch_core::api::LaunchNotice::ClaudeProfileNotForwarded::name: alloc::string::String
 pub devlaunch_core::api::LaunchNotice::CreateNeverFinished
 pub devlaunch_core::api::LaunchNotice::CreateNeverFinished::workspace_id: alloc::string::String
 pub devlaunch_core::api::LaunchNotice::DevcontainerIgnoredRunning
@@ -522,6 +524,8 @@ pub devlaunch_core::flows::launch::LaunchNotice::AlreadyRunningAttaching::worksp
 pub devlaunch_core::flows::launch::LaunchNotice::BroughtUpBySibling
 pub devlaunch_core::flows::launch::LaunchNotice::BroughtUpBySibling::workspace_id: alloc::string::String
 pub devlaunch_core::flows::launch::LaunchNotice::Cache(devlaunch_core::flows::repo_manager::CacheNotice)
+pub devlaunch_core::flows::launch::LaunchNotice::ClaudeProfileNotForwarded
+pub devlaunch_core::flows::launch::LaunchNotice::ClaudeProfileNotForwarded::name: alloc::string::String
 pub devlaunch_core::flows::launch::LaunchNotice::CreateNeverFinished
 pub devlaunch_core::flows::launch::LaunchNotice::CreateNeverFinished::workspace_id: alloc::string::String
 pub devlaunch_core::flows::launch::LaunchNotice::DevcontainerIgnoredRunning

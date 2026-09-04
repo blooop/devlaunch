@@ -2538,6 +2538,12 @@ pub(crate) fn launch_notice(notice: &LaunchNotice) -> Option<String> {
             "Could not create a file to pass the GitHub token to devpod ({reason}), so this \
              workspace opens without a GitHub login."
         ),
+        LaunchNotice::ClaudeProfileNotForwarded { name } => format!(
+            "Ignoring --claude-profile {}: this workspace's Claude configuration is not the \
+             host's to forward into, so `claude` runs as whichever account that configuration \
+             holds. A workspace that predates the check picks it up after one `up`.",
+            python_repr(name)
+        ),
 
         // --- the session (warning at 3845, info at 3864/3891, debug at 3875)
         LaunchNotice::NoTerminalAlias {

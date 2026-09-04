@@ -439,6 +439,17 @@ pub enum LaunchNotice {
     /// "could not create" from "could not write"; `tempfile` does both in one
     /// call, so there is one arm.
     TokenNotStaged { reason: String },
+    /// `--claude-profile` named an account and this session forwards no Claude login
+    /// at all, because the container's config directory is not the host's to write
+    /// into (or no pass has said whose it is).
+    ///
+    /// A warning rather than a refusal, because the not-forwarding is right: see
+    /// `SessionContext::forwarded_claude`. What was wrong was doing it in silence. A
+    /// named profile is an explicit instruction, so a launch that cannot carry it out
+    /// says so once, here, rather than leaving the user to discover the account from
+    /// inside the session. `dl <ws> stop` already prints the same courtesy for the
+    /// same flag.
+    ClaudeProfileNotForwarded { name: String },
 
     // --- the session (dl.py `workspace_ssh`)
     /// dl read the ssh config devpod publishes into and found no alias for this
@@ -1999,7 +2010,6 @@ impl<'a> SessionContext<'a> {
     /// into that would override a credential that can refresh itself with one that
     /// cannot -- Claude Code prefers the variable over the file. `None` is not
     /// knowing, which gets the same answer for the same reason.
-    /// The Claude token this session forwards, or the refusal that stops it.
     ///
     /// # Why one of the misses is an error and the rest are not
     ///
@@ -2018,8 +2028,25 @@ impl<'a> SessionContext<'a> {
     /// deliberate and is not this arm's business -- forwarding the host's short-lived
     /// token over a credential that can refresh itself is the case `ClaudeConfig`
     /// exists to prevent, and it is wrong whether or not a profile was named.
-    fn forwarded_claude(&self) -> Result<Option<claude::Token>, SessionRefused> {
+    ///
+    /// It is not, however, a reason to say nothing. That gate is reached with a profile
+    /// named on three ordinary paths -- a `Foreign` mounted config, a workspace
+    /// predating the provisioning record, and `DEVLAUNCH_NO_TOOLS` or a probe report
+    /// that would not parse, both of which leave `claude_seen` at `None` -- and a
+    /// launch that silently ignores an explicit `--claude-profile` is the "wrong
+    /// account, discovered later and somewhere else" outcome the refusal below exists
+    /// to prevent. So the token stays unforwarded and
+    /// [`LaunchNotice::ClaudeProfileNotForwarded`] says so once.
+    fn forwarded_claude(
+        &self,
+        notices: &mut dyn Notices<LaunchNotice>,
+    ) -> Result<Option<claude::Token>, SessionRefused> {
         if self.claude_seen.get() != Some(ClaudeConfig::Ours) {
+            if let Some(name) = self.host.claude.profile.as_deref() {
+                notices.say(LaunchNotice::ClaudeProfileNotForwarded {
+                    name: name.to_owned(),
+                });
+            }
             return Ok(None);
         }
         match claude::resolve_token(
@@ -2241,7 +2268,7 @@ fn devpod_session(
     // Resolved before the argv is built, so a refusal costs no process: `?` here
     // leaves devpod unrun rather than spawning a session that would forward the wrong
     // account.
-    let claude_token = session.forwarded_claude()?;
+    let claude_token = session.forwarded_claude(notices)?;
     let forwarding = claude::extend_ssh_forwarding(
         gh::ssh_forwarding(session.forwarded_token(notices)),
         claude_token.as_ref(),
@@ -2298,7 +2325,7 @@ fn ssh_with_terminal(
     // permit list `Reuse::derive` keys the control socket on is the same list the
     // two credentials built (`clients::herdr`). The manager's coordinates, unlike
     // the name, do cross the transport and so do join that list.
-    let claude_token = session.forwarded_claude()?;
+    let claude_token = session.forwarded_claude(notices)?;
     let forwarding = herdr::extend_openssh_forwarding(
         claude::extend_openssh_forwarding(
             gh::openssh_forwarding(session.forwarded_token(notices)),
@@ -6808,6 +6835,87 @@ mod tests {
         claude_seen.set(Some(ClaudeConfig::Ours));
         let context = SessionContext::new(&scene.runner, &scene.host, &token, &claude_seen);
         workspace_ssh(&context, "myws", command, None, &mut |_| {}, &mut notices)
+    }
+
+    /// A session opened with a profile named and a config directory that is not ours.
+    ///
+    /// Parameterised on `claude_seen` because the gate reads the same for both of its
+    /// non-`Ours` values, and each is reachable on an ordinary launch: `Foreign` is a
+    /// repo whose devcontainer mounts its own Claude config, `None` is a workspace
+    /// that predates the provisioning record, `DEVLAUNCH_NO_TOOLS`, or a probe report
+    /// that would not parse.
+    fn a_session_on_someone_elses_claude(
+        scene: &Scene,
+        seen: Option<ClaudeConfig>,
+    ) -> (Result<Session, SessionRefused>, Vec<LaunchNotice>) {
+        let token = HostToken::new();
+        let mut notices = Vec::new();
+        let claude_seen = ClaudeSeen::new();
+        claude_seen.set(seen);
+        let context = SessionContext::new(&scene.runner, &scene.host, &token, &claude_seen);
+        let opened = workspace_ssh(
+            &context,
+            "myws",
+            Some("claude"),
+            None,
+            &mut |_| {},
+            &mut notices,
+        );
+        (opened, notices)
+    }
+
+    #[test]
+    fn a_named_profile_that_cannot_be_forwarded_is_said_rather_than_dropped() {
+        // The gate on `claude_seen` sits above the profile arm, deliberately: not
+        // forwarding the host's short-lived token over a credential that can refresh
+        // itself is the case `ClaudeConfig` exists to prevent, and it is right whether
+        // or not a profile was named. Doing it in silence was not. `--claude-profile
+        // work` against a config directory that is not ours opened a session as
+        // whatever account that directory holds and reported nothing, which is the
+        // "wrong account, found out later and somewhere else" outcome the refusal one
+        // branch down exists to prevent.
+        for seen in [Some(ClaudeConfig::Foreign), None] {
+            let scene = Scene::new()
+                .on_a_terminal(&["myws"])
+                .with_running("myws")
+                // Logged in, so nothing here turns on the credential being absent:
+                // the profile is good and still cannot be carried.
+                .naming_a_claude_profile("work", true);
+
+            let (opened, notices) = a_session_on_someone_elses_claude(&scene, seen);
+
+            // Still a session, and still no token: the silence was the defect, not the
+            // decision.
+            assert!(opened.is_ok(), "{seen:?}: {opened:?}");
+            let said: Vec<_> = notices
+                .iter()
+                .filter_map(|notice| match notice {
+                    LaunchNotice::ClaudeProfileNotForwarded { name } => Some(name.as_str()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(said, ["work"], "{seen:?}: {notices:?}");
+        }
+    }
+
+    #[test]
+    fn a_launch_that_named_no_profile_stays_quiet_about_a_foreign_config() {
+        // The other half, and the reason the notice is gated on the flag: a host that
+        // simply does not use Claude, or a repo that mounts its own config, must not
+        // earn a warning on every launch. Only an explicit instruction that cannot be
+        // carried out is worth a word.
+        let scene = Scene::new().on_a_terminal(&["myws"]).with_running("myws");
+
+        let (opened, notices) =
+            a_session_on_someone_elses_claude(&scene, Some(ClaudeConfig::Foreign));
+
+        assert!(opened.is_ok(), "{opened:?}");
+        assert!(
+            !notices
+                .iter()
+                .any(|notice| matches!(notice, LaunchNotice::ClaudeProfileNotForwarded { .. })),
+            "{notices:?}"
+        );
     }
 
     /// The refusal `clients::claude` builds and nothing used to read.
