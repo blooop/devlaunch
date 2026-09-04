@@ -22,9 +22,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is how Claude Code treats it. Falling back would forward a credential out of a
   directory Claude Code is not reading, and that is the same defect one level down:
   invisible until the host has two logins, at which point it forwards the wrong one.
-  An empty value counts as unset. An exported `CLAUDE_CODE_OAUTH_TOKEN` still wins
-  over both, so a `dl` inside a workspace keeps passing its own token further down,
-  and `DEVLAUNCH_NO_CLAUDE_TOKEN` still beats everything.
+  An empty value counts as unset, and the value is read as bytes rather than as
+  text, so a configuration directory whose name is not valid UTF-8 is opened as
+  named instead of being mangled into one that cannot be found. An exported
+  `CLAUDE_CODE_OAUTH_TOKEN` still wins over both, so a `dl` inside a workspace keeps
+  passing its own token further down, and `DEVLAUNCH_NO_CLAUDE_TOKEN` still beats
+  everything.
 
 ## [0.29.0] - 2026-09-02
 

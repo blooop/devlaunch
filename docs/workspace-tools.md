@@ -83,8 +83,8 @@ The full order a launch reads:
 2. Any `CLAUDE_CODE_OAUTH_TOKEN` the host has already exported. This is what lets a
    `dl` running inside a workspace pass the token it was given further down, so a
    workspace can launch a workspace.
-3. `$CLAUDE_CONFIG_DIR/.credentials.json`.
-4. `~/.claude/.credentials.json`.
+3. `$CLAUDE_CONFIG_DIR/.credentials.json`, or `~/.claude/.credentials.json` when
+   the variable is unset. One step, not two: see below.
 
 **The variable replaces the default rather than being tried ahead of it.** Claude
 Code does not fall back from `$CLAUDE_CONFIG_DIR` to `~/.claude`, and neither does
@@ -92,10 +92,15 @@ this. A fallback would forward a credential out of a directory Claude Code is no
 reading, which is the same defect as ignoring the variable and harder to notice,
 because it only shows itself on a host with two logins. So a `$CLAUDE_CONFIG_DIR`
 that names a directory holding no credential is a host that is not logged in, and
-the launch says so once rather than quietly forwarding the other account.
+the launch forwards nothing rather than the other account. It does that silently,
+which is deliberate and is the same silence a missing `~/.claude` gets: on macOS
+the credential lives in the login keychain and no file is the ordinary state, so a
+warning there would fire on every correctly configured Mac.
 
 An empty value counts as unset, which is what a shell exporting a bare variable
-means and the rule the XDG directories already follow here.
+means and the rule the XDG directories already follow here. The value is read as
+bytes rather than as text, so a directory whose name is not valid UTF-8 is opened
+as named.
 
 The exported token stays above the variable because both are ambient, and the
 nested-workspace case has to keep working when no variable is set.

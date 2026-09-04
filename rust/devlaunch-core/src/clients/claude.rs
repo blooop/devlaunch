@@ -45,17 +45,20 @@
 //! symptom: a host that had moved its configuration reported [`NoToken::NotLoggedIn`]
 //! while holding a perfectly good login.
 //!
-//! The order is opt-out, then any exported `CLAUDE_CODE_OAUTH_TOKEN`, then
-//! `$CLAUDE_CONFIG_DIR`, then `$HOME/.claude`. The exported token stays above the
-//! variable because both are ambient and that hatch is what lets a `dl` inside a
-//! workspace forward what it was handed; see [`config_dir`] for why the variable
-//! *replaces* the default rather than being tried ahead of it.
+//! The order is opt-out, then any exported `CLAUDE_CODE_OAUTH_TOKEN`, then one
+//! credential file: `$CLAUDE_CONFIG_DIR`'s when the variable is set and
+//! `$HOME/.claude`'s when it is not. Those last two are one step and not two, which
+//! is the whole of [`config_dir`]'s argument and worth spelling here because a list
+//! of four reads as a fallback chain. The exported token stays above the variable
+//! because both are ambient and that hatch is what lets a `dl` inside a workspace
+//! forward what it was handed.
 //!
 //! It also means a session devlaunch did not open — `devpod ssh` by hand, VS Code
 //! through `dl <ws> code` — does not get it. Those already have the host's real
 //! `claude` available to them by other means, and widening this to cover them
 //! would mean widening it to cover `postCreateCommand` too.
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use super::gh::{Forwarding, forwarding_disabled};
@@ -154,7 +157,17 @@ pub(crate) struct HostEnv {
     /// Below the token because both are ambient, and the existing hatch above has to
     /// keep winning so a `dl` launched from inside a workspace still forwards what it
     /// was given. Above `$HOME` because it is what Claude Code itself prefers.
-    pub(crate) config_dir: Option<String>,
+    ///
+    /// An `OsString` and not a `String`, because this one is a **path** and the two
+    /// fields above are not. [`crate::osext::env_str`] decodes lossily on purpose,
+    /// which is right for a switch whose value is compared against words and wrong
+    /// here: a path is bytes, so a directory whose name is not valid UTF-8 would
+    /// arrive with U+FFFD where those bytes were, fail to open, and report
+    /// [`NoToken::NotLoggedIn`] on a host holding a perfectly good login. That is the
+    /// symptom this whole change removes, so reading it back in would be the same
+    /// defect wearing the fix's clothes. [`crate::domain::xdg`]'s `resolve` takes an
+    /// `OsString` for the same reason, and it is the rule this arm already cites.
+    pub(crate) config_dir: Option<OsString>,
 }
 
 impl HostEnv {
@@ -163,7 +176,8 @@ impl HostEnv {
         Self {
             disable: crate::osext::env_str(DISABLE_VAR),
             token: crate::osext::env_str(TOKEN_VAR),
-            config_dir: crate::osext::env_str(CONFIG_DIR_VAR),
+            // `var_os` rather than `osext::env_str`: see the field's own note.
+            config_dir: std::env::var_os(CONFIG_DIR_VAR),
         }
     }
 }
@@ -396,7 +410,7 @@ mod tests {
         // reported NotLoggedIn while sitting on a perfectly good login.
         let moved = credential_dir_holding("not-a-real-moved-token");
         let host = HostEnv {
-            config_dir: Some(moved.path().display().to_string()),
+            config_dir: Some(moved.path().into()),
             ..HostEnv::default()
         };
         assert_eq!(
@@ -415,7 +429,7 @@ mod tests {
         let home = logged_in("not-a-real-home-token");
         let moved = credential_dir_holding("not-a-real-moved-token");
         let host = HostEnv {
-            config_dir: Some(moved.path().display().to_string()),
+            config_dir: Some(moved.path().into()),
             ..HostEnv::default()
         };
         assert_eq!(
@@ -426,7 +440,7 @@ mod tests {
         // And an empty one names no directory at all, which is what the XDG rule
         // already says elsewhere and what a shell exporting a bare variable means.
         let empty = HostEnv {
-            config_dir: Some(String::new()),
+            config_dir: Some(OsString::new()),
             ..HostEnv::default()
         };
         assert_eq!(
@@ -442,7 +456,7 @@ mod tests {
         let empty_dir = tempfile::tempdir().expect("a scratch config dir");
         let home = logged_in("not-a-real-home-token");
         let host = HostEnv {
-            config_dir: Some(empty_dir.path().display().to_string()),
+            config_dir: Some(empty_dir.path().into()),
             ..HostEnv::default()
         };
         assert_eq!(
@@ -458,7 +472,7 @@ mod tests {
         let moved = credential_dir_holding("not-a-real-moved-token");
         let host = HostEnv {
             token: Some("not-a-real-exported-token".to_owned()),
-            config_dir: Some(moved.path().display().to_string()),
+            config_dir: Some(moved.path().into()),
             ..HostEnv::default()
         };
         assert_eq!(
@@ -473,7 +487,7 @@ mod tests {
         let moved = credential_dir_holding("not-a-real-moved-token");
         let host = HostEnv {
             disable: Some("1".to_owned()),
-            config_dir: Some(moved.path().display().to_string()),
+            config_dir: Some(moved.path().into()),
             ..HostEnv::default()
         };
         assert_eq!(
@@ -494,13 +508,56 @@ mod tests {
         )
         .expect("a credential");
         let host = HostEnv {
-            config_dir: Some(dir.path().display().to_string()),
+            config_dir: Some(dir.path().into()),
             ..HostEnv::default()
         };
         let TokenLookup::Found(token) = resolve_token(None, &host) else {
             panic!("the credential should have been read");
         };
         assert!(!token.as_str().contains("refresh"), "{token:?}");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_config_dir_whose_bytes_are_not_utf8_is_still_the_directory_it_names() {
+        // A path is bytes. Reading this variable through `osext::env_str`, which
+        // decodes lossily on purpose for the switches either side of it, put U+FFFD
+        // where the undecodable byte was and then failed to open the result -- so a
+        // host with a login reported NotLoggedIn, which is the exact symptom this
+        // change exists to remove.
+        use std::os::unix::ffi::OsStrExt as _;
+
+        let parent = tempfile::tempdir().expect("a scratch parent");
+        // `0xE9` is `é` in Latin-1: a legal byte in a Linux path and not valid UTF-8.
+        let mut name = std::ffi::OsString::from("cfg-caf");
+        name.push(std::ffi::OsStr::from_bytes(&[0xE9]));
+        let moved = parent.path().join(name);
+        std::fs::create_dir(&moved).expect("a scratch config dir");
+        std::fs::write(
+            moved.join(CREDENTIALS_FILENAME),
+            r#"{"claudeAiOauth":{"accessToken":"not-a-real-moved-token"}}"#,
+        )
+        .expect("a credential");
+
+        let host = HostEnv {
+            config_dir: Some(moved.clone().into_os_string()),
+            ..HostEnv::default()
+        };
+        assert_eq!(
+            resolve_token(None, &host),
+            TokenLookup::Found(Token("not-a-real-moved-token".to_owned()))
+        );
+
+        // And the lossy reading really would have missed it, so the test above is
+        // guarding something rather than restating that `PathBuf::from` is total.
+        let lossy = HostEnv {
+            config_dir: Some(moved.to_string_lossy().into_owned().into()),
+            ..HostEnv::default()
+        };
+        assert_eq!(
+            resolve_token(None, &lossy),
+            TokenLookup::Missing(NoToken::NotLoggedIn)
+        );
     }
 
     #[test]
