@@ -1234,6 +1234,53 @@ pub(crate) fn pane_list_argv() -> Vec<String> {
     vec!["pane".to_owned(), "list".to_owned()]
 }
 
+/// The source id devlaunch reports under, in herdr's `--source` sense.
+///
+/// One string, two callers: this module's argv builders and [`HOOK`], which spells it
+/// as a shell literal because it is a shell script.
+/// `the_hook_reports_under_the_source_this_module_names` is the test that diffs them.
+pub(crate) const REPORT_SOURCE: &str = "devlaunch:claude";
+
+/// The metadata token naming the Claude profile a pane's session forwards.
+///
+/// Display-only, and rendered as `$profile` in herdr's agent sidebar rows. A *token*
+/// rather than `--display-agent`, which would fight the agent name `report-agent`
+/// sets and which herdr uses to pick a detection manifest.
+pub(crate) const PROFILE_TOKEN: &str = "profile";
+
+/// The argv that labels a pane with the Claude profile its session runs as, or clears
+/// the label when the session names no profile.
+///
+/// **Clearing matters as much as setting.** A pane is reused: a launch that named
+/// `work` and a later launch in the same pane that named nothing would otherwise leave
+/// the sidebar claiming an account the running session is not using, which is the exact
+/// mislabelling `--claude-profiles` exists to prevent, moved somewhere more visible.
+///
+/// Verified against herdr 0.8.2: `pane report-metadata [OPTIONS] --source <ID>
+/// <PANE_ID>`, with `--token NAME=VALUE` and `--clear-token NAME`. The pane id is given
+/// first, as [`HOOK`] gives it to `report-agent`, which is the invocation measured
+/// against a live herdr.
+pub(crate) fn profile_metadata_argv(pane_id: &str, profile: Option<&str>) -> Vec<String> {
+    let mut args = vec![
+        "pane".to_owned(),
+        "report-metadata".to_owned(),
+        pane_id.to_owned(),
+        "--source".to_owned(),
+        REPORT_SOURCE.to_owned(),
+    ];
+    match profile {
+        Some(name) => {
+            args.push("--token".to_owned());
+            args.push(format!("{PROFILE_TOKEN}={name}"));
+        }
+        None => {
+            args.push("--clear-token".to_owned());
+            args.push(PROFILE_TOKEN.to_owned());
+        }
+    }
+    args
+}
+
 /// The argv that asks herdr what one pane is running.
 pub(crate) fn process_info_argv(pane_id: &str) -> Vec<String> {
     vec![

@@ -386,6 +386,8 @@ pub(crate) enum Command {
     List { output: ListOutput, sizes: Sizes },
     /// `dl --repos` — the known `owner/repo` strings, for completion.
     Repos,
+    /// `dl --claude-profiles` — the Claude logins `--claude-profile` can name.
+    ClaudeProfiles,
     /// `dl --completion-data` — the whole completion cache, as one JSON line.
     CompletionData,
     /// `dl --update-cache [--force]` — the silent background refresh.
@@ -411,12 +413,14 @@ pub(crate) enum Command {
     Select {
         verb: Verb,
         devcontainer: Option<DevcontainerPath>,
+        claude_profile: Option<String>,
     },
     /// A workspace, and what to do with it.
     Workspace {
         target: String,
         verb: Verb,
         devcontainer: Option<DevcontainerPath>,
+        claude_profile: Option<String>,
     },
 }
 
@@ -444,6 +448,14 @@ pub(crate) enum GrammarError {
     CommandNotAllowed { verb: &'static str },
     /// `--devcontainer` on a command that opens no workspace.
     DevcontainerNotAllowed { command: &'static str },
+    /// `--claude-profile` on a command that opens no workspace.
+    ///
+    /// Refused here and merely *reported* for a workspace verb that forwards no
+    /// login, which is the split `--devcontainer` already draws: a global command
+    /// has no workspace for the flag to mean anything about, while `dl <ws> stop
+    /// --claude-profile work` names a real workspace and a flag that does nothing to
+    /// it. See `claude_profile_ignored` in `crate::commands`.
+    ClaudeProfileNotAllowed { command: &'static str },
     /// `--rm` on a command the flag is not defined for.
     ///
     /// Refused rather than ignored, and `code` is why. `dl <ws> code --rm`
@@ -572,6 +584,11 @@ pub(crate) struct Cli {
     #[arg(long, hide = true)]
     autorm: bool,
 
+    /// List the Claude logins `--claude-profile` can name, and the account each is
+    /// signed in as. Reads them; never writes.
+    #[arg(long = "claude-profiles", group = "what")]
+    claude_profiles: bool,
+
     /// The known `owner/repo` strings, one per line (for shell completion).
     #[arg(long, group = "what", hide = true)]
     repos: bool,
@@ -599,6 +616,12 @@ pub(crate) struct Cli {
     /// pass it once.
     #[arg(long, value_name = "VARIANT|PATH")]
     devcontainer: Option<String>,
+    /// Forward a named Claude login instead of the default one. Profiles live in
+    /// `~/.claude-profiles/<name>/`, or under `CLAUDE_PROFILES_DIR`; dl reads them
+    /// and never creates one. Per launch: unlike `--devcontainer` it is not stored
+    /// with the workspace, so a workspace never forwards an account chosen weeks ago.
+    #[arg(long = "claude-profile", value_name = "NAME")]
+    claude_profile: Option<String>,
     /// Delete the workspace once the session ends, like `docker run --rm`. Only
     /// for the two forms that hand one over: `dl <ws>` and `dl <ws> -- <command>`.
     /// Stops at work that is nowhere else, exactly as the `rm` verb does.
@@ -735,6 +758,7 @@ enum Chosen {
     Purge,
     Version,
     Repos,
+    ClaudeProfiles,
     CompletionData,
     UpdateCache,
     HerdrShell,
@@ -753,6 +777,7 @@ impl Cli {
             (self.purge, Chosen::Purge),
             (self.version, Chosen::Version),
             (self.repos, Chosen::Repos),
+            (self.claude_profiles, Chosen::ClaudeProfiles),
             (self.completion_data, Chosen::CompletionData),
             (self.update_cache, Chosen::UpdateCache),
             (self.herdr_shell, Chosen::HerdrShell),
@@ -856,6 +881,9 @@ fn global_command(cli: &Cli, chosen: Chosen) -> Result<Command, GrammarError> {
     if cli.devcontainer.is_some() {
         return Err(GrammarError::DevcontainerNotAllowed { command: name });
     }
+    if cli.claude_profile.is_some() {
+        return Err(GrammarError::ClaudeProfileNotAllowed { command: name });
+    }
     if cli.rm {
         return Err(GrammarError::RmNotAllowed { command: name });
     }
@@ -919,6 +947,7 @@ fn global_command(cli: &Cli, chosen: Chosen) -> Result<Command, GrammarError> {
         Chosen::Purge => Command::Purge { yes: cli.yes },
         Chosen::Version => Command::Version,
         Chosen::Repos => Command::Repos,
+        Chosen::ClaudeProfiles => Command::ClaudeProfiles,
         Chosen::CompletionData => Command::CompletionData,
         Chosen::UpdateCache => Command::UpdateCache { force: cli.force },
         Chosen::HerdrShell => Command::HerdrShell,
@@ -935,6 +964,7 @@ fn flag_of(chosen: Chosen) -> &'static str {
         Chosen::Purge => "--purge",
         Chosen::Version => "--version",
         Chosen::Repos => "--repos",
+        Chosen::ClaudeProfiles => "--claude-profiles",
         Chosen::CompletionData => "--completion-data",
         Chosen::UpdateCache => "--update-cache",
         Chosen::HerdrShell => "--herdr-shell",
@@ -944,6 +974,10 @@ fn flag_of(chosen: Chosen) -> &'static str {
 /// The workspace-first and verb-first grammar: up to two words, plus `-- <cmd>`.
 fn workspace_command(cli: Cli, argv: &[String]) -> Result<Command, GrammarError> {
     let devcontainer = devcontainer_of(&cli)?;
+    // Carried as typed. `clients::claude` owns the check that a name can be one
+    // directory component, and owns the refusal, so the grammar does not get a
+    // second opinion about what a profile name may be.
+    let claude_profile = cli.claude_profile.clone();
     if cli.yes {
         return Err(GrammarError::ModifierNotAllowed {
             modifier: "--yes",
@@ -990,6 +1024,7 @@ fn workspace_command(cli: Cli, argv: &[String]) -> Result<Command, GrammarError>
                         rm: rm_on_exit_of(&cli),
                     },
                     devcontainer,
+                    claude_profile,
                 });
             }
             ForcePlace::VerbSlot { target } => {
@@ -1081,11 +1116,16 @@ fn workspace_command(cli: Cli, argv: &[String]) -> Result<Command, GrammarError>
         });
     }
     Ok(match target {
-        None => Command::Select { verb, devcontainer },
+        None => Command::Select {
+            verb,
+            devcontainer,
+            claude_profile,
+        },
         Some(target) => Command::Workspace {
             target,
             verb,
             devcontainer,
+            claude_profile,
         },
     })
 }
@@ -1107,6 +1147,14 @@ fn devcontainer_of(cli: &Cli) -> Result<Option<DevcontainerPath>, GrammarError> 
     }
 }
 
+/// The `dl` flags that take a separate value, which [`argv_without_value_flags`]
+/// has to swallow in pairs.
+///
+/// A second copy of a fact about [`Cli`], and `the_value_flags_are_the_ones_clap_takes_values_for`
+/// is the test that diffs it against clap's own parser rather than leaving it to be
+/// kept true by hand.
+const VALUE_FLAGS: [&str; 2] = ["--devcontainer", "--claude-profile"];
+
 /// The argv `wants_startup_cache_refresh` is asked about.
 ///
 /// Python asks the predicate *after* pulling `--devcontainer` out of the argument
@@ -1115,9 +1163,13 @@ fn devcontainer_of(cli: &Cli) -> Result<Option<DevcontainerPath>, GrammarError> 
 /// stripping happens here rather than after clap: what clap produces is a
 /// [`Cli`], and the predicate's question is about the words.
 ///
+/// Every `dl` flag that takes a *separate* value belongs in [`VALUE_FLAGS`], or its
+/// value is left behind to be read as one of the predicate's words: `dl
+/// --claude-profile work --ls` would otherwise look like a line with a word in it.
+///
 /// Scanning stops at the first bare `--`, because everything after it is the
 /// command the workspace runs and must not be read as `dl`'s own flags.
-pub(crate) fn argv_without_devcontainer(argv: &[String]) -> Vec<&str> {
+pub(crate) fn argv_without_value_flags(argv: &[String]) -> Vec<&str> {
     let mut kept = Vec::with_capacity(argv.len());
     let mut rest = argv.iter();
     while let Some(argument) = rest.next() {
@@ -1126,10 +1178,13 @@ pub(crate) fn argv_without_devcontainer(argv: &[String]) -> Vec<&str> {
             kept.extend(rest.map(String::as_str));
             break;
         }
-        if argument.starts_with("--devcontainer=") {
+        if VALUE_FLAGS
+            .iter()
+            .any(|flag| argument.starts_with(&format!("{flag}=")))
+        {
             continue;
         }
-        if argument == "--devcontainer" {
+        if VALUE_FLAGS.contains(&argument.as_str()) {
             // Its value, whatever it is. A missing value is clap's error to
             // report, not this scan's.
             rest.next();
@@ -1227,6 +1282,7 @@ mod tests {
             target: target.to_owned(),
             verb,
             devcontainer: None,
+            claude_profile: None,
         }
     }
 
@@ -1243,6 +1299,7 @@ mod tests {
                 Command::Select {
                     verb: Verb::Stop,
                     devcontainer: None,
+                    claude_profile: None,
                 },
             ),
             (&["stop", "ws"], workspace("ws", Verb::Stop)),
@@ -1330,7 +1387,8 @@ mod tests {
             parse(&["rme"]),
             Ok(Command::Select {
                 verb: remove_and_exit(false),
-                devcontainer: None
+                devcontainer: None,
+                claude_profile: None,
             })
         );
         assert!(remove_and_exit(false).several_at_once());
@@ -1545,7 +1603,8 @@ mod tests {
             parse(&[]),
             Ok(Command::Select {
                 verb: attach(),
-                devcontainer: None
+                devcontainer: None,
+                claude_profile: None,
             })
         );
     }
@@ -1763,7 +1822,8 @@ mod tests {
             parse(&["stop"]),
             Ok(Command::Select {
                 verb: Verb::Stop,
-                devcontainer: None
+                devcontainer: None,
+                claude_profile: None,
             })
         );
     }
@@ -1805,6 +1865,111 @@ mod tests {
                 why: DevcontainerRefError::Missing
             })
         );
+    }
+
+    #[test]
+    fn listing_the_profiles_is_a_command_of_its_own() {
+        // A global command, so it takes no workspace and no modifier: the two flags
+        // read alike and mean opposite things, one naming a login to use and one
+        // asking which exist.
+        assert_eq!(parse(&["--claude-profiles"]), Ok(Command::ClaudeProfiles));
+        assert_eq!(
+            parse(&["--claude-profiles", "--claude-profile", "work"]),
+            Err(GrammarError::ClaudeProfileNotAllowed {
+                command: "--claude-profiles"
+            })
+        );
+        assert!(matches!(
+            parse(&["--claude-profiles", "ws"]),
+            Err(GrammarError::TargetNotAllowed { .. })
+        ));
+    }
+
+    #[test]
+    fn a_claude_profile_is_refused_on_a_command_that_forwards_no_login() {
+        // The same line `--devcontainer` draws below: a global command has no
+        // workspace for the flag to be about. The verb case is not a refusal, it is
+        // `commands::claude_profile_ignored`.
+        for command in [
+            "--ls",
+            "--prune",
+            "--purge",
+            "--reconcile",
+            "--install",
+            "--refresh",
+            "--version",
+        ] {
+            assert_eq!(
+                parse(&[command, "--claude-profile", "work"]),
+                Err(GrammarError::ClaudeProfileNotAllowed { command }),
+                "{command}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_claude_profile_rides_the_workspace_forms_that_open_a_session() {
+        // Carried as typed, and carried by the picker form too: the flag is about
+        // this launch, so a picked workspace gets it exactly as a named one does.
+        assert_eq!(
+            parse(&["ws", "--claude-profile", "work"]),
+            Ok(Command::Workspace {
+                target: "ws".to_owned(),
+                verb: attach(),
+                devcontainer: None,
+                claude_profile: Some("work".to_owned()),
+            })
+        );
+        assert_eq!(
+            parse(&["--claude-profile", "work"]),
+            Ok(Command::Select {
+                verb: attach(),
+                devcontainer: None,
+                claude_profile: Some("work".to_owned()),
+            })
+        );
+    }
+
+    #[test]
+    fn a_profile_name_the_grammar_will_not_judge_still_reaches_the_command() {
+        // The grammar deliberately does not validate the name: `clients::claude`
+        // owns that check and owns the refusal, so there is one boundary rather than
+        // two that can disagree. A traversal attempt is carried here and refused
+        // there.
+        assert_eq!(
+            parse(&["ws", "--claude-profile", "../../etc"]),
+            Ok(Command::Workspace {
+                target: "ws".to_owned(),
+                verb: attach(),
+                devcontainer: None,
+                claude_profile: Some("../../etc".to_owned()),
+            })
+        );
+    }
+
+    #[test]
+    fn the_value_flags_are_the_ones_clap_takes_values_for() {
+        // `VALUE_FLAGS` is a second copy of a fact about `Cli`, and this is the diff
+        // that keeps it honest rather than leaving it to be remembered. A new
+        // value-taking flag missing from the list does not reach `dl` wrongly, it
+        // leaves its value behind for `wants_startup_cache_refresh` to read as a
+        // word.
+        use clap::CommandFactory;
+        let mut wanted: Vec<String> = Cli::command()
+            .get_arguments()
+            .filter(|arg| !arg.is_positional())
+            .filter(|arg| {
+                matches!(
+                    arg.get_action(),
+                    clap::ArgAction::Set | clap::ArgAction::Append
+                )
+            })
+            .filter_map(|arg| arg.get_long().map(|long| format!("--{long}")))
+            .collect();
+        wanted.sort();
+        let mut listed: Vec<String> = VALUE_FLAGS.iter().map(|f| (*f).to_owned()).collect();
+        listed.sort();
+        assert_eq!(listed, wanted);
     }
 
     #[test]
@@ -1918,7 +2083,7 @@ mod tests {
         ];
         for (argv, expected) in cases {
             let owned: Vec<String> = argv.iter().map(|word| word.to_string()).collect();
-            assert_eq!(argv_without_devcontainer(&owned), expected, "{argv:?}");
+            assert_eq!(argv_without_value_flags(&owned), expected, "{argv:?}");
         }
     }
 
@@ -1973,7 +2138,8 @@ mod tests {
             parse(&["--rm"]),
             Ok(Command::Select {
                 verb: Verb::Attach { rm: RmOnExit::Yes },
-                devcontainer: None
+                devcontainer: None,
+                claude_profile: None,
             })
         );
     }

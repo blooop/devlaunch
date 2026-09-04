@@ -335,7 +335,18 @@ pub(crate) fn start_forward(
 // binary surface -- not part of the frozen wf API (#251 §7)
 pub enum PaneDestination {
     /// The tab holds a live devlaunch session, in this workspace.
-    Workspace(String),
+    Workspace {
+        workspace_id: String,
+        /// The Claude profile the session beside this pane was launched with, when
+        /// its `dl` argv names one.
+        ///
+        /// Read rather than remembered, which is what lets it exist at all: a
+        /// profile is named per launch and deliberately **not** stored with the
+        /// workspace, so there is nothing on disk for a new pane to inherit. The
+        /// live sibling process is the only record, and herdr is already being
+        /// asked what that pane is running.
+        claude_profile: Option<String>,
+    },
     /// Open an ordinary shell on this host.
     HostShell,
 }
@@ -415,10 +426,42 @@ fn destination_for(runner: &dyn Runner, host: PaneEnv<'_>) -> PaneDestination {
             continue;
         };
         if let Some(workspace_id) = workspace_among(&info) {
-            return PaneDestination::Workspace(workspace_id);
+            return PaneDestination::Workspace {
+                workspace_id,
+                // Asked of the *same* pane, so one pane answers both questions and a
+                // tab holding two sessions cannot pair one session's workspace with
+                // another's account.
+                claude_profile: profile_among(&info).map(str::to_owned),
+            };
         }
     }
     PaneDestination::HostShell
+}
+
+/// Tell the manager which Claude account this pane's session is running as.
+///
+/// Display only: it sets a metadata token herdr renders as `$profile`, and touches no
+/// lifecycle state, so it cannot disturb the idle/working/blocked the hook reports.
+///
+/// **Reported and then tolerated**, like everything else in this flow. A herdr that is
+/// gone, too old for `report-metadata`, or simply slow costs a label and never a
+/// session, so the outcome is deliberately dropped.
+///
+/// Called with `None` as well as with a name, because a pane is reused and a stale
+/// label is worse than none: see [`herdr::profile_metadata_argv`].
+pub(crate) fn report_profile(
+    runner: &dyn Runner,
+    reporting: &herdr::Reporting,
+    profile: Option<&str>,
+) {
+    let mut budget = Budget::of(herdr::ANSWER_WITHIN);
+    let program = reporting.host_binary().display().to_string();
+    let _ = ask(
+        runner,
+        &program,
+        &herdr::profile_metadata_argv(reporting.pane_id(), profile),
+        &mut budget,
+    );
 }
 
 /// What is left of the time the whole question may take.
@@ -498,6 +541,55 @@ fn workspace_among(info: &herdr::PaneProcessInfo) -> Option<String> {
         .filter_map(|process| process.argv.as_deref())
         .find_map(workspace_named_by)
         .map(str::to_owned)
+}
+
+/// The Claude profile a pane's processes name, if one of them was given one.
+///
+/// Asked only of a pane that has already named a workspace, so the question is
+/// "which account is *this devlaunch session* running as" rather than a scan of the
+/// machine. That coupling is the guard: an unrelated pane is never consulted.
+///
+/// **Elements are compared whole, and the scan stops at the first bare `--`.** Both
+/// matter for one case. `aid <ws> add --claude-profile support to the docs` becomes a
+/// `dl` line whose prompt is a single argument containing that text, and the ssh
+/// transport carries the same string as one payload argument; neither is an argv
+/// *element* equal to `--claude-profile`, so neither is read as a flag. The `--` stop
+/// says the same thing a second way, and cheaply.
+///
+/// Deliberately not gated on the program name. `dl` on a host may be `dl`, `dl-next`
+/// or an absolute path, and matching that family by prefix is exactly the fuzzy test
+/// that made [`ssh_host`] necessary. The pane-level coupling above is the stronger
+/// guard and needs no such guess.
+fn profile_among(info: &herdr::PaneProcessInfo) -> Option<&str> {
+    info.foreground_processes
+        .iter()
+        .filter_map(|process| process.argv.as_deref())
+        .find_map(profile_named_by)
+}
+
+/// The profile one argv names, in either of clap's two spellings.
+fn profile_named_by(argv: &[String]) -> Option<&str> {
+    // The first match, and one is all a real argv can hold: `--claude-profile` is an
+    // `Option<String>` under clap with no `ArgAction::Append`, so a repeat is refused
+    // outright ("the argument '--claude-profile <NAME>' cannot be used multiple times")
+    // and the launch never happens. There is therefore no last-versus-first question to
+    // get wrong here, which is worth writing down because the reader looks like it has
+    // one. `a_repeated_profile_never_reaches_a_running_agent` holds clap to that.
+    let mut rest = argv.iter();
+    while let Some(argument) = rest.next() {
+        if argument == "--" {
+            // Everything after this belongs to the command the workspace runs, and a
+            // prompt is allowed to contain anything at all.
+            return None;
+        }
+        if let Some(value) = argument.strip_prefix("--claude-profile=") {
+            return (!value.is_empty()).then_some(value);
+        }
+        if argument == "--claude-profile" {
+            return rest.next().map(String::as_str).filter(|v| !v.is_empty());
+        }
+    }
+    None
 }
 
 /// The workspace an argv names, when the argv is one of dl's two transports.
@@ -1099,6 +1191,192 @@ mod tests {
         assert_eq!(workspace_named_by(&[]), None);
     }
 
+    /// One foreground process running `words`, beside the existing `argv` helper.
+    fn process(words: &[&str]) -> herdr::ForegroundProcess {
+        herdr::ForegroundProcess {
+            argv: Some(argv(words)),
+        }
+    }
+
+    #[test]
+    fn the_profile_label_is_set_and_cleared_in_herdrs_own_words() {
+        // Verified against herdr 0.8.2's `pane report-metadata --help`, not guessed:
+        // `[OPTIONS] --source <ID> <PANE_ID>`, where a metadata token is set with
+        // `--token` as `NAME=VALUE` and cleared with `--clear-token`. The pane id
+        // goes first, as the hook gives it to `report-agent`, which is the
+        // invocation measured against a live herdr.
+        assert_eq!(
+            herdr::profile_metadata_argv("pane-7", Some("work")),
+            argv(&[
+                "pane",
+                "report-metadata",
+                "pane-7",
+                "--source",
+                "devlaunch:claude",
+                "--token",
+                "profile=work",
+            ])
+        );
+        // No profile clears the label rather than leaving one. A pane is reused, and a
+        // sidebar claiming an account the running session is not using is the
+        // mislabelling `--claude-profiles` exists to prevent, moved somewhere more
+        // visible.
+        assert_eq!(
+            herdr::profile_metadata_argv("pane-7", None),
+            argv(&[
+                "pane",
+                "report-metadata",
+                "pane-7",
+                "--source",
+                "devlaunch:claude",
+                "--clear-token",
+                "profile",
+            ])
+        );
+    }
+
+    #[test]
+    fn the_hook_reports_under_the_source_this_module_names() {
+        // Two copies of one string: this module's argv builders and the hook, which
+        // spells it as a shell literal because it is a shell script. CLAUDE.md's
+        // standing rule asks for a test beside the second copy, and this is it.
+        assert!(
+            herdr::HOOK.contains(herdr::REPORT_SOURCE),
+            "the hook no longer reports under {}",
+            herdr::REPORT_SOURCE
+        );
+    }
+
+    #[test]
+    fn a_profile_label_costs_a_label_and_never_a_session() {
+        // Reported and then tolerated, like everything else in this flow. A herdr that
+        // is not installed, is too old for `report-metadata`, or simply refuses must
+        // cost the label and never the session. The signature is most of the guarantee
+        // -- there is no outcome for a caller to branch on -- and this is the other
+        // half: the unscripted and missing cases both return rather than panicking.
+        let reporting = reporting();
+        report_profile(&ScriptedRunner::new(), &reporting, Some("work"));
+        report_profile(&ScriptedRunner::new(), &reporting, None);
+        let absent =
+            ScriptedRunner::new().with_missing(reporting.host_binary().display().to_string());
+        report_profile(&absent, &reporting, Some("work"));
+    }
+
+    #[test]
+    fn a_profile_is_read_out_of_the_line_that_named_it() {
+        // Both of clap's spellings, since `dl` accepts either and a recalled line may
+        // hold either.
+        assert_eq!(
+            profile_named_by(&argv(&["dl", "ws", "--claude-profile", "work"])),
+            Some("work")
+        );
+        assert_eq!(
+            profile_named_by(&argv(&["dl", "--claude-profile=work", "ws"])),
+            Some("work")
+        );
+        // A line that named none, which is almost every line.
+        assert_eq!(profile_named_by(&argv(&["dl", "ws"])), None);
+        // A flag with nothing after it is clap's error to report, not a profile.
+        assert_eq!(
+            profile_named_by(&argv(&["dl", "ws", "--claude-profile"])),
+            None
+        );
+        assert_eq!(
+            profile_named_by(&argv(&["dl", "--claude-profile=", "ws"])),
+            None
+        );
+    }
+
+    #[test]
+    fn a_repeated_profile_never_reaches_a_running_agent() {
+        // Why this reader needs no first-versus-last rule, asserted rather than
+        // assumed: clap refuses a repeated `--claude-profile` outright, so no agent is
+        // ever running with two of them in its argv. Written down because the reader
+        // looks like it has a choice to make here, and a future `ArgAction::Append` on
+        // that flag would give it one -- at which point this test fails and says so.
+        //
+        // The clap half lives in `dl` and cannot be called from this crate, so what is
+        // pinned here is the consequence: whichever single occurrence an argv holds,
+        // both spellings and both positions answer with it.
+        assert_eq!(
+            profile_named_by(&argv(&["dl", "ws", "--claude-profile", "work"])),
+            Some("work")
+        );
+        assert_eq!(
+            profile_named_by(&argv(&["dl", "--claude-profile=work", "ws"])),
+            Some("work")
+        );
+        // What sits after `--` is the command's, so a flag there is never a profile.
+        assert_eq!(
+            profile_named_by(&argv(&["dl", "ws", "--", "--claude-profile", "personal",])),
+            None
+        );
+    }
+
+    #[test]
+    fn a_prompt_that_mentions_the_flag_is_not_a_profile() {
+        // The case that decides how this is written. `aid <ws> add --claude-profile
+        // support to the docs` becomes a dl line whose prompt is one argument holding
+        // that text, and the ssh transport carries the same string as one payload
+        // argument. Elements are compared whole, so neither is a flag; the `--` stop
+        // says it a second way.
+        assert_eq!(
+            profile_named_by(&argv(&[
+                "dl",
+                "ws",
+                "--",
+                "claude",
+                "add --claude-profile support to the docs",
+            ])),
+            None
+        );
+        assert_eq!(
+            profile_named_by(&argv(&[
+                "ssh",
+                "ws.devpod",
+                "claude 'add --claude-profile support'",
+            ])),
+            None
+        );
+        // And a real flag *before* the `--` is still read, so the stop is a stop and
+        // not a refusal.
+        assert_eq!(
+            profile_named_by(&argv(&[
+                "dl",
+                "--claude-profile",
+                "work",
+                "ws",
+                "--",
+                "claude",
+                "--claude-profile decoy",
+            ])),
+            Some("work")
+        );
+    }
+
+    #[test]
+    fn the_profile_comes_from_the_pane_that_named_the_workspace() {
+        // One pane answers both questions, so a tab holding two sessions cannot pair
+        // one session's workspace with another's account. The workspace comes off the
+        // transport process and the profile off `dl`, which are two processes in the
+        // same pane.
+        let info = herdr::PaneProcessInfo {
+            foreground_processes: vec![
+                process(&["dl", "ws", "--claude-profile", "work"]),
+                process(&["ssh", "-F", "cfg", "ws-3j1t.devpod", "payload"]),
+            ],
+        };
+        assert_eq!(profile_among(&info), Some("work"));
+    }
+
+    #[test]
+    fn a_pane_with_no_profile_on_its_line_reports_none() {
+        let info = herdr::PaneProcessInfo {
+            foreground_processes: vec![process(&["dl", "ws"]), process(&["ssh", "ws.devpod"])],
+        };
+        assert_eq!(profile_among(&info), None);
+    }
+
     /// The diff test CLAUDE.md's standing rule asks for. [`workspace_named_by`] is
     /// a second copy of a shape two argv builders own, so both builders are run
     /// and their output is fed to the reader. Break either builder and this fails;
@@ -1236,7 +1514,10 @@ mod tests {
         );
         assert_eq!(
             destination(&runner, in_pane_of("w1:t1")),
-            PaneDestination::Workspace("devlaunch-main-3j1t".to_owned())
+            PaneDestination::Workspace {
+                workspace_id: "devlaunch-main-3j1t".to_owned(),
+                claude_profile: None,
+            }
         );
     }
 
@@ -1307,7 +1588,10 @@ mod tests {
         );
         assert_eq!(
             destination(&runner, in_pane_of("w1:t1")),
-            PaneDestination::Workspace("ws-3j1t".to_owned())
+            PaneDestination::Workspace {
+                workspace_id: "ws-3j1t".to_owned(),
+                claude_profile: None,
+            }
         );
     }
 

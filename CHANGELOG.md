@@ -9,6 +9,150 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`dl --claude-profile <name>` forwards a named Claude login instead of the
+  default one**, for the case one credential cannot serve: two accounts on one
+  machine, and a workspace that wants the one your host is not signed in to. Profiles
+  are directories under `~/.claude-profiles/`, or wherever `CLAUDE_PROFILES_DIR` points,
+  each holding the `.credentials.json` a `claude` login writes and each a
+  `CLAUDE_CONFIG_DIR` of its own, which is what makes the logins independent.
+
+  **That layout and that variable belong to the tool managing the profiles, and `dl`
+  only reads them.** The first version of this invented a devlaunch-shaped root under
+  the config directory, which was a third location for one concept and would have asked
+  anyone with working profiles to log every account in again somewhere new. There is no
+  writer here: creating, seeding and deleting a profile stay with whatever made the
+  directory. `DEVLAUNCH_CLAUDE_PROFILES_DIR` still wins over `CLAUDE_PROFILES_DIR`, so a
+  scratch run reads its own profiles rather than the real credentials.
+
+  `--claude-profile default` resolves the login you would get anyway and never consults
+  a `default/` directory, so a picker has something to select and a recalled line has a
+  way to say "not the profile I used last time".
+
+- **`dl --claude-profiles` lists those logins with the account behind each one**, because
+  a profile's name is chosen by a person and verified by nothing. A profile called `work`
+  holding a personal login reads as correct right up until work is pushed from the wrong
+  identity, which is the failure profiles exist to prevent; the name is what you type and
+  the account column is what you get. Read from the three fields of `.claude.json` worth
+  showing (email, organisation, seat tier), and it distinguishes a profile with no
+  credential from one whose state file says nothing.
+
+  **Two names for one directory are one login, not a spare copy of one.** The
+  redundancy footnote says "all but one are spare", so a group has to mean separate
+  directories you could delete one of. `CLAUDE_CONFIG_DIR=~/.claude-profiles/work`
+  makes the `default` row and the `work` row the same directory, the same state file
+  and the same account id, and grouping on the id alone named the only login on the
+  host; a symlinked profile directory got there the same way, since the walk follows
+  symlinks. A directory is now counted once, so both rows are still listed with the
+  same account against each and no deletion is advised. `path` is not in the listing,
+  which is why nothing on screen let a reader catch this.
+
+  **A profiles directory that cannot be read says so** instead of listing as a host
+  with no profiles. Only `NotFound` is silent, because a root nothing has created yet
+  is the ordinary state of most hosts; a root that is unreadable, or a plain file where
+  the directory should be, told a host with five profiles that it had none.
+
+  **No token is read to build it.** The `authed` column is the credential file's
+  existence and never its contents, so a listing has not touched a secret. It is also
+  the way to find a profile created and never logged in to, since a launch naming one of
+  those refuses.
+
+  It also names the profiles that are **two names for one account**, which is the other
+  thing a name cannot tell you: two profiles of one account render identically to two
+  colleagues who share an organisation, so the redundant one is invisible exactly where
+  you are choosing between them. Grouped on the account's own id and never on a display
+  field, since a shared organisation is two people; a profile naming no account joins no
+  group, because two blanks are not the same account. Said once per group as a footnote
+  rather than per row as a column, because it is a fact about a pair.
+
+  A profile name beginning with a dot is now refused as well as unlisted. A `<root>/*/`
+  glob matches no dot-directory, so neither the listing nor the completion would ever
+  show one, and a profile you can launch but never see is a trap. That is marginally
+  stricter than the `^[A-Za-z0-9._-]+$` the managing tool validates with, and it makes
+  the resolver, the listing and the completion agree.
+
+  **A named profile that holds no credential stops the launch, and that refusal is the
+  feature.** It does not fall back to the default login. Two accounts on one machine is
+  what profiles are for, so a typo that silently forwarded the other one would be worse
+  than a launch that fails: the launch you see, and the wrong account you find out about
+  later and somewhere else. The name is checked at the boundary as a single directory
+  component, so `--claude-profile ../../etc` is refused by the rule rather than becoming
+  a traversal that fails later on a read. A leading `.` is refused along with a leading
+  `-`, which subsumes `.` and `..` and makes the one sentence a refusal prints true of
+  every name it refuses: `.work` was accepted and read from `<root>/.work/` while the
+  message said a name "cannot begin with '.' or '-'".
+
+  Read above an exported `CLAUDE_CODE_OAUTH_TOKEN`, unlike `$CLAUDE_CONFIG_DIR`, because
+  a profile was typed on this command line for this launch and nothing ambient should
+  beat an explicit argument. `DEVLAUNCH_NO_CLAUDE_TOKEN` still comes first: a machine
+  that has opted out has no account to choose.
+
+  **Not stored with the workspace**, unlike `--devcontainer`, so no workspace can
+  quietly forward an account chosen weeks ago. Profiles live outside everything devlaunch owns
+  so `--purge` and `--prune`, which walk devlaunch's cache, were never in reach of a
+  login. Completion offers the profiles that exist plus `default`, read off the disk
+  rather than the completion cache, because a profile made a minute ago has to complete
+  now.
+
+  It is not the claude.ai account a container's `claude` is paired to for Remote
+  Control, and it does not weaken the check that leaves a repo's own mounted Claude
+  config alone: `Foreign` forwards nothing, profile or no profile. **It does say so,
+  though.** That check sits above the profile arm on purpose, and it is reached with a
+  profile named on three ordinary paths: a repo whose devcontainer mounts its own Claude
+  config, a workspace older than the provisioning record, and `DEVLAUNCH_NO_TOOLS` or a
+  probe report that would not parse. A launch that ignored an explicit
+  `--claude-profile` in silence there was the same wrong-account-found-out-later outcome
+  the refusal exists to prevent, so it warns once and forwards nothing. A launch that
+  named no profile stays quiet, since a host that does not use Claude has earned no
+  warning. `aid` passes the flag through. A verb that forwards no login says it is
+  ignoring it, as `--devcontainer` does; a global command refuses it.
+
+- **A pane's row in [herdr](https://herdr.dev) says which account the agent in it is
+  running as**, reported as the display label `profile=<name>`. A profile is chosen per
+  launch and forwarded per session, so two tabs side by side can be two different
+  accounts with nothing on screen to tell them apart, and the failure that matters here
+  is not noticing: work pushed from the wrong identity is found out about later and
+  somewhere else. Reported under devlaunch's own source name, so it sits beside herdr's
+  labels rather than overwriting one, and cleared rather than left stale when a launch
+  forwards the default login. The label is reported before anything that can go wrong
+  with the manager's socket, because a launch whose forward never starts still opens a
+  session: reporting it last would have cleared a stale label on one path out of five
+  and left `profile=work` standing over a session on another account on the other four.
+
+  **A pane opened beside an agent inherits the profile that agent started with.** The
+  pane shell already opens in the workspace its tab holds; a workspace is not an account,
+  so it read the default login while the agent one pane over ran as another. It is read
+  from the agent's own argv rather than from a note kept anywhere, for the reason the
+  pane shell keeps nothing: the argv is what is true, and a record would be a second copy
+  of it that can go stale. An exact element match, and it stops at a bare `--`, so a
+  prompt that contains the words `--claude-profile work` is a prompt.
+
+  **Nothing is inherited across a boundary.** A pane in a tab holding no agent has no
+  account to inherit and gets the default login, and the environment of an agent already
+  running is fixed at exec, so switching profile reaches the next session and never the
+  one on screen.
+
+### Fixed
+
+- **`$CLAUDE_CONFIG_DIR` is now honoured on the host, so a host that has moved its
+  Claude configuration forwards its login instead of reporting itself as not logged
+  in.** Claude Code reads that variable before `~/.claude`, and the probe `dl` runs
+  inside a container has always read it too, because a devcontainer feature may set
+  it. Only the host side did not, and the symptom was silent: `claude` in every
+  workspace asked for a login while the host was authenticated, with nothing to say
+  why, because "no credential file at `~/.claude`" is also the ordinary macOS state
+  and so is deliberately not warned about.
+
+  The variable **replaces** `~/.claude` rather than being tried ahead of it, which
+  is how Claude Code treats it. Falling back would forward a credential out of a
+  directory Claude Code is not reading, and that is the same defect one level down:
+  invisible until the host has two logins, at which point it forwards the wrong one.
+  An empty value counts as unset, and the value is read as bytes rather than as
+  text, so a configuration directory whose name is not valid UTF-8 is opened as
+  named instead of being mangled into one that cannot be found. An exported
+  `CLAUDE_CODE_OAUTH_TOKEN` still wins over both, so a `dl` inside a workspace keeps
+  passing its own token further down, and `DEVLAUNCH_NO_CLAUDE_TOKEN` still beats
+  everything.
+
 - **A `devpod up` that has gone quiet says so, every 30 seconds, with the number
   going up.** A cold launch spends minutes on a single `postCreateCommand` step
   and said nothing while it did. Measured on one host: two consecutive lines
