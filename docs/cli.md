@@ -1,11 +1,12 @@
 # The command line, in full
 
 [README](../README.md) has the commands you need. This page is the rest: how the
-selector decides what you picked, which commands get a terminal, what `--rm`
-promises and where it stops, which exits fire it, the spellings that were retired
-and what they say now, what `aid`'s Remote Control default starts and how to turn
-it off, what `kill` does to a workspace that will not answer, and what happens
-when devpod is missing or will not answer.
+selector decides what you picked, which verb refreshes git state and which only
+touch the container, which commands get a terminal, what `--rm` promises and where
+it stops, which exits fire it, the spellings that were retired and what they say
+now, what `aid`'s Remote Control default starts and how to turn it off, what
+`kill` does to a workspace that will not answer, and what happens when devpod is
+missing, will not answer, or injects the wrong agent binary.
 
 ## The selector
 
@@ -81,6 +82,22 @@ Nothing here is short of room, and that is why the picker spends it differently 
 is read one at a time down the terminal, so the branch is spelled in full, slashes and
 all. A tab is a handful of characters read at a glance next to a dozen others, so it
 takes the truncated slug and drops the suffix. Same workspace, two jobs.
+
+## What a verb does not refresh
+
+Every verb on this page acts on a container. **`rm` is the only one that refreshes
+git state**, because it deletes the clone along with the workspace and the launch
+after it is a cold one. `restart`, `recreate` and `reset` all reach a workspace
+devpod already knows, and that path runs no git at all: no fetch, no ref update,
+no checkout. So a container can be rebuilt repeatedly from a checkout that never
+moves, and `reset` in particular is a clean slate for the container and its
+volumes rather than for the code in it.
+
+`dl` reports the part of that you cannot see. Launch `owner/repo@branch` against a
+workspace devpod already has and, when the checkout is behind the `origin/<branch>`
+that clone last fetched, the attach says how far behind before it hands over the
+shell. [How fresh a launch is](workspaces.md#how-fresh-a-launch-is) is the whole
+of the freshness rules, and the section under it names which verb moves what.
 
 ## Commands that need a terminal
 
@@ -648,3 +665,31 @@ Shell completion is the deliberate exception. `dl --install`, `dl --refresh` and
 `dl --completion-data` log the failure and carry on with the repos and branches
 they can still discover on local disk, so an unreachable devpod costs you
 workspace-name completion and nothing more.
+
+### An `up` that dies with `inject agent … exit status 126`
+
+The message is devpod's and the cause is a substring match. devpod decides which
+agent binary to inject by globbing `uname -a` for `arm`, and `uname -a` includes
+the container's hostname, so a container whose hostname contains `arm` reads as an
+ARM machine on an x86 host. devpod downloads the arm64 agent, the version check
+cannot execute it, and 126 is the shell's "not executable". Every workspace whose
+branch contains `alarm`, `warm`, `charm`, `swarm`, `harm`, `farm` or `armature` is
+a candidate, and `dl`'s own setup pass puts the workspace id into the hostname, so
+`dl` is one of the ways the name gets there.
+
+```bash
+# the mechanism, in any running container
+docker exec <container> sh -c 'case "$(uname -a)" in *arm*) echo ARM;; *) echo NOT;; esac'
+# what got injected
+docker exec <container> file /usr/local/bin/devpod
+```
+
+To unblock a container already in this state without rebuilding it, copy the
+right binary in and reconnect:
+
+```bash
+docker cp "$(command -v devpod)" <container>:/usr/local/bin/devpod
+```
+
+Not `restart` or `recreate`: a recreate wipes it. Renaming the branch is the only
+fix that lasts until the upstream match is anchored on `uname -m`.

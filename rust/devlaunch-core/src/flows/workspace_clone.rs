@@ -33,6 +33,10 @@
 //! - **Staleness is reported as a value, not a log line** ([`BranchBase`]), because
 //!   `wf` reads dl's output and a launch from an unrefreshed base has to be
 //!   distinguishable (devlaunch#245).
+//! - **How a checkout stands is read from the clone and never from the network**
+//!   ([`checkout_freshness`]), so the launch that reports it stays the launch that
+//!   makes no git call of consequence (devlaunch#560). Not the same subject as
+//!   [`BranchBase`], which is about a fetch that was attempted and did not land.
 //!
 //! Nothing here prints: every warning Python wrote is a [`CacheNotice`] carrying
 //! that line's data, and every failure is a typed error.
@@ -54,6 +58,7 @@ use crate::domain::metadata::MetadataStorage;
 use crate::domain::model::WorktreeInfo;
 use crate::domain::workspace_id::{NamePart, UnsafeName, WorkspaceId, validate_ref_name};
 use crate::notices::Notices;
+use crate::runner::Runner;
 use crate::timing;
 
 /// The remote every workspace clone talks to.
@@ -1317,6 +1322,49 @@ impl<'r> WorkspaceCloneManager<'r> {
 /// Whether a directory holds a git clone: it is there, and it has a `.git`.
 fn clone_is_there(ws_path: &Path) -> bool {
     ws_path.exists() && ws_path.join(".git").exists()
+}
+
+/// How the checkout dl cut for *workspace* stands against the ref it was last
+/// fetched to, or `None` when there is nothing dl can honestly say.
+///
+/// **The whole of it is local, and that is the design and not a shortcut**
+/// (devlaunch#560). A launch of a workspace devpod already knows makes no git
+/// call at all — devlaunch#144's decision, built by #149 and #150 — and a fetch
+/// added here to report freshness would trade away the thing that decision
+/// bought. It is not needed either: the clone already holds
+/// `refs/remotes/origin/<branch>` from the last fetch that reached it, so how the
+/// checkout stands against *that* is one `rev-list` over a local repository,
+/// single-digit milliseconds beside the 0.43s to 0.74s one `devpod status` costs
+/// on the same path (devlaunch#393).
+///
+/// The claim a caller may make from this is correspondingly narrow: how the
+/// checkout compares to a ref of whatever age, never how it compares to the
+/// remote now. That is already the whole of what somebody needs to know that
+/// `git fetch` or `dl <ws> rm` is the next move, and it cannot be wrong about a
+/// remote it never asked.
+///
+/// `None` for every way of not knowing, because they are one answer to a caller
+/// whose only options are to say something or to say nothing: no clone on disk (a
+/// workspace whose directory was removed under it), a `.git` git will not read, a
+/// clone with no remote-tracking ref for this branch (which is what a branch
+/// created locally and never pushed looks like), or output this build does not
+/// recognise.
+pub(crate) fn checkout_freshness(
+    runner: &dyn Runner,
+    repos_dir: &Path,
+    workspace: &WorkspaceId,
+) -> Option<git::AheadBehind> {
+    let ws_path = clone_dir(repos_dir, workspace);
+    // One stat before a spawn: a workspace whose clone is gone is the common way
+    // to reach here with nothing to read, and git would answer it with a refusal
+    // that costs a process.
+    if !clone_is_there(&ws_path) {
+        return None;
+    }
+    Git::new(runner)
+        .ahead_behind(&ws_path, &git::refs_remotes(ORIGIN, workspace.git_ref()))
+        .said()
+        .flatten()
 }
 
 /// Report what ensuring the branch turned out to be, in Python's order.

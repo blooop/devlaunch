@@ -90,7 +90,7 @@ use crate::flows::records::{self, Records, RecordsNotice, StartupError};
 use crate::flows::repo_manager::CacheNotice;
 use crate::flows::repo_manager::EnsureRepoError;
 use crate::flows::session_manager;
-use crate::flows::workspace_clone::{PrepareColdError, WorkspaceCloneManager};
+use crate::flows::workspace_clone::{self, PrepareColdError, WorkspaceCloneManager};
 use crate::notices::{Notices, Wrapped};
 use crate::runner::{Exit, Runner};
 use crate::shell;
@@ -430,6 +430,24 @@ pub enum LaunchNotice {
     /// `devpod up` was not re-run.
     BroughtUpBySibling { workspace_id: String },
 
+    // --- the dotfiles this `up` asked devpod for (devlaunch#560)
+    //
+    // Neither arm is a Python line: dl read devpod's context, silently forwarded
+    // two flags or silently omitted them, and there was no way from the terminal
+    // to tell which had happened. That is what turned "the dotfiles never landed"
+    // into a fortnight of three plausible causes and no observation to cut between
+    // them. Said on the `up` and only on the `up`, because devpod installs
+    // dotfiles when it *provisions* a container: an attach that runs no `up` is
+    // making no claim about dotfiles either way, and a line there would suggest it
+    // was.
+    /// This `up` carried `--dotfiles` (and `--dotfiles-script`, when the context
+    /// names one), from `devpod context options` and from nowhere else.
+    DotfilesForwarded { url: String, script: Option<String> },
+    /// devpod's context options name no dotfiles repository, so this `up` asked
+    /// for none. Carries nothing: what is absent is the same absence for every
+    /// workspace.
+    DotfilesNotConfigured,
+
     // --- the token (gh_auth.py, memoized here)
     /// The host has no GitHub token to forward, and this is why. One per launch
     /// however often the token is asked for — see `HostToken`.
@@ -518,6 +536,24 @@ pub enum LaunchNotice {
     // --- the launch's own arms (dl.py `_run_cli`)
     /// The workspace is already running, so this launch attaches straight to it.
     AlreadyRunningAttaching { workspace_id: String },
+    /// dl's own clone for this triple is behind the remote-tracking ref it was
+    /// last fetched to, and this launch is not going to move it.
+    ///
+    /// Said for a triple that resolved to a workspace devpod already has, which is
+    /// the shape that misleads: naming a branch implies a claim about that branch,
+    /// and the launch makes no git call to back one (devlaunch#560). `ahead` rides
+    /// along because a diverged checkout is two facts and "37 behind" alone would
+    /// describe somebody's own unpushed commits as staleness.
+    ///
+    /// Both counts are against a ref of whatever age the last fetch left it, which
+    /// is what [`workspace_clone::checkout_freshness`] can answer without a
+    /// network call. Nothing here is a claim about the remote now.
+    CheckoutBehind {
+        workspace_id: String,
+        branch: String,
+        ahead: u32,
+        behind: u32,
+    },
     /// devpod holds a record for this workspace and no create result, so an `up`
     /// started and never finished. Its container may well be running.
     CreateNeverFinished { workspace_id: String },
@@ -608,13 +644,39 @@ impl ContextOptions {
         self.0.get("SSH_CONFIG_INCLUDE_PATH").map(String::as_str)
     }
 
+    /// What the flags above amount to, as the one line a person can check the
+    /// argv against (devlaunch#560).
+    ///
+    /// Derived from the same two readers [`Self::up_args`] uses rather than from
+    /// the argv it built, which is the one thing this must not do: reading the
+    /// flags back would make the notice a restatement of the list instead of a
+    /// second reading of the same options, and the disagreement worth catching is
+    /// exactly a reader that stopped feeding the argv.
+    fn dotfiles_notice(&self) -> LaunchNotice {
+        match self.dotfiles_url() {
+            Some(url) => LaunchNotice::DotfilesForwarded {
+                url: url.to_owned(),
+                script: self.dotfiles_script().map(str::to_owned),
+            },
+            None => LaunchNotice::DotfilesNotConfigured,
+        }
+    }
+
     /// The `devpod up` flags these options contribute, in Python's order.
+    ///
+    /// The script is only a flag when there is a repository for it to be a path
+    /// *in*: `--dotfiles-script` names a file inside whatever `--dotfiles` cloned,
+    /// so alone it asks devpod to run a script in a repository nobody named. That
+    /// used to be pushed anyway, which is the one way the argv and
+    /// [`Self::dotfiles_notice`] could disagree -- and they are meant to be two
+    /// readings of the same options, not a list and a restatement of it.
     fn up_args(&self) -> Vec<String> {
         let mut args = Vec::new();
-        if let Some(url) = self.dotfiles_url() {
-            args.push("--dotfiles".to_owned());
-            args.push(url.to_owned());
-        }
+        let Some(url) = self.dotfiles_url() else {
+            return args;
+        };
+        args.push("--dotfiles".to_owned());
+        args.push(url.to_owned());
         if let Some(script) = self.dotfiles_script() {
             args.push("--dotfiles-script".to_owned());
             args.push(script.to_owned());
@@ -1538,6 +1600,11 @@ fn up_under_stage(
         .map(StagedToken::up_args)
         .unwrap_or_default();
     let args = up_args(request, &options, &pixi, &token_args);
+    // Said here rather than where the options are read, so the line and the argv
+    // cannot disagree: this is the one production site that turns those options
+    // into flags, and it is on the far side of every arm that returns without
+    // running an `up` at all.
+    notices.say(options.dotfiles_notice());
 
     // This launch is the one paying for the `up`, so no prewarm saved it from
     // anything — whether or not one was fired.
@@ -3941,7 +4008,10 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
         )
         .map_err(LaunchAborted::DevpodNotRun)?;
         match resolved {
-            Resolution::Warm { placement } => Ok(Ok(placement)),
+            Resolution::Warm { placement } => {
+                self.say_how_the_checkout_stands(&placement, &workspace);
+                Ok(Ok(placement))
+            }
             Resolution::Cold { workspace } => {
                 match prepare(self.cold, &workspace, &remote_url, &mut *self.notices) {
                     Ok(placement) => Ok(Ok(placement)),
@@ -3954,6 +4024,56 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
                 }
             }
         }
+    }
+
+    /// Say how dl's clone for this triple stands, on the arm where nothing else
+    /// will.
+    ///
+    /// **The gap this closes.** A launch that resolves warm returns the placement
+    /// and runs no git: no fetch, no checkout, no ref update, whatever verb
+    /// follows. `reset` rides the same arm — its `--reset` is devpod's flag, and
+    /// devpod removes the *source* only for a git-sourced workspace, where dl
+    /// hands it a local folder — so a container can be rebuilt over and over from
+    /// a checkout that never moves. Everything about that is deliberate and
+    /// documented (devlaunch#144, `docs/workspaces.md`); what was missing is that
+    /// the terminal said none of it at the moment somebody was about to conclude
+    /// something inside the container (devlaunch#560).
+    ///
+    /// **Two shapes stay silent, and it is not an omission.** A bare workspace
+    /// name never reaches here: [`Plan::Existing`] carries the raw spec and no
+    /// triple, so there is no clone path to derive and no branch to name. And a
+    /// warm resolution that devpod answered under an id `metadata.json` recorded
+    /// rather than the one this triple derives (devlaunch#88) is left alone as
+    /// well, because the clone directory is a function of the derived id: reading
+    /// one for a workspace addressed by another id would report a directory that
+    /// may not be the container's source at all. The recorded path is
+    /// [`WorkspaceCloneManager::resolve_clone_path`]'s answer and reading it means
+    /// opening the store, which this arm may not do (devlaunch#145).
+    ///
+    /// Nothing is read but the clone, so the cold machinery stays down here as it
+    /// does everywhere else on this arm.
+    fn say_how_the_checkout_stands(&mut self, placement: &Placement, workspace: &WorkspaceId) {
+        if placement.workspace_id() != workspace.value() {
+            return;
+        }
+        let repos_dir = crate::domain::xdg::clone_root_in(&self.host.cache_dir);
+        let Some(stands) =
+            workspace_clone::checkout_freshness(self.context.runner(), &repos_dir, workspace)
+        else {
+            return;
+        };
+        // Only "behind" is worth a line. A checkout that agrees with its ref is the
+        // ordinary case and a hot attach has to stay quiet; one that is only ahead
+        // is somebody's own work, which they put there.
+        if stands.behind == 0 {
+            return;
+        }
+        self.notices.say(LaunchNotice::CheckoutBehind {
+            workspace_id: workspace.value().to_owned(),
+            branch: workspace.git_ref().to_owned(),
+            ahead: stands.ahead,
+            behind: stands.behind,
+        });
     }
 
     /// Stages four and five: `devpod up` and the session.
@@ -4377,6 +4497,7 @@ mod tests {
     use crate::domain::model::WorktreeInfo;
     use crate::flows::launch_locks::LAUNCH_LOCK_DIR;
     use crate::flows::lifecycle::SelfInvocation;
+    use crate::flows::repo_manager::tests::as_strs;
     use crate::flows::workspace_clone::GitLfs;
 
     // ------------------------------------------------------------ the scene
@@ -5762,6 +5883,40 @@ mod tests {
                 "--dotfiles-script".to_owned(),
                 "install.sh".to_owned(),
             ]
+        );
+    }
+
+    /// A script with no repository to run it from is not a dotfiles setting.
+    ///
+    /// The notice and the argv are two readings of the same options, which is the
+    /// whole point of deriving the notice from the readers rather than from the
+    /// list. They disagreed here: `up_args` pushed `--dotfiles-script` on
+    /// `DOTFILES_SCRIPT` alone, while `dotfiles_notice` looked only at
+    /// `DOTFILES_URL` and said "none set ... so this up asked for none".
+    #[test]
+    fn a_script_with_no_dotfiles_repository_reaches_no_flag() {
+        let options = ContextOptions::from_map(BTreeMap::from([(
+            "DOTFILES_SCRIPT".to_owned(),
+            "install.sh".to_owned(),
+        )]));
+
+        let args = up_args(
+            &UpRequest::new("myws", Naming::Anonymous),
+            &options,
+            &PixiCache::NotADirectory {
+                source: PathBuf::from("/nope"),
+            },
+            &[],
+        );
+
+        assert!(
+            !args.iter().any(|arg| arg == "--dotfiles-script"),
+            "{args:?}"
+        );
+        assert_eq!(
+            options.dotfiles_notice(),
+            LaunchNotice::DotfilesNotConfigured,
+            "and the notice says the same thing the argv does"
         );
     }
 
@@ -8463,6 +8618,265 @@ mod tests {
             cold.opens.get(),
             0,
             "a warm launch still brings no clone manager, config or migration up"
+        );
+    }
+
+    // -------------------------------------- what a warm launch says it skipped
+    //
+    // devlaunch#560. The warm arm does no git, which is devlaunch#144's decision
+    // and is not what these are about: they are about the launch saying so. The
+    // report is computed from dl's own clone with no network call, so the negative
+    // pinned beside each positive -- no fetch, no extra devpod round trip -- is
+    // what stops this growing into the fetch it was chosen over.
+
+    /// A worktree record for *workspace* whose devpod workspace id is `devpod_id`,
+    /// which is what a workspace created under an older id scheme looks like once
+    /// devlaunch#88 has written the second copy down.
+    fn record_devpod_id(cache_dir: &Path, workspace: &WorkspaceId, devpod_id: &str) {
+        let (mut storage, _) =
+            MetadataStorage::open(cache_dir.join("metadata.json")).expect("a fresh store opens");
+        let mut recorded = WorktreeInfo::new(
+            workspace,
+            cache_dir.join(format!("repos/blooop/devlaunch/{devpod_id}")),
+        );
+        recorded.devpod_workspace_id = Some(devpod_id.to_owned());
+        storage.add_worktree(recorded).expect("the record is saved");
+    }
+
+    /// A workspace clone on disk where the triple derives one, with just enough in
+    /// it for `clone_is_there` to answer yes.
+    fn given_clone(cache_dir: &Path, workspace: &WorkspaceId) -> PathBuf {
+        let path = crate::flows::repo_manager::clone_dir(
+            &crate::domain::xdg::clone_root_in(cache_dir),
+            workspace,
+        );
+        std::fs::create_dir_all(path.join(".git")).expect("a scratch clone");
+        path
+    }
+
+    /// One warm triple launch over *scene*, answering `counts` to every git call:
+    /// everything it said, and how many times it opened the cold machinery.
+    fn warm_launch_saying(scene: &Scene, spec: &str, counts: &str) -> (Vec<LaunchNotice>, usize) {
+        scene
+            .runner
+            .script(["git"], Response::stdout(format!("{counts}\n")));
+        let git = Git::new(&scene.runner);
+        let mut cold = RealCold::new(scene.cache_dir(), git);
+        let updater = SelfInvocation::new("dl");
+        let completion = scene.cache_dir().join("completion.json");
+        let mut parts = launching(&scene.runner, &updater, &completion);
+        {
+            let mut launch = Launch::new(
+                &mut parts.context,
+                &mut parts.refresh,
+                &mut cold,
+                &parts.provision,
+                &scene.host,
+                &mut parts.chatter,
+                &mut parts.said,
+            );
+            let launched = launch.run(
+                spec,
+                &LaunchVerb::Attach {
+                    command: Some("true".to_owned()),
+                },
+                None,
+            );
+            assert_eq!(
+                launched,
+                Ok(Launched::Session(Session::RemoteExit { status: 0 })),
+                "the launch itself is unaffected"
+            );
+        }
+        (parts.said, cold.opens.get())
+    }
+
+    #[test]
+    fn a_warm_triple_whose_checkout_is_behind_says_so_and_still_fetches_nothing() {
+        // The session this closes: a branch was pushed to several times, the
+        // launch attached to the container that was already up, and the checkout
+        // inside it was the branch's first commit. Everything dl printed was true
+        // and none of it was that.
+        let workspace = WorkspaceId::new("blooop", "devlaunch", "main").expect("a safe triple");
+        let scene = Scene::new().with_running(workspace.value());
+        given_clone(scene.cache_dir(), &workspace);
+
+        let (said, opens) = warm_launch_saying(&scene, "blooop/devlaunch@main", "0\t37");
+
+        assert!(
+            said.contains(&LaunchNotice::CheckoutBehind {
+                workspace_id: workspace.value().to_owned(),
+                branch: "main".to_owned(),
+                ahead: 0,
+                behind: 37,
+            }),
+            "the one fact the attach was missing: {said:?}"
+        );
+        // The whole of the cost. One `rev-list` over a local repository, and the
+        // devpod calls the warm arm always made. `args_to` drops the program and
+        // `about` leads with `--git-dir` and `--work-tree`, which is why the verb
+        // starts at 2.
+        assert_eq!(
+            as_strs(&scene.runner.args_to("git"))
+                .iter()
+                .map(|argv| argv[2..].to_vec())
+                .collect::<Vec<_>>(),
+            [[
+                "rev-list",
+                "--left-right",
+                "--count",
+                "HEAD...refs/remotes/origin/main"
+            ]],
+            "no fetch: the report is what the clone already knew"
+        );
+        assert_eq!(
+            scene.devpod_heads(),
+            [
+                vec!["status".to_owned(), workspace.value().to_owned()],
+                vec!["ssh".to_owned(), workspace.value().to_owned()],
+            ],
+            "and no second devpod round trip to pay for it"
+        );
+        assert_eq!(
+            opens, 0,
+            "reading the clone is not a reason to open the machinery (devlaunch#145)"
+        );
+    }
+
+    #[test]
+    fn a_checkout_that_is_only_ahead_of_its_ref_is_nobodys_news() {
+        // Local commits are work somebody put there on purpose, and a hot attach
+        // has to stay quiet. Pinned because the obvious reading of "diverged" would
+        // report this, and reporting it would train people to ignore the line.
+        let workspace = WorkspaceId::new("blooop", "devlaunch", "main").expect("a safe triple");
+        let scene = Scene::new().with_running(workspace.value());
+        given_clone(scene.cache_dir(), &workspace);
+
+        let (said, _opens) = warm_launch_saying(&scene, "blooop/devlaunch@main", "4\t0");
+
+        assert!(
+            !said
+                .iter()
+                .any(|notice| matches!(notice, LaunchNotice::CheckoutBehind { .. })),
+            "{said:?}"
+        );
+    }
+
+    #[test]
+    fn a_checkout_that_has_diverged_reports_both_counts() {
+        // Commits on both sides, which is the case "37 behind" alone describes
+        // wrongly: the four commits are the reader's own and they are told so.
+        let workspace = WorkspaceId::new("blooop", "devlaunch", "main").expect("a safe triple");
+        let scene = Scene::new().with_running(workspace.value());
+        given_clone(scene.cache_dir(), &workspace);
+
+        let (said, _opens) = warm_launch_saying(&scene, "blooop/devlaunch@main", "4\t37");
+
+        assert!(
+            said.contains(&LaunchNotice::CheckoutBehind {
+                workspace_id: workspace.value().to_owned(),
+                branch: "main".to_owned(),
+                ahead: 4,
+                behind: 37,
+            }),
+            "{said:?}"
+        );
+    }
+
+    #[test]
+    fn a_warm_triple_with_no_clone_on_disk_reads_nothing_and_says_nothing() {
+        // A workspace whose clone was removed under it, which is the ordinary way
+        // to reach here with nothing to read. One stat, no spawn: git would answer
+        // this with a refusal that costs a process.
+        let workspace = WorkspaceId::new("blooop", "devlaunch", "main").expect("a safe triple");
+        let scene = Scene::new().with_running(workspace.value());
+
+        let (said, opens) = warm_launch_saying(&scene, "blooop/devlaunch@main", "0\t37");
+
+        assert!(
+            !said
+                .iter()
+                .any(|notice| matches!(notice, LaunchNotice::CheckoutBehind { .. })),
+            "{said:?}"
+        );
+        assert_eq!(
+            scene.runner.args_to("git"),
+            Vec::<Vec<String>>::new(),
+            "the clone is not there, so nothing was asked about it"
+        );
+        assert_eq!(opens, 0, "and the machinery stayed down (devlaunch#145)");
+    }
+
+    #[test]
+    fn a_bare_workspace_name_reads_no_clone_even_when_the_caller_knows_the_triple() {
+        // Two silences in one launch, and both are deliberate. `Plan::Existing`
+        // carries the raw spec and no triple, so there is no clone path to derive;
+        // and the triple the picker recovers is allowed to name the tab and nothing
+        // else (see `Launch::recognised_as`), so it may not be turned into a claim
+        // about a directory either.
+        let workspace = WorkspaceId::new("blooop", "devlaunch", "main").expect("a safe triple");
+        let scene = Scene::new().with_running(workspace.value());
+        given_clone(scene.cache_dir(), &workspace);
+        scene.runner.script(["git"], Response::stdout("0\t37\n"));
+        let mut cold = NeverCold;
+        let updater = SelfInvocation::new("dl");
+        let completion = scene.cache_dir().join("completion.json");
+        let mut parts = launching(&scene.runner, &updater, &completion);
+        let mut launch = Launch::new(
+            &mut parts.context,
+            &mut parts.refresh,
+            &mut cold,
+            &parts.provision,
+            &scene.host,
+            &mut parts.chatter,
+            &mut parts.said,
+        )
+        .recognised_as(Some(workspace.clone()));
+
+        let launched = launch.run(
+            workspace.value(),
+            &LaunchVerb::Attach {
+                command: Some("true".to_owned()),
+            },
+            None,
+        );
+
+        assert_eq!(
+            launched,
+            Ok(Launched::Session(Session::RemoteExit { status: 0 }))
+        );
+        assert_eq!(
+            scene.runner.args_to("git"),
+            Vec::<Vec<String>>::new(),
+            "a bare name asks git nothing, as it did before"
+        );
+    }
+
+    #[test]
+    fn a_warm_workspace_addressed_by_a_recorded_id_reads_no_clone() {
+        // devlaunch#88's arm: devpod denies the derived id and answers for the one
+        // `metadata.json` records instead. The clone directory is a function of the
+        // *derived* id, so reading one here would report a directory that is not
+        // this container's source -- and the recorded path is only readable by
+        // opening the store, which this arm may not do (devlaunch#145).
+        let workspace = WorkspaceId::new("blooop", "devlaunch", "main").expect("a safe triple");
+        let legacy = "devlaunch-main-legacy";
+        let scene = Scene::new().with_running(legacy);
+        record_devpod_id(scene.cache_dir(), &workspace, legacy);
+        given_clone(scene.cache_dir(), &workspace);
+
+        let (said, _opens) = warm_launch_saying(&scene, "blooop/devlaunch@main", "0\t37");
+
+        assert!(
+            !said
+                .iter()
+                .any(|notice| matches!(notice, LaunchNotice::CheckoutBehind { .. })),
+            "{said:?}"
+        );
+        assert_eq!(
+            scene.runner.args_to("git"),
+            Vec::<Vec<String>>::new(),
+            "no clone was read for a workspace this triple does not name"
         );
     }
 

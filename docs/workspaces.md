@@ -165,7 +165,14 @@ on a repo-wide refresh.
 ### What you get when you push and immediately launch
 
 - **Attaching to a workspace devpod already knows**: no git at all. The workspace
-  is exactly as you left it; freshness inside it is your own `git pull`.
+  is exactly as you left it; freshness inside it is your own `git pull`. `dl` now
+  says so when it matters: launch `owner/repo@branch` and, if the checkout in
+  `dl`'s clone is behind the `origin/<branch>` that clone last fetched, the attach
+  reports how far behind before handing over the shell. That report is read out of
+  the clone and costs no network call, so it says how the checkout stands against
+  a ref of whatever age and never claims to know the remote now. You get it for a
+  spec that names a branch, since that is the shape which implies a claim about
+  one; `dl <workspace-id>` carries no branch and stays silent.
 - **A cold launch** (first time this branch is launched on this machine, or a
   clone devpod has forgotten): one targeted fetch of that branch, every time.
   Push upstream and immediately `dl` the branch and you get the pushed tip.
@@ -176,6 +183,28 @@ on a repo-wide refresh.
 - **Everything else** (other branches, tags, prunes) is refreshed by the
   background updater within the configured interval (default: 1 hour), which
   never blocks a launch.
+
+### Which verb moves the checkout, and it is only one
+
+`rm` is the only verb that refreshes git state. Everything else acts on the
+container and leaves the clone standing:
+
+- `restart`, `recreate` and `reset` all reach a workspace devpod already knows,
+  so they take the attach path above and run no git. `reset` is the one worth
+  spelling out, because "clean slate" reads like a promise about the checkout: it
+  passes devpod's `--reset`, which recreates the container and removes its
+  volumes, and additionally removes the *source* only for a workspace devpod
+  cloned itself. `dl` hands devpod a local folder (its own clone), never a git
+  URL, so there is no devpod-managed source to remove and the clone is untouched.
+- `dl <workspace> rm` deletes the workspace and the clone with it, so the next
+  launch is a cold one: a fetch, a fresh clone, and the branch reset to the
+  fetched ref.
+- Inside the container, `git fetch` and `git pull` are yours and always were.
+
+A clone that is already on disk is never fast-forwarded for you, even on a cold
+launch: an existing directory gets a plain `git checkout <branch>` so that
+uncommitted work survives, and only a directory `dl` has just created is reset to
+the fetched ref.
 
 ### Preparing a workspace without attaching
 

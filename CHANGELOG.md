@@ -7,6 +7,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A launch that attaches to a workspace devpod already has now says how far
+  behind its checkout is.** `dl owner/repo@branch` against a running workspace
+  runs no git and never has -- that is the decision that makes a hot attach hot --
+  so the checkout inside the container is whatever you left there, and nothing
+  said so at the moment you were about to conclude something from it. One session
+  went the whole way to "this devcontainer boots correctly" against a container
+  built before the repository had a `.devcontainer/` at all.
+
+  The line is computed from `dl`'s own clone and reaches no network:
+
+  ```
+  Workspace devlaunch-main-3j1t: its checkout is 37 commits behind origin/main as this
+  workspace last fetched it, and a launch of a workspace devpod already has fetches
+  nothing. Run 'git fetch' inside it, or 'dl <workspace> rm' and launch again, if you
+  meant to run against the branch as it is now.
+  ```
+
+  **A fetch on attach was the other candidate and would have been the wrong
+  trade.** The claim here is deliberately narrow: how the checkout stands against
+  the `origin/<branch>` in that clone, of whatever age the last fetch left it. It
+  is one `rev-list` against a local repository, single-digit milliseconds beside
+  the 0.43s to 0.74s one `devpod status` already costs on the same path, and it
+  cannot be wrong about a remote it never asked. Being behind a week-old ref is
+  already the whole of what points you at `git fetch` or `rm`.
+
+  Commits of your own are named as yours rather than counted as staleness, and
+  four shapes stay silent: a checkout that agrees with its ref, one that is only
+  ahead, a workspace whose clone is gone, and `dl <workspace-id>` by bare name,
+  which carries no branch to be behind.
+
+- **Every `devpod up` says whether it forwarded dotfiles**, naming the repository
+  and script it passed or saying that devpod's context options name none. `dl`
+  reads `DOTFILES_URL` from `devpod context options` and from nowhere else -- not
+  from the process environment, and not from `~/.devpod/config.yaml`, which it only
+  ever stats -- and it used to forward or omit the flags in silence either way.
+  That silence is what turned one report of "the dotfiles never landed" into a
+  fortnight of three plausible causes and no observation to cut between them. An
+  attach that runs no `up` prints neither line, because it asked devpod for
+  nothing.
+
+- **`docs/cli.md` now names the cause of `inject agent … exit status 126`.** devpod
+  picks its agent binary by globbing `uname -a` for `arm`, and `uname -a` carries
+  the container's hostname, so a workspace whose branch contains `alarm`, `warm`,
+  `charm`, `swarm`, `harm` or `armature` gets the arm64 agent on an x86 host and a
+  launch that dies saying only "not executable". `dl` writes the workspace id into
+  that hostname itself, so it is one of the ways the name gets there. The entry
+  carries the one-line check, the way to unblock a container that is already in
+  that state, and the reason a recreate undoes it. The match itself is devpod's and
+  is not fixed here.
+
+### Changed
+
+- **`dl <ws> reset` stopped describing itself as a clean slate.** Its help line and
+  the README table said "Clean slate: remove everything, recreate", which reads as
+  a promise about the checkout that `reset` does not keep: it passes devpod's
+  `--reset`, and the source removal that flag additionally performs applies only to
+  a workspace devpod cloned itself, where `dl` hands devpod a local folder. Both
+  now say what it does -- recreate the container and its volumes -- and
+  `docs/cli.md` and `docs/workspaces.md` gained the sentence that `rm` is the only
+  verb which refreshes git state.
+
 ### Fixed
 
 - **`dl --prune` reclaims the per-workspace launch locks**, which nothing short
