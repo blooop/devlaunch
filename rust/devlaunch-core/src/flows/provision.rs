@@ -4862,28 +4862,34 @@ fi
             "{report}"
         );
 
-        // And the verdict those mounts earn, which is `Ours` on a machine with nothing
-        // mounted near the scratch dir and on one whose only match is a mount rooted at
-        // `/` -- the `/tmp` case, which `cfg_dir_is_foreign` already excludes by name.
+        // And the verdict those mounts earn, which stays the constant `Ours`: deriving
+        // it by calling `cfg_dir_is_foreign` would assert `parse` against the very
+        // helper `parse` calls, on arguments the two assertions above have already
+        // pinned to `parse`'s own. That equality is a theorem, so it sleeps through a
+        // real regression -- drop `&& root != "/"` from `cfg_dir_is_foreign` and an
+        // ordinary scratch home reads as `Foreign` wherever `/tmp` is its own mount,
+        // with both sides of a derived assertion agreeing on the wrong answer.
         //
-        // **Derived from `claudehome`, because that is the argument `parse` passes.**
-        // It read `claudedir` first, which is the wrong one and is a flake of the same
-        // family as the constant this test replaced: the scan is *about* the config
-        // directory, but the containment question `cfg_dir_is_foreign` asks is against
-        // the *home*. The two differ by `.claude`, so a mount rooted inside `$HOME` and
-        // outside `$HOME/.claude` earns `Ours` from `parse` and `Foreign` from a
-        // derivation given `claudedir` -- and nothing on a GitHub runner or on this
-        // machine has such a mount, so the disagreement would have waited for somebody
-        // else's filesystem.
+        // What the machine has to be for `Ours` to be the right answer is stated
+        // instead, against `claudehome` because that is the argument `parse` passes:
+        // every root the scan matched is `/` or a path inside the home. A filesystem
+        // that breaks the premise fails here, loudly and with the report attached,
+        // rather than quietly agreeing with the implementation.
         let cfg_home = found
             .get(CLAUDE_HOME_KEY)
             .expect("the probe named the config home");
-        let want = if cfg_dir_is_foreign(cfg_home, Some("/nowhere"), &expected.join(" ")) {
-            ClaudeConfig::Foreign
-        } else {
-            ClaudeConfig::Ours
-        };
-        assert_eq!(ClaudeConfig::parse(&report, Some("/nowhere")), Some(want));
+        for root in &expected {
+            let root = unescape_mount(root);
+            assert!(
+                root == "/" || is_under(&root, cfg_home),
+                "a mount rooted at {root} sits near the scratch home, so `Ours` is not \
+                 the verdict this test can assert; {report}"
+            );
+        }
+        assert_eq!(
+            ClaudeConfig::parse(&report, Some("/nowhere")),
+            Some(ClaudeConfig::Ours)
+        );
         assert!(
             answered.status.success(),
             "the probe exits 0 in every state"
