@@ -185,10 +185,12 @@ pub(crate) fn claude_profile_lines(rows: &[claude_profiles::ProfileSummary]) -> 
     lines
 }
 
-/// The sentence for a machine with nowhere to keep profiles.
+/// The sentence for a listing with no rows at all.
 ///
-/// A real state rather than a defensive branch: `dl` runs with `XDG_CACHE_HOME` set
-/// and no home directory at all, and then there is no profiles root to enumerate.
+/// A real state rather than a defensive branch: no home directory and no
+/// `$CLAUDE_CONFIG_DIR`, which is `dl` running under `XDG_CACHE_HOME` alone, so there
+/// is no unnamed login to head the listing. The profiles root is a separate variable
+/// and can still be set to somewhere that exists; an empty one adds no rows either.
 pub(crate) fn no_claude_profiles() -> String {
     "No Claude configuration directory on this machine, so no profiles to list.".to_owned()
 }
