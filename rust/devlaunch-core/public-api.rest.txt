@@ -2756,7 +2756,9 @@ impl core::marker::StructuralPartialEq for devlaunch_core::flows::repo_manager::
 pub mod devlaunch_core::flows::session_manager
 pub enum devlaunch_core::flows::session_manager::PaneDestination
 pub devlaunch_core::flows::session_manager::PaneDestination::HostShell
-pub devlaunch_core::flows::session_manager::PaneDestination::Workspace(alloc::string::String)
+pub devlaunch_core::flows::session_manager::PaneDestination::Workspace
+pub devlaunch_core::flows::session_manager::PaneDestination::Workspace::claude_profile: core::option::Option<alloc::string::String>
+pub devlaunch_core::flows::session_manager::PaneDestination::Workspace::workspace_id: alloc::string::String
 impl core::clone::Clone for devlaunch_core::flows::session_manager::PaneDestination
 pub fn devlaunch_core::flows::session_manager::PaneDestination::clone(&self) -> devlaunch_core::flows::session_manager::PaneDestination
 impl core::cmp::Eq for devlaunch_core::flows::session_manager::PaneDestination
