@@ -641,6 +641,7 @@ impl core::fmt::Debug for devlaunch_core::domain::xdg::NoHomeDirectory
 pub fn devlaunch_core::domain::xdg::NoHomeDirectory::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Copy for devlaunch_core::domain::xdg::NoHomeDirectory
 impl core::marker::StructuralPartialEq for devlaunch_core::domain::xdg::NoHomeDirectory
+pub fn devlaunch_core::domain::xdg::claude_profiles_root() -> core::result::Result<std::path::PathBuf, devlaunch_core::domain::xdg::NoHomeDirectory>
 pub fn devlaunch_core::domain::xdg::clone_root_in(&std::path::Path) -> std::path::PathBuf
 pub fn devlaunch_core::domain::xdg::config_home() -> core::result::Result<std::path::PathBuf, devlaunch_core::domain::xdg::NoHomeDirectory>
 pub fn devlaunch_core::domain::xdg::devlaunch_cache() -> core::result::Result<std::path::PathBuf, devlaunch_core::domain::xdg::NoHomeDirectory>
