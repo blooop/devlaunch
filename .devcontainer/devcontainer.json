@@ -120,10 +120,33 @@
         // known_hosts is read-only because nothing in here has any business
         // adding hosts to the developer's list.
         //
-        // The HOME-relative socket path is an assumption -- stock OpenSSH puts
-        // its agent socket in /tmp -- but a pre-existing one, since
-        // containerEnv already hardcodes the same path.
-        "source=${localEnv:HOME}/.ssh/agent.sock,target=/home/vscode/.ssh/agent.sock,type=bind",
+        // The source is $SSH_AUTH_SOCK, because the agent's path is not
+        // something this file can know. It used to be
+        // ${localEnv:HOME}/.ssh/agent.sock, described here as "an assumption
+        // -- stock OpenSSH puts its agent socket in /tmp -- but a
+        // pre-existing one, since containerEnv already hardcodes the same
+        // path". The assumption is false for every agent that is not a
+        // hand-rolled symlink: gpg-agent (a YubiKey OpenPGP setup) answers on
+        // $XDG_RUNTIME_DIR/gnupg/S.gpg-agent.ssh, ssh-agent(1) on a
+        // /tmp/ssh-XXXX mktemp path, and 1Password and gnome-keyring on paths
+        // of their own. None of them is under ~/.ssh, so `devpod up` failed
+        // before the container existed with "bind mount source path does not
+        // exist", which reads as a broken workspace rather than a
+        // configuration this repository declared.
+        //
+        // The reverse argument, which is what the old comment was reaching
+        // for: containerEnv hardcodes the *target*, and that stays hardcoded.
+        // Inside the container SSH_AUTH_SOCK is /home/vscode/.ssh/agent.sock
+        // whatever the host called it, so the source is the only half that has
+        // to vary and the container end of the contract is unchanged.
+        //
+        // Costs, both real. An unset SSH_AUTH_SOCK expands to nothing and the
+        // mount is malformed rather than skipped, since devcontainer.json has
+        // no conditional mounts -- a host with no agent at all was already
+        // broken here and is now broken differently. And this is a change
+        // under .devcontainer/, so the prebuild tag moves and every launch
+        // builds locally until devcontainer-prebuild.yml republishes on main.
+        "source=${localEnv:SSH_AUTH_SOCK},target=/home/vscode/.ssh/agent.sock,type=bind",
         "source=${localEnv:HOME}/.ssh/known_hosts,target=/home/vscode/.ssh/known_hosts,type=bind,readonly",
         "source=${localEnv:HOME}/.config/gh,target=/home/vscode/.config/gh,type=bind"
     ],
