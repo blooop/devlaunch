@@ -681,3 +681,34 @@ def test_the_devcontainer_installs_the_committed_lock_rather_than_solving_its_ow
             "create is free to discard the committed lock, solve its own environment over the "
             "network, and rewrite pixi.lock while it does it"
         )
+
+
+def test_the_feature_seeds_no_empty_credential():
+    """The feature must not write a `.credentials.json` into the container.
+
+    An empty ``{}`` there is not a harmless placeholder, it is a logged-out
+    session that wins: ``dl`` forwards a profile's login as
+    ``CLAUDE_CODE_OAUTH_TOKEN``, Claude Code reads the credentials file first,
+    and the agent then asks the operator to log in while a valid token sits in
+    its environment.
+
+    It stayed hidden for as long as the feature mounted the host's real
+    credentials file *over* the stub, so the bug was invisible in exactly the
+    configuration that could not use a forwarded token anyway.
+
+    Asserted over the whole installer rather than about one line, so it cannot
+    come back under another name. ``.claude.json`` is included because it was
+    seeded by the same block for the same retired reason; Claude Code creates
+    both itself on first use.
+    """
+    installer = FEATURE_INSTALLER.read_text()
+    for name in (".credentials.json", ".claude.json"):
+        seeding = [
+            line
+            for line in installer.splitlines()
+            # A write of the file, rather than a comment naming it.
+            if name in line
+            and not line.lstrip().startswith("#")
+            and (">" in line or "tee" in line or "cp " in line)
+        ]
+        assert not seeding, f"{name} is written by install.sh: {seeding}"
