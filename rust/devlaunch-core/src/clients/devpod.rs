@@ -58,7 +58,8 @@ use std::time::Duration;
 
 use crate::json::JsonKind;
 use crate::runner::{
-    CapturedText, EnvSpec, Exit, Invocation, OsFailure, Outcome, Runner, SpawnSpec, StdinPlan,
+    CapturedText, EnvSpec, Exit, Invocation, OsFailure, Outcome, Runner, SessionOutput, SpawnSpec,
+    StdinPlan,
 };
 use crate::timing;
 
@@ -246,6 +247,49 @@ pub(crate) fn run_watching_stderr(
         on_line(line);
     };
     ran(runner.session(&call.spec(), &mut forward)).map(|(exit, ())| exit)
+}
+
+/// The same call, echoed as it arrives, with the silences between lines timed.
+///
+/// For the one call that goes quiet for minutes at a stretch and gives a reader
+/// no way to tell that from a hang (devlaunch#576). The lines are written back to
+/// stderr exactly as [`run_watching_stderr`] writes them, so nothing about what
+/// devpod's output looks like changes; what is added is a report on the gaps,
+/// which is the thing no line sink can produce because a callback that is not
+/// being called says nothing.
+///
+/// `interval` is how often a continuing silence is reported and the measurement
+/// restarts at every line, so what `on_quiet` is handed is the age of the step
+/// devpod is on rather than the age of the call.
+pub(crate) fn run_watching_silence(
+    runner: &dyn Runner,
+    call: &Call,
+    interval: Duration,
+    on_quiet: &mut dyn FnMut(Duration),
+) -> Result<Exit, NotRun> {
+    let _span = timing::span(call.round_trip());
+    let mut watcher = Echoing { interval, on_quiet };
+    ran(runner.watched_session(&call.spec(), &mut watcher)).map(|(exit, ())| exit)
+}
+
+/// [`run_watching_silence`]'s watcher: echo the lines, hand the gaps over.
+struct Echoing<'a> {
+    interval: Duration,
+    on_quiet: &'a mut dyn FnMut(Duration),
+}
+
+impl SessionOutput for Echoing<'_> {
+    fn line(&mut self, line: &str) {
+        eprintln!("{line}");
+    }
+
+    fn quiet_interval(&self) -> Option<Duration> {
+        Some(self.interval)
+    }
+
+    fn quiet(&mut self, quiet: Duration) {
+        (self.on_quiet)(quiet);
+    }
 }
 
 /// Whether this is devpod saying it is blocked on a workspace's lock.

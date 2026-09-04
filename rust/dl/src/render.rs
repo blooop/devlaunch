@@ -1968,6 +1968,22 @@ pub(crate) fn report_refusals<'a>(
     lines
 }
 
+/// A short wall-clock span, for a reader watching one go by.
+///
+/// Minutes and seconds, because that is the range this is asked about: a launch
+/// step that has been quiet for four seconds is not reported at all and one that
+/// has been quiet for two hours has the same advice as one that has been quiet
+/// for ten minutes. Zero-padded seconds past the minute so a column of these
+/// lines reads as a clock going forwards rather than as numbers that get
+/// shorter.
+fn elapsed(span: std::time::Duration) -> String {
+    let seconds = span.as_secs();
+    match seconds / 60 {
+        0 => format!("{seconds}s"),
+        minutes => format!("{minutes}m{:02}s", seconds % 60),
+    }
+}
+
 fn refusal_reason(reason: &RefusalReason) -> String {
     match reason {
         RefusalReason::System(words) => words.clone(),
@@ -2527,6 +2543,20 @@ pub(crate) fn launch_notice(notice: &LaunchNotice) -> Option<String> {
         // debug: a lock that could not be taken costs this `up` its serialization
         // and nothing a user acts on.
         LaunchNotice::LaunchLockUnavailable { .. } => return None,
+
+        // --- a build that has stopped saying anything (info; devlaunch#576)
+        //
+        // A whole line rather than one refreshed in place, and that is a decision
+        // rather than a shortcut. devpod owns the stream this is interleaved with:
+        // dl echoes devpod's lines but does not compose them, so a line rewritten
+        // with a carriage return could not be relied on to be the last thing
+        // written and would be overtyped by devpod's next. A whole line is also the
+        // only shape that survives stderr being a file, which is what it is in CI
+        // and in the log `aid`'s background boot replays from.
+        LaunchNotice::UpHasGoneQuiet { quiet } => format!(
+            "Still working: devpod has printed nothing for {}.",
+            elapsed(*quiet)
+        ),
         // info
         LaunchNotice::BroughtUpBySibling { workspace_id } => {
             format!("Workspace {workspace_id} was brought up by another dl run.")
@@ -3257,6 +3287,8 @@ pub(crate) fn provision_event(event: &ProvisionEvent) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+
+    use std::time::Duration;
 
     use devlaunch_core::flows::kill::{HostProcess, Signalled};
     use devlaunch_core::flows::launch::{HerdrTabRename, TerminalTitle};
@@ -4891,5 +4923,40 @@ mod tests {
             killed("my-ws", &never_ran)[0],
             "Could not kill this workspace's containers: could not run docker (TimedOut)"
         );
+    }
+
+    #[test]
+    fn a_build_that_has_gone_quiet_says_how_long_for() {
+        // The line devlaunch#576 is about, and the whole of what it claims: not
+        // that anything is wrong, only that the launch is alive and this is how
+        // long the step has been running.
+        assert_eq!(
+            launch_notice(&LaunchNotice::UpHasGoneQuiet {
+                quiet: Duration::from_secs(30)
+            }),
+            Some("Still working: devpod has printed nothing for 30s.".to_owned())
+        );
+        assert_eq!(
+            launch_notice(&LaunchNotice::UpHasGoneQuiet {
+                quiet: Duration::from_secs(301)
+            }),
+            Some("Still working: devpod has printed nothing for 5m01s.".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_span_reads_as_a_clock_going_forwards() {
+        // Zero-padded past the minute, because these arrive one under another and
+        // a column of them is read as a clock. `5m1s` beside `5m31s` reads as the
+        // number getting shorter.
+        assert_eq!(elapsed(Duration::from_secs(0)), "0s");
+        assert_eq!(elapsed(Duration::from_secs(59)), "59s");
+        assert_eq!(elapsed(Duration::from_secs(60)), "1m00s");
+        assert_eq!(elapsed(Duration::from_secs(61)), "1m01s");
+        assert_eq!(elapsed(Duration::from_secs(3600)), "60m00s");
+        // Sub-second remainders are dropped rather than rounded up: the number is
+        // the age of a step, and a step reported as a second older than it is
+        // would be a report that ran ahead of the clock it is quoting.
+        assert_eq!(elapsed(Duration::from_millis(1900)), "1s");
     }
 }

@@ -525,6 +525,145 @@ fn a_session_hands_each_line_over_as_it_arrives() {
     assert_eq!(lines, ["one", "two"]);
 }
 
+/// A watcher that records both halves of what a session tells it, in order.
+///
+/// The order is the interesting part: a report of a silence that arrived after
+/// the line ending it would be a report about a step that is already over.
+#[derive(Default)]
+struct Heard {
+    events: Vec<String>,
+    interval: Option<Duration>,
+}
+
+impl SessionOutput for Heard {
+    fn line(&mut self, line: &str) {
+        self.events.push(format!("line {line}"));
+    }
+
+    fn quiet_interval(&self) -> Option<Duration> {
+        self.interval
+    }
+
+    fn quiet(&mut self, _quiet: Duration) {
+        self.events.push("quiet".to_owned());
+    }
+}
+
+#[test]
+fn a_watched_session_reports_the_silence_between_two_lines() {
+    // devlaunch#576's shape in miniature: two lines with a gap between them, and
+    // a caller that could not tell a live gap from a hung one because a line sink
+    // that is not being called says nothing at all.
+    let mut heard = Heard {
+        interval: Some(Duration::from_millis(60)),
+        ..Heard::default()
+    };
+
+    let outcome = ProcessRunner.watched_session(
+        &sh("echo one >&2; sleep 0.4; echo two >&2").into(),
+        &mut heard,
+    );
+
+    assert_eq!(exit_of(outcome), Exit::Code(0));
+    assert_eq!(heard.events.first().map(String::as_str), Some("line one"));
+    assert_eq!(heard.events.last().map(String::as_str), Some("line two"));
+    // Bounded rather than counted exactly: the number of ticks in 0.4s is the
+    // scheduler's business. That there were some, and that they landed between
+    // the two lines rather than after both, is this test's.
+    let quiets = heard.events.iter().filter(|it| *it == "quiet").count();
+    assert!(quiets >= 1, "no silence was reported: {:?}", heard.events);
+    assert_eq!(
+        heard.events.iter().position(|it| it == "line two"),
+        Some(heard.events.len() - 1),
+        "a silence was reported after the line that ended it: {:?}",
+        heard.events
+    );
+}
+
+#[test]
+fn a_silence_is_measured_from_the_last_line_and_not_from_the_call() {
+    // What makes a tick worth printing: the number restarts at every line, so it
+    // is the age of *this step* and not the age of the launch. A gap of 0.3s
+    // after 0.6s of chatter must report about 0.3s.
+    let mut reported = Vec::new();
+    let mut watcher = Reporting {
+        interval: Duration::from_millis(100),
+        quiets: &mut reported,
+    };
+
+    let outcome = ProcessRunner.watched_session(
+        &sh("for i in 1 2 3 4 5 6; do echo tick >&2; sleep 0.1; done; sleep 0.3").into(),
+        &mut watcher,
+    );
+
+    assert_eq!(exit_of(outcome), Exit::Code(0));
+    let longest = reported.iter().copied().max().unwrap_or_default();
+    assert!(
+        longest < Duration::from_secs(1),
+        "a silence was measured from the start of the call, not the last line: {reported:?}"
+    );
+}
+
+/// A watcher that keeps the durations it was told, for the measurement above.
+struct Reporting<'a> {
+    interval: Duration,
+    quiets: &'a mut Vec<Duration>,
+}
+
+impl SessionOutput for Reporting<'_> {
+    fn line(&mut self, _line: &str) {}
+
+    fn quiet_interval(&self) -> Option<Duration> {
+        Some(self.interval)
+    }
+
+    fn quiet(&mut self, quiet: Duration) {
+        self.quiets.push(quiet);
+    }
+}
+
+#[test]
+fn a_watcher_that_asks_for_no_interval_is_never_told_about_a_silence() {
+    // The default, and what every caller that only wants the lines keeps: the
+    // read blocks with no deadline of its own, so a session that runs for an hour
+    // wakes for its output and nothing else.
+    let mut heard = Heard::default();
+
+    let outcome = ProcessRunner.watched_session(
+        &sh("echo one >&2; sleep 0.3; echo two >&2").into(),
+        &mut heard,
+    );
+
+    assert_eq!(exit_of(outcome), Exit::Code(0));
+    assert_eq!(heard.events, ["line one", "line two"]);
+}
+
+#[test]
+fn a_timeout_still_kills_a_child_that_is_being_watched_for_silence() {
+    // The two clocks against each other. The tick fires several times over
+    // before the deadline does, and each one must leave the child running -- and
+    // then the deadline must still kill it, rather than being reset by them.
+    let mut heard = Heard {
+        interval: Some(Duration::from_millis(40)),
+        ..Heard::default()
+    };
+    let mut spec: SpawnSpec = sh("sleep 30").into();
+    spec.timeout = Some(Duration::from_millis(300));
+    let started = Instant::now();
+
+    let outcome = ProcessRunner.watched_session(&spec, &mut heard);
+
+    assert_eq!(outcome, Outcome::TimedOut);
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "the ticks pushed the deadline back"
+    );
+    assert!(
+        heard.events.iter().any(|it| it == "quiet"),
+        "the ticks fired while the deadline was pending"
+    );
+}
+
 #[test]
 fn a_session_leaves_stdin_and_stdout_alone() {
     // devpod puts the real terminal into raw mode through them and asks for a

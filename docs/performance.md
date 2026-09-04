@@ -120,6 +120,53 @@ failing. A master that has gone away leaves a socket the next client unlinks, an
 resident `devpod ssh --stdio` process and a `docker exec` per key, and `dl` must
 not be the reason a container never goes idle.
 
+## While the launch is still running
+
+`DEVLAUNCH_TIMING` answers after the fact, which is exactly when you no longer
+need it. What a cold launch needed was something during, because a cold launch
+spends minutes on one step and says nothing while it does. Measured on one host,
+streaming devpod's output, two consecutive lines **5m01s apart**:
+
+```
+11:42:52  Pixi task (ui-install-locked): npm --prefix frontend ci
+11:47:53  added 585 packages in 5m
+```
+
+Nothing in between said the launch was alive, which step it was on, or how long
+that step had been running. The same launch warm was 21.6s in total with that
+step taking 5s, so the ratio between a warm and a cold launch of one branch is
+about 16x and a reader had no way to tell from the terminal which one they were
+in.
+
+`dl` now times the gaps between devpod's own lines and says so every 30 seconds
+while one lasts:
+
+```
+11:42:52  Pixi task (ui-install-locked): npm --prefix frontend ci
+Still working: devpod has printed nothing for 30s.
+Still working: devpod has printed nothing for 1m00s.
+...
+11:47:53  added 585 packages in 5m
+```
+
+Three things it does not claim. **It is not a diagnosis**: a step that is slow
+and a step that is stuck both produce it, and the only thing separating them is
+the number going up. **It is not devlaunch's time**: the five minutes above are
+the repository's own `postCreateCommand`, `dl` cannot make `npm ci` faster and
+does not try. And **it is not the age of the launch**: the measurement restarts
+at every line devpod writes, so it is the age of the step devpod is on, and its
+restarting is what tells a long step from a wedged one.
+
+A launch that is talking never produces one, because devpod's own steps are
+seconds apart. That is what keeps the line off a warm launch entirely and off
+most of a cold one.
+
+**What it costs.** `devpod up`'s stderr is a pipe now rather than the terminal,
+so it is no longer a terminal to devpod and loses whatever devpod does with one.
+stdin and stdout are untouched, and so is the process group the build leads: a
+Ctrl-C still takes the build down with `dl` rather than orphaning it holding the
+launch lock.
+
 ## Measuring launch time
 
 Set `DEVLAUNCH_TIMING=1` and a `dl` command ends with one summary on stderr,
