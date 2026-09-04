@@ -9,6 +9,7 @@ that defines the fixture.
 
     launch_scenario.py <root> <devpod_shim.py> [--warm] [--stopped] [--gh]
                                               [--no-devpod] [--no-workspaces]
+                                              [--stale-checkout] [--dotfiles]
 
 The base world, under the root it is given:
 
@@ -31,6 +32,16 @@ explain another's world:
   fast-attach fixture, and the one `dl <workspace-id>` addresses by bare name.
 - `--stopped`: the same workspace, **Stopped**. Every verb that has to bring a
   container up before it can do anything uses this.
+- `--stale-checkout`: two further commits on `origin.git`'s `main`, fetched into
+  the warm workspace's clone and *not* checked out. Only usable beside `--warm` or
+  `--stopped`, whose clone it is. This is the world blooop/devlaunch#560 reports:
+  the clone's `HEAD` is behind its own `refs/remotes/origin/main`, which is a fact
+  the clone holds and no launch of a workspace devpod already knows goes looking
+  for.
+- `--dotfiles`: `devpod context options` names a dotfiles repository, which is the
+  only place dl reads one from. Without it the fake devpod answers `{}`, so a
+  launch forwards no `--dotfiles` flag -- which is the state a fortnight of #560
+  was spent being unable to observe.
 - `--gh`: a fake `gh` in `gh-bin/`, printing a token on `gh auth token`. It is a
   directory of its own so a test decides by PATH whether this host has a GitHub
   login at all — an absent `gh` is a choice and not a failure, and the two answers
@@ -70,6 +81,10 @@ COLD_BRANCH = "cold"
 
 # A token of the shape every GitHub token has, so the fake `gh` is believed.
 TOKEN = "gho_devlaunchtesttoken0123456789"
+
+# What `--dotfiles` makes `devpod context options` name. Never cloned by anything
+# here: the fake devpod is asked for the option and the flag is what is asserted.
+DOTFILES_URL = "https://github.com/blooop/dotfiles"
 
 
 def git(cwd, *args):
@@ -194,6 +209,16 @@ def build(root: pathlib.Path, shim: pathlib.Path, wanted: set) -> None:
         clone = repos / "blooop" / "devlaunch" / MAIN_LEAF
         git(root, "clone", "-q", str(origin), str(clone))
         git(clone, "checkout", "-q", "-B", "main")
+        if "stale-checkout" in wanted:
+            # The branch moves on the remote and the *clone* is told about it, then
+            # nothing checks it out. Two commits so the count is unmistakably a
+            # count and not a boolean rendered as one.
+            for nth in ("second", "third"):
+                (seed / f"{nth}.md").write_text(f"{nth}\n", encoding="utf-8")
+                git(seed, "add", "-A")
+                git(seed, "commit", "-q", "-m", nth)
+            git(seed, "push", "-q", str(origin), "main")
+            git(clone, "fetch", "-q", "origin", "main")
         worktrees["blooop/devlaunch/main"] = _record("blooop", "devlaunch", "main", clone, MAIN_WS)
         state = "Running" if "warm" in wanted else "Stopped"
         workspaces[MAIN_WS] = _workspace(MAIN_WS, clone, state)
@@ -209,6 +234,18 @@ def build(root: pathlib.Path, shim: pathlib.Path, wanted: set) -> None:
     # The failure-injection channel: the first entry whose `prefix` matches the
     # call's leading argv wins and short-circuits the shim's state machine.
     refusals = []
+    if "dotfiles" in wanted:
+        # devpod's own shape, which is nested: `{"NAME": {"value": …}}`. A flat map
+        # is what dl's *cache* file holds, and hand-writing devpod's shape into that
+        # file sets nothing -- so a fixture that answered flat here would be testing
+        # a document dl never reads (#560).
+        refusals.append(
+            {
+                "prefix": ["context", "options"],
+                "returncode": 0,
+                "stdout": json.dumps({"DOTFILES_URL": {"value": DOTFILES_URL}}) + "\n",
+            }
+        )
     if "fail-up" in wanted:
         refusals.append(
             {"prefix": ["up"], "returncode": 7, "stderr": "devpod: image pull failed\n"}
@@ -260,6 +297,8 @@ def build(root: pathlib.Path, shim: pathlib.Path, wanted: set) -> None:
 FIXTURES = {
     "warm",
     "stopped",
+    "stale-checkout",
+    "dotfiles",
     "gh",
     "no-devpod",
     "no-workspaces",

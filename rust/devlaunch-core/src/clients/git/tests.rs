@@ -1216,6 +1216,66 @@ fn a_symref_answer_with_no_ref_line_names_nothing() {
 }
 
 #[test]
+fn a_left_right_count_reads_heads_own_commits_first() {
+    // The order is the contract: `HEAD...<ref>` puts HEAD on the left, so the
+    // left column is `ahead`. Swap the two and every report of a stale checkout
+    // says the opposite of what happened.
+    assert_eq!(
+        ahead_behind_in_counts("3\t37\n"),
+        Some(AheadBehind {
+            ahead: 3,
+            behind: 37
+        })
+    );
+    assert_eq!(
+        ahead_behind_in_counts("0\t0"),
+        Some(AheadBehind::default()),
+        "the same commit both sides is an answer, and it is the ordinary one"
+    );
+}
+
+#[test]
+fn a_count_in_a_shape_this_does_not_recognise_is_no_answer() {
+    // Not a refusal and not a zero: a reader that guessed here would put an
+    // invented number in front of somebody, which is worse than saying nothing.
+    for output in ["", "37", "0 37", "a\tb", "-1\t2", "0\t"] {
+        assert_eq!(ahead_behind_in_counts(output), None, "{output:?}");
+    }
+}
+
+#[test]
+fn ahead_behind_asks_for_the_symmetric_difference_and_names_the_repository() {
+    let (dir, root) = a_clone();
+    let fake = ScriptedRunner::new().with_script(["git"], Response::stdout("2\t5\n"));
+
+    let answer = Git::new(&fake).ahead_behind(dir.path(), &refs_remotes("origin", "main"));
+
+    assert_eq!(
+        answer,
+        GitAnswer::Said(Some(AheadBehind {
+            ahead: 2,
+            behind: 5
+        }))
+    );
+    let argv = argv(&fake);
+    assert_eq!(
+        argv[1],
+        format!("--git-dir={}", root.join(".git").display()),
+        "one of the pinned family: discovery stays off (devlaunch#171)"
+    );
+    assert_eq!(
+        strs(&argv)[3..],
+        [
+            "rev-list",
+            "--left-right",
+            "--count",
+            "HEAD...refs/remotes/origin/main"
+        ],
+        "three dots, so a diverged checkout is two counts and not one"
+    );
+}
+
+#[test]
 fn an_empty_listing_parses_to_nothing_rather_than_to_one_empty_name() {
     assert!(branches_in_ls_remote("").is_empty());
     assert!(lines("\n\n").is_empty());
