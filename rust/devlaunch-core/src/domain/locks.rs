@@ -28,17 +28,23 @@
 //!   called from inside the scope at all. It is not a guard against re-locking
 //!   — structuring the call sites remains what prevents that; the token is what
 //!   makes the structure visible in the types instead of remembered.
-//! - **A lock file is unlinked only by [`reclaim`], and every acquisition
+//! - **A lock file can be unlinked under a holder, and every path that takes one
 //!   revalidates.** Unlinking an flock'd file is the classic self-defeating
 //!   move: a process that opened the old inode still "holds" a lock nobody else
 //!   can see, while new arrivals lock a fresh file and walk straight past it.
 //!   The answer used to be never to unlink at all, which made a per-workspace
 //!   lock file a permanent straggler (devlaunch#575). It is closed here instead,
-//!   at the acquisition: a guard is handed back only for the inode the path
-//!   *still names*, so a holder whose file went out from under it queues again
-//!   against the live one rather than believing itself alone. That is what makes
-//!   the unlink representable at all, and [`reclaim`] is the only caller that
-//!   performs one.
+//!   by asking after every flock whether the path still names the inode just
+//!   locked: an acquisition that has lost its file queues again against the live
+//!   one rather than believing itself alone, and [`reclaim`] declines to unlink a
+//!   file that is not the one it locked.
+//!
+//!   **Not because [`reclaim`] is the only unlinker.** It is the only one that
+//!   takes a lock first, which is a different claim: `dl --purge` removes the
+//!   cache directory entire ([`crate::flows::lifecycle::purge`]) and the launch
+//!   locks go with it, holding nothing. So "somebody unlinked this path" is an
+//!   ordinary event here, not a devlaunch bug, and the revalidation is what every
+//!   path relies on rather than a belt over a brace.
 //!
 //! **Lock ordering is an invariant, not a habit.** Only one order between the
 //! per-repo lock and the single metadata lock ([`crate::domain::metadata`]) is
@@ -82,17 +88,17 @@ use super::metadata::OsFailure;
 /// another user can open is a lock another user can hold, which on a shared box
 /// is a way to stop somebody else's dl for free. Creation is all this can
 /// promise: the mode is ignored for a file that already exists, so one that
-/// arrived with looser bits keeps them until something removes it. [`reclaim`]
-/// is the only thing that does, and only for a workspace that is gone.
+/// arrived with looser bits keeps them until something removes it: [`reclaim`],
+/// for a workspace that is gone, or `dl --purge` taking the cache with it.
 const LOCK_FILE_MODE: u32 = 0o600;
 
 /// How many times an acquisition will re-open a path that was replaced under it.
 ///
-/// One retry is all a real race needs: the only unlink devlaunch performs is
-/// [`reclaim`]'s, and a sweep performs at most one per path per run, so the
-/// second attempt meets a file nobody is about to take away. The bound is
-/// generous against that and still finite, because the alternative to a bound
-/// here is a loop whose exit depends on another process losing interest.
+/// One retry is all a real race needs: a sweep unlinks at most once per path per
+/// run, and `dl --purge` removes the cache directory once and does not put it
+/// back, so the second attempt meets a file nobody is about to take away. The
+/// bound is generous against that and still finite, because the alternative to a
+/// bound here is a loop whose exit depends on another process losing interest.
 const ACQUIRE_ATTEMPTS: usize = 8;
 
 /// Whether an acquisition had to queue behind another holder.
