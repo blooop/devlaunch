@@ -304,8 +304,9 @@ until now nothing removed them: measured on one host, **52 clone directories for
 all-or-nothing: the only way to get the 4 GB back was to destroy the 7.86 GB
 too, and every bare cache with it.
 
-`dl --prune` removes exactly the clone directories no live workspace opens, and
-reclaims the Docker volumes of workspaces devpod no longer lists. It never
+`dl --prune` removes exactly the clone directories no live workspace opens,
+reclaims the Docker volumes of workspaces devpod no longer lists, and reclaims
+the launch locks of workspaces devpod no longer lists. It never
 deletes a devpod workspace, a container or an image, never
 touches a repo's `.bare` cache (0.08 GB for seven repos, and it is what makes
 the next clone of a repo fast), and never looks outside
@@ -636,6 +637,57 @@ it.
 walk of a 12000-file environment, and the listing is a read-only command people
 run casually; a derivative is never a reason a site stands, so the listing loses
 no answer by not asking.
+
+#### The per-workspace launch locks
+
+Two `dl` runs launching one workspace serialize on a lock file under
+`<cache>/devlaunch/launch-locks/<workspace-id>.lock`. It is empty: the only thing
+it carries is the `flock` the kernel holds on it while a launch is inside its
+critical section, and the kernel drops that when the process ends, however it
+ends.
+
+Until [#575](https://github.com/blooop/devlaunch/issues/575) nothing removed one.
+Every workspace ever launched left an entry and no removal path took it away, so
+the directory only ever grew: measured on one host, **18 of 26 entries named no
+workspace `devpod list` still returns**, against 8 live workspaces, the oldest
+three weeks old. `dl <ws> rm` did not reach them, `--prune` did not, and
+`--purge` only did because it removes the whole cache directory. That is zero
+bytes of disk and it is still the thing worth fixing: a directory that only grows
+is one nobody can read as a description of anything.
+
+`--prune` reclaims them now, on the same plan and the same `y/N` as everything
+above, and the precondition is the volumes' precondition: no workspace `devpod
+list` returns carries that id.
+
+| artifact | who reclaims it | what makes that safe |
+| --- | --- | --- |
+| `<cache>/devlaunch/launch-locks/<id>.lock` | `--prune`, and `--purge` with the rest of the cache | no workspace devpod lists carries that id, re-asked under the acting pass's own listing, **and** nothing holds the lock at the moment of the unlink |
+| `~/.devpod/contexts/<ctx>/locks/<id>.workspace.lock` | nobody, deliberately | it is devpod's lock, taken by processes devlaunch does not run. See below |
+
+**Why unlinking a lock file needed a change to how they are taken.** Removing an
+`flock`'d file is the classic self-defeating move: a process that opened the old
+inode still holds a lock nobody else can see, while new arrivals lock a fresh
+file at the same path and walk straight past it, and two `devpod up`s of one
+workspace then run against each other. That hazard is the reason the rule used to
+be that no lock file is ever deleted. What replaced the rule is a check at the
+other end: an acquisition now hands back a guard only for the inode the path
+*still names*, so a run whose file went out from under it queues again against
+the live one instead of believing itself alone. The unlink itself is performed
+while holding the lock, and never blocks for it, so a launch inside its critical
+section keeps its file and the sweep says so rather than waiting.
+
+A lock a launch is holding is left standing and is not counted as a failure. It
+is the guard working, the run still ends 0, and the next `--prune` finds it free.
+
+**devpod's own lock is not devlaunch's to reclaim.** The same measurement found
+70 of 78 stale entries under `~/.devpod/contexts/default/locks`, and they stay.
+It is the same file `dl <ws> kill` is careful never to unlink, for the same
+reason: the revalidation above is a promise devlaunch makes to itself about a
+file only devlaunch opens, and devpod makes no such promise about this one. A
+`dl` that removed it would be deciding that another program's mutual exclusion is
+devlaunch's to break. The file devpod does leave stale, and which `kill` does
+remove, is the busy marker beside it, which is a plain file and not a lock at
+all.
 
 #### The disk neither command frees
 

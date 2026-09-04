@@ -12,12 +12,14 @@ use super::prune_plan::{
 };
 use super::prune_status::{Decision, KeptBecause, RepoAt, clone_status, decide};
 use crate::clients::devpod::Workspace;
-use crate::domain::metadata::MetadataStorage;
+use crate::domain::locks::Reclaimed;
+use crate::domain::metadata::{MetadataStorage, OsFailure};
 use crate::domain::model::WorktreeInfo;
 use crate::domain::workspace_state::NonEmpty;
 use crate::flows::agent_worktrees::{self, WorktreeReport};
 use crate::flows::disk_usage::{self, DiskUsage};
 use crate::flows::kept_copies::KeptCopies;
+use crate::flows::launch_locks::LaunchLocks;
 use crate::flows::listing::CommandContext;
 use crate::flows::repo_manager::{Refusal, TreeSweep, remove_tree_as_far_as_it_goes};
 use crate::flows::workspace_clone::WorkspaceCloneManager;
@@ -31,6 +33,28 @@ pub struct Withheld {
     /// Why it is staying — and it is worth saying that this was not so when the
     /// plan was printed.
     pub because: KeptBecause,
+}
+
+/// One launch lock the acting pass did not reclaim, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LockKept {
+    pub workspace_id: String,
+    pub because: LockKeptBecause,
+}
+
+/// Why one launch lock is staying.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LockKeptBecause {
+    /// devpod lists this workspace again. It did not when the plan was printed —
+    /// the same shrinking-only direction the clones and the volumes move in.
+    ListedAgain,
+    /// A launch of this workspace holds it right now, which is the one thing a
+    /// listing taken a moment ago could not say. Not a failure and not counted as
+    /// one: principle 1 of devlaunch#444 is that a check which cannot prove the
+    /// file abandoned fails towards keeping it, and the next prune reclaims it.
+    Held,
+    /// The OS refused the open or the unlink.
+    Refused(OsFailure),
 }
 
 /// What the acting pass did.
@@ -50,6 +74,14 @@ pub struct PruneReport {
     pub volumes_kept: Vec<VolumesKept>,
     /// What the run did about the agent worktrees inside the clones it kept.
     pub worktrees: WorktreeReport,
+    /// The workspaces whose launch lock is gone. Both ways of being gone are in
+    /// here: this run's unlink, and a file another sweep had already taken between
+    /// the plan and the act. The distinction is real and no caller acts on it —
+    /// what the report states is that the lock is not there any more.
+    pub locks_reclaimed: Vec<String>,
+    /// The launch locks that stayed, and why. Every one of these is retryable by
+    /// the next prune.
+    pub locks_kept: Vec<LockKept>,
 }
 
 impl PruneReport {
@@ -66,6 +98,15 @@ impl PruneReport {
 
     pub fn finished(&self) -> bool {
         self.refused.is_empty()
+            // A lock a launch holds is not unfinished business — it is the guard
+            // working — so only an OS refusal counts here, on the same rule the
+            // clone refusals are counted under: something the user was told would
+            // go is still on disk and no later run has a reason to succeed where
+            // this one did not.
+            && !self
+                .locks_kept
+                .iter()
+                .any(|kept| matches!(kept.because, LockKeptBecause::Refused(_)))
             && self.worktrees.refused.is_empty()
             // A part-removed environment is a directory the user was told would
             // go and which is still there, in pieces. `withheld` is absent from
@@ -113,6 +154,7 @@ pub fn prune_clones(
     clones: &WorkspaceCloneManager<'_>,
     storage: &mut MetadataStorage,
     copies: &KeptCopies,
+    launch_locks: &LaunchLocks,
     plan: &PrunePlan,
     notices: &mut dyn Notices<LifecycleNotice>,
 ) -> Result<PruneOutcome, PruneError> {
@@ -145,6 +187,8 @@ pub fn prune_clones(
         reclaimed: Vec::new(),
         volumes_kept: Vec::new(),
         worktrees: WorktreeReport::default(),
+        locks_reclaimed: Vec::new(),
+        locks_kept: Vec::new(),
     };
     let mut forget: Vec<WorktreeInfo> = Vec::new();
     for ((owner, repo), reclaimables) in by_repo {
@@ -197,6 +241,11 @@ pub fn prune_clones(
     // below: these volumes belong to workspaces with no clone directory in this
     // plan at all, so no repository lock is about them.
     reclaim_volumes(context.runner(), copies, plan, &workspaces, &mut report);
+    // Outside every repo lock for the same reason, and one of its own: a launch
+    // lock is the outermost lock dl takes ([`crate::domain::locks`]'s ordering
+    // note), so reaching for one from inside a repo lock would be the one order
+    // that rule forbids.
+    reclaim_launch_locks(launch_locks, plan, &workspaces, &mut report);
     // The agent worktrees inside the clones this run is keeping. A second pass
     // over a disjoint set of directories — the sweep only ever covers clones the
     // plan keeps, and the loop above only ever removes whole clones — so it
@@ -276,6 +325,47 @@ fn reclaim_volumes(
             // delete path keeps for the same arm. `NothingNamed` is unreachable:
             // the names ride on the entry and a `NonEmpty` has no empty state.
             VolumeSweep::NoDocker | VolumeSweep::NothingNamed => {}
+        }
+    }
+}
+
+/// Reclaim the launch locks the plan named, where nothing has taken them back.
+///
+/// **Both preconditions are re-asked here**, and they are asked of different
+/// things. That devpod still does not list the workspace is re-asked under the
+/// second listing the acting pass already pays for, exactly as each clone
+/// directory and each workspace's volumes are — the approved set can shrink
+/// between the report and the act and can never grow. That nothing *holds* the
+/// lock is asked by [`crate::domain::locks::reclaim`] at the moment of the unlink
+/// and could not be asked anywhere else: a check up here would be a lock free at
+/// the time of the reading and taken by the time of the removal.
+fn reclaim_launch_locks(
+    launch_locks: &LaunchLocks,
+    plan: &PrunePlan,
+    workspaces: &[Workspace],
+    report: &mut PruneReport,
+) {
+    let live: HashSet<&str> = workspaces.iter().map(|it| it.id.as_str()).collect();
+    for workspace_id in plan.reclaiming_locks() {
+        if live.contains(workspace_id.as_str()) {
+            report.locks_kept.push(LockKept {
+                workspace_id: workspace_id.clone(),
+                because: LockKeptBecause::ListedAgain,
+            });
+            continue;
+        }
+        match launch_locks.reclaim(workspace_id) {
+            Reclaimed::Removed | Reclaimed::AlreadyGone => {
+                report.locks_reclaimed.push(workspace_id.clone());
+            }
+            Reclaimed::Held => report.locks_kept.push(LockKept {
+                workspace_id: workspace_id.clone(),
+                because: LockKeptBecause::Held,
+            }),
+            Reclaimed::Refused(failure) => report.locks_kept.push(LockKept {
+                workspace_id: workspace_id.clone(),
+                because: LockKeptBecause::Refused(failure),
+            }),
         }
     }
 }

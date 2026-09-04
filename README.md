@@ -253,7 +253,7 @@ instead. [docs/cli.md](docs/cli.md) has the full `--rm` contract, including whic
 | `dl --ls` | List every workspace |
 | `dl --ls --json` | The same, machine-readable, with what each workspace would lose if deleted |
 | `dl --ls --size` | Add what deleting each one would free. Opt-in: it walks every file |
-| `dl --prune` | Remove the clone directories no workspace opens any more, the agent git worktrees inside the clones it keeps, and the volumes of workspaces devpod has forgotten |
+| `dl --prune` | Remove the clone directories no workspace opens any more, the agent git worktrees inside the clones it keeps, and the volumes and launch locks of workspaces devpod has forgotten |
 | `dl --reconcile` | Re-point workspaces whose recorded source folder went missing. Deletes nothing |
 | `dl --purge` | Remove devlaunch's own workspaces and caches |
 | `dl --install` | Install shell completions, and the `dl-herdr-shell` name a herdr pane opens through |
@@ -379,7 +379,7 @@ different jobs:
 
 | Command | Takes | Leaves |
 |---|---|---|
-| `dl --prune` | Clone directories no workspace opens, collectable agent git worktrees inside the ones it keeps, and the volumes of workspaces devpod no longer lists | Every workspace, container and image |
+| `dl --prune` | Clone directories no workspace opens, collectable agent git worktrees inside the ones it keeps, and the volumes and launch locks of workspaces devpod no longer lists | Every workspace, container and image |
 | `dl --purge` | The workspaces devlaunch created, and its caches | Workspaces it did not create, each named with its source before it asks |
 | `dl --reconcile` | Nothing | Repairs records that stopped matching the disk |
 

@@ -18,6 +18,7 @@ use crate::domain::workspace_state::NonEmpty;
 use crate::flows::agent_worktrees::{self, WorktreeSweep};
 use crate::flows::disk_usage::{self, DiskUsage};
 use crate::flows::kept_copies::KeptCopies;
+use crate::flows::launch_locks::LaunchLocks;
 use crate::flows::listing::{self};
 use crate::flows::repo_manager::{CacheNotice, present};
 use crate::flows::workspace_clone::WorkspaceCloneManager;
@@ -110,6 +111,13 @@ pub struct PrunePlan {
     /// being counted twice: a clone this run removes already accounts for
     /// everything inside it.
     pub(super) worktrees: WorktreeSweep,
+    /// The workspaces whose launch lock names nothing devpod lists any more, from
+    /// devlaunch's own lock directory. A third enumeration beside the clone walk
+    /// and the copies, for the reason the second one is one: see [`prune_plan`].
+    ///
+    /// Ids and not paths, because the store owns the spelling of the path and a
+    /// plan carrying one would be a second place that decides where a lock lives.
+    pub(super) locks: Vec<String>,
 }
 
 impl PrunePlan {
@@ -118,6 +126,7 @@ impl PrunePlan {
         self.removing.is_empty()
             && self.stale_records.is_empty()
             && self.reclaiming.is_empty()
+            && self.locks.is_empty()
             && self.worktrees.nothing_to_do()
     }
 
@@ -161,6 +170,11 @@ impl PrunePlan {
     /// The agent git worktrees inside the clones this run is keeping.
     pub fn worktrees(&self) -> &WorktreeSweep {
         &self.worktrees
+    }
+
+    /// The workspaces whose launch lock this run will reclaim.
+    pub fn reclaiming_locks(&self) -> &[String] {
+        &self.locks
     }
 }
 
@@ -255,12 +269,23 @@ pub enum PruneError {
 /// orphaned clone *manufactured* a permanent orphan — devpod's record died at the
 /// outside delete, so once the clone went the volumes were unreachable forever. It
 /// still deletes no workspace, no container and no image.
+///
+/// # And the launch locks are a third, for the same argument
+///
+/// The per-workspace launch locks ([`crate::flows::launch_locks`]) are enumerated
+/// the same way and against the same precondition, and the reason they are not a
+/// column on either pass above is the reason the volumes are not a column on the
+/// clone walk: a lock exists for workspaces that have no clone under the cache at
+/// all, and for workspaces that never completed an `up` and so left no copy. Until
+/// devlaunch#575 nothing reclaimed one short of `--purge` removing the whole cache
+/// directory.
 #[allow(clippy::too_many_arguments)]
 pub fn prune_plan(
     clones: &WorkspaceCloneManager<'_>,
     storage: &MetadataStorage,
     workspaces: &[Workspace],
     copies: &KeptCopies,
+    launch_locks: &LaunchLocks,
     placement: &ClonePlacement,
     insisted: Insisted,
     notices: &mut dyn Notices<LifecycleNotice>,
@@ -352,7 +377,25 @@ pub fn prune_plan(
         stale_records,
         reclaiming: reclaimable_volumes(copies, workspaces),
         worktrees,
+        locks: reclaimable_locks(launch_locks, workspaces),
     })
+}
+
+/// The workspaces holding a launch lock that devpod no longer lists.
+///
+/// The same one precondition [`reclaimable_volumes`] asks, of the same listing, for
+/// the same reason -- and it is the whole of what this pass decides. Whether the
+/// lock is *free* is not asked here and could not usefully be: the answer would be
+/// taken before the user has answered the question and acted on afterwards, so it
+/// is asked where it can be acted on, at the moment of the unlink
+/// ([`crate::domain::locks::reclaim`]).
+fn reclaimable_locks(launch_locks: &LaunchLocks, workspaces: &[Workspace]) -> Vec<String> {
+    let live: HashSet<&str> = workspaces.iter().map(|it| it.id.as_str()).collect();
+    launch_locks
+        .keyed()
+        .into_iter()
+        .filter(|workspace_id| !live.contains(workspace_id.as_str()))
+        .collect()
 }
 
 /// The copies whose workspace devpod no longer lists, each carrying its own names.

@@ -61,6 +61,7 @@ use crate::domain::workspace_state::{self, NonEmpty};
 use crate::flows::agent_worktrees::{self, Standing, Verdict};
 use crate::flows::completion_cache;
 use crate::flows::kept_copies::KeptCopies;
+use crate::flows::launch_locks::LaunchLocks;
 use crate::flows::listing::CommandContext;
 use crate::flows::repo_manager::tests::{refusing_reads, refusing_writes, run_git};
 use crate::flows::repo_manager::{
@@ -481,6 +482,11 @@ impl World {
         KeptCopies::under(&self.cache)
     }
 
+    /// The per-workspace launch locks, under that same cache.
+    fn launch_locks(&self) -> LaunchLocks {
+        LaunchLocks::under(&self.cache)
+    }
+
     fn branches_on_record(&self) -> Vec<String> {
         let mut branches: Vec<String> = self
             .storage
@@ -529,6 +535,7 @@ fn plan_insisting(world: &World, insisted: Insisted) -> PrunePlan {
         &world.storage,
         &workspaces,
         &world.copies(),
+        &world.launch_locks(),
         &placement,
         insisted,
         &mut ignoring(),
@@ -4084,6 +4091,7 @@ fn a_machine_with_no_clone_directories_has_nothing_to_prune() {
         &storage,
         &workspaces,
         &KeptCopies::under(dir.path()),
+        &LaunchLocks::under(dir.path()),
         &placement,
         Insisted::nothing(),
         &mut ignoring(),
@@ -4249,11 +4257,13 @@ fn the_acting_pass_removes_the_directories_and_forgets_their_records() {
     let mut context = CommandContext::new(&four.world.devpod);
 
     let copies = four.world.copies();
+    let launch_locks = four.world.launch_locks();
     let outcome = prune_clones(
         &mut context,
         &clones,
         &mut four.world.storage,
         &copies,
+        &launch_locks,
         &plan,
         &mut ignoring(),
     )
@@ -4290,11 +4300,13 @@ fn work_written_while_the_question_was_open_is_not_destroyed() {
     let mut context = CommandContext::new(&four.world.devpod);
 
     let copies = four.world.copies();
+    let launch_locks = four.world.launch_locks();
     let outcome = prune_clones(
         &mut context,
         &clones,
         &mut four.world.storage,
         &copies,
+        &launch_locks,
         &plan,
         &mut ignoring(),
     )
@@ -4333,11 +4345,13 @@ fn a_clone_a_launch_registered_since_the_plan_is_not_removed_even_under_force() 
     let mut context = CommandContext::new(&four.world.devpod);
 
     let copies = four.world.copies();
+    let launch_locks = four.world.launch_locks();
     let outcome = prune_clones(
         &mut context,
         &clones,
         &mut four.world.storage,
         &copies,
+        &launch_locks,
         &plan,
         &mut ignoring(),
     )
@@ -4369,11 +4383,13 @@ fn a_directory_that_refuses_is_named_and_its_siblings_still_go() {
     let mut context = CommandContext::new(&world.devpod);
 
     let copies = world.copies();
+    let launch_locks = world.launch_locks();
     let outcome = prune_clones(
         &mut context,
         &clones,
         &mut world.storage,
         &copies,
+        &launch_locks,
         &plan,
         &mut ignoring(),
     )
@@ -4413,11 +4429,13 @@ fn the_acting_pass_stops_when_a_workspace_appeared_that_it_cannot_place() {
     let mut context = CommandContext::new(&four.world.devpod);
 
     let copies = four.world.copies();
+    let launch_locks = four.world.launch_locks();
     let outcome = prune_clones(
         &mut context,
         &clones,
         &mut four.world.storage,
         &copies,
+        &launch_locks,
         &plan,
         &mut ignoring(),
     )
@@ -4438,11 +4456,13 @@ fn a_second_run_finds_nothing_left_to_do() {
     {
         let mut context = CommandContext::new(&four.world.devpod);
         let copies = four.world.copies();
+        let launch_locks = four.world.launch_locks();
         prune_clones(
             &mut context,
             &clones,
             &mut four.world.storage,
             &copies,
+            &launch_locks,
             &plan,
             &mut ignoring(),
         )
@@ -4466,11 +4486,13 @@ fn the_acting_pass_pays_a_second_devpod_list() {
     let mut context = CommandContext::new(&four.world.devpod);
 
     let copies = four.world.copies();
+    let launch_locks = four.world.launch_locks();
     prune_clones(
         &mut context,
         &clones,
         &mut four.world.storage,
         &copies,
+        &launch_locks,
         &plan,
         &mut ignoring(),
     )
@@ -4568,6 +4590,7 @@ fn a_prune_over_a_cache_with_no_copies_names_no_volume() {
     let plan = plan_for(&world, Insistence::NotInsisted);
     let clones = clones_for(&world.repos_dir, &world.devpod);
     let copies = world.copies();
+    let launch_locks = world.launch_locks();
     let mut context = CommandContext::new(&world.devpod);
 
     prune_clones(
@@ -4575,6 +4598,7 @@ fn a_prune_over_a_cache_with_no_copies_names_no_volume() {
         &clones,
         &mut world.storage,
         &copies,
+        &launch_locks,
         &plan,
         &mut ignoring(),
     )
@@ -4618,6 +4642,7 @@ fn a_prune_reclaims_the_volumes_of_a_workspace_devpod_forgot_and_drops_the_copy(
     let plan = plan_for(&world, Insistence::NotInsisted);
     let clones = clones_for(&world.repos_dir, &world.devpod);
     let copies = world.copies();
+    let launch_locks = world.launch_locks();
     let mut context = CommandContext::new(&world.devpod);
 
     let outcome = prune_clones(
@@ -4625,6 +4650,7 @@ fn a_prune_reclaims_the_volumes_of_a_workspace_devpod_forgot_and_drops_the_copy(
         &clones,
         &mut world.storage,
         &copies,
+        &launch_locks,
         &plan,
         &mut ignoring(),
     )
@@ -4672,6 +4698,7 @@ fn a_copy_naming_a_held_volume_is_a_reported_refusal_and_the_copy_stays() {
     let plan = plan_for(&world, Insistence::NotInsisted);
     let clones = clones_for(&world.repos_dir, &world.devpod);
     let copies = world.copies();
+    let launch_locks = world.launch_locks();
     let mut context = CommandContext::new(&world.devpod);
 
     let outcome = prune_clones(
@@ -4679,6 +4706,7 @@ fn a_copy_naming_a_held_volume_is_a_reported_refusal_and_the_copy_stays() {
         &clones,
         &mut world.storage,
         &copies,
+        &launch_locks,
         &plan,
         &mut ignoring(),
     )
@@ -4719,6 +4747,7 @@ fn a_workspace_back_in_the_listing_between_the_plan_and_the_act_keeps_its_volume
     world.devpod.lists(&[listed("r-main-aa", &clone)]);
     let clones = clones_for(&world.repos_dir, &world.devpod);
     let copies = world.copies();
+    let launch_locks = world.launch_locks();
     let mut context = CommandContext::new(&world.devpod);
 
     let outcome = prune_clones(
@@ -4726,6 +4755,7 @@ fn a_workspace_back_in_the_listing_between_the_plan_and_the_act_keeps_its_volume
         &clones,
         &mut world.storage,
         &copies,
+        &launch_locks,
         &plan,
         &mut ignoring(),
     )
@@ -4757,6 +4787,7 @@ fn a_prune_on_a_machine_with_no_docker_says_nothing_about_the_volumes() {
     let plan = plan_for(&world, Insistence::NotInsisted);
     let clones = clones_for(&world.repos_dir, &world.devpod);
     let copies = world.copies();
+    let launch_locks = world.launch_locks();
     let mut context = CommandContext::new(&world.devpod);
 
     let outcome = prune_clones(
@@ -4764,6 +4795,7 @@ fn a_prune_on_a_machine_with_no_docker_says_nothing_about_the_volumes() {
         &clones,
         &mut world.storage,
         &copies,
+        &launch_locks,
         &plan,
         &mut ignoring(),
     )
@@ -4825,6 +4857,184 @@ fn a_delete_docker_refused_keeps_the_copy() {
     deleting.delete();
 
     assert_eq!(deleting.world.copies().copied(), ["r-main-aa"]);
+}
+
+// =======================================================================
+// prune: reclaiming the per-workspace launch locks (devlaunch#575)
+// =======================================================================
+
+/// The launch lock a launch of `workspace_id` would have left behind, and then
+/// let go of.
+///
+/// Written rather than taken, because what the sweep meets on a real host is
+/// exactly this: a file the `flock` was released from when the launch exited,
+/// and which nothing has unlinked since.
+fn a_launch_lock_for(world: &World, workspace_id: &str) {
+    let path = world.launch_locks().path_for(workspace_id);
+    std::fs::create_dir_all(path.parent().expect("a parent")).expect("the lock directory");
+    std::fs::write(&path, "").expect("the lock file");
+}
+
+/// Whether `workspace_id`'s launch lock is still on disk.
+fn lock_survives(world: &World, workspace_id: &str) -> bool {
+    world.launch_locks().path_for(workspace_id).exists()
+}
+
+/// The leak in one run: every workspace ever launched left an entry, and until
+/// this nothing but `--purge` -- which removes the whole cache directory --
+/// took one away.
+#[test]
+fn a_prune_reclaims_the_launch_lock_of_a_workspace_devpod_no_longer_lists() {
+    let mut world = World::empty();
+    a_launch_lock_for(&world, "r-main-aa");
+    let plan = plan_for(&world, Insistence::NotInsisted);
+    assert_eq!(plan.reclaiming_locks(), ["r-main-aa"]);
+    assert!(
+        !plan.nothing_to_do(),
+        "a run whose only work is the launch locks"
+    );
+    let clones = clones_for(&world.repos_dir, &world.devpod);
+    let copies = world.copies();
+    let launch_locks = world.launch_locks();
+    let mut context = CommandContext::new(&world.devpod);
+
+    let outcome = prune_clones(
+        &mut context,
+        &clones,
+        &mut world.storage,
+        &copies,
+        &launch_locks,
+        &plan,
+        &mut ignoring(),
+    )
+    .expect("the pass ran");
+
+    let PruneOutcome::Acted(report) = &outcome else {
+        panic!("expected the pass to act, got {outcome:?}");
+    };
+    assert_eq!(report.locks_reclaimed, ["r-main-aa"]);
+    assert!(report.locks_kept.is_empty());
+    assert!(!lock_survives(&world, "r-main-aa"));
+    assert!(report.finished());
+}
+
+/// The precondition, and it is the volumes' precondition: no workspace devpod
+/// lists carries that id. A live workspace's launch lock is the file its next
+/// launch serializes on.
+#[test]
+fn a_prune_plans_no_lock_for_a_workspace_devpod_still_lists() {
+    let world = World::empty();
+    a_launch_lock_for(&world, "r-main-aa");
+    let clone = world.repo_dir.join("r-main-aa");
+    std::fs::create_dir_all(&clone).expect("a clone directory");
+    world.devpod.lists(&[listed("r-main-aa", &clone)]);
+
+    let plan = plan_for(&world, Insistence::NotInsisted);
+
+    assert_eq!(plan.reclaiming_locks(), Vec::<String>::new());
+    assert!(plan.nothing_to_do());
+}
+
+/// The approved set shrinks between the report and the act and never grows. A
+/// launch of that very id can register a workspace while the question is on
+/// screen, and its lock is then the one the next `up` will queue on.
+#[test]
+fn a_lock_whose_workspace_came_back_between_the_plan_and_the_act_is_left() {
+    let mut world = World::empty();
+    a_launch_lock_for(&world, "r-main-aa");
+    let plan = plan_for(&world, Insistence::NotInsisted);
+    assert_eq!(plan.reclaiming_locks(), ["r-main-aa"]);
+
+    let clone = world.repo_dir.join("r-main-aa");
+    std::fs::create_dir_all(&clone).expect("a clone directory");
+    world.devpod.lists(&[listed("r-main-aa", &clone)]);
+    let clones = clones_for(&world.repos_dir, &world.devpod);
+    let copies = world.copies();
+    let launch_locks = world.launch_locks();
+    let mut context = CommandContext::new(&world.devpod);
+
+    let outcome = prune_clones(
+        &mut context,
+        &clones,
+        &mut world.storage,
+        &copies,
+        &launch_locks,
+        &plan,
+        &mut ignoring(),
+    )
+    .expect("the pass ran");
+
+    let PruneOutcome::Acted(report) = &outcome else {
+        panic!("expected the pass to act, got {outcome:?}");
+    };
+    assert!(report.locks_reclaimed.is_empty());
+    assert_eq!(
+        report.locks_kept,
+        [LockKept {
+            workspace_id: "r-main-aa".to_owned(),
+            because: LockKeptBecause::ListedAgain,
+        }]
+    );
+    assert!(lock_survives(&world, "r-main-aa"));
+}
+
+/// The one thing the listing cannot say, asked at the moment of the unlink: a
+/// launch is holding this lock right now. It stays, the run is still finished,
+/// and the next prune finds it free -- principle 1 of devlaunch#444, where a
+/// check that cannot prove the file abandoned fails towards keeping it.
+#[test]
+fn a_lock_a_launch_is_holding_is_left_and_does_not_fail_the_run() {
+    let mut world = World::empty();
+    a_launch_lock_for(&world, "r-main-aa");
+    let plan = plan_for(&world, Insistence::NotInsisted);
+    let held = crate::domain::locks::hold_lock(&world.launch_locks().path_for("r-main-aa"))
+        .expect("a launch holds it");
+    let clones = clones_for(&world.repos_dir, &world.devpod);
+    let copies = world.copies();
+    let launch_locks = world.launch_locks();
+    let mut context = CommandContext::new(&world.devpod);
+
+    let outcome = prune_clones(
+        &mut context,
+        &clones,
+        &mut world.storage,
+        &copies,
+        &launch_locks,
+        &plan,
+        &mut ignoring(),
+    )
+    .expect("the pass ran");
+
+    let PruneOutcome::Acted(report) = &outcome else {
+        panic!("expected the pass to act, got {outcome:?}");
+    };
+    assert!(report.locks_reclaimed.is_empty());
+    assert_eq!(
+        report.locks_kept,
+        [LockKept {
+            workspace_id: "r-main-aa".to_owned(),
+            because: LockKeptBecause::Held,
+        }]
+    );
+    assert!(lock_survives(&world, "r-main-aa"));
+    assert!(
+        report.finished(),
+        "a lock the guard is doing its job on is not unfinished business"
+    );
+    drop(held);
+}
+
+/// The same constraint the copies have, and it holds here for the same reason:
+/// a run pointed at a scratch `XDG_CACHE_HOME` reads a lock directory that is
+/// not there, so it names no workspace and unlinks nothing.
+#[test]
+fn a_prune_over_a_cache_with_no_launch_locks_names_no_workspace() {
+    let world = World::empty();
+
+    let plan = plan_for(&world, Insistence::NotInsisted);
+
+    assert_eq!(plan.reclaiming_locks(), Vec::<String>::new());
+    assert!(plan.nothing_to_do());
 }
 
 // =======================================================================
@@ -4965,12 +5175,14 @@ fn the_acting_pass_removes_the_worktree_and_forgets_its_registration() {
     let clones = clones_for(&world.repos_dir, &world.devpod);
     let mut context = CommandContext::new(&world.devpod);
     let copies = world.copies();
+    let launch_locks = world.launch_locks();
 
     let outcome = prune_clones(
         &mut context,
         &clones,
         &mut world.storage,
         &copies,
+        &launch_locks,
         &plan,
         &mut ignoring(),
     )
@@ -5011,11 +5223,13 @@ fn a_nested_worktree_holding_work_stands_the_whole_subtree_end_to_end() {
     let clones = clones_for(&world.repos_dir, &world.devpod);
     let mut context = CommandContext::new(&world.devpod);
     let copies = world.copies();
+    let launch_locks = world.launch_locks();
     prune_clones(
         &mut context,
         &clones,
         &mut world.storage,
         &copies,
+        &launch_locks,
         &plan,
         &mut ignoring(),
     )
@@ -5508,6 +5722,8 @@ fn a_subtree_that_would_not_come_away_leaves_the_run_unfinished() {
         reclaimed: Vec::new(),
         volumes_kept: Vec::new(),
         worktrees: WorktreeReport::default(),
+        locks_reclaimed: Vec::new(),
+        locks_kept: Vec::new(),
     };
 
     assert!(report.finished(), "nothing was refused");
@@ -5521,5 +5737,32 @@ fn a_subtree_that_would_not_come_away_leaves_the_run_unfinished() {
         !report.finished(),
         "a part-removed environment is not a finished run, and exiting 0 tells \
          every script that called dl that it was"
+    );
+
+    // The launch locks join the same contract, and only on the arm that is a
+    // refusal: `Held` is the guard working and `ListedAgain` is the plan being
+    // re-asked, neither of which leaves anything for anybody to do.
+    report.worktrees.refused_derivatives.clear();
+    report.locks_kept.push(LockKept {
+        workspace_id: "r-main-aa".to_owned(),
+        because: LockKeptBecause::Held,
+    });
+    report.locks_kept.push(LockKept {
+        workspace_id: "r-main-bb".to_owned(),
+        because: LockKeptBecause::ListedAgain,
+    });
+
+    assert!(report.finished(), "neither of those is unfinished business");
+
+    report.locks_kept.push(LockKept {
+        workspace_id: "r-main-cc".to_owned(),
+        because: LockKeptBecause::Refused(
+            std::io::Error::from(std::io::ErrorKind::PermissionDenied).into(),
+        ),
+    });
+
+    assert!(
+        !report.finished(),
+        "a lock file the user was told would go is still on disk"
     );
 }

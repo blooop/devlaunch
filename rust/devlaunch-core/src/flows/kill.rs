@@ -12,11 +12,15 @@
 //! # Two files called `workspace.lock`, and only one of them is swept
 //!
 //! - **The flock**, under devpod's `contexts/<ctx>/locks`. This is what blocks,
-//!   and it is **never unlinked** — [`crate::domain::locks`] argues the case at
-//!   length and it applies verbatim to devpod's: a process holding the old inode
-//!   still holds a lock nobody else can see, while new arrivals lock a fresh file
-//!   and walk past it. Two processes then both believe they hold the workspace.
-//!   The kernel drops this one when the holder dies, so the kill *is* the release.
+//!   and **devlaunch never unlinks it** — [`crate::domain::locks`] states the
+//!   hazard at length and it is devpod's here verbatim: a process holding the old
+//!   inode still holds a lock nobody else can see, while new arrivals lock a
+//!   fresh file and walk past it. Two processes then both believe they hold the
+//!   workspace. devlaunch closes that for *its own* locks by revalidating the
+//!   inode on every acquisition, which is a promise it can only make about a file
+//!   only it opens; devpod's acquisitions make no such check, so out here there
+//!   is nothing that would make an unlink safe. The kernel drops this one when
+//!   the holder dies, so the kill *is* the release.
 //! - **The busy marker**, under devpod's `agent/contexts/<ctx>/workspaces/<id>`.
 //!   A plain file, created and removed by a `defer` in devpod's agent, and a
 //!   `defer` does not run under SIGKILL — so this is the one that actually goes

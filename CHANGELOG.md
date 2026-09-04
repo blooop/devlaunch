@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`dl --prune` reclaims the per-workspace launch locks**, which nothing short
+  of `--purge` removing the whole cache directory had ever reached. Two `dl` runs
+  launching one workspace serialize on an empty file under
+  `<cache>/devlaunch/launch-locks/<workspace-id>.lock`; every workspace ever
+  launched left one and no removal path took it away. Measured on one host: 18 of
+  26 entries named no workspace `devpod list` still returns, against 8 live
+  workspaces, the oldest three weeks old.
+
+  Zero bytes of disk, and still the thing worth fixing. A directory that only
+  ever grows is one nobody can read as a description of anything, and "nothing
+  devlaunch causes to exist accumulates unreclaimed" is the rule the rest of the
+  cleanup contract is written to.
+
+  The precondition is the volumes' precondition, asked of the same listing: no
+  workspace `devpod list` returns carries that id, re-asked under the acting
+  pass's own second listing so the approved set can shrink between the plan and
+  the act and can never grow.
+
+- **Unlinking a lock file is safe now, which it was not before.** Removing an
+  `flock`'d file is the self-defeating move: a process holding the old inode
+  excludes nobody, while new arrivals lock a fresh file at the same path and walk
+  past it, and two `devpod up`s of one workspace run against each other. The rule
+  used to be that no lock file is ever deleted, which is what made the leak
+  above permanent.
+
+  What replaced the rule is a check at the other end. An acquisition hands back a
+  guard only for the inode the path *still names*, so a run whose file went out
+  from under it queues again against the live one rather than believing itself
+  alone. The unlink is then performed while holding the lock, and never queues
+  for it: a lock a launch is holding is left standing, reported as held, and
+  reclaimed by the next prune. That is not counted as a failure and does not
+  change the exit code, because it is the guard working.
+
+- **devpod's own per-workspace lock is left alone, deliberately**, and the
+  cleanup contract now says so in a table row rather than by omission. The same
+  measurement found 70 of 78 stale entries under
+  `~/.devpod/contexts/default/locks`. They stay: it is another program's lock,
+  taken by processes devlaunch does not run, and the revalidation above is a
+  promise devlaunch can only make about a file only devlaunch opens. It is the
+  same file `dl <ws> kill` has always been careful never to unlink.
+
 ## [0.29.0] - 2026-09-02
 
 ### Added
