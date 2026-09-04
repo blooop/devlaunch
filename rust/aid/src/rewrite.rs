@@ -481,10 +481,10 @@ fn names_a_retired_spelling(options: &[String]) -> bool {
 
 /// A peeled trailing run, split by whose flag each word is.
 ///
-/// The split is the point. [`Self::options`] rides on to dl, and the remote-control
-/// request does not: dl has never heard of `--no-remote-control` and exits 2 on
-/// contact, so a run carrying one has to be read here and dropped rather than
-/// forwarded whole.
+/// The split is the point. [`Self::options`] rides on to dl; the remote-control
+/// request and the agent do not, because they are aid's own. dl has never heard of
+/// `--no-remote-control` or `--codex` and exits 2 on contact, so a run carrying
+/// either has to be read here and dropped rather than forwarded whole.
 struct Suffix<'a> {
     /// The line with the run taken off, which is what the prompt is built from.
     line: &'a [String],
