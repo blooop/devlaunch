@@ -19,6 +19,8 @@ pub mod kill;
 // binary surface — not part of the frozen wf API (#251 §7)
 pub mod launch;
 // binary surface — not part of the frozen wf API (#251 §7)
+pub mod launch_locks;
+// binary surface — not part of the frozen wf API (#251 §7)
 pub mod lifecycle;
 // binary surface — not part of the frozen wf API (#251 §7)
 pub mod listing;

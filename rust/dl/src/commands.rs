@@ -21,6 +21,7 @@ use devlaunch_core::flows::completion_cache::{self, Refreshed};
 use devlaunch_core::flows::kept_copies::KeptCopies;
 use devlaunch_core::flows::kill;
 use devlaunch_core::flows::launch::{ColdPath, LaunchNotice};
+use devlaunch_core::flows::launch_locks::LaunchLocks;
 use devlaunch_core::flows::lifecycle::{
     self, ChildWork, DeleteStalled, Insisted, Insistence, LifecycleNotice, PruneError,
     PruneOutcome, Refresh, RefreshReason, Removal, RemoveOutcome, StopOutcome,
@@ -1348,11 +1349,15 @@ fn prune_clone_directories(
     // already resolved. This is what makes a run pointed at a scratch
     // `XDG_CACHE_HOME` find no copies and so remove no volume.
     let copies = KeptCopies::under(cache);
+    // The launch locks under that same cache, and the same scratch-cache property
+    // follows: a run pointed at one finds no locks and reclaims none.
+    let launch_locks = LaunchLocks::under(cache);
     let plan = match lifecycle::prune_plan(
         &records.clones,
         &records.storage,
         &workspaces,
         &copies,
+        &launch_locks,
         &placement,
         insisted,
         &mut notices,
@@ -1373,7 +1378,15 @@ fn prune_clone_directories(
     let Records {
         storage, clones, ..
     } = &mut records;
-    let acted = lifecycle::prune_clones(context, clones, storage, &copies, &plan, &mut notices);
+    let acted = lifecycle::prune_clones(
+        context,
+        clones,
+        storage,
+        &copies,
+        &launch_locks,
+        &plan,
+        &mut notices,
+    );
     say(&notices);
     match acted {
         Err(refused) => Cleanup::Raised(refuse_prune(&refused)),

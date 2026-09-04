@@ -76,6 +76,7 @@ use crate::domain::workspace_id::{
     NamePart, UnsafeName, WorkspaceId, identity_of, validate_ref_name,
 };
 use crate::flows::kept_copies::KeptCopies;
+use crate::flows::launch_locks::LaunchLocks;
 use crate::flows::lifecycle::{
     self, KnownWorkspace, LifecycleNotice, Refresh, RefreshReason, StopOutcome,
 };
@@ -178,13 +179,6 @@ pub(crate) const PIXI_CACHE_TARGET: &str = "/var/tmp/devlaunch-pixi";
 /// is somebody else's spelling, and one place to look for it is the whole of what
 /// keeps a rename from becoming a silently shared master.
 pub(crate) const SSH_AUTH_SOCK_VAR: &str = "SSH_AUTH_SOCK";
-
-/// The leaf under devlaunch's cache directory that the launch locks live in.
-///
-/// Its own directory rather than the repo cache: this lock is keyed by workspace,
-/// exists for workspaces that have no clone under the cache at all (paths, URLs),
-/// and must not look like a repo to the cache's walkers.
-pub(crate) const LAUNCH_LOCK_DIR: &str = "launch-locks";
 
 /// Everything on the host this flow reads, gathered once by the caller.
 ///
@@ -312,11 +306,17 @@ impl Host {
         self
     }
 
+    /// The launch locks under this host's cache.
+    ///
+    /// Derived here rather than carried as a field, for [`Host::kept_copies`]'s
+    /// reason: there is one `cache_dir` and this is a view of it.
+    pub(crate) fn launch_locks(&self) -> LaunchLocks {
+        LaunchLocks::under(&self.cache_dir)
+    }
+
     /// The lock two `up`s of one workspace serialize on.
     pub(crate) fn launch_lock_path(&self, workspace_id: &str) -> PathBuf {
-        self.cache_dir
-            .join(LAUNCH_LOCK_DIR)
-            .join(format!("{workspace_id}.lock"))
+        self.launch_locks().path_for(workspace_id)
     }
 
     /// Where this host's ssh control sockets live.
@@ -1254,6 +1254,11 @@ fn lock_reason(error: &LockError) -> String {
         LockError::CreateParent { failure, .. }
         | LockError::Open { failure, .. }
         | LockError::Acquire { failure, .. } => failure.message.clone(),
+        // No OS failure to quote: every syscall succeeded and the file kept being
+        // replaced anyway. The count is the whole of what there is to say.
+        LockError::Superseded { attempts, .. } => {
+            format!("the lock file was replaced under this run {attempts} times")
+        }
     }
 }
 
@@ -4490,6 +4495,7 @@ mod tests {
     use crate::clients::git::Git;
     use crate::domain::config::WorktreeConfig;
     use crate::domain::model::WorktreeInfo;
+    use crate::flows::launch_locks::LAUNCH_LOCK_DIR;
     use crate::flows::lifecycle::SelfInvocation;
     use crate::flows::repo_manager::tests::as_strs;
     use crate::flows::workspace_clone::GitLfs;

@@ -38,8 +38,8 @@ use devlaunch_core::flows::launch::{
     NotPrepared, SessionRefused,
 };
 use devlaunch_core::flows::lifecycle::{
-    Insistence, KeptBecause, LifecycleNotice, NotAdopted, Promotion, PrunePlan, PruneReport,
-    PurgeOutcome, PurgePlan, PurgeStep, ReconcilePlan, RemovalGrounds, RemovalRefused,
+    Insistence, KeptBecause, LifecycleNotice, LockKeptBecause, NotAdopted, Promotion, PrunePlan,
+    PruneReport, PurgeOutcome, PurgePlan, PurgeStep, ReconcilePlan, RemovalGrounds, RemovalRefused,
     SweepOccasion, Unlocatable, VolumeRefusal, VolumesKeptBecause,
 };
 use devlaunch_core::flows::listing::{
@@ -965,9 +965,10 @@ pub(crate) fn metadata_error(error: &metadata::MetadataError) -> String {
 
 /// Why a lock could not be taken, naming the lock it is about.
 ///
-/// The three steps stay apart because they are fixed in three different places: a
-/// parent directory that cannot be made, a lock file that cannot be opened, and an
-/// `flock` that failed for a reason other than somebody else holding it.
+/// The steps stay apart because they are fixed in different places: a parent
+/// directory that cannot be made, a lock file that cannot be opened, an `flock`
+/// that failed for a reason other than somebody else holding it, and a file that
+/// kept being replaced under the run trying to take it.
 pub(crate) fn lock_refusal(error: &LockError, lock: &str) -> String {
     match error {
         LockError::CreateParent { path, failure } => format!(
@@ -984,6 +985,13 @@ pub(crate) fn lock_refusal(error: &LockError, lock: &str) -> String {
             "could not take {lock} {} ({})",
             path.display(),
             failure.message
+        ),
+        // Nothing failed, so there is no OS message to quote and no step to name.
+        // What went wrong is that something else keeps unlinking the file, which
+        // is why the line says so rather than blaming a syscall.
+        LockError::Superseded { path, attempts } => format!(
+            "gave up taking {lock} {}: something replaced it {attempts} times",
+            path.display()
         ),
     }
 }
@@ -2173,6 +2181,17 @@ pub(crate) fn prune_plan_lines(plan: &PrunePlan) -> Vec<String> {
         ));
         lines.push(String::new());
     }
+    if !plan.reclaiming_locks().is_empty() {
+        // A count and not the names, which is the opposite of the volumes above and
+        // for the reason they are named: a volume that still matters is data loss,
+        // and a launch lock is an empty file that the next launch of that workspace
+        // makes again. What is worth reading here is how many there were.
+        lines.push(format!(
+            "Reclaiming the launch locks of {} workspace(s) devpod no longer lists.",
+            plan.reclaiming_locks().len()
+        ));
+        lines.push(String::new());
+    }
     lines.extend(worktree_plan_lines(plan.worktrees()));
     if plan.nothing_to_do() {
         lines.push("Nothing to prune.".to_owned());
@@ -2491,6 +2510,32 @@ pub(crate) fn prune_report_lines(report: &PruneReport) -> Vec<String> {
             VolumesKeptBecause::Refused(refusal) => {
                 volumes_not_removed(&kept.workspace_id, SweepOccasion::KeptCopy, refusal)
             }
+        });
+    }
+    if !report.locks_reclaimed.is_empty() {
+        lines.push(format!(
+            "Reclaimed the launch locks of {} workspace(s) devpod no longer lists.",
+            report.locks_reclaimed.len()
+        ));
+    }
+    for kept in &report.locks_kept {
+        lines.push(match &kept.because {
+            LockKeptBecause::ListedAgain => format!(
+                "Left the launch lock of {}: devpod lists that workspace again. That was not \
+                 so when the plan above was printed.",
+                kept.workspace_id
+            ),
+            // Not phrased as a failure, because it is not one: the lock is doing
+            // its job and this run declined to take it away from somebody. The
+            // next prune finds it free.
+            LockKeptBecause::Held => format!(
+                "Left the launch lock of {}: a launch of that workspace is holding it.",
+                kept.workspace_id
+            ),
+            LockKeptBecause::Refused(failure) => format!(
+                "Left the launch lock of {}: {}.",
+                kept.workspace_id, failure.message
+            ),
         });
     }
     if !report.refused.is_empty() {
@@ -3460,8 +3505,10 @@ pub(crate) fn provision_event(event: &ProvisionEvent) -> Option<String> {
 mod tests {
     use std::path::PathBuf;
 
+    use devlaunch_core::flows::agent_worktrees::WorktreeReport;
     use devlaunch_core::flows::kill::{HostProcess, Signalled};
     use devlaunch_core::flows::launch::{HerdrTabRename, TerminalTitle};
+    use devlaunch_core::flows::lifecycle::LockKept;
     use devlaunch_core::flows::listing::{SourceDescription, SourceKind};
 
     use super::*;
@@ -5423,6 +5470,66 @@ mod tests {
         assert_eq!(
             killed("my-ws", &never_ran)[0],
             "Could not kill this workspace's containers: could not run docker (TimedOut)"
+        );
+    }
+
+    /// The whole of what a prune says about the launch locks, as lines.
+    ///
+    /// Written against the *sequence* and not against `contains`, because the
+    /// defect this catches is a duplicate: an earlier draft of this block landed
+    /// twice and every line in it was correct, so nothing but the count was wrong
+    /// and nothing but a run of the binary showed it.
+    #[test]
+    fn a_prune_says_what_became_of_the_launch_locks_once_each() {
+        let report = PruneReport {
+            removed: Vec::new(),
+            withheld: Vec::new(),
+            refused: Vec::new(),
+            reclaimed: Vec::new(),
+            volumes_kept: Vec::new(),
+            worktrees: WorktreeReport::default(),
+            locks_reclaimed: vec!["r-main-aa".to_owned(), "r-main-bb".to_owned()],
+            locks_kept: vec![
+                LockKept {
+                    workspace_id: "r-main-cc".to_owned(),
+                    because: LockKeptBecause::Held,
+                },
+                LockKept {
+                    workspace_id: "r-main-dd".to_owned(),
+                    because: LockKeptBecause::ListedAgain,
+                },
+            ],
+        };
+
+        assert_eq!(
+            prune_report_lines(&report),
+            [
+                "Removed 0 clone director(ies) -- 0 B.",
+                "Reclaimed the launch locks of 2 workspace(s) devpod no longer lists.",
+                "Left the launch lock of r-main-cc: a launch of that workspace is holding it.",
+                "Left the launch lock of r-main-dd: devpod lists that workspace again. That was \
+                 not so when the plan above was printed.",
+            ]
+        );
+    }
+
+    /// A run with no locks to reclaim says nothing about them at all.
+    #[test]
+    fn a_prune_with_no_stale_launch_locks_is_silent_about_them() {
+        let report = PruneReport {
+            removed: Vec::new(),
+            withheld: Vec::new(),
+            refused: Vec::new(),
+            reclaimed: Vec::new(),
+            volumes_kept: Vec::new(),
+            worktrees: WorktreeReport::default(),
+            locks_reclaimed: Vec::new(),
+            locks_kept: Vec::new(),
+        };
+
+        assert_eq!(
+            prune_report_lines(&report),
+            ["Removed 0 clone director(ies) -- 0 B."]
         );
     }
 }
