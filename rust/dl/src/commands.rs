@@ -338,13 +338,6 @@ fn render_json(
 // the completion commands
 // ---------------------------------------------------------------------------
 
-/// The known `owner/repo` strings, one per line.
-///
-/// Reads the completion cache when there is one and asks devpod when there is not.
-/// **Divergence row 11 lands here:** a cache document with no `repos` key reads as
-/// a cache with no repos, where Python's key check fell through to asking devpod.
-/// The distinguishing input is a `completions.json` written by something other
-/// than dl; every cache dl writes carries all four keys.
 /// `dl --claude-profiles`: the logins `--claude-profile` can name, and who each is.
 ///
 /// Plumbing only. The columns, the two absences the account column distinguishes and
@@ -396,6 +389,13 @@ fn warn_if_the_profiles_root_could_not_be_read() {
     );
 }
 
+/// The known `owner/repo` strings, one per line.
+///
+/// Reads the completion cache when there is one and asks devpod when there is not.
+/// **Divergence row 11 lands here:** a cache document with no `repos` key reads as
+/// a cache with no repos, where Python's key check fell through to asking devpod.
+/// The distinguishing input is a `completions.json` written by something other
+/// than dl; every cache dl writes carries all four keys.
 fn render_repos(context: &mut CommandContext<'_>, cache: &Path) -> Ending {
     if let Some(cached) =
         completion_cache::read_completion_cache(&completion_cache::cache_path(cache))
