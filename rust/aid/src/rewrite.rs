@@ -497,17 +497,35 @@ struct Suffix<'a> {
     /// --rm` turned it off before the spec and the `--rm` run must not turn it back
     /// on.
     remote_control: Option<RemoteControlRequest>,
+    /// The agent the run named, or `None` if it named none.
+    ///
+    /// An `Option` for the same reason the field above is one: "said nothing" has to
+    /// leave an earlier flag standing, so `aid --codex <ws> fix it --rm` still starts
+    /// codex.
+    ///
+    /// Read here and dropped rather than forwarded, like the remote-control request
+    /// and unlike [`Self::options`]: an agent flag is aid's own, and dl has never
+    /// heard of it.
+    agent: Option<&'static str>,
 }
 
 /// Split a trailing run of dl flags off the end of a command line.
 ///
 /// The one exception to "everything after the spec is prompt", and bounded three
 /// ways to earn it: only at the very *end* of the line, only the exact words in
-/// [`SUFFIX_OPTIONS`], [`SUFFIX_RETIRED`] and [`SUFFIX_MODIFIERS`], and only when an
-/// option or a retired spelling is among them. A prompt whose last word happens to
-/// be `--force` is untouched, and so is one that merely mentions `--rm` inside it —
-/// `aid <ws> fix the --rm flag` ends on `flag`, and a quoted `aid <ws> 'drop --rm'`
-/// is one argument that is not `--rm`.
+/// [`SUFFIX_OPTIONS`], [`SUFFIX_RETIRED`], [`SUFFIX_MODIFIERS`], the remote-control
+/// spellings and the agent flags, and only when one that is not a bare modifier is
+/// among them. A prompt whose last word happens to be `--force` is untouched, and so
+/// is one that merely mentions `--rm` inside it — `aid <ws> fix the --rm flag` ends
+/// on `flag`, and a quoted `aid <ws> 'drop --rm'` is one argument that is not
+/// `--rm`.
+///
+/// **An agent flag peels here as well as before the spec**, and for the reason the
+/// whole exception exists: recalling a line and typing at the end of it is the cheap
+/// edit a shell offers, so `aid <ws> fix the bug --codex` is how somebody actually
+/// switches agent on a line they have already typed. Left out of the peel it fell
+/// into the prompt, and claude was handed the words `fix the bug --codex` with no
+/// sign anything had been asked of it.
 ///
 /// A `--force` in the run is peeled with them, which is what gets `aid <ws> <prompt>
 /// --rm --force` the sentence dl has for that pair instead of a `--force` silently
@@ -536,6 +554,7 @@ fn peel_suffix(argv: &[String]) -> Option<Suffix<'_>> {
             || SUFFIX_MODIFIERS.contains(&word)
             || REMOTE_CONTROL_FLAGS.contains(&word)
             || NO_REMOTE_CONTROL_FLAGS.contains(&word)
+            || agent_flag(word).is_some()
     };
     let mut at = argv.len();
     while at > 0 && is_suffix(argv[at - 1].as_str()) {
@@ -549,6 +568,7 @@ fn peel_suffix(argv: &[String]) -> Option<Suffix<'_>> {
         && !names(SUFFIX_RETIRED)
         && !names(REMOTE_CONTROL_FLAGS)
         && !names(NO_REMOTE_CONTROL_FLAGS)
+        && !run.iter().any(|word| agent_flag(word).is_some())
     {
         return None;
     }
@@ -557,11 +577,16 @@ fn peel_suffix(argv: &[String]) -> Option<Suffix<'_>> {
     let mut options: Vec<String> = Vec::new();
     let mut modifiers: Vec<String> = Vec::new();
     let mut remote_control = None;
+    let mut agent = None;
     for word in run {
         if REMOTE_CONTROL_FLAGS.contains(&word.as_str()) {
             remote_control = Some(RemoteControlRequest::Insisted);
         } else if NO_REMOTE_CONTROL_FLAGS.contains(&word.as_str()) {
             remote_control = Some(RemoteControlRequest::Off);
+        } else if let Some(named) = agent_flag(word) {
+            // Last one typed wins within the run, which is the rule the leading flags
+            // are read by too.
+            agent = Some(named);
         } else if SUFFIX_MODIFIERS.contains(&word.as_str()) {
             modifiers.push(word.clone());
         } else {
@@ -573,6 +598,7 @@ fn peel_suffix(argv: &[String]) -> Option<Suffix<'_>> {
         line: &argv[..at],
         options,
         remote_control,
+        agent,
     })
 }
 
@@ -596,9 +622,14 @@ pub(crate) fn parse_aid_args(
     // `DEVLAUNCH_AID_REMOTE_CONTROL` that is neither a yes nor a no.
     let mut agent = default_agent(environment.agent)?;
     let mut remote_control = default_remote_control(environment.remote_control)?;
-    let (line, trailing, trailing_remote_control) = match peel_suffix(argv) {
-        Some(suffix) => (suffix.line, suffix.options, suffix.remote_control),
-        None => (argv, Vec::new(), None),
+    let (line, trailing, trailing_remote_control, trailing_agent) = match peel_suffix(argv) {
+        Some(suffix) => (
+            suffix.line,
+            suffix.options,
+            suffix.remote_control,
+            suffix.agent,
+        ),
+        None => (argv, Vec::new(), None, None),
     };
     let mut dl_options: Vec<String> = Vec::new();
     let mut spec: Option<String> = None;
@@ -650,6 +681,12 @@ pub(crate) fn parse_aid_args(
     // edit a shell offers, and rewriting the front of one is not.
     if let Some(asked) = trailing_remote_control {
         remote_control = asked;
+    }
+    // Read in the same position and by the same rule, and *ahead of* the settle
+    // below, so a line that switches agent and asks for Remote Control in one breath
+    // is answered by the agent it will actually start.
+    if let Some(named) = trailing_agent {
+        agent = named.to_owned();
     }
     // Settled after the workspace, because a line missing both is missing a
     // workspace first: that is the sentence which tells somebody what an aid line
@@ -863,6 +900,115 @@ mod tests {
         assert_eq!(parsed.spec, "owner/repo");
         assert_eq!(prompt(&parsed), "hi");
         assert!(parsed.dl_options.is_empty());
+    }
+
+    #[test]
+    fn an_agent_flag_appended_to_a_recalled_line_picks_the_agent_and_keeps_the_prompt() {
+        // The edit a shell actually makes cheap: recall the line, type the flag at
+        // the end. Before the peel knew the agent flags this handed claude the words
+        // "fix the bug --codex" and said nothing.
+        let chosen = parsed(&["owner/repo", "fix the bug", "--codex"]);
+
+        assert_eq!(chosen.agent(), Some("codex"));
+        assert_eq!(prompt(&chosen), "fix the bug");
+        // aid's own flag, so it rides to dl no more than `--no-remote` does.
+        assert!(chosen.spec_options.is_empty());
+        assert!(chosen.dl_options.is_empty());
+        assert_eq!(
+            build_dl_args(&chosen).expect("an agent line"),
+            ["owner/repo", "--", "codex 'fix the bug'"]
+        );
+    }
+
+    #[test]
+    fn a_trailing_agent_flag_beats_a_leading_one_and_the_environment() {
+        // Last one typed wins, which is the rule the whole line is read by — and the
+        // end of the line is where the appended one is.
+        assert_eq!(
+            parsed(&["--codex", "owner/repo", "fix it", "--gemini"]).agent(),
+            Some("gemini")
+        );
+        assert_eq!(
+            parse_aid_args(
+                &words(&["owner/repo", "fix it", "--codex"]),
+                agent_env(Some("gemini")),
+            )
+            .expect("a usable command line")
+            .agent(),
+            Some("codex")
+        );
+    }
+
+    #[test]
+    fn an_agent_flag_rides_in_the_same_run_as_the_other_suffix_flags() {
+        // One appended run, read word by word: the agent flag is aid's and stops
+        // here, `--rm` is dl's and goes on after the spec.
+        let chosen = parsed(&["owner/repo", "fix it", "--codex", "--rm"]);
+
+        assert_eq!(chosen.agent(), Some("codex"));
+        assert_eq!(prompt(&chosen), "fix it");
+        assert_eq!(chosen.spec_options, ["--rm"]);
+        // And the other way round, because a run is read as a set of flags.
+        let typed_backwards = parsed(&["owner/repo", "fix it", "--rm", "--codex"]);
+        assert_eq!(typed_backwards.agent(), Some("codex"));
+        assert_eq!(typed_backwards.spec_options, ["--rm"]);
+    }
+
+    #[test]
+    fn a_trailing_rm_leaves_an_earlier_agent_flag_where_it_was() {
+        // The reason the peeled agent is an `Option` and not a default: a run that
+        // names no agent must not reinstate claude over the `--codex` typed first.
+        let chosen = parsed(&["--codex", "owner/repo", "fix it", "--rm"]);
+
+        assert_eq!(chosen.agent(), Some("codex"));
+        assert_eq!(chosen.spec_options, ["--rm"]);
+    }
+
+    #[test]
+    fn an_agent_flag_on_its_own_after_the_spec_is_a_plain_session() {
+        let chosen = parsed(&["owner/repo", "--codex"]);
+
+        assert_eq!(chosen.agent(), Some("codex"));
+        assert_eq!(prompt(&chosen), "");
+    }
+
+    #[test]
+    fn a_prompt_that_merely_mentions_an_agent_flag_is_still_a_prompt() {
+        // Same bound every suffix flag is peeled under: the exact word, at the very
+        // end, as a whole argv word.
+        assert_eq!(
+            prompt(&parsed(&["owner/repo", "why", "--codex", "and not claude"])),
+            "why --codex and not claude"
+        );
+        assert_eq!(
+            prompt(&parsed(&["owner/repo", "compare --codex"])),
+            "compare --codex"
+        );
+        assert_eq!(
+            parsed(&["owner/repo", "compare --codex"]).agent(),
+            Some(DEFAULT_AGENT)
+        );
+    }
+
+    #[test]
+    fn a_trailing_agent_flag_is_the_agent_remote_control_is_settled_against() {
+        // The flag switching agent and the flag asking for Remote Control can arrive
+        // in one appended run, so the settle has to see the agent that will actually
+        // run rather than the one the line started with.
+        assert_eq!(
+            parse_aid_args(
+                &words(&["owner/repo", "fix it", "--remote", "--codex"]),
+                Environment::default(),
+            ),
+            Err(UsageError::RemoteControlUnsupported {
+                agent: "codex".to_owned()
+            })
+        );
+        // And back the other way: a trailing `--claude` on a codex line has Remote
+        // Control, so the same insistence is a launch.
+        let chosen = parsed(&["--codex", "owner/repo", "fix it", "--remote", "--claude"]);
+        assert_eq!(chosen.agent(), Some("claude"));
+        assert_eq!(remote_control(&chosen), RemoteControl::On);
     }
 
     #[test]

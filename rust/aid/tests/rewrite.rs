@@ -365,6 +365,20 @@ fn an_appended_off_switch_is_observed_from_outside_to_turn_it_off() {
 }
 
 #[test]
+fn an_appended_agent_flag_is_observed_from_outside_to_switch_the_agent() {
+    // The same position and the same reason as the off switch above, and the same
+    // failure before it was peeled: this line started claude and handed it the words
+    // "fix the bug --codex", with nothing saying an agent had been asked for.
+    let world = World::with(&["--warm"]);
+    world.aid(&[MAIN, "fix", "the", "bug", "--codex"]).exited(0);
+
+    assert_eq!(
+        world.devpod_calls().last().expect("a session"),
+        &format!("devpod ssh {MAIN} --command bash -lc 'codex '\"'\"'fix the bug'\"'\"''")
+    );
+}
+
+#[test]
 fn a_remote_control_variable_that_is_neither_a_yes_nor_a_no_is_refused() {
     // Read where `DEVLAUNCH_AID_AGENT` is read and refused the same way, before
     // anything opens: both readings of a value like this are a guess, and both leave

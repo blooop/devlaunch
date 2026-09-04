@@ -313,7 +313,7 @@ the question and launches one-shot, so scripts behave as they always have.
 
 | Option | What it does |
 |---|---|
-| `--claude`, `--codex`, `--gemini` | Pick the agent. Default `claude` |
+| `--claude`, `--codex`, `--gemini` | Pick the agent. Default `claude`. Appendable to a recalled line, the way `--rm` is, and the prompt survives |
 | `--rm` | Delete the workspace when the agent is done. Appendable to a recalled line |
 | `--no-remote-control`, `--no-remote` | Start a plain local session. Remote Control is on by default for `claude`: the session is named after the workspace and can be read and steered from claude.ai/code or the Claude app. It needs a claude.ai login in the container |
 | `--remote-control`, `--remote` | Ask for Remote Control by name. `claude` has it already; beside `--codex` or `--gemini` this says they have not got it and stops |

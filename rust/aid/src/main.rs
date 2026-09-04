@@ -287,7 +287,10 @@ one-shot, as a prompt on the command line always has.
 
 Options:
     {agents}
-                                     Pick the agent (default: {default})
+                                     Pick the agent (default: {default}). Appendable,
+                                     like --rm: recall the line and type it at the
+                                     end, prompt and all, and the prompt survives.
+                                     Last one typed wins
     --devcontainer <variant|path>    Passed through to dl
     --rm                             Delete the workspace once the agent's session
                                      ends, the way docker run --rm does. Appendable:
@@ -332,6 +335,7 @@ Examples:
     aid blooop/devlaunch                       # Start {default} in the workspace
     aid blooop/devlaunch@fix/42 fix the bug    # Open the branch, hand over the prompt
     aid --gemini ./my-project explain this     # Pick a different agent
+    aid blooop/devlaunch fix the bug --codex   # The same, appended to a recalled line
     aid --no-remote blooop/devlaunch           # Nothing but the session in front of you
     aid blooop/devlaunch@fix/42 fix the bug --rm
                                                # The line above, recalled, with the

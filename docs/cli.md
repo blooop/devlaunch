@@ -444,6 +444,39 @@ strings `render.rs` and `lib.rs` own, so
 `the_force_placement_section_quotes_the_refusals_it_says_it_does` reads this
 section back and diffs them against what the binary prints.
 
+## Picking the agent
+
+`aid` starts `claude` unless something says otherwise. Three things can say
+otherwise, and they are read in this order, with the last one typed winning:
+
+```bash
+export DEVLAUNCH_AID_AGENT=codex          # every launch from this shell
+aid --codex owner/repo fix the bug        # this launch
+aid owner/repo fix the bug --codex        # the same, appended to a recalled line
+```
+
+The third form is the one worth knowing about, because it is the edit a shell makes
+cheap. Recall the previous line, type the flag at the end of it, and the prompt
+survives: `aid owner/repo fix the bug --codex` starts codex with `fix the bug`. It is
+the same exception `--rm` earns, bounded the same three ways, so it only fires on the
+exact word, as a whole argument, in the run at the very end of the line. A prompt that
+merely mentions a flag is still a prompt. `aid owner/repo why --codex and not claude`
+ends on `claude` and hands the agent every word of it.
+
+Before this the appended flag fell into the prompt and nothing said so, which is the
+worst shape a flag can have: `aid owner/repo fix the bug --codex` started claude and
+handed it the words `fix the bug --codex`.
+
+A trailing flag beats a leading one on the same line, and both beat the variable. An
+appended run that names no agent leaves an earlier flag standing, so `aid --codex
+owner/repo fix it --rm` still starts codex.
+
+The agent flag is `aid`'s own and stops there. It is never forwarded to `dl`, which
+has never heard of it, and the one thing it changes downstream is the agent Remote
+Control is settled against. `aid owner/repo fix it --remote --codex` is refused by
+name, because the flag switching agent and the flag asking for Remote Control arrived
+in the same appended run and codex has not got it.
+
 ## Remote Control: every `aid` session, on your phone too
 
 Every `aid` launch of claude starts with Claude Code's Remote Control on. There is no
