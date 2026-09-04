@@ -6,6 +6,8 @@ import shlex
 import pytest
 from unittest.mock import patch
 
+from fixtures.e2e_helpers import dl_command
+
 
 class TestBashCompletion:
     """Test bash completion functionality."""
@@ -55,7 +57,7 @@ class TestBashCompletion:
         if self.test_dir and os.path.exists(self.test_dir):
             shutil.rmtree(self.test_dir)
 
-    def run_completion(self, comp_line, comp_point=None):
+    def run_completion(self, comp_line, comp_point=None, env=None):
         """
         Run bash completion for the given line and cursor position.
 
@@ -66,9 +68,9 @@ class TestBashCompletion:
         Returns:
             List of completion suggestions
         """
-        return self.run_completion_with_options(comp_line, comp_point)[0]
+        return self.run_completion_with_options(comp_line, comp_point, env)[0]
 
-    def run_completion_with_options(self, comp_line, comp_point=None):
+    def run_completion_with_options(self, comp_line, comp_point=None, env=None):
         """
         As `run_completion`, and also the options the function asked bash for.
 
@@ -93,9 +95,15 @@ class TestBashCompletion:
 
         # Create a bash script that sources the completion and runs it
         # Use shlex.quote to properly escape shell arguments
+        # Exported inside the script rather than passed to `subprocess`, so it is
+        # visible in the same place as XDG_CACHE_HOME when a failure prints the script.
+        exports = "\n".join(
+            f"export {name}={shlex.quote(str(value))}" for name, value in (env or {}).items()
+        )
         script = f"""
 #!/bin/bash
 export XDG_CACHE_HOME={shlex.quote(str(self.cache_base))}
+{exports}
 source {shlex.quote(str(self.completion_script))}
 
 compopt() {{ printf '%s\\n' "$*" >> {shlex.quote(str(options_file))}; }}
@@ -121,6 +129,109 @@ done
         recorded = options_file.read_text(encoding="utf-8") if options_file.exists() else ""
         options = [line.strip() for line in recorded.strip().split("\n") if line.strip()]
         return completions, options
+
+    # ------------------------------------------------------------------
+    # --claude-profile: the completion and the resolver have to agree
+    # ------------------------------------------------------------------
+
+    # Directory names a profile root can hold, and whether `ProfileName::parse`
+    # accepts each. The invalid ones are not hypothetical: a profile directory is
+    # made by hand, and `-` and a space are what a hand produces.
+    PROFILE_FIXTURES = {
+        "work": True,
+        "personal.2": True,
+        "with_underscore": True,
+        "with-dash": True,
+        "-flag": False,
+        "has space": False,
+        "tab\there": False,
+        "unicode-é": False,
+        ".hidden": False,
+    }
+
+    def _a_profile_root(self):
+        """A profiles directory holding every name in PROFILE_FIXTURES."""
+        root = pathlib.Path(self.test_dir) / "claude-profiles"
+        for name in self.PROFILE_FIXTURES:
+            (root / name).mkdir(parents=True)
+        return root
+
+    def test_the_completion_offers_only_names_a_launch_accepts(self):
+        """The completion's grammar, diffed against the binary's own listing.
+
+        `dl.bash` restates `ProfileName::parse`, which the repo's standing rule
+        allows only with a test beside it that diffs the copy against the first.
+        This is that diff, and it is a real one rather than a restatement: the
+        expectation comes from running `dl --claude-profiles`, so the two
+        implementations have to agree about the same directory rather than both
+        having to agree with a list written here.
+
+        Sourcery caught the original, which offered every directory. Tab-completing
+        `-flag` and then being refused for a name you never typed is worse than no
+        completion at all.
+        """
+        root = self._a_profile_root()
+        env = {"DEVLAUNCH_CLAUDE_PROFILES_DIR": str(root)}
+
+        offered = set(self.run_completion("dl --claude-profile ", env=env))
+
+        listed = subprocess.run(
+            dl_command() + ["--claude-profiles"],
+            capture_output=True,
+            text=True,
+            check=True,
+            env={**os.environ, **env},
+        ).stdout
+        # The NAME column, minus the header.
+        named = {
+            line.split()[0]
+            for line in listed.splitlines()[1:]
+            if line.strip() and not line.startswith(" ")
+        }
+
+        assert offered == named, (
+            f"the completion offers {sorted(offered)} and `dl --claude-profiles` "
+            f"lists {sorted(named)}; a name in one and not the other is either a "
+            "completion the launch refuses or a profile you cannot tab to"
+        )
+
+    def test_the_completion_offers_the_valid_names_and_default(self):
+        """The absolute half of the diff above.
+
+        Two implementations agreeing on nothing would satisfy the comparison, so
+        this pins what the answer actually is -- and the `default` row, which is a
+        name the resolver answers for with no directory behind it at all.
+        """
+        root = self._a_profile_root()
+        offered = set(
+            self.run_completion(
+                "dl --claude-profile ", env={"DEVLAUNCH_CLAUDE_PROFILES_DIR": str(root)}
+            )
+        )
+
+        wanted = {name for name, ok in self.PROFILE_FIXTURES.items() if ok}
+        assert offered == wanted | {"default"}, sorted(offered)
+        for name, ok in self.PROFILE_FIXTURES.items():
+            if not ok:
+                assert name not in offered, f"{name!r} is not a name a launch accepts"
+
+    def test_a_partial_profile_name_still_filters(self):
+        """The filter must not have replaced compgen's own prefix matching."""
+        root = self._a_profile_root()
+        offered = set(
+            self.run_completion(
+                "dl --claude-profile with", env={"DEVLAUNCH_CLAUDE_PROFILES_DIR": str(root)}
+            )
+        )
+        assert offered == {"with_underscore", "with-dash"}, sorted(offered)
+
+    def test_the_default_name_is_offered_with_no_profile_root_at_all(self):
+        """A host with no profiles directory still has one name to complete."""
+        missing = pathlib.Path(self.test_dir) / "nothing-here"
+        offered = self.run_completion(
+            "dl --claude-profile ", env={"DEVLAUNCH_CLAUDE_PROFILES_DIR": str(missing)}
+        )
+        assert offered == ["default"]
 
     def test_completion_with_dashed_workspace(self):
         """Test completion works with names containing dashes, in both namespaces."""

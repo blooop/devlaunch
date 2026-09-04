@@ -58,8 +58,9 @@ stays in place, including one it was given before you set
 ## Claude authentication
 
 `claude` starts in every workspace `dl` opens without asking for a login. The
-host's access token is read from `~/.claude/.credentials.json` and forwarded as
-`CLAUDE_CODE_OAUTH_TOKEN`. Only the variable's name reaches a command line, which
+host's access token is read from its Claude configuration directory, which is
+`$CLAUDE_CONFIG_DIR` when the host sets one and `~/.claude` otherwise, and
+forwarded as `CLAUDE_CODE_OAUTH_TOKEN`. Only the variable's name reaches a command line, which
 is the discipline the GitHub token keeps too, by a different route: that one is
 staged in a private file because `devpod up` needs it, and this one rides
 `--send-env` on the session, so the value travels in the environment and no file
@@ -71,6 +72,153 @@ repo whose own devcontainer bind-mounts `~/.claude` had a working `claude` and a
 working status line; a repo with no `.devcontainer/` at all had neither, and the
 reported symptom was a blank status bar in a workspace where `claude-statusline`
 was installed and the `settings.json` naming it had never been applied.
+
+### Which credential, on a host that has moved it
+
+`$CLAUDE_CONFIG_DIR` is Claude Code's own name for where its configuration lives,
+and `dl` honours it rather than setting it, the way it honours `DEVPOD_SSH_CONFIG`.
+The full order a launch reads:
+
+1. `DEVLAUNCH_NO_CLAUDE_TOKEN`, which forwards nothing at all.
+2. Any `CLAUDE_CODE_OAUTH_TOKEN` the host has already exported. This is what lets a
+   `dl` running inside a workspace pass the token it was given further down, so a
+   workspace can launch a workspace.
+3. `$CLAUDE_CONFIG_DIR/.credentials.json`, or `~/.claude/.credentials.json` when
+   the variable is unset. One step, not two: see below.
+
+**The variable replaces the default rather than being tried ahead of it.** Claude
+Code does not fall back from `$CLAUDE_CONFIG_DIR` to `~/.claude`, and neither does
+this. A fallback would forward a credential out of a directory Claude Code is not
+reading, which is the same defect as ignoring the variable and harder to notice,
+because it only shows itself on a host with two logins. So a `$CLAUDE_CONFIG_DIR`
+that names a directory holding no credential is a host that is not logged in, and
+the launch forwards nothing rather than the other account. It does that silently,
+which is deliberate and is the same silence a missing `~/.claude` gets: on macOS
+the credential lives in the login keychain and no file is the ordinary state, so a
+warning there would fire on every correctly configured Mac.
+
+An empty value counts as unset, which is what a shell exporting a bare variable
+means and the rule the XDG directories already follow here. The value is read as
+bytes rather than as text, so a directory whose name is not valid UTF-8 is opened
+as named.
+
+The exported token stays above the variable because both are ambient, and the
+nested-workspace case has to keep working when no variable is set.
+
+This closes an asymmetry rather than adding a feature. The probe `dl` runs inside a
+container has always read `$CLAUDE_CONFIG_DIR`, because a devcontainer feature may
+set it and Claude Code honours it there too. The host side read `~/.claude`
+regardless, so a host that had moved its configuration reported itself as not
+logged in while holding a perfectly good login.
+
+### Naming a profile
+
+`--claude-profile <name>` forwards a named login instead of the default one, for the
+case the order above cannot serve: two accounts on one machine, and a workspace
+that wants the one your host is not signed in to.
+
+```bash
+dl owner/repo --claude-profile work
+```
+
+The name is one directory under `~/.claude-profiles/`, holding the
+`.credentials.json` a `claude` login writes. Each such directory is a
+`CLAUDE_CONFIG_DIR` of its own, which is what makes the logins independent.
+
+**That is somebody else's directory and `dl` only reads it.** The layout and the
+`CLAUDE_PROFILES_DIR` variable belong to the tool that manages them, honoured here
+rather than set, the same arrangement `dl` has with devpod's own
+`DEVPOD_SSH_CONFIG`. An earlier version of this feature invented a devlaunch-shaped
+root under the config directory, and that was wrong: it made a third location for one
+concept and would have asked anyone with working profiles to log every account in
+again somewhere new.
+
+So there is no writer. Creating a profile, seeding the config it shares with your main
+login, and deleting it belong to whatever made the directory; `dl` reads one file out
+of it. By hand that is `CLAUDE_CONFIG_DIR=~/.claude-profiles/work claude`, then a
+login.
+
+Nothing `dl` deletes can reach them. `dl --purge` removes devlaunch's cache entire and
+`dl --prune` walks the clones inside it, and a login was never in either path.
+
+Two variables, in this order: `DEVLAUNCH_CLAUDE_PROFILES_DIR` is devlaunch's own and
+wins, which is what lets a scratch run read and complete its own profiles rather than
+the real credentials; `CLAUDE_PROFILES_DIR` is the managing tool's and is honoured
+next.
+
+`--claude-profile default` resolves the login you would get anyway and never consults
+a `default/` directory. It exists as a word because a picker needs something to
+select, and a recalled line needs a way to say "not the profile I used last time".
+
+### Seeing which account a profile actually holds
+
+```
+$ dl --claude-profiles
+NAME     STATE          ACCOUNT
+default  authed         someone@example.com · Someorg · team_tier_1
+work     authed         someone@work.example · Workorg · team_tier_1
+spare    authed         someone@example.com · Someorg · team_tier_1
+fresh    not logged in  -
+
+'default', 'spare' are the same account, so all but one are spare.
+```
+
+That last line is the other thing a name cannot tell you. Two profiles of one
+account render **identically** to two colleagues who share an organisation, so the
+redundant one is invisible exactly where you are choosing between them. It is decided
+on the account's own id and never on a display field, because a shared organisation is
+two people and a shared name is nothing at all. A profile whose state file names no
+account joins no group, so no claim is made about a blank.
+
+**A profile's name is chosen by you and verified by nothing**, which is the reason
+this listing exists. A profile called `work` holding a personal login reads as correct
+right up until the work is pushed from the wrong identity, and that is the failure
+profiles are meant to prevent. The name is what you type; the account column is what
+you get.
+
+The account is read from `.claude.json`, the state file Claude Code keeps inside each
+config directory, and only three of its fields: the email address, the organisation
+and the seat tier. Nothing else is read and nothing is written. A `-` is a profile
+with no credential and so nobody to name; `unknown` is one that is logged in whose
+state file is absent or has moved on from the shape this reads, which stops nothing.
+
+**No token is read to build this.** The `authed` column is the credential file's
+existence, never its contents, so a listing has not touched a secret.
+`--claude-profiles` is also the honest way to find a profile created and never logged
+in to, since a launch naming one of those refuses.
+
+A name beginning with a dot is neither offered nor accepted. A `<root>/*/` glob does
+not match a dot-directory, so neither this listing nor the shell completion would show
+one, and a profile you can launch but never see is a trap rather than a feature.
+
+**A named profile that holds no credential stops the launch.** It does not fall back
+to your default login, and that refusal is the feature rather than a rough edge. Two
+accounts on one machine is what profiles are for, so a typo that silently forwarded
+the other one would be worse than a launch that fails: the launch you see, and the
+wrong account you find out about later and somewhere else. The opt-out still comes
+first, because a machine that has opted out has no account to choose.
+
+It is read **above** an exported `CLAUDE_CODE_OAUTH_TOKEN`, unlike
+`$CLAUDE_CONFIG_DIR`, and the difference is where the two come from. A profile was
+typed on this command line for this launch, so nothing ambient should beat it, and a
+nested `dl` naming a profile is overriding exactly the token it inherited.
+
+**Not stored with the workspace**, unlike `--devcontainer`. A profile describes this
+session and not the container, so storing it would mean a workspace quietly
+forwarding an account chosen weeks ago. Pass it per launch, or export
+`CLAUDE_CODE_OAUTH_TOKEN` in a shell profile if that is the shape you want.
+
+Two things it does not change. It is not the claude.ai account the container's own
+`claude` is paired to for **Remote Control**, which lives in the container with the
+rest of the agent's state, so `aid --claude-profile work` still lists its session
+under whichever account the container is signed in to. And it does not weaken the
+check below: a repo whose devcontainer owns its Claude config forwards nothing,
+profile or no profile.
+
+A verb that forwards no login at all (`stop`, `kill`, `rm`, `rme`) says it is
+ignoring the flag rather than failing, the way `--devcontainer` does there. A global
+command such as `--ls` refuses it outright, because there is no workspace for it to
+be about.
 
 ### A variable, not the credential file
 

@@ -46,6 +46,8 @@ pub devlaunch_core::api::LaunchNotice::CheckoutBehind::ahead: u32
 pub devlaunch_core::api::LaunchNotice::CheckoutBehind::behind: u32
 pub devlaunch_core::api::LaunchNotice::CheckoutBehind::branch: alloc::string::String
 pub devlaunch_core::api::LaunchNotice::CheckoutBehind::workspace_id: alloc::string::String
+pub devlaunch_core::api::LaunchNotice::ClaudeProfileNotForwarded
+pub devlaunch_core::api::LaunchNotice::ClaudeProfileNotForwarded::name: alloc::string::String
 pub devlaunch_core::api::LaunchNotice::CreateNeverFinished
 pub devlaunch_core::api::LaunchNotice::CreateNeverFinished::workspace_id: alloc::string::String
 pub devlaunch_core::api::LaunchNotice::DevcontainerIgnoredRunning
@@ -324,6 +326,7 @@ impl core::marker::StructuralPartialEq for devlaunch_core::clients::devpod_home:
 pub struct devlaunch_core::api::Host
 impl devlaunch_core::flows::launch::Host
 pub fn devlaunch_core::flows::launch::Host::from_process(impl core::convert::Into<std::path::PathBuf>) -> Self
+pub fn devlaunch_core::flows::launch::Host::with_claude_profile(self, core::option::Option<alloc::string::String>) -> Self
 impl core::clone::Clone for devlaunch_core::flows::launch::Host
 pub fn devlaunch_core::flows::launch::Host::clone(&self) -> devlaunch_core::flows::launch::Host
 impl core::cmp::Eq for devlaunch_core::flows::launch::Host
@@ -535,6 +538,8 @@ pub devlaunch_core::flows::launch::LaunchNotice::CheckoutBehind::ahead: u32
 pub devlaunch_core::flows::launch::LaunchNotice::CheckoutBehind::behind: u32
 pub devlaunch_core::flows::launch::LaunchNotice::CheckoutBehind::branch: alloc::string::String
 pub devlaunch_core::flows::launch::LaunchNotice::CheckoutBehind::workspace_id: alloc::string::String
+pub devlaunch_core::flows::launch::LaunchNotice::ClaudeProfileNotForwarded
+pub devlaunch_core::flows::launch::LaunchNotice::ClaudeProfileNotForwarded::name: alloc::string::String
 pub devlaunch_core::flows::launch::LaunchNotice::CreateNeverFinished
 pub devlaunch_core::flows::launch::LaunchNotice::CreateNeverFinished::workspace_id: alloc::string::String
 pub devlaunch_core::flows::launch::LaunchNotice::DevcontainerIgnoredRunning
@@ -616,6 +621,7 @@ pub fn devlaunch_core::flows::launch::ColdPath<'r, '_>::recorded(&mut self) -> c
 pub struct devlaunch_core::flows::launch::Host
 impl devlaunch_core::flows::launch::Host
 pub fn devlaunch_core::flows::launch::Host::from_process(impl core::convert::Into<std::path::PathBuf>) -> Self
+pub fn devlaunch_core::flows::launch::Host::with_claude_profile(self, core::option::Option<alloc::string::String>) -> Self
 impl core::clone::Clone for devlaunch_core::flows::launch::Host
 pub fn devlaunch_core::flows::launch::Host::clone(&self) -> devlaunch_core::flows::launch::Host
 impl core::cmp::Eq for devlaunch_core::flows::launch::Host

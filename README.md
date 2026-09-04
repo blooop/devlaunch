@@ -19,7 +19,7 @@ one argument instead of a clone, a config file and a build command.
 [![GitHub pull-requests merged](https://badgen.net/github/merged-prs/blooop/devlaunch)](https://github.com/blooop/devlaunch/pulls?q=is%3Amerged)
 [![GitHub release](https://img.shields.io/github/release/blooop/devlaunch.svg)](https://GitHub.com/blooop/devlaunch/releases/)
 [![PyPI](https://img.shields.io/pypi/v/devlaunch)](https://pypi.org/project/devlaunch/)
-[![Conda](https://img.shields.io/badge/conda-v0.29.0-brightgreen?logo=anaconda)](https://prefix.dev/channels/blooop/packages/devlaunch)
+[![Conda](https://img.shields.io/badge/conda-v0.31.0-brightgreen?logo=anaconda)](https://prefix.dev/channels/blooop/packages/devlaunch)
 [![License](https://img.shields.io/github/license/blooop/devlaunch)](https://opensource.org/license/mit/)
 [![Platform](https://img.shields.io/badge/platform-linux--64-blue)](https://github.com/blooop/devlaunch/releases)
 [![Pixi Badge](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/prefix-dev/pixi/main/assets/badge/v0.json)](https://pixi.sh)
@@ -258,6 +258,7 @@ instead. [docs/cli.md](docs/cli.md) has the full `--rm` contract, including whic
 | `dl --purge` | Remove devlaunch's own workspaces and caches |
 | `dl --install` | Install shell completions, and the `dl-herdr-shell` name a herdr pane opens through |
 | `dl --refresh` | Rebuild the completion cache now |
+| `dl --claude-profiles` | List the Claude logins `--claude-profile` can name, and the account each is signed in as |
 | `dl --version` | Print the version |
 | `dl --herdr-shell` | The shell a new [herdr](https://herdr.dev) pane opens: inside the workspace its tab holds, or on this host |
 | `dl --help`, `-h` | Print help |
@@ -275,13 +276,36 @@ clone, and [docs/cleanup.md](docs/cleanup.md) says what it carries one past and 
 
 ```bash
 $ dl --version
-dl 0.29.0
+dl 0.31.0
 ```
 
 `--devcontainer <variant|path>` picks a non-default `devcontainer.json`. A bare name means
 `.devcontainer/<name>/devcontainer.json`. It is stored with the workspace, so pass it once.
 Projects with several variants, compose sidecars, or a host-side `initializeCommand` are covered
 in [docs/devcontainer-projects.md](docs/devcontainer-projects.md).
+
+`--claude-profile <name>` forwards a named Claude login instead of the default one, for
+workspaces where you want a different account than the one `claude` on your host is signed in to:
+
+```bash
+dl blooop/devlaunch --claude-profile work
+```
+
+Profiles live in `~/.claude-profiles/<name>/`, or wherever `CLAUDE_PROFILES_DIR` points, each
+holding the `.credentials.json` that a `claude` login writes. Each is a `CLAUDE_CONFIG_DIR` of its
+own, which is what makes the logins independent. `dl` reads that layout rather than inventing one,
+so profiles you already have work with no re-login, and it never writes there: creating and
+deleting them stays with whatever made the directory. By hand it is
+`CLAUDE_CONFIG_DIR=~/.claude-profiles/work claude`, then log in.
+
+`--claude-profile default` means the login you would get anyway, so a recalled line has a way to
+say "not the profile I used last time".
+
+Unlike `--devcontainer` it is **not** stored with the workspace, so it applies to the launch you
+typed it on and no workspace ever forwards an account chosen weeks ago. A name that holds no
+credential stops the launch and says so rather than falling back to your default login, which is
+the whole point of naming one. [docs/workspace-tools.md](docs/workspace-tools.md) has the
+precedence order and what a profile does not change.
 
 `dl --help` is the complete reference and is kept in step with the binary by a test.
 
@@ -318,6 +342,7 @@ the question and launches one-shot, so scripts behave as they always have.
 | `--no-remote-control`, `--no-remote` | Start a plain local session. Remote Control is on by default for `claude`: the session is named after the workspace and can be read and steered from claude.ai/code or the Claude app. It needs a claude.ai login in the container |
 | `--remote-control`, `--remote` | Ask for Remote Control by name. `claude` has it already; beside `--codex` or `--gemini` this says they have not got it and stops |
 | `--devcontainer <variant\|path>` | Passed through to `dl` |
+| `--claude-profile <name>` | Passed through to `dl`: which host Claude login to forward. Not the claude.ai account the container's `claude` is paired to for Remote Control |
 
 **The trade, stated plainly.** `claude` starts with `--dangerously-skip-permissions`, because the
 agent is already inside a disposable container holding only this repo, and the per-tool prompts
@@ -349,8 +374,9 @@ anything to its `devcontainer.json`.
 - **Your Claude login.** `claude` starts in the container without asking you to log in again. The
   host's access token is forwarded as `CLAUDE_CODE_OAUTH_TOKEN`, only into the sessions `dl` itself
   opens, so a `postCreateCommand` from a repo you did not write never sees it. Nothing is written
-  to the container's disk. A repo whose own devcontainer bind-mounts `~/.claude` is detected and
-  left alone. `DEVLAUNCH_NO_CLAUDE_TOKEN=1` skips it. A workspace that existed before this feature
+  to the container's disk. The token is read from `$CLAUDE_CONFIG_DIR` when your host sets one and
+  from `~/.claude` otherwise, which is the order Claude Code itself reads them in. A repo whose own
+  devcontainer bind-mounts `~/.claude` is detected and left alone. `DEVLAUNCH_NO_CLAUDE_TOKEN=1` skips it. A workspace that existed before this feature
   needs one `dl <workspace> up` before it picks the login up, and so does a workspace rebuilt by
   a `devpod up` devlaunch did not run; workspaces created since do not.
 - **`gh` and `claude` on `PATH`.** If the image has them, nothing happens. If not, `dl` streams
@@ -416,11 +442,14 @@ Images are yours: `docker system df` is what shows those.
 | `HERDR_AGENT=<agent>` | Written, not read: an `aid` launch that starts an agent, or a `dl <ws> -- <agent>` whose command is one, names it here so a session manager can see it. See [docs/workspace-tools.md](docs/workspace-tools.md) |
 | `DEVLAUNCH_TIMING=1\|json` | Write a timing summary to stderr. See [docs/performance.md](docs/performance.md) |
 | `DEVPOD_SSH_CONFIG=<path>` | devpod's own, honoured rather than set: it is where `devpod up` publishes host aliases, so it is where `dl` looks for them. See [docs/cli.md](docs/cli.md) |
+| `CLAUDE_CONFIG_DIR=<path>` | Claude Code's own, honoured rather than set: it is where the host keeps its Claude configuration, so it is where `dl` reads the login to forward. It replaces `~/.claude` rather than being tried before it, exactly as Claude Code treats it. See [docs/workspace-tools.md](docs/workspace-tools.md) |
+| `DEVLAUNCH_CLAUDE_PROFILES_DIR=<path>` | Where `--claude-profile` looks, and it wins over the row below. For scoping a scratch run away from real credentials |
+| `CLAUDE_PROFILES_DIR=<path>` | Honoured rather than set: the profile directory `claude-as` manages. Defaults to `~/.claude-profiles`. Nothing `dl` deletes reaches it |
 
 Every switch here reads the same values: anything but empty, `0`, `false` or `no` counts as
-set. On a "no" variable that means turn it off; on an opt-in one it means turn it on. Five
-rows are not switches and do not follow it: `DEVLAUNCH_AID_AGENT` and `DEVPOD_SSH_CONFIG`
-take a value, `DEVLAUNCH_TIMING` counts only empty and `0` as off, so `false` and `no`
+set. On a "no" variable that means turn it off; on an opt-in one it means turn it on. Eight
+rows are not switches and do not follow it: `DEVLAUNCH_AID_AGENT`, `DEVPOD_SSH_CONFIG`,
+`CLAUDE_CONFIG_DIR`, `DEVLAUNCH_CLAUDE_PROFILES_DIR` and `CLAUDE_PROFILES_DIR` take a value, `DEVLAUNCH_TIMING` counts only empty and `0` as off, so `false` and `no`
 turn it on, `DEVLAUNCH_AID_REMOTE_CONTROL` takes `1`/`true`/`on`/`yes` or
 `0`/`false`/`off`/`no` and refuses anything else rather than guessing, and `HERDR_AGENT` is
 the one written rather than read, so a value of your own survives only a line that starts

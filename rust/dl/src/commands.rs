@@ -15,6 +15,7 @@ use devlaunch_core::domain::config;
 use devlaunch_core::domain::spec::DevcontainerPath;
 use devlaunch_core::domain::workspace_id::WorkspaceId;
 use devlaunch_core::domain::xdg;
+use devlaunch_core::flows::claude_profiles;
 use devlaunch_core::flows::completion::{self, FileState, InstallError, Installed, RcChange};
 use devlaunch_core::flows::completion_cache::{self, Refreshed};
 use devlaunch_core::flows::kept_copies::KeptCopies;
@@ -109,6 +110,7 @@ pub(crate) fn dispatch(
         Command::Version => render_version(),
         Command::List { output, sizes } => render_list(runner, &mut context, cache, output, sizes),
         Command::Repos => render_repos(&mut context, cache),
+        Command::ClaudeProfiles => render_claude_profiles(),
         Command::CompletionData => render_completion_data(&mut context, cache),
         Command::UpdateCache { force } => render_update_cache(runner, &mut context, cache, force),
         Command::Refresh => render_refresh(&mut context, cache),
@@ -131,7 +133,10 @@ pub(crate) fn dispatch(
         // indistinguishable from one typed by hand -- same launch, same terminal
         // title, same agent reporting, same everything a manager reads.
         Command::HerdrShell => match session_manager::pane_destination(runner) {
-            PaneDestination::Workspace(workspace_id) => {
+            PaneDestination::Workspace {
+                workspace_id,
+                claude_profile,
+            } => {
                 let ending = dispatch(
                     runner,
                     cache,
@@ -140,6 +145,13 @@ pub(crate) fn dispatch(
                         target: workspace_id,
                         verb: Verb::Attach { rm: RmOnExit::No },
                         devcontainer: None,
+                        // Inherited from the live sibling rather than from disk: a
+                        // profile is named per launch and not stored with the
+                        // workspace, so the running session is the only record of
+                        // which account it is. Without this a pane opened beside an
+                        // agent authenticated as a different account than the agent,
+                        // which is the one way this feature could mislead quietly.
+                        claude_profile,
                     },
                 );
                 if pane_shell::no_session_ran(ending) {
@@ -154,7 +166,11 @@ pub(crate) fn dispatch(
         // hangup is asked *here* rather than inside either of them: a picked batch
         // is one command over several workspaces, and the shell it was typed in is
         // hung up once, when the last of them has gone. See [`crate::hangup`].
-        Command::Select { verb, devcontainer } => {
+        Command::Select {
+            verb,
+            devcontainer,
+            claude_profile,
+        } => {
             let after = verb.after_removal();
             let ending = render_select(
                 runner,
@@ -163,6 +179,7 @@ pub(crate) fn dispatch(
                 refresh,
                 verb,
                 devcontainer.as_ref(),
+                claude_profile.as_deref(),
             );
             hangup::after_the_command(after, ending)
         }
@@ -170,6 +187,7 @@ pub(crate) fn dispatch(
             target,
             verb,
             devcontainer,
+            claude_profile,
         } => {
             let after = verb.after_removal();
             let ending = render_workspace(
@@ -180,6 +198,7 @@ pub(crate) fn dispatch(
                 &target,
                 verb,
                 devcontainer.as_ref(),
+                claude_profile.as_deref(),
                 // A target named on the command line is resolved by the launch
                 // itself; only the picker arrives knowing more than it says.
                 None,
@@ -318,6 +337,57 @@ fn render_json(
 // ---------------------------------------------------------------------------
 // the completion commands
 // ---------------------------------------------------------------------------
+
+/// `dl --claude-profiles`: the logins `--claude-profile` can name, and who each is.
+///
+/// Plumbing only. The columns, the two absences the account column distinguishes and
+/// the shared-account footnote are `render::claude_profile_lines`, which is where the
+/// rest of dl's rendering lives and where it is tested.
+///
+/// Nothing here reads a token. "authed" is the credential file's existence, so a
+/// listing has never touched a secret.
+fn render_claude_profiles() -> Ending {
+    let rows = claude_profiles::from_process();
+    warn_if_the_profiles_root_could_not_be_read();
+    if rows.is_empty() {
+        // stderr, because it is the reason there is no listing rather than a listing.
+        eprintln!("{}", render::no_claude_profiles());
+        return Ending::Done;
+    }
+    for line in render::claude_profile_lines(&rows) {
+        println!("{line}");
+    }
+    Ending::Done
+}
+
+/// Say so when the profiles root is there and could not be read.
+///
+/// `claude_profiles::summarise` is pure and returns a list, so every reason it found
+/// no profiles looks the same from the outside: a root that was never created, and one
+/// that is unreadable or is a plain file, all come back as an empty listing. The first
+/// is the ordinary state of most hosts and worth no words. The other two are this
+/// command answering a question it could not actually look at, and a host with five
+/// profiles being told it has none is worse than an error.
+///
+/// So the reason is asked for here, where there is a stderr to put it on, rather than
+/// widening the return type of a pure function for a case only the binary can report.
+/// `NotFound` is the silent arm; a directory that reads fine says nothing either.
+fn warn_if_the_profiles_root_could_not_be_read() {
+    let Ok(root) = xdg::claude_profiles_root() else {
+        return;
+    };
+    let Err(error) = std::fs::read_dir(&root) else {
+        return;
+    };
+    if error.kind() == std::io::ErrorKind::NotFound {
+        return;
+    }
+    eprintln!(
+        "Could not read the Claude profiles directory {} ({error}), so any profiles in it are \
+         missing from this listing.",
+        root.display()
+    );
+}
 
 /// The known `owner/repo` strings, one per line.
 ///
@@ -632,6 +702,7 @@ fn render_workspace<'r>(
     target: &str,
     verb: Verb,
     devcontainer: Option<&DevcontainerPath>,
+    claude_profile: Option<&str>,
     recognised: Option<WorkspaceId>,
 ) -> Ending {
     // The open's own notices are said where they happen, by the same printer every
@@ -647,14 +718,17 @@ fn render_workspace<'r>(
     match launch::family(&verb) {
         Family::Stop => {
             devcontainer_ignored(devcontainer.is_some(), word);
+            claude_profile_ignored(claude_profile.is_some(), word);
             render_stop(runner, context, refresh, &mut cold, target)
         }
         Family::Kill => {
             devcontainer_ignored(devcontainer.is_some(), word);
+            claude_profile_ignored(claude_profile.is_some(), word);
             render_kill(runner, context, cache, refresh, &mut cold, target, word)
         }
         Family::Remove { force } => {
             devcontainer_ignored(devcontainer.is_some(), word);
+            claude_profile_ignored(claude_profile.is_some(), word);
             render_remove(
                 runner,
                 context,
@@ -677,6 +751,7 @@ fn render_workspace<'r>(
                 target,
                 &launched,
                 devcontainer,
+                claude_profile,
                 recognised,
             );
             after_the_session(runner, context, cache, refresh, &mut cold, target, rm, ran)
@@ -803,6 +878,19 @@ fn after_the_session<'r>(
 
 /// A config choice a verb that opens no workspace cannot honour, said rather than
 /// discarded.
+/// Say that `--claude-profile` was given to a verb that forwards no Claude login.
+///
+/// Reported rather than refused, which is the line `devcontainer_ignored` already
+/// draws for the same three families: a global command has no workspace for the flag
+/// to be about, while `dl <ws> stop --claude-profile work` names a real workspace and
+/// a flag that does nothing to it. Refusing that would break a recalled line for no
+/// gain, and silence would let somebody believe an account had been chosen.
+fn claude_profile_ignored(given: bool, verb: &str) {
+    if given {
+        eprintln!("Ignoring --claude-profile: '{verb}' forwards no Claude login.");
+    }
+}
+
 fn devcontainer_ignored(given: bool, verb: &str) {
     if given {
         eprintln!("Ignoring --devcontainer: it does not apply to '{verb}'.");
@@ -1457,6 +1545,7 @@ fn render_select<'r>(
     refresh: &mut Refresh<'_>,
     verb: Verb,
     devcontainer: Option<&DevcontainerPath>,
+    claude_profile: Option<&str>,
 ) -> Ending {
     let workspaces = match context.workspaces() {
         Err(refused) => return refuse_listing(&refused),
@@ -1494,6 +1583,7 @@ fn render_select<'r>(
                     &pick.workspace_id,
                     verb.clone(),
                     devcontainer,
+                    claude_profile,
                     // The picker knows what it drew: this row's clone said it is
                     // this triple, and the launch it is about to start knows only
                     // the id. See `Launch::recognised_as`.
