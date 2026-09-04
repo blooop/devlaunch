@@ -658,6 +658,7 @@ impl core::fmt::Debug for devlaunch_core::domain::xdg::NoHomeDirectory
 pub fn devlaunch_core::domain::xdg::NoHomeDirectory::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Copy for devlaunch_core::domain::xdg::NoHomeDirectory
 impl core::marker::StructuralPartialEq for devlaunch_core::domain::xdg::NoHomeDirectory
+pub fn devlaunch_core::domain::xdg::claude_profiles_root() -> core::result::Result<std::path::PathBuf, devlaunch_core::domain::xdg::NoHomeDirectory>
 pub fn devlaunch_core::domain::xdg::clone_root_in(&std::path::Path) -> std::path::PathBuf
 pub fn devlaunch_core::domain::xdg::config_home() -> core::result::Result<std::path::PathBuf, devlaunch_core::domain::xdg::NoHomeDirectory>
 pub fn devlaunch_core::domain::xdg::devlaunch_cache() -> core::result::Result<std::path::PathBuf, devlaunch_core::domain::xdg::NoHomeDirectory>
@@ -1109,6 +1110,53 @@ pub fn devlaunch_core::flows::branch_manager::BranchError::eq(&self, &devlaunch_
 impl core::fmt::Debug for devlaunch_core::flows::branch_manager::BranchError
 pub fn devlaunch_core::flows::branch_manager::BranchError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::branch_manager::BranchError
+pub mod devlaunch_core::flows::claude_profiles
+pub enum devlaunch_core::flows::claude_profiles::ProfileState
+pub devlaunch_core::flows::claude_profiles::ProfileState::Authed
+pub devlaunch_core::flows::claude_profiles::ProfileState::NoCredential
+impl core::clone::Clone for devlaunch_core::flows::claude_profiles::ProfileState
+pub fn devlaunch_core::flows::claude_profiles::ProfileState::clone(&self) -> devlaunch_core::flows::claude_profiles::ProfileState
+impl core::cmp::Eq for devlaunch_core::flows::claude_profiles::ProfileState
+impl core::cmp::PartialEq for devlaunch_core::flows::claude_profiles::ProfileState
+pub fn devlaunch_core::flows::claude_profiles::ProfileState::eq(&self, &devlaunch_core::flows::claude_profiles::ProfileState) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::claude_profiles::ProfileState
+pub fn devlaunch_core::flows::claude_profiles::ProfileState::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for devlaunch_core::flows::claude_profiles::ProfileState
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::claude_profiles::ProfileState
+pub struct devlaunch_core::flows::claude_profiles::Account
+pub devlaunch_core::flows::claude_profiles::Account::account_uuid: core::option::Option<alloc::string::String>
+pub devlaunch_core::flows::claude_profiles::Account::email: core::option::Option<alloc::string::String>
+pub devlaunch_core::flows::claude_profiles::Account::organization: core::option::Option<alloc::string::String>
+pub devlaunch_core::flows::claude_profiles::Account::seat_tier: core::option::Option<alloc::string::String>
+impl devlaunch_core::flows::claude_profiles::Account
+pub fn devlaunch_core::flows::claude_profiles::Account::is_empty(&self) -> bool
+impl core::clone::Clone for devlaunch_core::flows::claude_profiles::Account
+pub fn devlaunch_core::flows::claude_profiles::Account::clone(&self) -> devlaunch_core::flows::claude_profiles::Account
+impl core::cmp::Eq for devlaunch_core::flows::claude_profiles::Account
+impl core::cmp::PartialEq for devlaunch_core::flows::claude_profiles::Account
+pub fn devlaunch_core::flows::claude_profiles::Account::eq(&self, &devlaunch_core::flows::claude_profiles::Account) -> bool
+impl core::default::Default for devlaunch_core::flows::claude_profiles::Account
+pub fn devlaunch_core::flows::claude_profiles::Account::default() -> devlaunch_core::flows::claude_profiles::Account
+impl core::fmt::Debug for devlaunch_core::flows::claude_profiles::Account
+pub fn devlaunch_core::flows::claude_profiles::Account::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::claude_profiles::Account
+pub struct devlaunch_core::flows::claude_profiles::ProfileSummary
+pub devlaunch_core::flows::claude_profiles::ProfileSummary::account: core::option::Option<devlaunch_core::flows::claude_profiles::Account>
+pub devlaunch_core::flows::claude_profiles::ProfileSummary::name: alloc::string::String
+pub devlaunch_core::flows::claude_profiles::ProfileSummary::path: std::path::PathBuf
+pub devlaunch_core::flows::claude_profiles::ProfileSummary::shares_account_with: alloc::vec::Vec<alloc::string::String>
+pub devlaunch_core::flows::claude_profiles::ProfileSummary::state: devlaunch_core::flows::claude_profiles::ProfileState
+impl core::clone::Clone for devlaunch_core::flows::claude_profiles::ProfileSummary
+pub fn devlaunch_core::flows::claude_profiles::ProfileSummary::clone(&self) -> devlaunch_core::flows::claude_profiles::ProfileSummary
+impl core::cmp::Eq for devlaunch_core::flows::claude_profiles::ProfileSummary
+impl core::cmp::PartialEq for devlaunch_core::flows::claude_profiles::ProfileSummary
+pub fn devlaunch_core::flows::claude_profiles::ProfileSummary::eq(&self, &devlaunch_core::flows::claude_profiles::ProfileSummary) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::claude_profiles::ProfileSummary
+pub fn devlaunch_core::flows::claude_profiles::ProfileSummary::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::claude_profiles::ProfileSummary
+pub const devlaunch_core::flows::claude_profiles::DEFAULT_PROFILE: &str
+pub fn devlaunch_core::flows::claude_profiles::from_process() -> alloc::vec::Vec<devlaunch_core::flows::claude_profiles::ProfileSummary>
+pub fn devlaunch_core::flows::claude_profiles::summarise(core::option::Option<&std::path::Path>, core::option::Option<&std::path::Path>) -> alloc::vec::Vec<devlaunch_core::flows::claude_profiles::ProfileSummary>
 pub mod devlaunch_core::flows::completion
 pub enum devlaunch_core::flows::completion::FileState
 pub devlaunch_core::flows::completion::FileState::AlreadyCurrent
@@ -1416,6 +1464,19 @@ pub fn devlaunch_core::flows::launch::BranchNotNamed::eq(&self, &devlaunch_core:
 impl core::fmt::Debug for devlaunch_core::flows::launch::BranchNotNamed
 pub fn devlaunch_core::flows::launch::BranchNotNamed::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::launch::BranchNotNamed
+pub enum devlaunch_core::flows::launch::ClaudeProfileProblem
+pub devlaunch_core::flows::launch::ClaudeProfileProblem::NoCredential
+pub devlaunch_core::flows::launch::ClaudeProfileProblem::NoCredential::directory: alloc::string::String
+pub devlaunch_core::flows::launch::ClaudeProfileProblem::NoRoot
+pub devlaunch_core::flows::launch::ClaudeProfileProblem::NotAName
+impl core::clone::Clone for devlaunch_core::flows::launch::ClaudeProfileProblem
+pub fn devlaunch_core::flows::launch::ClaudeProfileProblem::clone(&self) -> devlaunch_core::flows::launch::ClaudeProfileProblem
+impl core::cmp::Eq for devlaunch_core::flows::launch::ClaudeProfileProblem
+impl core::cmp::PartialEq for devlaunch_core::flows::launch::ClaudeProfileProblem
+pub fn devlaunch_core::flows::launch::ClaudeProfileProblem::eq(&self, &devlaunch_core::flows::launch::ClaudeProfileProblem) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::launch::ClaudeProfileProblem
+pub fn devlaunch_core::flows::launch::ClaudeProfileProblem::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::launch::ClaudeProfileProblem
 pub enum devlaunch_core::flows::launch::HerdrTabRename
 pub devlaunch_core::flows::launch::HerdrTabRename::Off
 pub devlaunch_core::flows::launch::HerdrTabRename::Run
@@ -1577,6 +1638,9 @@ pub fn devlaunch_core::flows::launch::Session::fmt(&self, &mut core::fmt::Format
 impl core::marker::Copy for devlaunch_core::flows::launch::Session
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::launch::Session
 pub enum devlaunch_core::flows::launch::SessionRefused
+pub devlaunch_core::flows::launch::SessionRefused::ClaudeProfile
+pub devlaunch_core::flows::launch::SessionRefused::ClaudeProfile::name: alloc::string::String
+pub devlaunch_core::flows::launch::SessionRefused::ClaudeProfile::problem: devlaunch_core::flows::launch::ClaudeProfileProblem
 pub devlaunch_core::flows::launch::SessionRefused::Devpod(devlaunch_core::clients::devpod::NotRun)
 pub devlaunch_core::flows::launch::SessionRefused::Ssh(devlaunch_core::clients::ssh::NotRun)
 pub devlaunch_core::flows::launch::SessionRefused::Unquotable(devlaunch_core::flows::launch::UnquotableCommand)
@@ -2747,7 +2811,9 @@ impl core::marker::StructuralPartialEq for devlaunch_core::flows::repo_manager::
 pub mod devlaunch_core::flows::session_manager
 pub enum devlaunch_core::flows::session_manager::PaneDestination
 pub devlaunch_core::flows::session_manager::PaneDestination::HostShell
-pub devlaunch_core::flows::session_manager::PaneDestination::Workspace(alloc::string::String)
+pub devlaunch_core::flows::session_manager::PaneDestination::Workspace
+pub devlaunch_core::flows::session_manager::PaneDestination::Workspace::claude_profile: core::option::Option<alloc::string::String>
+pub devlaunch_core::flows::session_manager::PaneDestination::Workspace::workspace_id: alloc::string::String
 impl core::clone::Clone for devlaunch_core::flows::session_manager::PaneDestination
 pub fn devlaunch_core::flows::session_manager::PaneDestination::clone(&self) -> devlaunch_core::flows::session_manager::PaneDestination
 impl core::cmp::Eq for devlaunch_core::flows::session_manager::PaneDestination

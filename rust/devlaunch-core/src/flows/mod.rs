@@ -4,6 +4,9 @@ pub mod agent_worktrees;
 // refusal travels inside a launch refusal, and the words for it are the binary's.
 pub mod branch_manager;
 // binary surface — not part of the frozen wf API (#251 §7)
+/// The Claude logins this host can forward, with the account behind each name.
+pub mod claude_profiles;
+
 pub mod completion;
 // binary surface — not part of the frozen wf API (#251 §7)
 pub mod completion_cache;
