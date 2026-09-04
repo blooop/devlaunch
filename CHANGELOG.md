@@ -209,7 +209,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   passing its own token further down, and `DEVLAUNCH_NO_CLAUDE_TOKEN` still beats
   everything.
 
-
 ## [0.29.0] - 2026-09-02
 
 ### Added
