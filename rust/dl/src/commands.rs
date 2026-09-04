@@ -354,6 +354,7 @@ fn render_json(
 /// listing has never touched a secret.
 fn render_claude_profiles() -> Ending {
     let rows = claude_profiles::from_process();
+    warn_if_the_profiles_root_could_not_be_read();
     if rows.is_empty() {
         // No home directory and no override, which is a real state: `dl` runs with
         // `XDG_CACHE_HOME` set and no home at all.
@@ -376,6 +377,35 @@ fn render_claude_profiles() -> Ending {
     }
     say_shared_accounts(&rows);
     Ending::Done
+}
+
+/// Say so when the profiles root is there and could not be read.
+///
+/// `claude_profiles::summarise` is pure and returns a list, so every reason it found
+/// no profiles looks the same from the outside: a root that was never created, and one
+/// that is unreadable or is a plain file, all come back as an empty listing. The first
+/// is the ordinary state of most hosts and worth no words. The other two are this
+/// command answering a question it could not actually look at, and a host with five
+/// profiles being told it has none is worse than an error.
+///
+/// So the reason is asked for here, where there is a stderr to put it on, rather than
+/// widening the return type of a pure function for a case only the binary can report.
+/// `NotFound` is the silent arm; a directory that reads fine says nothing either.
+fn warn_if_the_profiles_root_could_not_be_read() {
+    let Ok(root) = xdg::claude_profiles_root() else {
+        return;
+    };
+    let Err(error) = std::fs::read_dir(&root) else {
+        return;
+    };
+    if error.kind() == std::io::ErrorKind::NotFound {
+        return;
+    }
+    eprintln!(
+        "Could not read the Claude profiles directory {} ({error}), so any profiles in it are \
+         missing from this listing.",
+        root.display()
+    );
 }
 
 /// Name the profiles that are two names for one account.

@@ -36,6 +36,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   showing (email, organisation, seat tier), and it distinguishes a profile with no
   credential from one whose state file says nothing.
 
+  **Two names for one directory are one login, not a spare copy of one.** The
+  redundancy footnote says "all but one are spare", so a group has to mean separate
+  directories you could delete one of. `CLAUDE_CONFIG_DIR=~/.claude-profiles/work`
+  makes the `default` row and the `work` row the same directory, the same state file
+  and the same account id, and grouping on the id alone named the only login on the
+  host; a symlinked profile directory got there the same way, since the walk follows
+  symlinks. A directory is now counted once, so both rows are still listed with the
+  same account against each and no deletion is advised. `path` is not in the listing,
+  which is why nothing on screen let a reader catch this.
+
+  **A profiles directory that cannot be read says so** instead of listing as a host
+  with no profiles. Only `NotFound` is silent, because a root nothing has created yet
+  is the ordinary state of most hosts; a root that is unreadable, or a plain file where
+  the directory should be, told a host with five profiles that it had none.
+
   **No token is read to build it.** The `authed` column is the credential file's
   existence and never its contents, so a listing has not touched a secret. It is also
   the way to find a profile created and never logged in to, since a launch naming one of

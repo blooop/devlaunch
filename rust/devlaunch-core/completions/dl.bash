@@ -110,8 +110,8 @@ _dl_completion() {
                 # so the visible half of this is the leading '-' and the character set.
                 # Both are checked anyway rather than relying on the glob, because the
                 # rule is what has to agree and not the accident that enforces part of
-                # it. `the_completion_offers_only_names_a_launch_accepts` in
-                # test_completion_tables.py is the diff that keeps the two in step.
+                # it. `test_the_completion_offers_only_names_a_launch_accepts` in
+                # test_bash_completion.py is the diff that keeps the two in step.
                 # The character set is spelled out rather than written as ranges,
                 # and that is not fussiness: `[[ =~ ]]` honours LC_COLLATE, so
                 # `[A-Za-z]` matches `é` in a UTF-8 locale and this offered

@@ -106,6 +106,13 @@ pub fn summarise(profiles_root: Option<&Path>, unnamed: Option<&Path>) -> Vec<Pr
         // A root that does not exist is a host with no profiles, not a failure: the
         // directory is created by whatever manages the profiles, and most hosts never
         // have one.
+        //
+        // Every other error kind lands here too, and that is a real loss rather than a
+        // tidy default: a root that is unreadable, or a plain file where the directory
+        // should be, lists as "no profiles" and tells a host with five of them that it
+        // has none. This function is pure and has no channel to say so, so the caller
+        // that does say it -- `render_claude_profiles`, which owns stderr -- checks
+        // separately. Nothing here can be trusted to have looked.
         return rows;
     };
     let mut named: Vec<ProfileSummary> = entries
@@ -132,31 +139,60 @@ pub fn summarise(profiles_root: Option<&Path>, unnamed: Option<&Path>) -> Vec<Pr
 /// colleagues, a shared `emailAddress` would be the same thing said less precisely,
 /// and a profile whose file names no id at all joins no group rather than joining the
 /// group of blanks.
+///
+/// **Two names for one directory are one login, not a spare copy of one.** The group
+/// this builds is what `dl --claude-profiles` turns into "all but one are spare", so a
+/// group has to mean "these are separate directories you could delete one of". Rows
+/// resolving to the same directory fail that: `CLAUDE_CONFIG_DIR=<root>/work` makes the
+/// `default` row and the `work` row the same directory, the same `.claude.json` and the
+/// same id, and the advice would have named the only login on the host. A symlinked
+/// profile directory reaches it the same way, since the walk above follows symlinks.
+///
+/// So a directory is counted once, by [`std::fs::canonicalize`] where that answers and
+/// by the path as given where it does not: a path that cannot be resolved is not a
+/// directory anything else in the listing reached either, and treating it as its own is
+/// the reading that cannot invent a spare. This deliberately says nothing about the two
+/// names, which is the smaller loss: the listing prints both rows, with the same
+/// account against each, and declines to advise a deletion it cannot justify.
 fn note_shared_accounts(rows: &mut [ProfileSummary]) {
-    let mut by_account: std::collections::BTreeMap<String, Vec<String>> =
+    let directory_of = |row: &ProfileSummary| {
+        std::fs::canonicalize(&row.path).unwrap_or_else(|_| row.path.clone())
+    };
+
+    // One entry per (account, directory): the first row that reaches a directory
+    // represents it, and a later row naming the same one is skipped rather than
+    // counted again. Indices and not names, because only a representative row may be
+    // told about its neighbours -- a second name for a directory already represented
+    // must be left with an empty `shares_account_with`, or the group it reconstructs
+    // downstream would count it as one more thing to delete.
+    let mut representatives: std::collections::BTreeMap<String, Vec<usize>> =
         std::collections::BTreeMap::new();
-    for row in rows.iter() {
-        if let Some(uuid) = row.account.as_ref().and_then(|a| a.account_uuid.as_deref()) {
-            by_account
-                .entry(uuid.to_owned())
-                .or_default()
-                .push(row.name.clone());
-        }
-    }
-    by_account.retain(|_, names| names.len() > 1);
-    let shared = by_account;
-    for row in rows.iter_mut() {
+    let mut seen: std::collections::BTreeSet<(String, std::path::PathBuf)> =
+        std::collections::BTreeSet::new();
+    for (index, row) in rows.iter().enumerate() {
         let Some(uuid) = row.account.as_ref().and_then(|a| a.account_uuid.as_deref()) else {
             continue;
         };
-        let Some(names) = shared.get(uuid) else {
+        if !seen.insert((uuid.to_owned(), directory_of(row))) {
             continue;
-        };
-        row.shares_account_with = names
-            .iter()
-            .filter(|name| *name != &row.name)
-            .cloned()
-            .collect();
+        }
+        representatives
+            .entry(uuid.to_owned())
+            .or_default()
+            .push(index);
+    }
+    representatives.retain(|_, indices| indices.len() > 1);
+
+    let groups: Vec<Vec<usize>> = representatives.into_values().collect();
+    for group in groups {
+        for &index in &group {
+            let names: Vec<String> = group
+                .iter()
+                .filter(|&&other| other != index)
+                .map(|&other| rows[other].name.clone())
+                .collect();
+            rows[index].shares_account_with = names;
+        }
     }
 }
 
@@ -254,6 +290,57 @@ mod tests {
             row.account, None,
             "a directory nobody is logged in to has no account to name"
         );
+    }
+
+    #[test]
+    fn one_directory_under_two_names_is_not_a_spare_copy_of_itself() {
+        // `CLAUDE_CONFIG_DIR=<root>/work` makes the unnamed login and the `work`
+        // profile the same directory: one `.claude.json`, one id, one login. Grouping
+        // on the id alone printed "'default', 'work' are the same account, so all but
+        // one are spare" about the only login on the host, and `path` is never in the
+        // listing, so nothing on screen let a reader notice.
+        let root = tempfile::tempdir().expect("a scratch root");
+        let work = profile(root.path(), "work", true, Some("me@example.com"));
+
+        let rows = summarise(Some(root.path()), Some(&work));
+
+        let shared = |name: &str| {
+            rows.iter()
+                .find(|row| row.name == name)
+                .map(|row| row.shares_account_with.clone())
+                .unwrap_or_else(|| panic!("{name}: {rows:?}"))
+        };
+        // Both rows are still listed, with the same account against each. What is gone
+        // is the advice to delete one of them.
+        assert!(shared("default").is_empty(), "{rows:?}");
+        assert!(shared("work").is_empty(), "{rows:?}");
+    }
+
+    #[test]
+    fn a_third_name_for_a_counted_directory_does_not_inflate_the_group() {
+        // Three names, two directories: `default` and `alias` are one directory, and
+        // `spare` is a genuinely separate copy of the same account. "All but one are
+        // spare" is true of the pair of *directories*, so the group has to name two
+        // things and not three -- otherwise the count of what can be deleted is wrong
+        // in the direction that loses a login.
+        let root = tempfile::tempdir().expect("a scratch root");
+        let alias = profile(root.path(), "alias", true, Some("me@example.com"));
+        profile(root.path(), "spare", true, Some("me@example.com"));
+
+        let rows = summarise(Some(root.path()), Some(&alias));
+
+        let shared = |name: &str| {
+            rows.iter()
+                .find(|row| row.name == name)
+                .map(|row| row.shares_account_with.clone())
+                .unwrap_or_else(|| panic!("{name}: {rows:?}"))
+        };
+        // `default` represents the directory it shares with `alias`, so it is the one
+        // told about `spare`; `alias` is the second name for a directory already
+        // counted and is told nothing.
+        assert_eq!(shared("default"), ["spare"], "{rows:?}");
+        assert_eq!(shared("spare"), ["default"], "{rows:?}");
+        assert!(shared("alias").is_empty(), "{rows:?}");
     }
 
     /// And the half that made it worse than a cosmetic slip.
