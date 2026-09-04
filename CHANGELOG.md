@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`aid`'s agent flags are appendable to a recalled line.** `aid owner/repo fix
+  the bug --codex` now starts codex and keeps the prompt. It used to start claude
+  and hand it the words `fix the bug --codex`, because the agent flags were read
+  only *before* the workspace spec and everything after the spec is prompt, so an
+  appended one was swallowed with nothing said. That is the worst shape a flag can
+  have: it looks like it worked.
+
+  Recalling a line and typing at the end of it is the cheap edit a shell offers,
+  which is why `--rm` and `--no-remote` already peel off the end. The agent flags
+  now peel in the same run and under the same three bounds -- only at the very end
+  of the line, only the exact word, only as a whole argv word -- so a prompt that
+  merely mentions one is still a prompt. `aid owner/repo why --codex and not
+  claude` ends on `claude` and hands the agent every word of it.
+
+  A trailing flag beats a leading one and both beat `DEVLAUNCH_AID_AGENT`, which is
+  the rule the whole line is already read by. An appended run naming no agent leaves
+  an earlier flag standing, so `aid --codex owner/repo fix it --rm` still starts
+  codex. The flag is `aid`'s own and is never forwarded to `dl`; the one thing it
+  changes downstream is the agent Remote Control is settled against, so
+  `aid owner/repo fix it --remote --codex` is refused by name before anything boots.
+
 ## [0.29.0] - 2026-09-02
 
 ### Added
