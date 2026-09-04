@@ -663,12 +663,20 @@ impl ContextOptions {
     }
 
     /// The `devpod up` flags these options contribute, in Python's order.
+    ///
+    /// The script is only a flag when there is a repository for it to be a path
+    /// *in*: `--dotfiles-script` names a file inside whatever `--dotfiles` cloned,
+    /// so alone it asks devpod to run a script in a repository nobody named. That
+    /// used to be pushed anyway, which is the one way the argv and
+    /// [`Self::dotfiles_notice`] could disagree -- and they are meant to be two
+    /// readings of the same options, not a list and a restatement of it.
     fn up_args(&self) -> Vec<String> {
         let mut args = Vec::new();
-        if let Some(url) = self.dotfiles_url() {
-            args.push("--dotfiles".to_owned());
-            args.push(url.to_owned());
-        }
+        let Some(url) = self.dotfiles_url() else {
+            return args;
+        };
+        args.push("--dotfiles".to_owned());
+        args.push(url.to_owned());
         if let Some(script) = self.dotfiles_script() {
             args.push("--dotfiles-script".to_owned());
             args.push(script.to_owned());
@@ -5869,6 +5877,40 @@ mod tests {
                 "--dotfiles-script".to_owned(),
                 "install.sh".to_owned(),
             ]
+        );
+    }
+
+    /// A script with no repository to run it from is not a dotfiles setting.
+    ///
+    /// The notice and the argv are two readings of the same options, which is the
+    /// whole point of deriving the notice from the readers rather than from the
+    /// list. They disagreed here: `up_args` pushed `--dotfiles-script` on
+    /// `DOTFILES_SCRIPT` alone, while `dotfiles_notice` looked only at
+    /// `DOTFILES_URL` and said "none set ... so this up asked for none".
+    #[test]
+    fn a_script_with_no_dotfiles_repository_reaches_no_flag() {
+        let options = ContextOptions::from_map(BTreeMap::from([(
+            "DOTFILES_SCRIPT".to_owned(),
+            "install.sh".to_owned(),
+        )]));
+
+        let args = up_args(
+            &UpRequest::new("myws", Naming::Anonymous),
+            &options,
+            &PixiCache::NotADirectory {
+                source: PathBuf::from("/nope"),
+            },
+            &[],
+        );
+
+        assert!(
+            !args.iter().any(|arg| arg == "--dotfiles-script"),
+            "{args:?}"
+        );
+        assert_eq!(
+            options.dotfiles_notice(),
+            LaunchNotice::DotfilesNotConfigured,
+            "and the notice says the same thing the argv does"
         );
     }
 
