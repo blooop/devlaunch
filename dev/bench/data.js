@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788935310797,
+  "lastUpdate": 1788940546290,
   "repoUrl": "https://github.com/blooop/devlaunch",
   "entries": {
     "devlaunch launch stages": [
@@ -12518,6 +12518,93 @@ window.BENCHMARK_DATA = {
             "range": "± 0.298714",
             "unit": "s",
             "extra": "runs=5/5 wall=7.791004s v0.26.1, Linux-X64"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "blooop@gmail.com",
+            "name": "Austin Gregg-Smith",
+            "username": "blooop"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4060d5f68a6da8e8c8a15f5acd85ab6c3370241e",
+          "message": "Merge pull request #583 from blooop/fix/empty-credentials-stub-defeats-token-forwarding\n\nfix: an empty seeded .credentials.json is a logged-out session that wins",
+          "timestamp": "2026-09-09T08:52:41+01:00",
+          "tree_id": "cf421f7ee0846fc02b8ed5fa1afc6d73fc2ca704",
+          "url": "https://github.com/blooop/devlaunch/commit/4060d5f68a6da8e8c8a15f5acd85ab6c3370241e"
+        },
+        "date": 1788940545214,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "warm / attach",
+            "value": 1.302153,
+            "range": "± 0.046991",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / devpod-up",
+            "value": 0.340539,
+            "range": "± 0.014045",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / host-prep",
+            "value": 0.000049,
+            "range": "± 0.000009",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / total",
+            "value": 1.641597,
+            "range": "± 0.054934",
+            "unit": "s",
+            "extra": "runs=5/5 wall=1.643929s v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / attach",
+            "value": 1.367431,
+            "range": "± 0.050947",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / devpod-up",
+            "value": 3.214328,
+            "range": "± 0.054691",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / host-prep",
+            "value": 0.340793,
+            "range": "± 0.009088",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / tools",
+            "value": 3.957175,
+            "range": "± 0.145343",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / total",
+            "value": 8.841358,
+            "range": "± 0.191163",
+            "unit": "s",
+            "extra": "runs=5/5 wall=8.843517s v0.26.1, Linux-X64"
           }
         ]
       }
