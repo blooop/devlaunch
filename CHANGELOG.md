@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`LaunchVerb::Attach` carries a `RemoteCommand` rather than an
+  `Option<String>`, and the change is a break for anyone driving
+  `devlaunch-core` directly.** The field meant two opposite things depending on
+  who filled it: `dl <ws> -- <command>` put words in it whose quoting the host's
+  shell had already stripped, and the dotfiles pass put a script in it that it
+  had composed itself, `&&` and `$(...)` included. Nothing in the type could tell
+  those apart, so the join that turns the first into a command line lived in `dl`
+  and the second survived only by nobody joining it. That is the shape 0.37.0
+  fixed one instance of.
+
+  `RemoteCommand::Argv(NonEmpty<String>)` and `RemoteCommand::Script(String)` are
+  the two senses, and `RemoteCommand::line` is now the only place either becomes a
+  command line. A caller passing argv writes `Argv` and a caller passing a script
+  writes `Script`; there is no longer a reading to get wrong.
+
+  Two things follow from holding words instead of a line. The program a session
+  manager is told about is now exact for argv, where it had to be guessed at by
+  splitting on whitespace. And `UnquotableCommand` carries the composed line, so
+  the refusal of a command holding a NUL names `echo '<NUL>hi'` where it used to
+  name `echo <NUL>hi`: there is no single string the caller gave any more, and the
+  line is the thing that could not be made into a shell word. The refusal itself
+  is unchanged.
+
+  Nothing about what reaches a workspace changes. Every payload assertion in the
+  suite is untouched.
+
+- **A version that is already published is refused before it can be merged.**
+  Two branches bumped to the same number and git merged it without a conflict,
+  because the same version line on both sides is one edit; the second merge then
+  published nothing and said so in the words an ordinary push gets.
+  `scripts/version_untaken.py` runs on the pull request, where the two versions
+  still differ, and `publish.yml` now separates a re-run over the commit it
+  published from a push moving the version onto somebody else's tag.
+
 ## [0.37.0] - 2026-09-09
 
 ### Fixed

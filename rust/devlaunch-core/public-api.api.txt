@@ -101,7 +101,7 @@ pub fn devlaunch_core::flows::launch::LaunchNotice::fmt(&self, &mut core::fmt::F
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::launch::LaunchNotice
 pub enum devlaunch_core::api::LaunchVerb
 pub devlaunch_core::api::LaunchVerb::Attach
-pub devlaunch_core::api::LaunchVerb::Attach::command: core::option::Option<alloc::string::String>
+pub devlaunch_core::api::LaunchVerb::Attach::command: core::option::Option<devlaunch_core::flows::launch::RemoteCommand>
 pub devlaunch_core::api::LaunchVerb::Code
 pub devlaunch_core::api::LaunchVerb::Dotfiles
 pub devlaunch_core::api::LaunchVerb::Recreate
@@ -593,7 +593,7 @@ pub fn devlaunch_core::flows::launch::LaunchNotice::fmt(&self, &mut core::fmt::F
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::launch::LaunchNotice
 pub enum devlaunch_core::flows::launch::LaunchVerb
 pub devlaunch_core::flows::launch::LaunchVerb::Attach
-pub devlaunch_core::flows::launch::LaunchVerb::Attach::command: core::option::Option<alloc::string::String>
+pub devlaunch_core::flows::launch::LaunchVerb::Attach::command: core::option::Option<devlaunch_core::flows::launch::RemoteCommand>
 pub devlaunch_core::flows::launch::LaunchVerb::Code
 pub devlaunch_core::flows::launch::LaunchVerb::Dotfiles
 pub devlaunch_core::flows::launch::LaunchVerb::Recreate

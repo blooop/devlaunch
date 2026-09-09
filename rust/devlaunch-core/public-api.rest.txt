@@ -1606,6 +1606,19 @@ pub fn devlaunch_core::flows::launch::Plan::eq(&self, &devlaunch_core::flows::la
 impl core::fmt::Debug for devlaunch_core::flows::launch::Plan
 pub fn devlaunch_core::flows::launch::Plan::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::launch::Plan
+pub enum devlaunch_core::flows::launch::RemoteCommand
+pub devlaunch_core::flows::launch::RemoteCommand::Argv(devlaunch_core::domain::workspace_state::NonEmpty<alloc::string::String>)
+pub devlaunch_core::flows::launch::RemoteCommand::Script(alloc::string::String)
+impl devlaunch_core::flows::launch::RemoteCommand
+pub fn devlaunch_core::flows::launch::RemoteCommand::line(&self) -> alloc::borrow::Cow<'_, str>
+impl core::clone::Clone for devlaunch_core::flows::launch::RemoteCommand
+pub fn devlaunch_core::flows::launch::RemoteCommand::clone(&self) -> devlaunch_core::flows::launch::RemoteCommand
+impl core::cmp::Eq for devlaunch_core::flows::launch::RemoteCommand
+impl core::cmp::PartialEq for devlaunch_core::flows::launch::RemoteCommand
+pub fn devlaunch_core::flows::launch::RemoteCommand::eq(&self, &devlaunch_core::flows::launch::RemoteCommand) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::launch::RemoteCommand
+pub fn devlaunch_core::flows::launch::RemoteCommand::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::launch::RemoteCommand
 pub enum devlaunch_core::flows::launch::Resolution
 pub devlaunch_core::flows::launch::Resolution::Cold
 pub devlaunch_core::flows::launch::Resolution::Cold::workspace: devlaunch_core::domain::workspace_id::WorkspaceId

@@ -69,7 +69,7 @@ once under the `api` section and once under the module that owns them.
 
 **What it still does not reach, and it is not one type.** A type `api` never re-exports but a
 promised signature hands back is reachable from outside and classified as binary surface. Counted
-on the checked-in files rather than guessed at, that is **37 types owning close to six hundred rows** in
+on the checked-in files rather than guessed at, that is **38 types owning close to six hundred rows** in
 `public-api.rest.txt`, and the command that lists them needs no toolchain:
 
 **A falling count is not automatically a win, and it is worth knowing which kind you are looking
@@ -93,10 +93,10 @@ file that moves is the one this page calls freely regenerated.
 section used to give on its own, which made six hundred rows read as one.
 
 So a diff in `public-api.rest.txt` is routine for a row whose subject nothing promised names, and a
-contract change for a row whose subject is one of the 39. `--print-residual` is how you tell the two
+contract change for a row whose subject is one of the 38. `--print-residual` is how you tell the two
 apart, and `test/test_public_api_snapshots_doc.py` diffs the count of types in this paragraph
 against it, so the sentence goes red rather than stale. The row total is left round on purpose: it
-moves whenever anything is added to any one of the 39 and says nothing about the scale of the
+moves whenever anything is added to any one of the 38 and says nothing about the scale of the
 limit, where the count of types moves only when the residual really grows.
 
 The `-ss` flag also omits blanket and auto-trait impls from both files,
