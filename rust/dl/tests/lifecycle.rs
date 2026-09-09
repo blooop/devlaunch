@@ -353,11 +353,28 @@ impl World {
     ///
     /// A script rather than a recorded fixture because what is being pinned is the
     /// *rewrite*, not the call: the answer is fixed, and what the test reads is
-    /// which workspace devpod was then addressed by. A world that installs none of
-    /// these has no `gh` at all -- `PATH` is the scratch `bin` plus `/usr/bin` and
-    /// `/bin`, and gh lives in neither -- which is its own case below.
+    /// which workspace devpod was then addressed by.
+    ///
+    /// Every case that reaches the lookup installs one of these, and none may rely
+    /// on a world that does not. `PATH` here is the scratch `bin` plus `/usr/bin`
+    /// and `/bin`, and it has to carry `/usr/bin` for the `git` these commands
+    /// really run -- so on a machine that ships `gh` there, and GitHub's runners
+    /// do, a world with no fake `gh` reaches a real unauthenticated one. That is
+    /// what made the first version of `a_gh_that_refuses_is_reported_in_ghs_own_words`
+    /// pass here and fail in CI.
     fn gh_answers(&self, json: &str) {
-        let script = format!("#!/bin/sh\ncat <<'JSON'\n{json}\nJSON\n");
+        self.install_gh(&format!("#!/bin/sh\ncat <<'JSON'\n{json}\nJSON\n"));
+    }
+
+    /// Put a `gh` on the world's PATH that refuses, the way an unauthenticated
+    /// one does.
+    fn gh_refuses(&self, code: i32, stderr: &str) {
+        self.install_gh(&format!(
+            "#!/bin/sh\nprintf '%s' '{stderr}' >&2\nexit {code}\n"
+        ));
+    }
+
+    fn install_gh(&self, script: &str) {
         let path = self.root.join("bin/gh");
         std::fs::write(&path, script).expect("the scratch bin is writable");
         std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755))
@@ -727,19 +744,48 @@ fn every_spelling_of_one_pull_request_reaches_the_same_workspace() {
 }
 
 #[test]
-fn a_pull_request_link_on_a_host_with_no_gh_says_to_name_the_branch_instead() {
-    // The remedy that needs nothing installed, which is why it is the one the
-    // refusal names. Nothing is asked of devpod: there is no spec yet to address
-    // it with.
+fn a_gh_that_refuses_is_reported_in_ghs_own_words() {
+    // The arm a real user hits: not logged in, or no such request. gh writes the
+    // useful half of that sentence and dl quotes it, so nothing here has a second
+    // wording to go stale. Nothing is asked of devpod either -- there is no spec
+    // yet to address it with.
+    //
+    // **The `GhMissing` arm has no case here, and cannot have one.** It is a fact
+    // about the host rather than about the world this harness builds: `PATH` has
+    // to carry `/usr/bin` for the `git` these commands really run, and GitHub's
+    // runners ship `gh` in it, so a world that installs no fake `gh` gets a real
+    // unauthenticated one and this refusal instead. That arm is pinned where it is
+    // a decision rather than an accident of the machine --
+    // `flows::pull_request::tests::no_gh_on_path_is_its_own_refusal` for the
+    // choice, and `render::tests::no_gh_says_the_one_thing_that_needs_no_install`
+    // for the words.
     let world = World::base();
+    world.gh_refuses(1, "gh: Not Found (HTTP 404)\n");
     let run = world.dl(&["blooop/devlaunch@#579", "stop"]);
     run.exited(1);
     assert_eq!(run.out, "");
     assert_eq!(
         run.err,
-        "error: could not look up pull request blooop/devlaunch#579: gh is not on PATH, and only \
-         gh can say which branch a pull request is. Install the GitHub CLI, or name the branch \
-         instead of the link.\n"
+        "error: could not look up pull request blooop/devlaunch#579: gh: Not Found (HTTP 404)\n"
+    );
+    assert_eq!(world.devpod_calls(), Vec::<String>::new());
+}
+
+#[test]
+fn a_malformed_pull_request_reference_is_refused_with_no_lookup_at_all() {
+    // The classification is pure, so this costs no round trip -- and it is the one
+    // refusal that needs no `gh` on the machine to be reproducible. Refused as a
+    // malformed reference rather than passed on as a URL, which is what kept the
+    // old failure obscure: devpod would report, truthfully, that it could not
+    // clone `.../pull/579`.
+    let world = World::base();
+    let run = world.dl(&["https://github.com/blooop/devlaunch/pull/abc", "stop"]);
+    run.exited(1);
+    assert_eq!(run.out, "");
+    assert_eq!(
+        run.err,
+        "error: 'abc' is not a pull request number. A pull request is named by its number, as in \
+         'owner/repo@#579'.\n"
     );
     assert_eq!(world.devpod_calls(), Vec::<String>::new());
 }
