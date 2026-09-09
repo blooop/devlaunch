@@ -258,6 +258,82 @@ impl VerdictCache {
         };
         write_atomically(&self.marker(workspace_id), &text);
     }
+
+    /// Where the in-flight record for this workspace lives.
+    fn in_flight(&self, workspace_id: &str) -> PathBuf {
+        self.marker(workspace_id).with_extension("pass")
+    }
+
+    /// Note that a setup pass over the container [`Self::observe`] identified is
+    /// about to run, and has not finished.
+    ///
+    /// Written *before* the trip and removed by [`Self::end_pass`] after it, so the
+    /// file surviving a launch is the one thing on this host that says the pass was
+    /// cut short. `dl`'s signal handler `_exit`s without unwinding
+    /// (`devlaunch_runner::interrupt`), which is exactly why the evidence has to be
+    /// a file left standing rather than one written on the way out: nothing runs on
+    /// the way out.
+    ///
+    /// Anchored like everything else here, and against the same failure: a record
+    /// left by an interrupted pass over a container that has since been rebuilt
+    /// describes a container that is not standing, and reading it would send every
+    /// later launch on a round trip it does not owe.
+    ///
+    /// Silent about every way of not working, as [`Self::record`] is. A record that
+    /// could not be written costs one interrupted launch its recovery and nothing
+    /// else -- which is today's behaviour, exactly.
+    pub(crate) fn begin_pass(&self, workspace_id: &str, observed: Observed) {
+        let Observed(result_mtime) = observed;
+        let Ok(text) = serde_json::to_string(&InFlight { result_mtime }) else {
+            return;
+        };
+        write_atomically(&self.in_flight(workspace_id), &text);
+    }
+
+    /// The pass [`Self::begin_pass`] opened has finished.
+    ///
+    /// Called for a pass that *ran*, however it turned out -- a trip devpod refused
+    /// and an install that failed are both passes that happened, and re-running them
+    /// on every attach afterwards is the "re-attempts forever" behaviour the module
+    /// note refuses for [`Provisioning::ShimKept`](super::Provisioning::ShimKept).
+    /// What this exists to catch is the pass that never got an answer at all,
+    /// because the process carrying it was killed.
+    pub(crate) fn end_pass(&self, workspace_id: &str) {
+        let _ = std::fs::remove_file(self.in_flight(workspace_id));
+    }
+
+    /// Whether a setup pass over the container standing now began and never
+    /// finished.
+    ///
+    /// **Positive evidence, and it has to be.** The opposite reading -- "no record
+    /// of a finished pass, so run one" -- is true of every workspace `dl` never
+    /// provisioned: one created by VS Code, by a hand-typed `devpod up`, or by a
+    /// build older than this file. Those must keep attaching in one round trip, so
+    /// the question asked here is the narrow one, and every doubt answers *no*: no
+    /// record, a record that will not parse, or one whose container is not the one
+    /// standing.
+    pub(crate) fn pass_never_finished(&self, workspace_id: &str) -> bool {
+        let Some(text) = std::fs::read_to_string(self.in_flight(workspace_id)).ok() else {
+            return false;
+        };
+        let Ok(in_flight) = serde_json::from_str::<InFlight>(&text) else {
+            return false;
+        };
+        let Some(result) = sole_workspace_result(self.devpod_home.as_ref(), workspace_id) else {
+            return false;
+        };
+        Stamp::of(&result) == Some(in_flight.result_mtime)
+    }
+}
+
+/// What one in-flight record says.
+///
+/// One field, and a struct rather than the bare [`Stamp`] it wraps, for
+/// [`Marker`]'s reason: the check is the parse, so a file a later build writes with
+/// a second field it needs is not silently read as this one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+struct InFlight {
+    result_mtime: Stamp,
 }
 
 /// The container a pass is about, as [`VerdictCache::observe`] read it.
@@ -475,6 +551,13 @@ mod tests {
         let cache = cache();
         let verdicts = VerdictCache::under(cache.path(), Some(DevpodHome::at(home.path())));
         (cache, home, verdicts)
+    }
+
+    /// Open a pass over the container standing now, as [`provision`] does before
+    /// its trip -- and, unlike [`provision`], never close it.
+    fn began(verdicts: &VerdictCache, workspace_id: &str) {
+        let observed = verdicts.observe(workspace_id).expect("an anchor");
+        verdicts.begin_pass(workspace_id, observed);
     }
 
     /// Remember `seen` against the container standing now, as [`provision`] does.
@@ -871,6 +954,93 @@ mod tests {
 
         assert!(verdicts.trusted("myws", Switches::INSTALLING));
         assert!(!verdicts.trusted("other", Switches::INSTALLING));
+    }
+
+    #[test]
+    fn a_pass_that_began_and_never_ended_is_still_unfinished() {
+        // The whole of what this file adds. A `dl` killed between `devpod up` and
+        // the end of its setup pass leaves a container devpod calls Running and
+        // finished creating, so every later launch fast-attaches to it and the pass
+        // never runs again. Nothing else on the host can tell that apart from a
+        // container whose pass ran to completion, because the cache records only
+        // success and an absent record is what a workspace dl never touched has too.
+        let (_cache, _home, verdicts) = anchored();
+
+        began(&verdicts, "ws");
+
+        assert!(verdicts.pass_never_finished("ws"));
+    }
+
+    #[test]
+    fn an_interrupted_pass_over_a_container_since_rebuilt_asks_for_nothing() {
+        // The anchor earns its keep here as much as anywhere. A `--recreate` after
+        // the interruption is a whole new container with a pass of its own, and a
+        // record left by the old one would put a round trip on every attach from
+        // then on -- for a pass that already ran, over a container that is gone.
+        let (_cache, home, verdicts) = anchored();
+        began(&verdicts, "ws");
+        assert!(verdicts.pass_never_finished("ws"));
+
+        rewritten(&result_in(&home, "ws"), Duration::from_secs(30));
+
+        assert!(!verdicts.pass_never_finished("ws"));
+    }
+
+    #[test]
+    fn nothing_unreadable_asks_for_a_pass_either() {
+        // Every doubt reads as "no interrupted pass", which is the direction that
+        // costs nothing: a workspace dl never provisioned has no record at all, and
+        // it must go on attaching in one round trip.
+        let (cache, _home, verdicts) = anchored();
+        assert!(!verdicts.pass_never_finished("ws"), "no record");
+
+        let path = cache.path().join(MARKERS_DIR).join("ws.pass");
+        std::fs::create_dir_all(path.parent().expect("a parent")).expect("the directory");
+        for text in ["", "{", "{}", "null", r#"{"result_mtime": "yesterday"}"#] {
+            std::fs::write(&path, text).expect("the record");
+            assert!(!verdicts.pass_never_finished("ws"), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn a_host_that_cannot_find_the_container_asks_for_nothing() {
+        // No `workspace_result.json` to compare against is a doubt like any other.
+        // It is also what a scratch `XDG_CACHE_HOME` and a machine with no devpod
+        // home both look like, and neither is a launch that owes a round trip.
+        let unfinished = devpod_home_with(&[("default", "ws", None)]);
+        let cache = cache();
+        for home in [Some(DevpodHome::at(unfinished.path())), None] {
+            let verdicts = VerdictCache::under(cache.path(), home.clone());
+            std::fs::create_dir_all(cache.path().join(MARKERS_DIR)).expect("the directory");
+            std::fs::write(
+                cache.path().join(MARKERS_DIR).join("ws.pass"),
+                r#"{"result_mtime":{"secs":1,"nanos":0}}"#,
+            )
+            .expect("the record");
+            assert!(!verdicts.pass_never_finished("ws"), "{home:?}");
+        }
+    }
+
+    #[test]
+    fn one_workspaces_interrupted_pass_says_nothing_about_another() {
+        let home = devpod_home_with(&[("default", "ws", Some(())), ("default", "other", Some(()))]);
+        let cache = cache();
+        let verdicts = VerdictCache::under(cache.path(), Some(DevpodHome::at(home.path())));
+
+        began(&verdicts, "ws");
+
+        assert!(verdicts.pass_never_finished("ws"));
+        assert!(!verdicts.pass_never_finished("other"));
+    }
+
+    #[test]
+    fn a_pass_that_ended_left_nothing_to_finish() {
+        let (_cache, _home, verdicts) = anchored();
+
+        began(&verdicts, "ws");
+        verdicts.end_pass("ws");
+
+        assert!(!verdicts.pass_never_finished("ws"));
     }
 
     #[test]

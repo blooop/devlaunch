@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A launch cut short between `devpod up` and the end of dl's setup pass left a
+  workspace that never got provisioned, and no later launch ever noticed.** The
+  `up` finishes, devpod writes its create result, and what runs next is dl's own
+  `devpod ssh --command`: the hostname, the terminal title, the onboarding memo,
+  `gh` and `claude`. Ctrl-C there and the container is left running with none of
+  it. Nothing about that container says so. `devpod status` answers `Running` and
+  devpod's create record is complete, which is exactly what the fast attach asks,
+  so `dl <workspace>` attaches in one round trip and provisions nothing, and does
+  the same on every launch after that. The workspace is permanently half built and
+  the recovery is knowing to type `dl <workspace> up`, which nothing says either.
+  That is the "sometimes it works" of it: whether you get a whole workspace
+  depends on which second the Ctrl-C landed in.
+
+  A pass now writes down that it is running, before its trip, in
+  `${XDG_CACHE_HOME:-~/.cache}/devlaunch/tool-verdicts/<workspace>.pass`, and
+  removes it when the pass answers. dl's signal handler `_exit`s without unwinding,
+  so a record left standing is the one thing on the host that says a pass was cut
+  short, and a launch that finds one runs the pass before it hands over a shell.
+  The record carries the same `workspace_result.json` mtime the verdict marker
+  does, so one left by a container that has since been rebuilt describes nothing
+  standing and is ignored.
+
+  It is positive evidence, never the absence of it. A workspace brought up by VS
+  Code, by a hand-typed `devpod up`, or by a build older than the record has no
+  record either, and those go on attaching in one round trip as before.
+
 ### Changed
 
 - **`LaunchVerb::Attach` carries a `RemoteCommand` rather than an
