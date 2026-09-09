@@ -2234,6 +2234,31 @@ pub enum Provisioning {
 }
 
 impl Provisioning {
+    /// Whether a trip got through to the container, whatever it then found.
+    ///
+    /// What decides whether the in-flight record [`provision`] opens is closed
+    /// again. Every arm but one is a pass that reached the container and did
+    /// something there, or established that there was nothing to do; only
+    /// [`Self::TripRefused`] is the OS declining to make the trip, which leaves the
+    /// container exactly as it was and this host knowing nothing new about it.
+    ///
+    /// Exhaustive rather than `matches!` on the one arm, for
+    /// [`Self::tools_present`]'s reason: a later arm has to be classified by
+    /// somebody who is looking at it, and an `_` would classify it as *reached*,
+    /// which is the direction that loses a workspace.
+    pub(crate) fn reached_the_container(&self) -> bool {
+        match self {
+            Self::AlreadyProvisioned
+            | Self::CachedProvisioned
+            | Self::Lent
+            | Self::ShimKept
+            | Self::Installed
+            | Self::InstallRefused { .. }
+            | Self::Disabled => true,
+            Self::TripRefused { .. } => false,
+        }
+    }
+
     /// Whether the tools are now there — the bool Python returns. Only this
     /// module's tests read it; the binary matches the arms directly.
     #[cfg_attr(not(test), allow(dead_code))]
@@ -2354,6 +2379,12 @@ fn provision(
         // launch after upgrading, which is the trade `switches` made too.
         && verdicts.has_claude_memo(workspace)
     {
+        // Including a record some killed launch left open, which is the one route
+        // out of here that reaches neither place a pass is normally closed. Closing
+        // it is the right answer and not only the terminating one: the marker being
+        // trusted means a pass probed *this* container provisioned, so whatever the
+        // interrupted pass had left to do, there is nothing left to do now.
+        verdicts.end_pass(workspace);
         // No probe ran here, and the session that follows still has to decide
         // whether to forward the host's login, so the answer comes from what the
         // last pass remembered.
@@ -2365,6 +2396,58 @@ fn provision(
 
     // Before the pass, not after it: see [`VerdictCache::observe`].
     let observed = verdicts.and_then(|verdicts| verdicts.observe(workspace));
+    // And the record that this pass is running, opened here for the same "before"
+    // and a second reason of its own. `dl`'s signal handler `_exit`s without
+    // unwinding, and a container whose pass was cut short is one devpod calls
+    // Running and finished creating -- so every later launch fast-attaches to it
+    // and the pass never runs again. Nothing about the container says otherwise,
+    // which is why the host writes it down first.
+    if let (Some(verdicts), Some(observed)) = (verdicts, observed) {
+        verdicts.begin_pass(workspace, observed);
+    }
+
+    let outcome = run_the_pass(
+        runner, workspace, switches, title, host, verdicts, observed, events,
+    );
+
+    // Closed out here, from what the pass answered, and that placement is the whole
+    // of what makes the record worth keeping. It used to close beside the memo, the
+    // moment the probe trip returned -- which covers ~1.7s of a pass that runs for
+    // minutes, since the lend streams the host's binaries and the install fetches a
+    // ~300MB `claude`. A Ctrl-C in the part that was left uncovered is the ordinary
+    // one, so the record was open for the window nobody interrupts and shut for the
+    // window everybody does.
+    //
+    // A trip that never got through is the one outcome that leaves it standing.
+    // Nothing was learned about the container and nothing was done to it, which is
+    // exactly the state the record describes; closing there would erase the only
+    // evidence a later launch could act on, and it is reachable from the recovery
+    // pass itself.
+    if let (Some(verdicts), Ok(pass)) = (verdicts, &outcome)
+        && pass.provisioning.reached_the_container()
+    {
+        verdicts.end_pass(workspace);
+    }
+    outcome
+}
+
+/// The pass: the probe trip, then the lend, then the install.
+///
+/// Split from [`provision`] only so the in-flight record can be opened before all
+/// three and closed after all three. Folding it back means closing the record at
+/// each of the six places this returns, and the two that must *not* close it are
+/// the two easiest to miss.
+#[allow(clippy::too_many_arguments)]
+fn run_the_pass(
+    runner: &dyn Runner,
+    workspace: &str,
+    switches: Switches,
+    title: Option<&str>,
+    host: Option<&HostLayout>,
+    verdicts: Option<&VerdictCache>,
+    observed: Option<Observed>,
+    events: &mut dyn Notices<ProvisionEvent>,
+) -> Result<Pass, DevpodMissing> {
     let host_home = host.and_then(|layout| layout.home.to_str());
 
     let found = match setup_pass(runner, workspace, switches, title, host_home, events) {
@@ -2655,6 +2738,12 @@ mod zellij_contract;
 /// own header says so.
 #[cfg(test)]
 mod herdr_tab_contract;
+
+/// The file name `docs/workspace-tools.md` publishes for a pass that was killed,
+/// held against the path the verdict cache writes. Beside the other three for
+/// `zellij_contract`'s reason, and reading the same section splitter.
+#[cfg(test)]
+mod interrupted_pass_contract;
 
 #[cfg(test)]
 mod tests {
@@ -3049,13 +3138,29 @@ fi
     /// registry, so a test driving it without the guard writes into whatever document
     /// a concurrent measured test installed. In the fixture rather than per test, so
     /// no test has to remember.
-    #[derive(Debug)]
     struct Trips {
         answers: Vec<Answer>,
         stdout: String,
         seen: Mutex<Vec<Trip>>,
+        /// See [`Trips::watching`]. `None` for the tests that only count trips.
+        #[allow(clippy::type_complexity)]
+        during: Option<Box<dyn Fn() -> bool + Send + Sync>>,
+        saw: Mutex<Vec<bool>>,
         /// See [`timing::exclusive`]. Last field, so it is dropped last.
         _serialized: timing::Exclusive,
+    }
+
+    impl std::fmt::Debug for Trips {
+        /// Hand-written because the watcher is a closure. What a failure message
+        /// wants of this value is what it recorded, which is the rest of it.
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("Trips")
+                .field("answers", &self.answers)
+                .field("stdout", &self.stdout)
+                .field("seen", &self.seen)
+                .field("saw", &self.saw)
+                .finish_non_exhaustive()
+        }
     }
 
     impl Trips {
@@ -3064,6 +3169,8 @@ fi
                 answers: exits.iter().copied().map(Answer::Exited).collect(),
                 stdout: String::new(),
                 seen: Mutex::new(Vec::new()),
+                during: None,
+                saw: Mutex::new(Vec::new()),
                 _serialized: timing::exclusive(),
             }
         }
@@ -3073,6 +3180,8 @@ fi
                 answers: answers.to_vec(),
                 stdout: String::new(),
                 seen: Mutex::new(Vec::new()),
+                during: None,
+                saw: Mutex::new(Vec::new()),
                 _serialized: timing::exclusive(),
             }
         }
@@ -3081,6 +3190,24 @@ fi
         fn reporting(mut self, stdout: &str) -> Self {
             self.stdout = stdout.to_owned();
             self
+        }
+
+        /// Run `during` at the moment each trip is in flight, keeping what it
+        /// answered.
+        ///
+        /// The one thing a fake runner can see that a recording of the argv cannot:
+        /// what was true on the host *while* devpod was running. A `dl` killed
+        /// mid-pass is killed exactly here, and nothing about it is observable after
+        /// the call returns.
+        #[must_use]
+        fn watching(mut self, during: impl Fn() -> bool + Send + Sync + 'static) -> Self {
+            self.during = Some(Box::new(during));
+            self
+        }
+
+        /// What [`Self::watching`] saw, one answer per trip, in order.
+        fn watched(&self) -> Vec<bool> {
+            self.saw.lock().expect("the recording").clone()
         }
 
         fn trips(&self) -> Vec<Trip> {
@@ -3121,7 +3248,12 @@ fi
                     StdinPlan::Inherit | StdinPlan::Null => None,
                 },
             });
-            self.answers[(seen.len() - 1).min(self.answers.len() - 1)]
+            let answer = self.answers[(seen.len() - 1).min(self.answers.len() - 1)];
+            drop(seen);
+            if let Some(during) = &self.during {
+                self.saw.lock().expect("the recording").push(during());
+            }
+            answer
         }
 
         fn outcome(&self, answer: Answer) -> Outcome<CapturedText> {
@@ -6523,6 +6655,140 @@ fi
             Some(verdicts),
             &mut Vec::new(),
         )
+    }
+
+    #[test]
+    fn the_pass_is_open_while_the_trip_is_and_closed_once_it_answers() {
+        // The record a killed `dl` leaves. `dl`'s signal handler `_exit`s without
+        // unwinding, so the only moment at which the host can be told "a pass is
+        // running" is before the trip, and the only proof it was told is what is
+        // standing *during* the trip -- which is the seconds-long window a Ctrl-C
+        // actually lands in.
+        let remembering = Remembering::new();
+        let verdicts = remembering.verdicts();
+        let watching = remembering.verdicts();
+        let runner = Trips::new(&[0])
+            .reporting(REPORT_PROVISIONED)
+            .watching(move || watching.pass_never_finished("myws"));
+
+        pass_of(&runner, PassOccasion::AfterUp, &verdicts).expect("devpod answered");
+
+        assert_eq!(
+            runner.watched(),
+            [true],
+            "the trip ran with no record of the pass carrying it"
+        );
+        assert!(
+            !verdicts.pass_never_finished("myws"),
+            "the pass answered, so there is nothing left to finish"
+        );
+    }
+
+    #[test]
+    fn the_pass_is_open_for_the_install_trip_and_not_only_the_probe() {
+        // The trip the record is *for*. A probe that answers absent is followed by
+        // the install, which fetches `gh` and `claude`: minutes against the probe's
+        // ~1.7s, and so the window nearly every Ctrl-C lands in. Closing the record
+        // when the probe answered left that window exactly as it was before any of
+        // this existed -- the container comes up, the install is killed, and every
+        // launch afterwards fast-attaches into a container with no tools.
+        let remembering = Remembering::new();
+        let verdicts = remembering.verdicts();
+        let watching = remembering.verdicts();
+        let runner = Trips::new(&[0])
+            .reporting(REPORT_ABSENT)
+            .watching(move || watching.pass_never_finished("myws"));
+
+        let outcome = pass_of(&runner, PassOccasion::AfterUp, &verdicts);
+
+        assert_eq!(outcome, Ok(Provisioning::Installed));
+        assert_eq!(
+            runner.watched(),
+            [true, true],
+            "the install ran with no record of the pass carrying it"
+        );
+        assert!(
+            !verdicts.pass_never_finished("myws"),
+            "and the record closes once the whole pass has answered"
+        );
+    }
+
+    #[test]
+    fn a_trip_that_never_got_through_leaves_the_pass_open() {
+        // Replaces a test that asserted the opposite, and the opposite was wrong.
+        // `TripRefused` is the OS declining to make the trip at all, so nothing was
+        // learned about the container and nothing was done to it -- which is the
+        // one state the record exists to describe. Closing it there erases the only
+        // evidence a later launch could act on, and it is reachable from the
+        // recovery pass itself: one refused trip and the workspace can never be
+        // recovered by anything.
+        //
+        // Not the "re-attempts forever" shape `verdict_cache` refuses for
+        // `ShimKept`. That is a trip that *ran* and would go on failing; this is a
+        // trip that did not happen, on a host that is broken in a way the pass
+        // reports every time.
+        let remembering = Remembering::new();
+        let verdicts = remembering.verdicts();
+        let runner = Trips::answering(&[Answer::Blocked]);
+
+        let outcome = pass_of(&runner, PassOccasion::AfterUp, &verdicts);
+
+        assert!(matches!(outcome, Ok(Provisioning::TripRefused { .. })));
+        assert!(verdicts.pass_never_finished("myws"));
+    }
+
+    #[test]
+    fn a_top_up_that_makes_no_trip_opens_no_pass() {
+        // The cached arm returns before the trip, so there is no pass for a Ctrl-C
+        // to interrupt -- and a record opened for it would never be closed.
+        let remembering = Remembering::new();
+        let verdicts = remembering.verdicts();
+        let first = Trips::new(&[0]).reporting(REPORT_PROVISIONED);
+        pass_of(&first, PassOccasion::TopUp, &verdicts).expect("devpod answered");
+
+        let again = Trips::new(&[0]).reporting(REPORT_PROVISIONED);
+        assert_eq!(
+            pass_of(&again, PassOccasion::TopUp, &verdicts),
+            Ok(Provisioning::CachedProvisioned)
+        );
+
+        assert!(!verdicts.pass_never_finished("myws"));
+    }
+
+    #[test]
+    fn a_cached_answer_closes_a_pass_that_was_left_open() {
+        // The arm that returns before the trip has to close the record too, or the
+        // one launch that could act on it would be the one that cannot: a top-up
+        // whose cache fully answers makes no trip, so it would reach neither of the
+        // two places the record is closed, and the launch after it would ask again,
+        // and so would every launch after that.
+        //
+        // Closing it is also the right answer rather than only the terminating one.
+        // The marker being trusted means a pass probed this same container
+        // provisioned, so whatever the interrupted pass had left to do, there is
+        // nothing left to do now.
+        let remembering = Remembering::new();
+        let verdicts = remembering.verdicts();
+        let first = Trips::new(&[0]).reporting(REPORT_PROVISIONED);
+        pass_of(&first, PassOccasion::TopUp, &verdicts).expect("devpod answered");
+        // A pass opened over the same container and never closed, which is the state
+        // a killed `dl` leaves.
+        let observed = verdicts.observe("myws").expect("an anchor");
+        verdicts.begin_pass("myws", observed);
+        assert!(verdicts.pass_never_finished("myws"));
+
+        let again = Trips::new(&[0]).reporting(REPORT_PROVISIONED);
+        assert_eq!(
+            pass_of(&again, PassOccasion::TopUp, &verdicts),
+            Ok(Provisioning::CachedProvisioned)
+        );
+
+        assert_eq!(again.count(), 0, "still no round trip");
+        assert!(
+            !verdicts.pass_never_finished("myws"),
+            "the cached answer left the record open, so every launch after this \
+             one asks again and none of them can ever answer"
+        );
     }
 
     #[test]
