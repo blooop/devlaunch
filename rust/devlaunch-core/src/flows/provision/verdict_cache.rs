@@ -267,9 +267,11 @@ impl VerdictCache {
     /// Note that a setup pass over the container [`Self::observe`] identified is
     /// about to run, and has not finished.
     ///
-    /// Written *before* the trip and removed by [`Self::end_pass`] after it, so the
-    /// file surviving a launch is the one thing on this host that says the pass was
-    /// cut short. `dl`'s signal handler `_exit`s without unwinding
+    /// Written before the pass's *first* trip and removed by [`Self::end_pass`]
+    /// after its last, so the file surviving a launch is the one thing on this host
+    /// that says the pass was cut short. A pass is up to three trips and the probe
+    /// is the short one, so a record that closed when the probe answered would be
+    /// open for ~1.7s of a pass that runs for minutes. `dl`'s signal handler `_exit`s without unwinding
     /// (`devlaunch_runner::interrupt`), which is exactly why the evidence has to be
     /// a file left standing rather than one written on the way out: nothing runs on
     /// the way out.
@@ -292,12 +294,13 @@ impl VerdictCache {
 
     /// The pass [`Self::begin_pass`] opened has finished.
     ///
-    /// Called for a pass that *ran*, however it turned out -- a trip devpod refused
-    /// and an install that failed are both passes that happened, and re-running them
-    /// on every attach afterwards is the "re-attempts forever" behaviour the module
+    /// Called for a pass that got through to the container, however it turned out:
+    /// an install that ran and failed is a pass that happened, and re-running it on
+    /// every attach afterwards is the "re-attempts forever" behaviour the module
     /// note refuses for [`Provisioning::ShimKept`](super::Provisioning::ShimKept).
-    /// What this exists to catch is the pass that never got an answer at all,
-    /// because the process carrying it was killed.
+    /// A trip the OS would not make is the other thing and is not called for here --
+    /// see [`Provisioning::reached_the_container`](super::Provisioning::reached_the_container),
+    /// which is where the two are told apart.
     pub(crate) fn end_pass(&self, workspace_id: &str) {
         let _ = std::fs::remove_file(self.in_flight(workspace_id));
     }
