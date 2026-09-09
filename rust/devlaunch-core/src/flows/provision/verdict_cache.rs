@@ -103,7 +103,7 @@ impl VerdictCache {
     /// file's name: devpod itself uses the id as a directory name under its own
     /// contexts, so an id that could not be a path component is one no workspace
     /// this could be asked about has.
-    fn marker(&self, workspace_id: &str) -> PathBuf {
+    pub(super) fn marker(&self, workspace_id: &str) -> PathBuf {
         self.markers_dir.join(format!("{workspace_id}.json"))
     }
 
@@ -260,7 +260,7 @@ impl VerdictCache {
     }
 
     /// Where the in-flight record for this workspace lives.
-    fn in_flight(&self, workspace_id: &str) -> PathBuf {
+    pub(super) fn in_flight(&self, workspace_id: &str) -> PathBuf {
         self.marker(workspace_id).with_extension("pass")
     }
 

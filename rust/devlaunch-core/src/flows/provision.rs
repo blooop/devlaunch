@@ -2739,6 +2739,12 @@ mod zellij_contract;
 #[cfg(test)]
 mod herdr_tab_contract;
 
+/// The file name `docs/workspace-tools.md` publishes for a pass that was killed,
+/// held against the path the verdict cache writes. Beside the other three for
+/// `zellij_contract`'s reason, and reading the same section splitter.
+#[cfg(test)]
+mod interrupted_pass_contract;
+
 #[cfg(test)]
 mod tests {
     //! # What this pins, and how
