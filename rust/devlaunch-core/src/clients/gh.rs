@@ -880,3 +880,210 @@ mod tests {
         assert!(openssh_forwarding(None).args.is_empty());
     }
 }
+
+// ===========================================================================
+// which branch a pull request is
+// ===========================================================================
+
+/// The fields `gh pr view` is asked for, in the order the argv spells them.
+///
+/// The **head** repository and not the base one, which is the whole reason a
+/// lookup is needed rather than a string rewrite: a request from a fork has its
+/// branch in the fork, and checking that branch out of the base repository would
+/// either miss or, worse, find an unrelated branch of the same name.
+const PR_FIELDS: &str = "headRefName,headRepository,headRepositoryOwner,state";
+
+/// How long the one round trip a pull request reference costs may take.
+///
+/// Longer than [`GH_TIMEOUT`], and for a different reason: that bound covers a
+/// keyring gh may have to unlock, where this one covers the GitHub API over
+/// whatever network the user is on. It is also spent in front of a person who has
+/// just pressed return and is watching, so it cannot be generous either.
+pub(crate) const PR_LOOKUP_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Where a pull request's branch actually lives.
+///
+/// `owner`/`repo` here are the **head** repository, so they are what names the
+/// workspace and what `dl` clones. For a same-repository request they equal the
+/// base repository the reference spelled; for a fork request they do not, and
+/// that difference is the answer this lookup exists to get.
+#[derive(Clone, Debug, PartialEq, Eq)]
+// binary surface — not part of the frozen wf API (#251 §7)
+pub struct PullRequestHead {
+    pub owner: String,
+    pub repo: String,
+    pub branch: String,
+    pub state: PullRequestState,
+}
+
+/// Whether the request is still open.
+///
+/// Carried rather than dropped because it changes what a failure downstream
+/// *means*: GitHub deletes the head branch of most merged requests, so a merged
+/// request usually resolves to a branch that is no longer there, and "no such
+/// branch" is a confusing way to be told "that one landed". The state is reported
+/// alongside the branch and nothing here refuses on it — a merged request whose
+/// branch still exists is a perfectly good thing to open.
+#[derive(Clone, Debug, PartialEq, Eq)]
+// binary surface — not part of the frozen wf API (#251 §7)
+pub enum PullRequestState {
+    Open,
+    Closed,
+    Merged,
+    /// A spelling this version of dl does not know. Carried whole rather than
+    /// folded into one of the three above, because guessing is how a new state
+    /// comes to be reported as the wrong old one.
+    Other(String),
+}
+
+impl PullRequestState {
+    fn read(raw: &str) -> Self {
+        match raw.to_ascii_uppercase().as_str() {
+            "OPEN" => Self::Open,
+            "CLOSED" => Self::Closed,
+            "MERGED" => Self::Merged,
+            _ => Self::Other(raw.to_owned()),
+        }
+    }
+}
+
+/// Why a pull request reference could not be turned into a branch.
+///
+/// Arms and not sentences (#251 §5). [`PullRequestUnavailable::Refused`] carries
+/// gh's own stderr for the same reason [`crate::clients::git::GitRefused`] carries
+/// git's: the useful half of "no such pull request", "not logged in" and "repo not
+/// found" is a sentence only gh can write, nothing branches on it, and re-deriving
+/// it here would be a second opinion that goes stale.
+#[derive(Clone, Debug, PartialEq, Eq)]
+// binary surface — not part of the frozen wf API (#251 §7)
+pub enum PullRequestUnavailable {
+    /// No `gh` on PATH. Its own arm because the remedy is a different one
+    /// entirely: install it, or name the branch instead of the link.
+    GhMissing,
+    /// gh ran and refused. `reason` is gh's stderr, trimmed, or a naming of the
+    /// command when gh was silent.
+    Refused { exit: Exit, reason: String },
+    /// [`PR_LOOKUP_TIMEOUT`] elapsed.
+    TimedOut,
+    /// gh never started.
+    Blocked(OsFailure),
+    /// gh exited 0 and what it printed is not the document this asked for. The
+    /// output is deliberately not carried: it may be megabytes of an HTML error
+    /// page, and a diagnostic is no place to put one.
+    Unreadable,
+    /// gh answered, and the answer is that the head repository is gone — the fork
+    /// a request came from can be deleted while the request stays readable. There
+    /// is no branch to check out, so this is a refusal and not a notice.
+    HeadRepositoryGone,
+}
+
+/// The `gh pr view` document, as far as this cares.
+///
+/// `Option` on each of the two objects because GitHub really does return null for
+/// them once the head repository is deleted, which is [`PullRequestUnavailable::HeadRepositoryGone`]
+/// below rather than a parse failure.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PrView {
+    head_ref_name: String,
+    head_repository: Option<NamedRepo>,
+    head_repository_owner: Option<NamedOwner>,
+    state: String,
+}
+
+#[derive(serde::Deserialize)]
+struct NamedRepo {
+    name: String,
+}
+
+#[derive(serde::Deserialize)]
+struct NamedOwner {
+    login: String,
+}
+
+/// Ask gh which branch a pull request's head is.
+///
+/// One round trip, and the only network call `dl` makes on its own account. It is
+/// charged to `host-prep` for the reason [`token_from_gh_cli`] gives: the answer
+/// is the host's to produce, and the trip belongs to that owner even though it
+/// happens in the middle of resolving a spec.
+///
+/// The number goes in argv, where the token never may, and that is safe for the
+/// reason the token is not: a pull request number is public and is already in the
+/// user's shell history.
+// binary surface — not part of the frozen wf API (#251 §7)
+pub fn pull_request_head(
+    runner: &dyn Runner,
+    owner: &str,
+    repo: &str,
+    number: u32,
+) -> Result<PullRequestHead, PullRequestUnavailable> {
+    let addressed = format!("{owner}/{repo}");
+    let spec = SpawnSpec::new(Invocation::new(PROGRAM).with_args([
+        "pr",
+        "view",
+        &number.to_string(),
+        "--repo",
+        &addressed,
+        "--json",
+        PR_FIELDS,
+    ]))
+    // gh must not eat stdin that belongs to the command `dl` was asked to run,
+    // and a lookup must never stop to prompt: an unauthenticated gh has to refuse
+    // in a way a person can read rather than sit there asking.
+    .with_stdin_null()
+    .with_timeout(PR_LOOKUP_TIMEOUT);
+    let started = Instant::now();
+    let answered = runner.capture(&spec);
+    let took = started.elapsed();
+    if !matches!(answered, Outcome::ProgramNotFound) {
+        let _stage = timing::stage(timing::Stage::HostPrep);
+        timing::record("gh pr view", took);
+    }
+    match answered {
+        Outcome::Ran { exit, io } if exit.is_success() => read_pr_view(&io.stdout),
+        Outcome::Ran { exit, io } => Err(PullRequestUnavailable::Refused {
+            exit,
+            reason: refusal_reason(&io.stderr, exit),
+        }),
+        Outcome::ProgramNotFound => Err(PullRequestUnavailable::GhMissing),
+        Outcome::TimedOut => Err(PullRequestUnavailable::TimedOut),
+        Outcome::NotStarted(failure) => Err(PullRequestUnavailable::Blocked(failure)),
+    }
+}
+
+/// gh's stderr, or a naming of the command when gh said nothing.
+///
+/// `git_failure_reason`'s rule, for `git_failure_reason`'s argument: "gh pr view
+/// exited 1" with nothing after it tells the reader only that something went
+/// wrong, which they already knew.
+fn refusal_reason(stderr: &str, exit: Exit) -> String {
+    let said = stderr.trim();
+    if said.is_empty() {
+        match exit {
+            Exit::Code(code) => format!("gh pr view exited {code}"),
+            Exit::Signal(signal) => format!("gh pr view was killed by signal {signal}"),
+        }
+    } else {
+        said.to_owned()
+    }
+}
+
+fn read_pr_view(stdout: &str) -> Result<PullRequestHead, PullRequestUnavailable> {
+    let view: PrView =
+        serde_json::from_str(stdout).map_err(|_| PullRequestUnavailable::Unreadable)?;
+    let (Some(repo), Some(owner)) = (view.head_repository, view.head_repository_owner) else {
+        return Err(PullRequestUnavailable::HeadRepositoryGone);
+    };
+    // An empty branch name is not an answer -- it would expand to
+    // `git@github.com:o/r.git@`, which `spec` reads as a repo with no ref at all.
+    if view.head_ref_name.is_empty() || owner.login.is_empty() || repo.name.is_empty() {
+        return Err(PullRequestUnavailable::Unreadable);
+    }
+    Ok(PullRequestHead {
+        owner: owner.login,
+        repo: repo.name,
+        branch: view.head_ref_name,
+        state: PullRequestState::read(&view.state),
+    })
+}

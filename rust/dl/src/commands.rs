@@ -27,6 +27,7 @@ use devlaunch_core::flows::lifecycle::{
     PruneOutcome, Refresh, RefreshReason, Removal, RemoveOutcome, StopOutcome,
 };
 use devlaunch_core::flows::listing::{self, CommandContext, DlView, Sizes};
+use devlaunch_core::flows::pull_request;
 use devlaunch_core::flows::records::{Records, StartupError, open_records, open_storage};
 use devlaunch_core::flows::repo_manager::CacheNotice;
 use devlaunch_core::flows::session_manager::{self, PaneDestination};
@@ -190,6 +191,17 @@ pub(crate) fn dispatch(
             devcontainer,
             claude_profile,
         } => {
+            // The one place a typed target exists before anything has read it,
+            // which is why the pull request rewrite happens here and nowhere
+            // else. `dl <spec> --rm` resolves its target twice, on the way in and
+            // again on the way out, and a second lookup could answer differently
+            // -- a request can be force-pushed or retargeted between them -- so
+            // the two would then disagree about which workspace they were
+            // removing. See `flows::pull_request`.
+            let target = match resolve_pull_request(runner, target) {
+                Ok(target) => target,
+                Err(ending) => return ending,
+            };
             let after = verb.after_removal();
             let ending = render_workspace(
                 runner,
@@ -209,6 +221,27 @@ pub(crate) fn dispatch(
     }
 }
 
+/// The spec a target word stands for, once a pull request reference in it has been
+/// looked up.
+///
+/// Returns the word unchanged for every ordinary target, which is every target but
+/// the three spellings [`devlaunch_core::domain::pull_request`] recognises: the
+/// classification is pure, so nothing is asked of the network on the way past.
+pub(crate) fn resolve_pull_request(runner: &dyn Runner, target: String) -> Result<String, Ending> {
+    match pull_request::resolve(runner, &target) {
+        pull_request::Resolved::AsTyped => Ok(target),
+        pull_request::Resolved::Rewritten { spec, named, head } => {
+            for line in render::pull_request_resolved(&named, &head, &spec) {
+                eprintln!("{line}");
+            }
+            Ok(spec)
+        }
+        pull_request::Resolved::Refused(refusal) => {
+            eprintln!("error: {}", render::pull_request_refusal(&refusal));
+            Err(Ending::Refused)
+        }
+    }
+}
 /// The commands a machine with no cache directory can still run.
 ///
 /// One of them, and it is the one that needs nothing: `dl --version` answers from

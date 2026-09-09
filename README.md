@@ -19,7 +19,7 @@ one argument instead of a clone, a config file and a build command.
 [![GitHub pull-requests merged](https://badgen.net/github/merged-prs/blooop/devlaunch)](https://github.com/blooop/devlaunch/pulls?q=is%3Amerged)
 [![GitHub release](https://img.shields.io/github/release/blooop/devlaunch.svg)](https://GitHub.com/blooop/devlaunch/releases/)
 [![PyPI](https://img.shields.io/pypi/v/devlaunch)](https://pypi.org/project/devlaunch/)
-[![Conda](https://img.shields.io/badge/conda-v0.39.0-brightgreen?logo=anaconda)](https://prefix.dev/channels/blooop/packages/devlaunch)
+[![Conda](https://img.shields.io/badge/conda-v0.40.0-brightgreen?logo=anaconda)](https://prefix.dev/channels/blooop/packages/devlaunch)
 [![License](https://img.shields.io/github/license/blooop/devlaunch)](https://opensource.org/license/mit/)
 [![Platform](https://img.shields.io/badge/platform-linux--64-blue)](https://github.com/blooop/devlaunch/releases)
 [![Pixi Badge](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/prefix-dev/pixi/main/assets/badge/v0.json)](https://pixi.sh)
@@ -140,6 +140,7 @@ workspaces. `dl --refresh` rebuilds it now.
 dl                               # pick a workspace interactively
 dl <user/repo>                   # open it, on its default branch
 dl <user/repo>@<branch>          # open it, on that branch
+dl <user/repo>@<pr-link>         # open the branch a GitHub pull request is on
 dl ./my-project                  # open a local folder
 dl <user/repo> <verb>            # apply a verb (stop, code, rm, ...)
 dl <verb> <user/repo>            # the same, verb first
@@ -150,6 +151,14 @@ dl <user/repo> -- <command>      # run one command inside the workspace
 `owner/repo` expands to `github.com/owner/repo`. A name that is not `owner/repo`, a URL or a path
 is looked up among the workspaces you have. Owner and repo match case-insensitively, the way
 GitHub treats them. Branch names are case-sensitive, because git refs are.
+
+**A pull request link goes where a branch name goes.** `dl blooop/devlaunch@https://github.com/blooop/devlaunch/pull/579`
+opens the branch that request is on. The link on its own works too, and so does the short
+`owner/repo@#579`. `dl` asks `gh` which branch it is, says which one it found, and from there the
+workspace is the ordinary one for that branch: launch it by its link today and by its branch name
+tomorrow and you get the same workspace back. A request from a fork opens the fork, because that is
+where the branch is. This is the one thing `dl` needs the GitHub CLI for, so a host without `gh`
+gets a refusal that says to name the branch instead.
 
 `dl <ws> -- <command>` gets a terminal whenever `dl` has one, so `htop`, `git rebase -i`, a REPL
 or a coding agent all work. Redirect the output and the terminal goes away, so
@@ -276,7 +285,7 @@ clone, and [docs/cleanup.md](docs/cleanup.md) says what it carries one past and 
 
 ```bash
 $ dl --version
-dl 0.39.0
+dl 0.40.0
 ```
 
 `--devcontainer <variant|path>` picks a non-default `devcontainer.json`. A bare name means
@@ -312,7 +321,7 @@ precedence order and what a profile does not change.
 ## aid: an agent instead of a shell
 
 ```bash
-aid <user/repo>[@branch] [prompt...]
+aid <user/repo>[@branch|@<pr-link>] [prompt...]
 ```
 
 `aid` is a shortcut, not a second launcher. It rewrites its command line into a `dl` one, so
@@ -329,6 +338,15 @@ dl blooop/devlaunch@fix/42 -- IS_SANDBOX=1 claude --dangerously-skip-permissions
 
 Same clone, same workspace, same container. Everything after the workspace is the prompt, flags
 included, so it never needs quoting.
+
+A pull request link works here too, in the same three spellings, and `aid` resolves it before it
+does anything else. So the prompt banner, the terminal tab, the background boot and the agent's
+Remote Control session name all say the branch rather than the link, and the request is looked up
+once for the whole run:
+
+```bash
+aid https://github.com/blooop/devlaunch/pull/579 address the review comments
+```
 
 With no prompt on the line, `aid` starts the container booting and asks for the prompt while it
 does. Type it free of shell quoting, with no escaping and no history expansion eating a `!`. An

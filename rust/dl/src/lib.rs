@@ -336,6 +336,29 @@ pub fn name_before_launch(spec: &str) {
     saying.say(LaunchNotice::HerdrTab(herdr_tab));
 }
 
+/// The spec a workspace word stands for, once a GitHub pull request reference in
+/// it has been looked up, or the exit code to end on.
+///
+/// `Ok(word)` for everything that is not a pull request reference, which is
+/// everything but the three spellings
+/// [`domain::pull_request`](devlaunch_core::domain::pull_request) recognises: the
+/// classification is pure, so an ordinary word costs no round trip on the way
+/// past. A reference that resolved is reported on stderr and comes back as
+/// `owner/repo@branch`; one that could not is reported the same way and comes back
+/// as the code to exit with.
+///
+/// **Public for `aid`, and for that one reason.** `dl` does this itself, inside
+/// `dispatch`, at the one point a typed target exists before anything reads it.
+/// aid cannot use that: it holds the spec in three places dl never sees — the
+/// banner, the early tab name, and the background boot's own argv — and the boot
+/// and the launch after it are two separate `dl::run` calls, so leaving the
+/// reference in place would look it up twice and could resolve the two to
+/// different branches. aid calls this once, in front of all three, and dl's own
+/// rewrite then sees an ordinary spec and does nothing.
+pub fn pull_request_spec(word: &str) -> Result<String, i32> {
+    commands::resolve_pull_request(&ProcessRunner, word.to_owned()).map_err(commands::Ending::code)
+}
+
 /// What `spec` states it is called, without resolving anything.
 ///
 /// Split out from [`name_before_launch`] because it is the whole of the decision
@@ -346,6 +369,24 @@ fn early_name(spec: &str) -> Option<String> {
     use devlaunch_core::domain::spec::{SpecIdentity, identity};
     use devlaunch_core::domain::workspace_id::WorkspaceId;
     use devlaunch_core::flows::launch::{Plan, plan};
+
+    // A pull request reference names nothing here. Only the lookup in
+    // `flows::pull_request` knows which branch it is, so the honest early answer
+    // is silence, where `Plan::Existing` below would otherwise label the tab
+    // `owner/repo@#579`.
+    //
+    // aid, the only caller in this tree, resolves the reference before it names
+    // anything (`dl::pull_request_spec`), so it never reaches this guard. It
+    // stays because this function is public and cannot assume its caller did:
+    // the whole point of naming early is to name before a launch, and a caller
+    // that has not looked the reference up yet is exactly the caller that would
+    // be here.
+    if !matches!(
+        devlaunch_core::domain::pull_request::classify(spec),
+        devlaunch_core::domain::pull_request::Classified::NotOne
+    ) {
+        return None;
+    }
 
     // Through `plan`, which is the parse boundary rather than a second reading of
     // one: it refuses an owner or repo that is not a safe git name, which is what
@@ -838,6 +879,21 @@ mod early_name_tests {
             "blooop/.",
             "blooop/-weird",
             "blooop/rocker@../../etc",
+        ] {
+            assert_eq!(early_name(spec), None, "{spec}");
+        }
+    }
+
+    #[test]
+    fn a_pull_request_reference_is_not_named_before_it_is_looked_up() {
+        // Only `flows::pull_request` knows which branch these are, and it runs
+        // inside the launch. `blooop/devlaunch@#579` would otherwise reach
+        // `Plan::Existing` and label the tab with the reference itself.
+        for spec in [
+            "blooop/devlaunch@#579",
+            "blooop/devlaunch@https://github.com/blooop/devlaunch/pull/579",
+            "https://github.com/blooop/devlaunch/pull/579",
+            "github.com/blooop/devlaunch/pull/579",
         ] {
             assert_eq!(early_name(spec), None, "{spec}");
         }

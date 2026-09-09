@@ -7,6 +7,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.40.0] - 2026-09-09
+
+### Added
+
+- **A GitHub pull request link goes where a branch name goes.**
+  `dl blooop/devlaunch@https://github.com/blooop/devlaunch/pull/579` opens the
+  branch that request is on. The link on its own is accepted too, and so is the
+  short `owner/repo@#579`. A review request arrives as a link rather than as a
+  branch name, and turning one into the other meant opening the page and copying
+  a string out of it.
+
+  It resolves to a spec and then stops being a pull request. `dl` asks `gh` which
+  branch the head is, rewrites the target into `owner/repo@branch`, prints the
+  line saying so, and hands that on; everything downstream is the ordinary branch
+  launch, with the same derived id, clone directory, metadata record and `dl --ls`
+  row. Launch a branch by its link today and by its name tomorrow and it is one
+  workspace, because there is one spec left by the time anything looks. The
+  rewrite happens once, in `dispatch`, before any use of the target word, which is
+  what stops `dl <pr-link> --rm` resolving differently on the way in and on the
+  way out.
+
+  A request from a fork opens the fork, because that is where the branch is:
+  checking that branch out of the base repository would find nothing, or find an
+  unrelated branch of the same name. The line `dl` prints names the repository it
+  picked.
+
+  Three things are refused before anything launches, each for the same reason,
+  that the alternative is a wrong workspace rather than an error. A spec naming
+  two different repositories (`a/b@https://github.com/c/d/pull/5`) is refused
+  rather than resolved either way. A reference with no usable number
+  (`.../pull/abc`) is refused as a malformed reference rather than passed on as a
+  URL for devpod to fail to clone, which is what made the old failure obscure. And
+  a spec `dl` cannot open is refused before anything is cloned. That is two checks
+  rather than one character class: the rewritten spec has to read back as the
+  triple it was built from, since one that re-reads as a different spec opens the
+  wrong workspace instead of failing, and `dl` has to be willing to name a
+  workspace after it, which is the stricter of the two. `%` is legal in a git ref
+  and legal in `spec`'s branch pattern, so `fix%20thing` passes the round trip and
+  is still turned down by `WorkspaceId::new`.
+
+  Two spellings deliberately do not work. A bare `owner/repo@579` stays a branch
+  name, because `579` is a legal branch name and someone has one. A GitHub
+  Enterprise URL is not recognised, because guessing that an unfamiliar host
+  speaks GitHub's API is worse than not matching.
+
+  `gh` is required for this and for nothing else in `dl`. A host without it gets a
+  refusal that says to name the branch instead, which is the remedy that needs
+  nothing installed. A merged or closed request still resolves, and `dl` says so
+  before the checkout, because GitHub deletes the head branch of most merged
+  requests and "couldn't find branch" is a confusing way to be told that something
+  landed.
+
+  `domain::pull_request` is the pure classification, `clients::gh::pull_request_head`
+  the one round trip, and `flows::pull_request` the join, whose whole output is
+  another spec.
+
+  `aid` accepts the same three spellings and resolves the reference itself, once,
+  before anything else. It has to: it holds the spec in three places `dl` never
+  sees, and one of them is a second `dl` run. The banner names the spec, the early
+  terminal tab is named after it, and the interactive flow's background boot is
+  `dl <spec> up` in a process of its own. Leaving the reference in place looked it
+  up twice, and two lookups can answer differently, so a boot could warm one
+  workspace while the launch attached to another. `dl::pull_request_spec` is the
+  entry point aid reaches that through, and dl's own rewrite then sees an ordinary
+  spec and does nothing. It also means the agent's Remote Control session is named
+  after the branch rather than after the link somebody pasted.
+
 ## [0.39.0] - 2026-09-09
 
 ### Fixed
