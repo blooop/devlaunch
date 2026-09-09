@@ -3560,14 +3560,14 @@ pub(crate) fn pull_request_refusal(refusal: &PullRequestRefusal) -> String {
             named.number,
             pull_request_unavailable(why)
         ),
-        // git allows names dl's own `owner/repo@branch` grammar cannot carry, and
-        // the check is the round trip itself: refused rather than rewritten,
-        // because a spec that re-reads as something else opens the wrong
-        // workspace instead of failing.
-        PullRequestRefusal::Unspellable { named, spelled } => format!(
-            "pull request {}/{}#{} is the spec '{spelled}', which dl does not read back as that \
-             branch of that repository. Check the branch out by hand in a workspace opened from \
-             {}/{}.",
+        // Refused rather than handed on, because a spec dl would read back as
+        // something else opens the wrong workspace instead of failing, and one dl
+        // will not name a workspace after fails deep inside the launch with a
+        // generic name-rule error. Both arrive here as one sentence, because the
+        // reader's next move is the same either way.
+        PullRequestRefusal::Unusable { named, spelled } => format!(
+            "pull request {}/{}#{} resolved to '{spelled}', which dl cannot open as a workspace. \
+             Check that branch out by hand in a workspace opened from {}/{}.",
             named.owner, named.repo, named.number, named.owner, named.repo
         ),
     }

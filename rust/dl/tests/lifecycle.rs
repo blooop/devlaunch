@@ -348,6 +348,22 @@ impl World {
         self.read("docker-log").lines().map(str::to_owned).collect()
     }
 
+    /// Put a `gh` on the world's PATH that answers one `gh pr view` and nothing
+    /// else.
+    ///
+    /// A script rather than a recorded fixture because what is being pinned is the
+    /// *rewrite*, not the call: the answer is fixed, and what the test reads is
+    /// which workspace devpod was then addressed by. A world that installs none of
+    /// these has no `gh` at all -- `PATH` is the scratch `bin` plus `/usr/bin` and
+    /// `/bin`, and gh lives in neither -- which is its own case below.
+    fn gh_answers(&self, json: &str) {
+        let script = format!("#!/bin/sh\ncat <<'JSON'\n{json}\nJSON\n");
+        let path = self.root.join("bin/gh");
+        std::fs::write(&path, script).expect("the scratch bin is writable");
+        std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .expect("the fake gh is executable");
+    }
+
     /// The devpod calls made so far, in order, as `devpod <argv>` lines.
     fn devpod_calls(&self) -> Vec<String> {
         self.read("shim-log.jsonl")
@@ -653,6 +669,102 @@ fn a_stop_reaches_the_workspace_the_record_names() {
         ],
         "the derived id is asked first and the record is read only after it is denied"
     );
+}
+
+#[test]
+fn a_pull_request_link_addresses_the_workspace_its_branch_names() {
+    // The whole claim of the feature, at the boundary: a link and the branch it is
+    // on are one workspace. `gh` answers `main`, and everything after the extra
+    // line is byte for byte what `blooop/devlaunch@main stop` produces above --
+    // the same derived id, the same record, the same three devpod calls.
+    let world = World::base();
+    world.gh_answers(
+        r#"{"headRefName":"main","headRepository":{"name":"devlaunch"},"headRepositoryOwner":{"login":"blooop"},"state":"OPEN"}"#,
+    );
+    let run = world.dl(&["blooop/devlaunch@#579", "stop"]);
+    run.exited(0);
+    assert_eq!(run.out, "");
+    assert_eq!(
+        run.err,
+        "Pull request blooop/devlaunch#579 is blooop/devlaunch@main\nAddressing devpod workspace \
+         'devlaunch-main-legacy' from the record for blooop/devlaunch@main; this build derives \
+         'devlaunch-main-3j1t'\n"
+    );
+    assert_eq!(
+        world.devpod_calls(),
+        [
+            "devpod status devlaunch-main-3j1t --output json",
+            "devpod status devlaunch-main-legacy --output json",
+            "devpod stop devlaunch-main-legacy",
+        ],
+        "the rewrite happens in front of the resolution, so the link resolves exactly as the \
+         branch does"
+    );
+}
+
+#[test]
+fn every_spelling_of_one_pull_request_reaches_the_same_workspace() {
+    // The three spellings are one spec by the time anything looks, so none of them
+    // can address a workspace either of the others would not.
+    for spelling in [
+        "blooop/devlaunch@#579",
+        "blooop/devlaunch@https://github.com/blooop/devlaunch/pull/579",
+        "https://github.com/blooop/devlaunch/pull/579",
+        "github.com/blooop/devlaunch/pull/579/files",
+    ] {
+        let world = World::base();
+        world.gh_answers(
+            r#"{"headRefName":"main","headRepository":{"name":"devlaunch"},"headRepositoryOwner":{"login":"blooop"},"state":"OPEN"}"#,
+        );
+        let run = world.dl(&[spelling, "stop"]);
+        run.exited(0);
+        assert_eq!(
+            world.devpod_calls().last().map(String::as_str),
+            Some("devpod stop devlaunch-main-legacy"),
+            "{spelling}"
+        );
+    }
+}
+
+#[test]
+fn a_pull_request_link_on_a_host_with_no_gh_says_to_name_the_branch_instead() {
+    // The remedy that needs nothing installed, which is why it is the one the
+    // refusal names. Nothing is asked of devpod: there is no spec yet to address
+    // it with.
+    let world = World::base();
+    let run = world.dl(&["blooop/devlaunch@#579", "stop"]);
+    run.exited(1);
+    assert_eq!(run.out, "");
+    assert_eq!(
+        run.err,
+        "error: could not look up pull request blooop/devlaunch#579: gh is not on PATH, and only \
+         gh can say which branch a pull request is. Install the GitHub CLI, or name the branch \
+         instead of the link.\n"
+    );
+    assert_eq!(world.devpod_calls(), Vec::<String>::new());
+}
+
+#[test]
+fn a_head_branch_dl_cannot_name_a_workspace_after_is_refused_before_the_launch() {
+    // `%` is legal in a git ref and legal in `spec`'s branch pattern, and
+    // `workspace_id::validate_ref_name` refuses it -- so the round trip alone let
+    // this through to fail deep inside the launch with a generic name-rule error.
+    // The guard asks for what the launch will accept, so the refusal is the
+    // tailored one and it arrives before anything is cloned.
+    let world = World::base();
+    world.gh_answers(
+        r#"{"headRefName":"fix%20thing","headRepository":{"name":"devlaunch"},"headRepositoryOwner":{"login":"blooop"},"state":"OPEN"}"#,
+    );
+    let run = world.dl(&["blooop/devlaunch@#579", "stop"]);
+    run.exited(1);
+    assert_eq!(run.out, "");
+    assert_eq!(
+        run.err,
+        "error: pull request blooop/devlaunch#579 resolved to \
+         'blooop/devlaunch@fix%20thing', which dl cannot open as a workspace. Check that branch \
+         out by hand in a workspace opened from blooop/devlaunch.\n"
+    );
+    assert_eq!(world.devpod_calls(), Vec::<String>::new());
 }
 
 #[test]

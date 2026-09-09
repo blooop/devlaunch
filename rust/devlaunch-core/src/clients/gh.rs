@@ -945,11 +945,6 @@ impl PullRequestState {
             _ => Self::Other(raw.to_owned()),
         }
     }
-
-    /// Whether the head branch is likely to still be there.
-    pub fn is_open(&self) -> bool {
-        matches!(self, Self::Open)
-    }
 }
 
 /// Why a pull request reference could not be turned into a branch.

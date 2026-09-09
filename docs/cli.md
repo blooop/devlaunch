@@ -150,11 +150,16 @@ either way, because both readings are defensible and a wrong guess opens a
 repository you did not ask for. A reference with no usable number, `.../pull/abc`,
 is refused as a malformed reference rather than passed on as a URL, which is what
 kept the old failure obscure: devpod would report, truthfully, that it could not
-clone `.../pull/579`. And a rewrite `dl` does not read back as the triple it was
-built from is refused rather than handed on. That check is the round trip itself,
-not a character class: git allows names the `owner/repo@branch` grammar cannot
-carry, a branch with an `@` or a `:` in it most obviously, and a spec that re-reads
-as some other spec opens the wrong workspace instead of failing.
+clone `.../pull/579`. And a spec `dl` cannot open is refused before anything is
+cloned, which is two checks rather than one character class. The rewritten spec has
+to read *back* as the triple it was built from, since git allows names the
+`owner/repo@branch` grammar cannot carry, a branch with an `@` or a `:` in it most
+obviously, and a spec that re-reads as some other spec opens the wrong workspace
+instead of failing. And `dl` has to be willing to name a workspace after it, which
+is the stricter of the two: `%` is legal in a git ref and legal in the branch
+pattern, so `fix%20thing` reads back correctly and is still turned down, and
+checking only the round trip let it through to fail deep inside the launch with a
+generic name-rule error.
 
 Two spellings deliberately do **not** work. A bare `owner/repo@579` stays a branch
 name, because `579` is a legal branch name and somebody has one. And a GitHub

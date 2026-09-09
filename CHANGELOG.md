@@ -37,8 +37,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rather than resolved either way. A reference with no usable number
   (`.../pull/abc`) is refused as a malformed reference rather than passed on as a
   URL for devpod to fail to clone, which is what made the old failure obscure. And
-  a head branch `dl` cannot spell in a spec, one with an `@` in it, is refused
-  rather than rewritten into something that re-reads as a different spec.
+  a spec `dl` cannot open is refused before anything is cloned. That is two checks
+  rather than one character class: the rewritten spec has to read back as the
+  triple it was built from, since one that re-reads as a different spec opens the
+  wrong workspace instead of failing, and `dl` has to be willing to name a
+  workspace after it, which is the stricter of the two. `%` is legal in a git ref
+  and legal in `spec`'s branch pattern, so `fix%20thing` passes the round trip and
+  is still turned down by `WorkspaceId::new`.
 
   Two spellings deliberately do not work. A bare `owner/repo@579` stays a branch
   name, because `579` is a legal branch name and someone has one. A GitHub

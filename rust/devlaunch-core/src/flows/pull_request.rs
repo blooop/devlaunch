@@ -38,6 +38,7 @@
 use crate::clients::gh::{self, PullRequestHead, PullRequestUnavailable};
 use crate::domain::pull_request::{self, Classified, Malformed, PullRequestRef};
 use crate::domain::spec::{self, WorkspaceSpec};
+use crate::domain::workspace_id::WorkspaceId;
 use crate::runner::Runner;
 
 /// What a raw spec turned out to mean.
@@ -75,18 +76,20 @@ pub enum Refusal {
         named: PullRequestRef,
         why: PullRequestUnavailable,
     },
-    /// GitHub answered, and the spec that answer spells is not one dl reads back
-    /// as the triple it was built from.
+    /// GitHub answered, and the spec that answer spells is not one dl can open.
     ///
-    /// git allows names dl's own `owner/repo@branch` grammar cannot carry —
-    /// anything with an `@` or a `:` in it, most obviously — and the offender is
-    /// usually the branch but need not be. A rewrite that produced one would be
-    /// re-read as some *other* spec, which is a wrong workspace rather than an
-    /// error, so it is refused here instead. Carries the whole spec rather than
-    /// the branch alone, so a diagnostic never has to guess which part of it was
-    /// unspellable. Rare enough that no known request has one, and cheap enough
-    /// to rule out.
-    Unspellable {
+    /// Two ways to land here, and the diagnostic does not have to tell them apart.
+    /// The spec may not read *back* as the triple it was built from — git allows
+    /// names dl's own `owner/repo@branch` grammar cannot carry, anything with an
+    /// `@` or a `:` in it most obviously — in which case handing it on would open
+    /// some other workspace rather than fail. Or dl may refuse to name a workspace
+    /// after it at all: `%` is legal in a git ref and legal in `spec`'s branch
+    /// pattern, and `WorkspaceId::new` turns it down.
+    ///
+    /// Carries the whole spec rather than the branch alone, so a diagnostic never
+    /// has to guess which part of it was the problem. Rare enough that no known
+    /// request has one, and cheap enough to rule out before anything is cloned.
+    Unusable {
         named: PullRequestRef,
         spelled: String,
     },
@@ -106,21 +109,30 @@ pub fn resolve(runner: &dyn Runner, raw: &str) -> Resolved {
         Ok(head) => head,
         Err(why) => return Resolved::Refused(Refusal::NotLookedUp { named, why }),
     };
-    // The invariant the whole rewrite rests on, checked directly rather than
-    // approximated by character classes: the string handed on must read back as
-    // the very triple it was built from. git allows names dl's own
-    // `owner/repo@branch` grammar cannot carry -- a branch with an `@` or a `:`
-    // in it, most obviously -- and a spec that re-reads as some *other* spec is a
-    // wrong workspace rather than an error. Asking `spec::parse` is what makes
-    // this a guard over the grammar rather than a second copy of it.
+    // Two things have to be true of the spec this hands on, and neither implies
+    // the other:
+    //
+    // - **It reads back as the triple it was built from.** git allows names dl's
+    //   own `owner/repo@branch` grammar cannot carry -- a branch with an `@` or a
+    //   `:` in it, most obviously -- and a spec that re-reads as some *other* spec
+    //   is a wrong workspace rather than an error. Asking `spec::parse` is what
+    //   makes this a guard over the grammar rather than a second copy of it.
+    // - **dl will name a workspace after it.** `WorkspaceId::new` is the launch's
+    //   own parse boundary and the stricter of the two: `%` is legal in a git ref
+    //   and legal in `spec`'s branch pattern, and `validate_ref_name` refuses it.
+    //   The round trip alone let `fix%20thing` through to fail deep inside the
+    //   launch with a generic name-rule error, where this arm's refusal names the
+    //   spec and says what to do instead.
     let spelled = format!("{}/{}@{}", head.owner, head.repo, head.branch);
     let intended = WorkspaceSpec::OwnerRepo {
         owner: &head.owner,
         repo: &head.repo,
         branch: Some(&head.branch),
     };
-    if spec::parse(&spelled) != intended {
-        return Resolved::Refused(Refusal::Unspellable { named, spelled });
+    if spec::parse(&spelled) != intended
+        || WorkspaceId::new(&head.owner, &head.repo, &head.branch).is_err()
+    {
+        return Resolved::Refused(Refusal::Unusable { named, spelled });
     }
     Resolved::Rewritten {
         spec: spelled,
@@ -253,18 +265,21 @@ mod tests {
     }
 
     #[test]
-    fn a_spec_dl_would_read_back_as_something_else_is_refused_rather_than_rewritten() {
-        // Two branch names, one for each way the round trip can fail. `we@ird`
-        // re-reads as an existing workspace name, and `wei:rd` as an scp-style git
-        // remote. Either way the rewrite would have opened something other than
-        // the branch the request is on.
-        for branch in ["we@ird", "wei:rd"] {
+    fn a_spec_dl_cannot_open_is_refused_rather_than_rewritten() {
+        // Three branch names, one for each way the guard can fire. `we@ird`
+        // re-reads as an existing workspace name and `wei:rd` as an scp-style git
+        // remote, so the rewrite would have opened something other than the branch
+        // the request is on. `fix%20thing` re-reads correctly and is refused by
+        // `WorkspaceId::new` instead: `%` is legal in a git ref and legal in
+        // `spec`'s branch pattern, so the round trip alone let it through to fail
+        // deep inside the launch with a generic name-rule error.
+        for branch in ["we@ird", "wei:rd", "fix%20thing"] {
             let fake = answering(&format!(
                 r#"{{"headRefName":"{branch}","headRepository":{{"name":"devlaunch"}},
                     "headRepositoryOwner":{{"login":"blooop"}},"state":"OPEN"}}"#
             ));
             let resolved = resolve(&fake, "blooop/devlaunch@#579");
-            let Resolved::Refused(Refusal::Unspellable { spelled, .. }) = resolved else {
+            let Resolved::Refused(Refusal::Unusable { spelled, .. }) = resolved else {
                 panic!("{branch}: {resolved:?}");
             };
             assert_eq!(spelled, format!("blooop/devlaunch@{branch}"));
