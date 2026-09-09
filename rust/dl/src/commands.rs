@@ -227,7 +227,7 @@ pub(crate) fn dispatch(
 /// Returns the word unchanged for every ordinary target, which is every target but
 /// the three spellings [`devlaunch_core::domain::pull_request`] recognises: the
 /// classification is pure, so nothing is asked of the network on the way past.
-fn resolve_pull_request(runner: &dyn Runner, target: String) -> Result<String, Ending> {
+pub(crate) fn resolve_pull_request(runner: &dyn Runner, target: String) -> Result<String, Ending> {
     match pull_request::resolve(runner, &target) {
         pull_request::Resolved::AsTyped => Ok(target),
         pull_request::Resolved::Rewritten { spec, named, head } => {

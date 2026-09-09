@@ -143,6 +143,15 @@ fn run(argv: &[String]) -> i32 {
     // the workspace in the background while the prompt is typed here instead of in
     // a shell. Anything else — an inline prompt, a verb line, a pipe — comes back
     // unchanged with no boot, and takes the path it always took.
+    // Before the interactive flow and before the boot it spawns, because all
+    // three of aid's own uses of the spec are downstream of here: the banner
+    // names it, `name_before_launch` names the tab after it, and
+    // `build_boot_args` puts it in a `dl::run` of its own. One lookup in front of
+    // them is what keeps them naming one workspace -- see `dl::pull_request_spec`.
+    let parsed = match dl::pull_request_spec(&parsed.spec) {
+        Ok(spec) => parsed.with_spec(spec),
+        Err(code) => return code,
+    };
     let (parsed, boot) = interactive::collect_prompt(parsed);
     let Some(dl_args) = rewrite::build_dl_args(&parsed) else {
         // Unreachable by a command line: the parse only ever answers with an agent

@@ -166,6 +166,18 @@ A merged or closed request still resolves, and `dl` says which it is before the
 checkout runs. GitHub deletes the head branch of most merged requests, and
 "couldn't find branch" is a confusing way to be told that something landed.
 
+`aid` accepts the same three spellings, and resolves the reference itself before
+anything else happens. It has to: `aid` holds the spec in three places `dl` never
+sees, and one of them is a second `dl` run. The banner names the spec, the early
+terminal tab is named after it, and the background boot the interactive flow
+spawns is `dl <spec> up` in a process of its own. Leaving the reference in place
+would have looked it up twice, once for the boot and once for the launch that
+attaches, and two lookups can answer differently: a boot that warmed one
+workspace while the launch attached to another is exactly the split the single
+rewrite exists to prevent. Resolving once, in front of all three, also means the
+agent's Remote Control session is named after the branch rather than after the
+link somebody pasted.
+
 ## What `--` takes
 
 The command and its arguments, one word each. `dl` quotes every word on the way

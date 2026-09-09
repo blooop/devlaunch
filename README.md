@@ -321,7 +321,7 @@ precedence order and what a profile does not change.
 ## aid: an agent instead of a shell
 
 ```bash
-aid <user/repo>[@branch] [prompt...]
+aid <user/repo>[@branch|@<pr-link>] [prompt...]
 ```
 
 `aid` is a shortcut, not a second launcher. It rewrites its command line into a `dl` one, so
@@ -338,6 +338,15 @@ dl blooop/devlaunch@fix/42 -- IS_SANDBOX=1 claude --dangerously-skip-permissions
 
 Same clone, same workspace, same container. Everything after the workspace is the prompt, flags
 included, so it never needs quoting.
+
+A pull request link works here too, in the same three spellings, and `aid` resolves it before it
+does anything else. So the prompt banner, the terminal tab, the background boot and the agent's
+Remote Control session name all say the branch rather than the link, and the request is looked up
+once for the whole run:
+
+```bash
+aid https://github.com/blooop/devlaunch/pull/579 address the review comments
+```
 
 With no prompt on the line, `aid` starts the container booting and asks for the prompt while it
 does. Type it free of shell quoting, with no escaping and no history expansion eating a `!`. An

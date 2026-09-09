@@ -56,6 +56,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the one round trip, and `flows::pull_request` the join, whose whole output is
   another spec.
 
+  `aid` accepts the same three spellings and resolves the reference itself, once,
+  before anything else. It has to: it holds the spec in three places `dl` never
+  sees, and one of them is a second `dl` run. The banner names the spec, the early
+  terminal tab is named after it, and the interactive flow's background boot is
+  `dl <spec> up` in a process of its own. Leaving the reference in place looked it
+  up twice, and two lookups can answer differently, so a boot could warm one
+  workspace while the launch attached to another. `dl::pull_request_spec` is the
+  entry point aid reaches that through, and dl's own rewrite then sees an ordinary
+  spec and does nothing. It also means the agent's Remote Control session is named
+  after the branch rather than after the link somebody pasted.
+
+
 ### Changed
 
 - **`LaunchVerb::Attach` carries a `RemoteCommand` rather than an

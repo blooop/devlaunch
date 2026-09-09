@@ -442,6 +442,19 @@ impl AidArgs {
         }
         self
     }
+
+    /// The same line with the spec a pull request reference resolved to.
+    ///
+    /// aid holds the spec in three places `dl` never sees — the banner, the early
+    /// tab name, and the background boot's own argv — so the reference has to be
+    /// resolved here rather than left to dl's own rewrite. Replacing it once, in
+    /// front of all three, is what keeps them naming one workspace: the boot and
+    /// the launch that follows it are two `dl::run` calls, and two lookups could
+    /// answer differently.
+    pub(crate) fn with_spec(mut self, spec: String) -> Self {
+        self.spec = spec;
+        self
+    }
 }
 
 /// The dl command line that boots the workspace without attaching to it.
@@ -877,6 +890,33 @@ mod tests {
         assert_eq!(prompt(&parsed), "");
         assert!(parsed.dl_options.is_empty());
         assert_eq!(parsed.agent(), Some(DEFAULT_AGENT));
+    }
+
+    #[test]
+    fn a_resolved_spec_reaches_every_argv_the_line_produces() {
+        // The pull request lookup happens once, in `main`, and lands here. Both
+        // command lines aid builds have to carry the answer: `build_boot_args` is
+        // a `dl::run` of its own, and a boot that warmed one workspace while the
+        // launch attached to another is the failure the single lookup exists to
+        // prevent.
+        let parsed = parsed(&["blooop/devlaunch@#579", "fix", "it"])
+            .with_spec("blooop/devlaunch@pr_link".to_owned());
+
+        assert_eq!(parsed.spec, "blooop/devlaunch@pr_link");
+        let launch = build_dl_args(&parsed).expect("an agent line builds");
+        assert_eq!(
+            launch.first().map(String::as_str),
+            Some("blooop/devlaunch@pr_link")
+        );
+        // And the session on the phone is named after the branch rather than after
+        // the reference somebody pasted.
+        assert!(
+            launch
+                .iter()
+                .any(|word| word == "--remote-control=blooop/devlaunch@pr_link"),
+            "{launch:?}"
+        );
+        assert_eq!(build_boot_args(&parsed), ["blooop/devlaunch@pr_link", "up"]);
     }
 
     #[test]
