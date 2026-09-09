@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788941338993,
+  "lastUpdate": 1788949241587,
   "repoUrl": "https://github.com/blooop/devlaunch",
   "entries": {
     "devlaunch launch stages": [
@@ -12692,6 +12692,93 @@ window.BENCHMARK_DATA = {
             "range": "± 0.486455",
             "unit": "s",
             "extra": "runs=5/5 wall=8.618574s v0.26.1, Linux-X64"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "blooop@gmail.com",
+            "name": "Austin Gregg-Smith",
+            "username": "blooop"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3ee4419a07e59ad670c54f84ecfd91af68799adb",
+          "message": "Merge pull request #588 from blooop/feat/shared-agent-skills\n\nfeat: share Claude and Codex skills in the container feature",
+          "timestamp": "2026-09-09T11:17:36+01:00",
+          "tree_id": "70029081432e39acc79db500aa43260d0e5048fb",
+          "url": "https://github.com/blooop/devlaunch/commit/3ee4419a07e59ad670c54f84ecfd91af68799adb"
+        },
+        "date": 1788949240863,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "warm / attach",
+            "value": 1.102982,
+            "range": "± 0.276077",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / devpod-up",
+            "value": 0.228531,
+            "range": "± 0.017072",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / host-prep",
+            "value": 0.000031,
+            "range": "± 0.000001",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / total",
+            "value": 1.337873,
+            "range": "± 0.281492",
+            "unit": "s",
+            "extra": "runs=5/5 wall=1.339937s v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / attach",
+            "value": 0.908474,
+            "range": "± 0.059982",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / devpod-up",
+            "value": 3.2098,
+            "range": "± 0.15222",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / host-prep",
+            "value": 0.247188,
+            "range": "± 0.050843",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / tools",
+            "value": 2.958591,
+            "range": "± 0.13898",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / total",
+            "value": 7.381299,
+            "range": "± 0.263183",
+            "unit": "s",
+            "extra": "runs=5/5 wall=7.383794s v0.26.1, Linux-X64"
           }
         ]
       }
