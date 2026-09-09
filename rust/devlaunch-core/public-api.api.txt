@@ -81,6 +81,8 @@ pub devlaunch_core::api::LaunchNotice::SessionManagerReady::pane_id: alloc::stri
 pub devlaunch_core::api::LaunchNotice::SessionManagerReady::socket: alloc::string::String
 pub devlaunch_core::api::LaunchNotice::SessionManagerUnavailable
 pub devlaunch_core::api::LaunchNotice::SessionManagerUnavailable::reason: alloc::string::String
+pub devlaunch_core::api::LaunchNotice::SetupPassNeverFinished
+pub devlaunch_core::api::LaunchNotice::SetupPassNeverFinished::workspace_id: alloc::string::String
 pub devlaunch_core::api::LaunchNotice::SshCommand
 pub devlaunch_core::api::LaunchNotice::SshCommand::argv: alloc::vec::Vec<alloc::string::String>
 pub devlaunch_core::api::LaunchNotice::SshConfigUnlocatable
@@ -576,6 +578,8 @@ pub devlaunch_core::flows::launch::LaunchNotice::SessionManagerReady::pane_id: a
 pub devlaunch_core::flows::launch::LaunchNotice::SessionManagerReady::socket: alloc::string::String
 pub devlaunch_core::flows::launch::LaunchNotice::SessionManagerUnavailable
 pub devlaunch_core::flows::launch::LaunchNotice::SessionManagerUnavailable::reason: alloc::string::String
+pub devlaunch_core::flows::launch::LaunchNotice::SetupPassNeverFinished
+pub devlaunch_core::flows::launch::LaunchNotice::SetupPassNeverFinished::workspace_id: alloc::string::String
 pub devlaunch_core::flows::launch::LaunchNotice::SshCommand
 pub devlaunch_core::flows::launch::LaunchNotice::SshCommand::argv: alloc::vec::Vec<alloc::string::String>
 pub devlaunch_core::flows::launch::LaunchNotice::SshConfigUnlocatable
