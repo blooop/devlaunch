@@ -57,6 +57,7 @@
 //! *is* a string here is a remote payload — `bash -lc <quoted>` — because those
 //! bytes are a contract with a shell rather than prose for a person.
 
+use std::borrow::Cow;
 use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -75,6 +76,7 @@ use crate::domain::spec::{self, DevcontainerPath, SpecIdentity, WorkspaceSpec};
 use crate::domain::workspace_id::{
     NamePart, UnsafeName, WorkspaceId, identity_of, validate_ref_name,
 };
+use crate::domain::workspace_state::NonEmpty;
 use crate::flows::kept_copies::KeptCopies;
 use crate::flows::launch_locks::LaunchLocks;
 use crate::flows::lifecycle::{
@@ -1754,10 +1756,16 @@ pub(crate) struct RemotePayload(String);
 
 impl RemotePayload {
     /// Wrap `command` for the remote shell.
-    pub(crate) fn wrap(command: &str, zellij: ZellijWrap) -> Result<Self, UnquotableCommand> {
-        let inner = with_zellij_session(command, zellij);
+    pub(crate) fn wrap(
+        command: &RemoteCommand,
+        zellij: ZellijWrap,
+    ) -> Result<Self, UnquotableCommand> {
+        // `line()` is where argv becomes one command line, and the only place it
+        // does. A `Script` is already one and is passed through untouched.
+        let line = command.line();
+        let inner = with_zellij_session(&line, zellij);
         let quoted = posix_quote(&inner).ok_or_else(|| UnquotableCommand {
-            command: command.to_owned(),
+            command: line.into_owned(),
         })?;
         Ok(Self(format!("bash -lc {quoted}")))
     }
@@ -2168,7 +2176,7 @@ impl<'a> SessionContext<'a> {
 pub(crate) fn workspace_ssh(
     session: &SessionContext<'_>,
     workspace_id: &str,
-    command: Option<&str>,
+    command: Option<&RemoteCommand>,
     workdir: Option<&str>,
     forward: &mut dyn FnMut(&str),
     notices: &mut dyn Notices<LaunchNotice>,
@@ -2183,7 +2191,7 @@ pub(crate) fn workspace_ssh(
     // Read off the command dl was handed, not the payload: the payload is already
     // wrapped in a `cd` and possibly in zellij, and the question is what program
     // the person asked for.
-    let agent = command.and_then(herdr::agent_in);
+    let agent = command.and_then(RemoteCommand::agent);
     // The already-cached options, never a fresh `devpod context options`: this is
     // on the warm path, where that round trip costs more than the pty it decides.
     let options = already_cached_options(session.host, SystemTime::now());
@@ -2608,7 +2616,10 @@ pub(crate) fn dotfiles_update(
         session.host.devpod_config().as_deref(),
         SystemTime::now(),
     );
-    let command = dotfiles_command(options.dotfiles_url(), bound);
+    // A script, and named as one: it is composed here with `&&` and `$(...)` in
+    // it, so quoting it as argv would run a program whose name is the whole
+    // pipeline.
+    let command = RemoteCommand::Script(dotfiles_command(options.dotfiles_url(), bound));
     workspace_ssh(
         session,
         workspace_id,
@@ -2952,7 +2963,7 @@ pub(crate) fn attach_workspace(
     workspace_id: &str,
     title: TerminalTitle,
     herdr_tab: HerdrTabRename,
-    command: Option<&str>,
+    command: Option<&RemoteCommand>,
     forward: &mut dyn FnMut(&str),
     notices: &mut dyn Notices<LaunchNotice>,
 ) -> Result<Session, SessionRefused> {
@@ -3639,6 +3650,70 @@ pub(crate) fn prepare(
 // the whole launch
 // ===========================================================================
 
+/// What the workspace is asked to run, and in which of the two senses.
+///
+/// One `bash -lc <line>` carries both, so by the time it reaches the transport the
+/// difference is gone -- and it is exactly the difference that decides whether a
+/// space in the text is a separator or a character. Splitting the type is what
+/// stops the two from being handed to each other: `dl <ws> -- claude 'fix the bug'`
+/// is [`Argv`](RemoteCommand::Argv) and must not be reparsed, while the dotfiles
+/// pass composes a real script with `&&` and `$(...)` in it and must not be quoted.
+///
+/// Both used to arrive as `Option<String>`, and the join lived in `dl`. That is how
+/// blooop/devlaunch#591 happened: the argv side was rejoined with plain spaces, so
+/// the remote shell got back every separator the host's shell had already consumed
+/// -- quoted arguments re-split, a `#` truncated the line, and a `$(...)` ran. The
+/// quoting moved in here with the type, so there is one place that turns either
+/// sense into a line and no caller that can pick the wrong one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RemoteCommand {
+    /// The command and its arguments, one word each, as the caller's own shell
+    /// left them. Every word is quoted on the way out, so a word is a word.
+    Argv(NonEmpty<String>),
+    /// A shell script, run as written. The caller composed the syntax and means it.
+    Script(String),
+}
+
+#[cfg(test)]
+impl RemoteCommand {
+    /// Argv from words, for the tests that model `dl <ws> -- <cmd>`.
+    ///
+    /// A panic on the empty slice rather than an `Option`: a test that asks for a
+    /// command with no words has asked the wrong question, and `NonEmpty` is the
+    /// production answer to that case.
+    pub(crate) fn argv(words: &[&str]) -> Self {
+        Self::Argv(NonEmpty::of(words.iter().map(|word| (*word).to_owned())).expect("a command"))
+    }
+}
+
+impl RemoteCommand {
+    /// The one command line, in whichever sense this is.
+    pub fn line(&self) -> Cow<'_, str> {
+        match self {
+            Self::Argv(words) => Cow::Owned(shell::join(words.iter().map(String::as_str))),
+            Self::Script(script) => Cow::Borrowed(script),
+        }
+    }
+
+    /// The program this starts, for a session manager that wants to name it.
+    ///
+    /// Exact for [`Argv`](RemoteCommand::Argv), where the words are already split
+    /// and the program is simply the first one that is not an assignment prefix. A
+    /// [`Script`](RemoteCommand::Script) has to be guessed at by
+    /// [`herdr::agent_in`], which splits on whitespace and is wrong for a quoted
+    /// program name -- but a script is the caller's own syntax and there is nothing
+    /// better to do with it.
+    pub(crate) fn agent(&self) -> Option<&'static str> {
+        match self {
+            Self::Argv(words) => words
+                .iter()
+                .find(|word| !herdr::is_assignment(word))
+                .and_then(|program| herdr::agent_named(program)),
+            Self::Script(script) => herdr::agent_in(script),
+        }
+    }
+}
+
 /// What `dl <spec> <verb>` asks for.
 ///
 /// One arm per shape `_run_cli` dispatches to on this path. `stop`, `rm` and the
@@ -3648,7 +3723,7 @@ pub enum LaunchVerb {
     /// `dl <spec>` and `dl <spec> -- <cmd>`: bring it up if it is not up, then
     /// attach. The default, and the shape wayfinder hands dl for every agent
     /// launch.
-    Attach { command: Option<String> },
+    Attach { command: Option<RemoteCommand> },
     /// `dl <spec> up`: the warm half of a launch, for callers that want the
     /// container ready before a user arrives. Idempotent and quiet when already up.
     Up,
@@ -3690,9 +3765,9 @@ impl LaunchVerb {
     }
 
     /// The command the session runs, if this verb ends in a session.
-    fn command(&self) -> Option<&str> {
+    fn command(&self) -> Option<&RemoteCommand> {
         match self {
-            Self::Attach { command } => command.as_deref(),
+            Self::Attach { command } => command.as_ref(),
             Self::Recreate | Self::Reset | Self::Restart => None,
             Self::Up | Self::Code | Self::Dotfiles => None,
         }
@@ -4339,7 +4414,7 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
     fn attach(
         &mut self,
         placement: &Placement,
-        command: Option<&str>,
+        command: Option<&RemoteCommand>,
     ) -> Result<Launched, LaunchAborted> {
         // A warm attach runs no pass, so nothing has observed this container's Claude
         // config directory during this launch. The host's own records stand in, and
@@ -4916,7 +4991,7 @@ mod tests {
         scene: &Scene,
         token: &HostToken,
         workspace_id: &str,
-        command: Option<&str>,
+        command: Option<&RemoteCommand>,
         notices: &mut Vec<LaunchNotice>,
     ) -> Result<Session, SessionRefused> {
         let claude_seen = ClaudeSeen::new();
@@ -6115,7 +6190,8 @@ mod tests {
     fn a_command_is_wrapped_for_a_login_shell() {
         // devpod runs `--command` under a non-login, non-interactive `bash -c`,
         // which sources neither ~/.profile nor ~/.bashrc.
-        let payload = RemotePayload::wrap("echo hi", ZellijWrap::Off).expect("quotable");
+        let payload = RemotePayload::wrap(&RemoteCommand::argv(&["echo", "hi"]), ZellijWrap::Off)
+            .expect("quotable");
 
         assert_eq!(payload.as_str(), "bash -lc 'echo hi'");
     }
@@ -6123,8 +6199,11 @@ mod tests {
     #[test]
     fn a_quoted_prompt_reaches_the_agent_intact() {
         // `aid repo fix the bug` becomes one quoted argument; it must stay one.
-        let payload =
-            RemotePayload::wrap("claude 'fix the bug'", ZellijWrap::Off).expect("quotable");
+        let payload = RemotePayload::wrap(
+            &RemoteCommand::argv(&["claude", "fix the bug"]),
+            ZellijWrap::Off,
+        )
+        .expect("quotable");
 
         assert_eq!(
             payload.as_str(),
@@ -6134,7 +6213,9 @@ mod tests {
 
     #[test]
     fn the_zellij_wrap_ensures_a_session_beside_the_command() {
-        let payload = RemotePayload::wrap("echo hi", ZellijWrap::Beside).expect("quotable");
+        let payload =
+            RemotePayload::wrap(&RemoteCommand::argv(&["echo", "hi"]), ZellijWrap::Beside)
+                .expect("quotable");
 
         assert_eq!(
             payload.as_str(),
@@ -6512,10 +6593,17 @@ mod tests {
         // A NUL cannot survive a shell word, so there is no payload to build.
         // Python has no such refusal — `shlex.quote` wraps it and the remote shell
         // mangles it.
+        //
+        // The refusal survives the argv split, which is the part worth asserting:
+        // `shell::join` quotes the offending word rather than rejecting it, so the
+        // NUL is still there when `posix_quote` looks at the whole line and still
+        // stops the launch. What the error carries is that composed line, which for
+        // argv is the quoted form -- there is no single string the caller gave, and
+        // the line is the thing that actually could not be made a word.
         assert_eq!(
-            RemotePayload::wrap("echo \0hi", ZellijWrap::Off),
+            RemotePayload::wrap(&RemoteCommand::argv(&["echo", "\0hi"]), ZellijWrap::Off),
             Err(UnquotableCommand {
-                command: "echo \0hi".to_owned()
+                command: "echo '\0hi'".to_owned()
             })
         );
     }
@@ -6689,7 +6777,8 @@ mod tests {
                 config: published.clone()
             }
         );
-        let payload = RemotePayload::wrap("claude", ZellijWrap::Off).expect("quotable");
+        let payload = RemotePayload::wrap(&RemoteCommand::argv(&["claude"]), ZellijWrap::Off)
+            .expect("quotable");
         assert_eq!(
             route(Some(&payload), &terminal, "myws", &mut no_notices()),
             Route::Terminal {
@@ -6738,7 +6827,8 @@ mod tests {
                 config: config.clone()
             }
         );
-        let payload = RemotePayload::wrap("claude", ZellijWrap::Off).expect("quotable");
+        let payload = RemotePayload::wrap(&RemoteCommand::argv(&["claude"]), ZellijWrap::Off)
+            .expect("quotable");
         assert_eq!(
             route(Some(&payload), &terminal, "myws", &mut notices),
             Route::DevpodCommand(&payload)
@@ -6773,7 +6863,8 @@ mod tests {
                 looked_in: never_written.clone()
             }
         );
-        let payload = RemotePayload::wrap("claude", ZellijWrap::Off).expect("quotable");
+        let payload = RemotePayload::wrap(&RemoteCommand::argv(&["claude"]), ZellijWrap::Off)
+            .expect("quotable");
         assert_eq!(
             route(Some(&payload), &terminal, "myws", &mut notices),
             Route::DevpodCommand(&payload)
@@ -6801,7 +6892,8 @@ mod tests {
 
         let terminal = terminal_here(&host, "myws");
         assert_eq!(terminal, Terminal::ConfigUnlocatable);
-        let payload = RemotePayload::wrap("claude", ZellijWrap::Off).expect("quotable");
+        let payload = RemotePayload::wrap(&RemoteCommand::argv(&["claude"]), ZellijWrap::Off)
+            .expect("quotable");
         assert_eq!(
             route(Some(&payload), &terminal, "myws", &mut notices),
             Route::DevpodCommand(&payload)
@@ -6857,7 +6949,7 @@ mod tests {
     /// [`a_session`], with the Claude config ownership the pass would have observed.
     fn a_session_seeing(
         scene: &Scene,
-        command: Option<&str>,
+        command: Option<&RemoteCommand>,
         seen: Option<ClaudeConfig>,
     ) -> Vec<String> {
         let token = HostToken::new();
@@ -6978,7 +7070,7 @@ mod tests {
 
     fn a_session(
         scene: &Scene,
-        command: Option<&str>,
+        command: Option<&RemoteCommand>,
     ) -> (
         Result<Session, SessionRefused>,
         Vec<LaunchNotice>,
@@ -7009,7 +7101,7 @@ mod tests {
     /// nothing.
     fn a_session_on_our_own_claude(
         scene: &Scene,
-        command: Option<&str>,
+        command: Option<&RemoteCommand>,
     ) -> Result<Session, SessionRefused> {
         let token = HostToken::new();
         let mut notices = no_notices();
@@ -7038,7 +7130,7 @@ mod tests {
         let opened = workspace_ssh(
             &context,
             "myws",
-            Some("claude"),
+            Some(&RemoteCommand::argv(&["claude"])),
             None,
             &mut |_| {},
             &mut notices,
@@ -7132,7 +7224,7 @@ mod tests {
                 .naming_a_claude_profile("work", true),
         );
 
-        let _ = a_session_on_our_own_claude(&scene, Some("claude"));
+        let _ = a_session_on_our_own_claude(&scene, Some(&RemoteCommand::argv(&["claude"])));
 
         let labelled: Vec<Vec<String>> = scene
             .runner
@@ -7164,7 +7256,7 @@ mod tests {
             .with_running("myws")
             .naming_a_claude_profile("work", false);
 
-        match a_session_on_our_own_claude(&scene, Some("claude")) {
+        match a_session_on_our_own_claude(&scene, Some(&RemoteCommand::argv(&["claude"]))) {
             Err(SessionRefused::ClaudeProfile { name, problem }) => {
                 assert_eq!(name, "work");
                 match problem {
@@ -7192,7 +7284,7 @@ mod tests {
             .with_running("myws")
             .naming_a_claude_profile("work", false);
 
-        let _ = a_session_on_our_own_claude(&scene, Some("claude"));
+        let _ = a_session_on_our_own_claude(&scene, Some(&RemoteCommand::argv(&["claude"])));
 
         assert!(scene.runner.calls_to("ssh").is_empty(), "openssh was run");
         assert!(
@@ -7214,7 +7306,8 @@ mod tests {
             .with_running("myws")
             .naming_a_claude_profile("work", true);
 
-        a_session_on_our_own_claude(&scene, Some("claude")).expect("a session");
+        a_session_on_our_own_claude(&scene, Some(&RemoteCommand::argv(&["claude"])))
+            .expect("a session");
 
         let calls = scene.runner.calls_to("ssh");
         let call = calls.last().expect("an openssh session");
@@ -7236,7 +7329,8 @@ mod tests {
         // would fire on every launch of every host that does not use Claude.
         let scene = Scene::new().on_a_terminal(&["myws"]).with_running("myws");
 
-        a_session_on_our_own_claude(&scene, Some("echo hi")).expect("a session");
+        a_session_on_our_own_claude(&scene, Some(&RemoteCommand::argv(&["echo", "hi"])))
+            .expect("a session");
 
         let calls = scene.runner.calls_to("ssh");
         let call = calls.last().expect("an openssh session");
@@ -7256,7 +7350,7 @@ mod tests {
         scene.host.claude_profiles_root = Some(scene.dir.path().join("claude-profiles"));
         scene.host.claude.profile = Some("../../etc".to_owned());
 
-        match a_session_on_our_own_claude(&scene, Some("claude")) {
+        match a_session_on_our_own_claude(&scene, Some(&RemoteCommand::argv(&["claude"]))) {
             Err(SessionRefused::ClaudeProfile { name, problem }) => {
                 assert_eq!(name, "../../etc");
                 // No directory, because the name was refused before one was built from
@@ -7279,7 +7373,10 @@ mod tests {
     fn a_command_that_names_an_agent_names_it_to_the_ssh_child() {
         let scene = Scene::new().on_a_terminal(&["myws"]).with_running("myws");
 
-        let _ = a_session(&scene, Some("claude 'fix the bug'"));
+        let _ = a_session(
+            &scene,
+            Some(&RemoteCommand::argv(&["claude", "fix the bug"])),
+        );
 
         let calls = scene.runner.calls_to("ssh");
         let call = calls.last().expect("an openssh session");
@@ -7311,7 +7408,10 @@ mod tests {
     fn a_command_that_names_an_agent_names_it_on_the_devpod_route_too() {
         let scene = Scene::new().with_running("myws");
 
-        let _ = a_session(&scene, Some("claude 'fix the bug'"));
+        let _ = a_session(
+            &scene,
+            Some(&RemoteCommand::argv(&["claude", "fix the bug"])),
+        );
 
         let calls = scene.runner.calls_to("devpod");
         let call = calls.last().expect("a devpod session");
@@ -7338,7 +7438,7 @@ mod tests {
     fn an_ordinary_command_names_no_agent() {
         let scene = Scene::new().on_a_terminal(&["myws"]).with_running("myws");
 
-        let _ = a_session(&scene, Some("make test"));
+        let _ = a_session(&scene, Some(&RemoteCommand::argv(&["make", "test"])));
 
         let calls = scene.runner.calls_to("ssh");
         let call = calls.last().expect("an openssh session");
@@ -7362,7 +7462,7 @@ mod tests {
     fn a_one_shot_command_travels_as_the_shlex_quoted_payload() {
         let scene = Scene::new().with_running("myws");
 
-        let (session, _, _) = a_session(&scene, Some("echo hi"));
+        let (session, _, _) = a_session(&scene, Some(&RemoteCommand::argv(&["echo", "hi"])));
 
         assert_eq!(session, Ok(Session::RemoteExit { status: 0 }));
         assert_eq!(
@@ -7432,7 +7532,7 @@ mod tests {
             panic!("a scratch cache is short enough to multiplex through");
         };
 
-        let (session, _, _) = a_session(&scene, Some("claude"));
+        let (session, _, _) = a_session(&scene, Some(&RemoteCommand::argv(&["claude"])));
 
         assert_eq!(
             session,
@@ -7525,7 +7625,7 @@ mod tests {
             let scene = Scene::new().on_a_terminal(&["myws"]).with_running("myws");
             scene.runner.script(["ssh"], Response::exited(code));
 
-            let (session, _, _) = a_session(&scene, Some("false"));
+            let (session, _, _) = a_session(&scene, Some(&RemoteCommand::argv(&["false"])));
 
             assert_eq!(
                 session.expect("a session").exit_status(),
@@ -7542,7 +7642,7 @@ mod tests {
         let scene = Scene::new().on_a_terminal(&["myws"]).with_running("myws");
         scene.runner.script_missing("ssh");
 
-        let (session, _, _) = a_session(&scene, Some("claude"));
+        let (session, _, _) = a_session(&scene, Some(&RemoteCommand::argv(&["claude"])));
 
         assert_eq!(session, Err(SessionRefused::Ssh(ssh::NotRun::NotInstalled)));
     }
@@ -7551,7 +7651,7 @@ mod tests {
     fn the_argv_of_the_session_is_reported_before_it_starts() {
         let scene = Scene::new().with_running("myws");
 
-        let (_, notices, _) = a_session(&scene, Some("echo hi"));
+        let (_, notices, _) = a_session(&scene, Some(&RemoteCommand::argv(&["echo", "hi"])));
 
         assert!(notices.contains(&LaunchNotice::SshCommand {
             argv: vec![
@@ -7686,7 +7786,7 @@ mod tests {
     fn the_openssh_transport_forwards_the_same_token_by_name() {
         let scene = logged_in(Scene::new().on_a_terminal(&["myws"]).with_running("myws"));
 
-        let _ = a_session(&scene, Some("claude"));
+        let _ = a_session(&scene, Some(&RemoteCommand::argv(&["claude"])));
 
         let argv = scene
             .runner
@@ -7711,8 +7811,8 @@ mod tests {
         let with_token = logged_in(Scene::new().on_a_terminal(&["myws"]).with_running("myws"));
         let without = Scene::new().on_a_terminal(&["myws"]).with_running("myws");
 
-        let _ = a_session(&with_token, Some("claude"));
-        let _ = a_session(&without, Some("claude"));
+        let _ = a_session(&with_token, Some(&RemoteCommand::argv(&["claude"])));
+        let _ = a_session(&without, Some(&RemoteCommand::argv(&["claude"])));
 
         let keyed = |scene: &Scene| -> String {
             let argv = scene
@@ -7747,7 +7847,7 @@ mod tests {
         // takes it away with everything else.
         let scene = Scene::new().on_a_terminal(&["myws"]).with_running("myws");
 
-        let _ = a_session(&scene, Some("claude"));
+        let _ = a_session(&scene, Some(&RemoteCommand::argv(&["claude"])));
 
         let argv = scene
             .runner
@@ -8073,7 +8173,13 @@ mod tests {
         scene.host.dotfiles_on_attach = Some("1".to_owned());
         let token = HostToken::new();
 
-        let _ = attaching(&scene, &token, "myws", Some("echo hi"), &mut no_notices());
+        let _ = attaching(
+            &scene,
+            &token,
+            "myws",
+            Some(&RemoteCommand::argv(&["echo", "hi"])),
+            &mut no_notices(),
+        );
 
         assert_eq!(
             scene.devpod_commands(),
@@ -8091,7 +8197,8 @@ mod tests {
         let scene = Scene::new().with_running("myws");
         let token = HostToken::new();
 
-        for command in [None, Some("echo hi")] {
+        let echo = RemoteCommand::argv(&["echo", "hi"]);
+        for command in [None, Some(&echo)] {
             scene.runner.forget_calls();
 
             let _ = attaching(&scene, &token, "myws", command, &mut no_notices());
@@ -8542,7 +8649,7 @@ mod tests {
         let launched = launch.run(
             &format!("blooop/devlaunch@{COLLIDING_B}"),
             &LaunchVerb::Attach {
-                command: Some("true".to_owned()),
+                command: Some(RemoteCommand::argv(&["true"])),
             },
             None,
         );
@@ -8603,7 +8710,7 @@ mod tests {
             let launched = launch.run(
                 &format!("blooop/devlaunch@{COLLIDING_A}"),
                 &LaunchVerb::Attach {
-                    command: Some("true".to_owned()),
+                    command: Some(RemoteCommand::argv(&["true"])),
                 },
                 None,
             );
@@ -8678,7 +8785,7 @@ mod tests {
             let launched = launch.run(
                 spec,
                 &LaunchVerb::Attach {
-                    command: Some("true".to_owned()),
+                    command: Some(RemoteCommand::argv(&["true"])),
                 },
                 None,
             );
@@ -8836,7 +8943,7 @@ mod tests {
         let launched = launch.run(
             workspace.value(),
             &LaunchVerb::Attach {
-                command: Some("true".to_owned()),
+                command: Some(RemoteCommand::argv(&["true"])),
             },
             None,
         );
@@ -8924,7 +9031,7 @@ mod tests {
         let launched = launch.run(
             "NVIDIA/cuda-samples@main",
             &LaunchVerb::Attach {
-                command: Some("true".to_owned()),
+                command: Some(RemoteCommand::argv(&["true"])),
             },
             None,
         );
@@ -8982,7 +9089,7 @@ mod tests {
         let launched = launch.run(
             "owner/repo@Main",
             &LaunchVerb::Attach {
-                command: Some("true".to_owned()),
+                command: Some(RemoteCommand::argv(&["true"])),
             },
             None,
         );
@@ -9037,7 +9144,7 @@ mod tests {
         let launched = launch.run(
             "owner/repo@main",
             &LaunchVerb::Attach {
-                command: Some("true".to_owned()),
+                command: Some(RemoteCommand::argv(&["true"])),
             },
             None,
         );
@@ -9081,7 +9188,7 @@ mod tests {
         let launched = launch.run(
             &format!("blooop/devlaunch@{COLLIDING_B}"),
             &LaunchVerb::Attach {
-                command: Some("true".to_owned()),
+                command: Some(RemoteCommand::argv(&["true"])),
             },
             None,
         );
@@ -9199,7 +9306,7 @@ mod tests {
         let launched = launch.run(
             "octocat/Hello-World@master",
             &LaunchVerb::Attach {
-                command: Some("true".to_owned()),
+                command: Some(RemoteCommand::argv(&["true"])),
             },
             None,
         );
@@ -9262,7 +9369,7 @@ mod tests {
         let _ = launch.run(
             "octocat/Hello-World@master",
             &LaunchVerb::Attach {
-                command: Some("true".to_owned()),
+                command: Some(RemoteCommand::argv(&["true"])),
             },
             None,
         );
@@ -9313,7 +9420,7 @@ mod tests {
         let launched = launch.run(
             "blooop/devlaunch@wayfinder/devlaunch-7",
             &LaunchVerb::Attach {
-                command: Some("echo hi".to_owned()),
+                command: Some(RemoteCommand::argv(&["echo", "hi"])),
             },
             None,
         );
@@ -9377,7 +9484,7 @@ mod tests {
         let launched = launch.run(
             "blooop/devlaunch@feature/auth",
             &LaunchVerb::Attach {
-                command: Some("echo hi".to_owned()),
+                command: Some(RemoteCommand::argv(&["echo", "hi"])),
             },
             None,
         );
@@ -9500,7 +9607,7 @@ mod tests {
         let launched = launch.run(
             "myws",
             &LaunchVerb::Attach {
-                command: Some("echo hi".to_owned()),
+                command: Some(RemoteCommand::argv(&["echo", "hi"])),
             },
             None,
         );
@@ -10456,7 +10563,7 @@ mod tests {
             let launched = launch.run(
                 "owner/repo@feature/x",
                 &LaunchVerb::Attach {
-                    command: Some("echo hi".to_owned()),
+                    command: Some(RemoteCommand::argv(&["echo", "hi"])),
                 },
                 None,
             );
@@ -10502,7 +10609,7 @@ mod tests {
             let _ = launch.run(
                 "owner/repo",
                 &LaunchVerb::Attach {
-                    command: Some("echo hi".to_owned()),
+                    command: Some(RemoteCommand::argv(&["echo", "hi"])),
                 },
                 None,
             );
@@ -10741,7 +10848,13 @@ mod tests {
         let token = HostToken::new();
 
         let (_, document) = measured(timing::Seam::default(), || {
-            attaching(&scene, &token, "myws", Some("claude"), &mut no_notices())
+            attaching(
+                &scene,
+                &token,
+                "myws",
+                Some(&RemoteCommand::argv(&["claude"])),
+                &mut no_notices(),
+            )
         });
 
         assert_eq!(span_labels(&document, "attach"), ["ssh"]);

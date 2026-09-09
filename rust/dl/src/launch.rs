@@ -36,13 +36,13 @@ use std::path::Path;
 use devlaunch_core::domain::spec::DevcontainerPath;
 use devlaunch_core::domain::workspace_id::WorkspaceId;
 use devlaunch_core::flows::completion_cache;
+use devlaunch_core::flows::launch::RemoteCommand;
 use devlaunch_core::flows::launch::{
     self, ColdPath, Host, Launch, LaunchAborted, LaunchRefusal, LaunchVerb, Launched, Plan,
     Session, ToolProvisioning,
 };
 use devlaunch_core::flows::lifecycle::Refresh;
 use devlaunch_core::flows::listing::CommandContext;
-use devlaunch_core::shell;
 
 use crate::cli::{RmOnExit, Verb};
 use crate::commands::Ending;
@@ -102,23 +102,14 @@ pub(crate) fn family(verb: &Verb) -> Family {
         // ending rather than to this pass over one workspace.
         Verb::Remove { force, after: _ } => return Family::Remove { force: *force },
         Verb::Attach { rm } => (LaunchVerb::Attach { command: None }, *rm),
-        // Re-quoted, not just rejoined. [`RemotePayload::wrap`] quotes this
-        // string whole into `bash -lc '<it>'`, so what is built here is a
-        // command line the *remote* shell parses -- and the words arriving here
-        // have already had their quoting removed by the *host's* shell. Joining
-        // them on spaces gave the remote shell every one of those separators
-        // back. The three failure modes that produced -- a re-split argument, a
-        // truncating `#`, an executed `$(...)` -- are a test each below, beside
-        // the plain command that must stay unquoted and the shell snippet that is
-        // now spelled by naming a shell.
-        //
-        // A bare `NAME=value` survives `shell::join` unquoted, because `=` is in
-        // the shell-safe set. That is not an oversight to tidy: it is what keeps
-        // `dl <ws> -- IS_SANDBOX=1 claude ...` setting a variable, which is the
-        // spelling `aid` builds and the README documents.
+        // Handed over as the argv it is. The quoting lives in
+        // [`RemoteCommand::line`] now, so this no longer composes a command line
+        // at all -- which is the point: the words arriving here have had their
+        // quoting removed by the *host's* shell, and whoever turns them back into
+        // one line has to be the one that knows they are words.
         Verb::Run(words, rm) => (
             LaunchVerb::Attach {
-                command: Some(shell::join(words.iter().map(String::as_str))),
+                command: Some(RemoteCommand::Argv(words.clone())),
             },
             *rm,
         ),
@@ -337,7 +328,11 @@ mod tests {
     use super::{Family, family};
     use crate::cli::{RmOnExit, Verb};
 
-    /// The command `dl <ws> -- <words>` would hand the remote shell.
+    /// The command line `dl <ws> -- <words>` would hand the remote shell.
+    ///
+    /// The join is [`RemoteCommand::line`]'s now rather than this crate's, so what
+    /// these tests pin is the seam: the words go over as words, and the quoting
+    /// that makes them survive happens once, in core.
     fn run_command(words: &[&str]) -> String {
         let verb = Verb::Run(
             NonEmpty::of(words.iter().map(|word| (*word).to_owned())).expect("a command"),
@@ -350,7 +345,7 @@ mod tests {
                         command: Some(command),
                     },
                 ..
-            } => command,
+            } => command.line().into_owned(),
             _ => panic!("`-- <cmd>` is a launch that attaches with a command"),
         }
     }

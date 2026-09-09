@@ -39,6 +39,13 @@ use devlaunch_core::flows::lifecycle::{Refresh, RefreshReason};
 use devlaunch_core::runner::ProcessRunner;
 use devlaunch_core::timing;
 
+/// Re-exported for `aid`, which may name nothing but `dl`.
+///
+/// `build_agent_command` returns the agent's argv, and an empty one is not a
+/// degenerate answer but a wrong one: `build_dl_args` would emit `[<spec>, "--"]`,
+/// a separator with nothing after it, which dl reads as a plain interactive attach.
+/// An agent was asked for and a shell would arrive. The type is what refuses it.
+pub use devlaunch_core::domain::workspace_state::NonEmpty;
 /// `shlex.quote`, for the entry point that builds a `dl` command line out of its
 /// own: `aid` reaches it through here rather than through `devlaunch-core`, so the
 /// only thing it can see of devlaunch is `dl`'s command line and the quoting that

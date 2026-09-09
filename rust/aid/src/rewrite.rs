@@ -6,6 +6,8 @@
 //! containers itself is an `aid` that builds one `dl` would have reused, which is
 //! the drift `aid.py` was rewritten to end.
 
+use dl::NonEmpty;
+
 /// How one coding agent is started inside the workspace.
 ///
 /// Split three ways because not every part of the line belongs everywhere: `env`
@@ -737,7 +739,7 @@ pub(crate) fn build_agent_command(
     agent: &str,
     prompt: &str,
     remote_control: Option<&str>,
-) -> Option<Vec<String>> {
+) -> Option<NonEmpty<String>> {
     let (_, started) = AGENTS.iter().find(|(name, _)| *name == agent)?;
     // No prompt to be interactive about: start the agent's plain session, without
     // the flags that only make sense alongside one.
@@ -765,7 +767,13 @@ pub(crate) fn build_agent_command(
         .map(|(name, value)| format!("{name}={value}"))
         .collect();
     line.extend(words.into_iter().map(str::to_owned));
-    Some(line)
+    // `NonEmpty` rather than the `Vec`, because an empty tail is not a smaller
+    // answer but a different one: `build_dl_args` would emit `[<spec>, "--"]` and
+    // dl reads a separator with nothing after it as a plain interactive attach, so
+    // an agent that was asked for would arrive as a shell. Unreachable while every
+    // row has a command -- which `every_agent_in_the_table_composes_into_argv_dl_can_carry`
+    // is what holds -- and now unrepresentable rather than merely untaken.
+    NonEmpty::of(line)
 }
 
 /// The dl command line that does the work.
@@ -802,7 +810,7 @@ pub(crate) fn build_dl_args(parsed: &AidArgs) -> Option<Vec<String>> {
                 RemoteControl::On => Some(parsed.spec.as_str()),
                 RemoteControl::Off => None,
             };
-            args.extend(build_agent_command(agent, prompt, session)?);
+            args.extend(build_agent_command(agent, prompt, session)?.iter().cloned());
         }
         Task::Retired => {}
     }
@@ -1070,7 +1078,11 @@ mod tests {
 
     /// The agent's argv, for a name the table has.
     fn agent_argv(agent: &str, prompt: &str, remote_control: Option<&str>) -> Vec<String> {
-        build_agent_command(agent, prompt, remote_control).expect("a known agent")
+        build_agent_command(agent, prompt, remote_control)
+            .expect("a known agent")
+            .iter()
+            .cloned()
+            .collect()
     }
 
     #[test]
