@@ -37,7 +37,7 @@
 
 use crate::clients::gh::{self, PullRequestHead, PullRequestUnavailable};
 use crate::domain::pull_request::{self, Classified, Malformed, PullRequestRef};
-use crate::domain::spec;
+use crate::domain::spec::{self, WorkspaceSpec};
 use crate::runner::Runner;
 
 /// What a raw spec turned out to mean.
@@ -75,16 +75,20 @@ pub enum Refusal {
         named: PullRequestRef,
         why: PullRequestUnavailable,
     },
-    /// GitHub answered, and the branch it named cannot be spelled in a `dl` spec.
+    /// GitHub answered, and the spec that answer spells is not one dl reads back
+    /// as the triple it was built from.
     ///
-    /// git allows branch names `dl`'s own `owner/repo@branch` grammar cannot
-    /// carry — anything with an `@` or a `:` in it, most obviously. A rewrite that
-    /// produced one would be re-read as some *other* spec, which is a wrong
-    /// workspace rather than an error, so it is refused here instead. Rare enough
-    /// that no known request has one, and cheap enough to rule out.
-    BranchUnusable {
+    /// git allows names dl's own `owner/repo@branch` grammar cannot carry —
+    /// anything with an `@` or a `:` in it, most obviously — and the offender is
+    /// usually the branch but need not be. A rewrite that produced one would be
+    /// re-read as some *other* spec, which is a wrong workspace rather than an
+    /// error, so it is refused here instead. Carries the whole spec rather than
+    /// the branch alone, so a diagnostic never has to guess which part of it was
+    /// unspellable. Rare enough that no known request has one, and cheap enough
+    /// to rule out.
+    Unspellable {
         named: PullRequestRef,
-        branch: String,
+        spelled: String,
     },
 }
 
@@ -102,14 +106,24 @@ pub fn resolve(runner: &dyn Runner, raw: &str) -> Resolved {
         Ok(head) => head,
         Err(why) => return Resolved::Refused(Refusal::NotLookedUp { named, why }),
     };
-    if !spec::is_branch_part(&head.branch) {
-        return Resolved::Refused(Refusal::BranchUnusable {
-            named,
-            branch: head.branch,
-        });
+    // The invariant the whole rewrite rests on, checked directly rather than
+    // approximated by character classes: the string handed on must read back as
+    // the very triple it was built from. git allows names dl's own
+    // `owner/repo@branch` grammar cannot carry -- a branch with an `@` or a `:`
+    // in it, most obviously -- and a spec that re-reads as some *other* spec is a
+    // wrong workspace rather than an error. Asking `spec::parse` is what makes
+    // this a guard over the grammar rather than a second copy of it.
+    let spelled = format!("{}/{}@{}", head.owner, head.repo, head.branch);
+    let intended = WorkspaceSpec::OwnerRepo {
+        owner: &head.owner,
+        repo: &head.repo,
+        branch: Some(&head.branch),
+    };
+    if spec::parse(&spelled) != intended {
+        return Resolved::Refused(Refusal::Unspellable { named, spelled });
     }
     Resolved::Rewritten {
-        spec: format!("{}/{}@{}", head.owner, head.repo, head.branch),
+        spec: spelled,
         named,
         head,
     }
@@ -239,18 +253,22 @@ mod tests {
     }
 
     #[test]
-    fn a_branch_dl_cannot_spell_is_refused_rather_than_rewritten() {
-        // `owner/repo@a@b` re-reads as something else entirely, so a rewrite that
-        // produced it would open the wrong workspace rather than fail.
-        let fake = answering(
-            r#"{"headRefName":"we@ird","headRepository":{"name":"devlaunch"},
-                "headRepositoryOwner":{"login":"blooop"},"state":"OPEN"}"#,
-        );
-        let resolved = resolve(&fake, "blooop/devlaunch@#579");
-        let Resolved::Refused(Refusal::BranchUnusable { branch, .. }) = resolved else {
-            panic!("{resolved:?}");
-        };
-        assert_eq!(branch, "we@ird");
+    fn a_spec_dl_would_read_back_as_something_else_is_refused_rather_than_rewritten() {
+        // Two branch names, one for each way the round trip can fail. `we@ird`
+        // re-reads as an existing workspace name, and `wei:rd` as an scp-style git
+        // remote. Either way the rewrite would have opened something other than
+        // the branch the request is on.
+        for branch in ["we@ird", "wei:rd"] {
+            let fake = answering(&format!(
+                r#"{{"headRefName":"{branch}","headRepository":{{"name":"devlaunch"}},
+                    "headRepositoryOwner":{{"login":"blooop"}},"state":"OPEN"}}"#
+            ));
+            let resolved = resolve(&fake, "blooop/devlaunch@#579");
+            let Resolved::Refused(Refusal::Unspellable { spelled, .. }) = resolved else {
+                panic!("{branch}: {resolved:?}");
+            };
+            assert_eq!(spelled, format!("blooop/devlaunch@{branch}"));
+        }
     }
 
     #[test]
