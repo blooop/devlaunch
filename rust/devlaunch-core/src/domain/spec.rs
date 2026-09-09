@@ -300,14 +300,14 @@ fn match_owner_repo(spec: &str) -> Option<(&str, &str, Option<&str>)> {
     Some((owner, repo, branch))
 }
 
-fn is_name_part(part: &str) -> bool {
+pub(crate) fn is_name_part(part: &str) -> bool {
     !part.is_empty()
         && part
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'))
 }
 
-fn is_branch_part(part: &str) -> bool {
+pub(crate) fn is_branch_part(part: &str) -> bool {
     !part.is_empty()
         && part
             .bytes()

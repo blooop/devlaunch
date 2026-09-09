@@ -12,13 +12,16 @@ use std::process;
 
 use devlaunch_core::clients::devpod::{ListingUnreadable, NotAListing, NotRun, Workspace};
 use devlaunch_core::clients::devpod_home::RepointFailure;
-use devlaunch_core::clients::gh::{GhEvent, GhUnavailable};
+use devlaunch_core::clients::gh::{
+    GhEvent, GhUnavailable, PullRequestHead, PullRequestState, PullRequestUnavailable,
+};
 use devlaunch_core::clients::git::Failure as GitFailure;
 use devlaunch_core::clients::ssh::{NotRun as SshNotRun, UnsafeRequest};
 use devlaunch_core::domain::config;
 use devlaunch_core::domain::locks::LockError;
 use devlaunch_core::domain::metadata;
 use devlaunch_core::domain::model::SweepTrouble;
+use devlaunch_core::domain::pull_request::{Malformed as PullRequestMalformed, PullRequestRef};
 use devlaunch_core::domain::workspace_id::{NamePart, UnsafeName};
 use devlaunch_core::domain::workspace_state::NonEmpty;
 use devlaunch_core::domain::xdg;
@@ -47,6 +50,7 @@ use devlaunch_core::flows::listing::{
 };
 use devlaunch_core::flows::migration::{Listing, MigrationReport};
 use devlaunch_core::flows::provision::{BundleFailed, FailureLevel, ProvisionEvent};
+use devlaunch_core::flows::pull_request::Refusal as PullRequestRefusal;
 use devlaunch_core::flows::records::{RecordsNotice, StartupError};
 use devlaunch_core::flows::repo_manager::{
     CacheNotice, Cleanup, CloneError, EnsureRepoError, NotRefreshed, Refusal, RefusalReason,
@@ -3501,6 +3505,125 @@ pub(crate) fn provision_event(event: &ProvisionEvent) -> Option<String> {
     })
 }
 
+// ---------------------------------------------------------------------------
+// a pull request named where a branch goes
+// ---------------------------------------------------------------------------
+
+/// What the reference resolved to, said out loud before anything is launched.
+///
+/// Printed rather than kept quiet, and printed *every* time, because the spec the
+/// launch went on to use is not the spec the user typed: everything after this
+/// line — the workspace name, the clone directory, `dl --ls`, the title on the
+/// terminal — is in terms of the branch, and a person who pasted a link has no
+/// way to connect the two without being told once.
+///
+/// It also states which repository the branch is in, which is the part a reader
+/// of a fork request needs: `dl` clones the fork, so the workspace is named after
+/// the fork and not after the repository whose URL they pasted.
+pub(crate) fn pull_request_resolved(
+    named: &PullRequestRef,
+    head: &PullRequestHead,
+    spec: &str,
+) -> Vec<String> {
+    let mut lines = vec![format!(
+        "Pull request {}/{}#{} is {spec}",
+        named.owner, named.repo, named.number
+    )];
+    // Said before the checkout rather than after it fails, because "couldn't find
+    // branch 'landed'" is a confusing way to be told that a request merged.
+    match &head.state {
+        PullRequestState::Open => {}
+        PullRequestState::Merged => lines.push(format!(
+            "That request has merged. GitHub deletes the head branch of most merged requests, so \
+             '{}' may no longer be there.",
+            head.branch
+        )),
+        PullRequestState::Closed => lines.push(format!(
+            "That request is closed. Its head branch '{}' may have been deleted with it.",
+            head.branch
+        )),
+        PullRequestState::Other(state) => {
+            lines.push(format!("GitHub reports that request as '{state}'."))
+        }
+    }
+    lines
+}
+
+/// Why a pull request reference produced no spec, without the `error: ` prefix.
+pub(crate) fn pull_request_refusal(refusal: &PullRequestRefusal) -> String {
+    match refusal {
+        PullRequestRefusal::Malformed(malformed) => malformed_pull_request(malformed),
+        PullRequestRefusal::NotLookedUp { named, why } => format!(
+            "could not look up pull request {}/{}#{}: {}",
+            named.owner,
+            named.repo,
+            named.number,
+            pull_request_unavailable(why)
+        ),
+        // git allows branch names dl's own `owner/repo@branch` grammar cannot
+        // carry. Refused rather than rewritten, because a spec that re-reads as
+        // something else opens the wrong workspace instead of failing.
+        PullRequestRefusal::BranchUnusable { named, branch } => format!(
+            "pull request {}/{}#{} is branch '{branch}', which dl cannot name in a spec. Check \
+             that branch out by hand in a workspace opened from {}/{}.",
+            named.owner, named.repo, named.number, named.owner, named.repo
+        ),
+    }
+}
+
+fn malformed_pull_request(malformed: &PullRequestMalformed) -> String {
+    match malformed {
+        PullRequestMalformed::RepoMismatch {
+            prefix_owner,
+            prefix_repo,
+            url_owner,
+            url_repo,
+        } => format!(
+            "that spec names two different repositories: '{prefix_owner}/{prefix_repo}' before \
+             the '@' and '{url_owner}/{url_repo}' in the link. Drop the part before the '@', or \
+             correct it to '{url_owner}/{url_repo}'."
+        ),
+        PullRequestMalformed::NotANumber { found } if found.is_empty() => {
+            "that looks like a pull request reference with no number in it. A pull request is \
+             named by its number, as in 'owner/repo@#579'."
+                .to_owned()
+        }
+        PullRequestMalformed::NotANumber { found } => format!(
+            "'{found}' is not a pull request number. A pull request is named by its number, as \
+             in 'owner/repo@#579'."
+        ),
+    }
+}
+
+fn pull_request_unavailable(why: &PullRequestUnavailable) -> String {
+    match why {
+        // The only arm with a remedy that is not "try again": name the branch
+        // instead, and nothing needs installing.
+        PullRequestUnavailable::GhMissing => "gh is not on PATH, and only gh can say which branch \
+                                              a pull request is. Install the GitHub CLI, or name \
+                                              the branch instead of the link."
+            .to_owned(),
+        // gh's own words. It writes the useful half of this -- no such request, not
+        // logged in, no such repository -- and re-deriving those sentences here
+        // would be a second opinion that goes stale.
+        PullRequestUnavailable::Refused { reason, .. } => reason.clone(),
+        PullRequestUnavailable::TimedOut => "gh did not answer in time".to_owned(),
+        PullRequestUnavailable::Blocked(failure) => {
+            format!("gh could not run ({:?})", failure.kind)
+        }
+        // Never the output itself: it may be an HTML error page, and a diagnostic
+        // is no place to put one.
+        PullRequestUnavailable::Unreadable => {
+            "gh printed something that is not the answer it was asked for".to_owned()
+        }
+        PullRequestUnavailable::HeadRepositoryGone => {
+            "the repository that request was opened from no longer exists, so there is no branch \
+             left to open"
+                .to_owned()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -5531,5 +5654,103 @@ mod tests {
             prune_report_lines(&report),
             ["Removed 0 clone director(ies) -- 0 B."]
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // a pull request named where a branch goes
+    // -----------------------------------------------------------------------
+
+    fn a_reference(number: u32) -> PullRequestRef {
+        PullRequestRef {
+            owner: "blooop".to_owned(),
+            repo: "devlaunch".to_owned(),
+            number,
+        }
+    }
+
+    fn a_head(branch: &str, state: PullRequestState) -> PullRequestHead {
+        PullRequestHead {
+            owner: "blooop".to_owned(),
+            repo: "devlaunch".to_owned(),
+            branch: branch.to_owned(),
+            state,
+        }
+    }
+
+    #[test]
+    fn an_open_request_reports_the_spec_it_became_and_nothing_else() {
+        assert_eq!(
+            pull_request_resolved(
+                &a_reference(579),
+                &a_head("pr_link", PullRequestState::Open),
+                "blooop/devlaunch@pr_link",
+            ),
+            ["Pull request blooop/devlaunch#579 is blooop/devlaunch@pr_link"]
+        );
+    }
+
+    #[test]
+    fn a_merged_request_warns_that_its_branch_is_probably_gone() {
+        let lines = pull_request_resolved(
+            &a_reference(579),
+            &a_head("landed", PullRequestState::Merged),
+            "blooop/devlaunch@landed",
+        );
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(lines[1].contains("has merged"), "{}", lines[1]);
+        assert!(lines[1].contains("'landed'"), "{}", lines[1]);
+    }
+
+    #[test]
+    fn a_disagreeing_prefix_is_told_which_half_to_drop() {
+        let line = pull_request_refusal(&PullRequestRefusal::Malformed(
+            PullRequestMalformed::RepoMismatch {
+                prefix_owner: "a".to_owned(),
+                prefix_repo: "b".to_owned(),
+                url_owner: "blooop".to_owned(),
+                url_repo: "devlaunch".to_owned(),
+            },
+        ));
+        assert!(line.contains("'a/b' before the '@'"), "{line}");
+        assert!(line.contains("'blooop/devlaunch' in the link"), "{line}");
+    }
+
+    #[test]
+    fn a_gh_refusal_is_reported_in_ghs_own_words() {
+        // gh writes the useful half of this -- no such request, not logged in, no
+        // such repository -- and a second wording here would go stale.
+        let line = pull_request_refusal(&PullRequestRefusal::NotLookedUp {
+            named: a_reference(579),
+            why: PullRequestUnavailable::Refused {
+                exit: Exit::Code(1),
+                reason: "could not find any pull requests".to_owned(),
+            },
+        });
+        assert_eq!(
+            line,
+            "could not look up pull request blooop/devlaunch#579: could not find any pull requests"
+        );
+    }
+
+    #[test]
+    fn no_gh_says_the_one_thing_that_needs_no_install() {
+        let line = pull_request_refusal(&PullRequestRefusal::NotLookedUp {
+            named: a_reference(579),
+            why: PullRequestUnavailable::GhMissing,
+        });
+        assert!(
+            line.contains("name the branch instead of the link"),
+            "{line}"
+        );
+    }
+
+    #[test]
+    fn a_reference_with_no_number_is_shown_the_shorthand() {
+        let line = pull_request_refusal(&PullRequestRefusal::Malformed(
+            PullRequestMalformed::NotANumber {
+                found: String::new(),
+            },
+        ));
+        assert!(line.contains("owner/repo@#579"), "{line}");
     }
 }

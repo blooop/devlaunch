@@ -7,6 +7,8 @@ pub mod metadata;
 // binary surface — not part of the frozen wf API (#251 §7)
 pub mod model;
 // binary surface — not part of the frozen wf API (#251 §7)
+pub mod pull_request;
+// binary surface — not part of the frozen wf API (#251 §7)
 pub mod spec;
 // binary surface — not part of the frozen wf API (#251 §7)
 pub mod workspace_id;

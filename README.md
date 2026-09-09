@@ -140,6 +140,7 @@ workspaces. `dl --refresh` rebuilds it now.
 dl                               # pick a workspace interactively
 dl <user/repo>                   # open it, on its default branch
 dl <user/repo>@<branch>          # open it, on that branch
+dl <user/repo>@<pr-link>         # open the branch a GitHub pull request is on
 dl ./my-project                  # open a local folder
 dl <user/repo> <verb>            # apply a verb (stop, code, rm, ...)
 dl <verb> <user/repo>            # the same, verb first
@@ -150,6 +151,14 @@ dl <user/repo> -- <command>      # run one command inside the workspace
 `owner/repo` expands to `github.com/owner/repo`. A name that is not `owner/repo`, a URL or a path
 is looked up among the workspaces you have. Owner and repo match case-insensitively, the way
 GitHub treats them. Branch names are case-sensitive, because git refs are.
+
+**A pull request link goes where a branch name goes.** `dl blooop/devlaunch@https://github.com/blooop/devlaunch/pull/579`
+opens the branch that request is on. The link on its own works too, and so does the short
+`owner/repo@#579`. `dl` asks `gh` which branch it is, says which one it found, and from there the
+workspace is the ordinary one for that branch: launch it by its link today and by its branch name
+tomorrow and you get the same workspace back. A request from a fork opens the fork, because that is
+where the branch is. This is the one thing `dl` needs the GitHub CLI for, so a host without `gh`
+gets a refusal that says to name the branch instead.
 
 `dl <ws> -- <command>` gets a terminal whenever `dl` has one, so `htop`, `git rebase -i`, a REPL
 or a coding agent all work. Redirect the output and the terminal goes away, so

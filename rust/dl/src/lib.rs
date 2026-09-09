@@ -347,6 +347,17 @@ fn early_name(spec: &str) -> Option<String> {
     use devlaunch_core::domain::workspace_id::WorkspaceId;
     use devlaunch_core::flows::launch::{Plan, plan};
 
+    // A pull request reference names nothing here. Only the lookup in
+    // `flows::pull_request` knows which branch it is, and that runs inside the
+    // launch -- so the honest early answer is silence, where `Plan::Existing`
+    // below would otherwise label the tab `owner/repo@#579`.
+    if !matches!(
+        devlaunch_core::domain::pull_request::classify(spec),
+        devlaunch_core::domain::pull_request::Classified::NotOne
+    ) {
+        return None;
+    }
+
     // Through `plan`, which is the parse boundary rather than a second reading of
     // one: it refuses an owner or repo that is not a safe git name, which is what
     // stops a tab being named `..` or `-weird` for a launch that then refuses the
@@ -838,6 +849,21 @@ mod early_name_tests {
             "blooop/.",
             "blooop/-weird",
             "blooop/rocker@../../etc",
+        ] {
+            assert_eq!(early_name(spec), None, "{spec}");
+        }
+    }
+
+    #[test]
+    fn a_pull_request_reference_is_not_named_before_it_is_looked_up() {
+        // Only `flows::pull_request` knows which branch these are, and it runs
+        // inside the launch. `blooop/devlaunch@#579` would otherwise reach
+        // `Plan::Existing` and label the tab with the reference itself.
+        for spec in [
+            "blooop/devlaunch@#579",
+            "blooop/devlaunch@https://github.com/blooop/devlaunch/pull/579",
+            "https://github.com/blooop/devlaunch/pull/579",
+            "github.com/blooop/devlaunch/pull/579",
         ] {
             assert_eq!(early_name(spec), None, "{spec}");
         }

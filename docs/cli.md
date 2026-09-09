@@ -2,7 +2,8 @@
 
 [README](../README.md) has the commands you need. This page is the rest: how the
 selector decides what you picked, which verb refreshes git state and which only
-touch the container, which commands get a terminal, what `--rm` promises and where
+touch the container, what a pull request link resolves to, which commands get a
+terminal, what `--rm` promises and where
 it stops, which exits fire it, the spellings that were retired and what they say
 now, which full-auto flag `aid` starts each agent with and why codex gets the one it
 gets, what `aid`'s Remote Control default starts and how to turn it off, what
@@ -99,6 +100,69 @@ workspace devpod already has and, when the checkout is behind the `origin/<branc
 that clone last fetched, the attach says how far behind before it hands over the
 shell. [How fresh a launch is](workspaces.md#how-fresh-a-launch-is) is the whole
 of the freshness rules, and the section under it names which verb moves what.
+
+## A pull request where a branch goes
+
+A review request arrives as a link, not as a branch name, and turning one into the
+other means opening the page and copying a string out of it. So the link is
+accepted wherever `owner/repo@branch` is accepted, in three spellings:
+
+```bash
+dl blooop/devlaunch@https://github.com/blooop/devlaunch/pull/579
+dl https://github.com/blooop/devlaunch/pull/579
+dl blooop/devlaunch@#579
+```
+
+All three mean the same thing, and so does every verb form built on them:
+`dl <pr-link> stop`, `dl <pr-link> code`, `dl <pr-link> -- pytest`.
+
+**It resolves to a spec and then stops being a pull request.** `dl` asks `gh`
+which branch the request's head is, rewrites what you typed into
+`owner/repo@branch`, prints the line saying so, and hands that on. Everything
+downstream is the ordinary branch launch: the same derived id, the same clone
+directory, the same metadata record, the same row in `dl --ls`, the same thing
+`dl <ws> rm` removes. Two people opening one branch, one by its link and one by
+its name, are in the same workspace, and they are because there is only one spec
+left by the time anything looks.
+
+That rewrite happens once, before anything reads the target word, which is what
+makes `dl <pr-link> --rm` safe. That form resolves its target twice, on the way in
+and again on the way out, and a second lookup could answer differently: a request
+can be force-pushed or retargeted in between. One rewrite means the removal and
+the launch cannot disagree about which workspace they meant.
+
+**A request from a fork opens the fork.** The rewrite names the repository the
+*branch* is in, which for a fork request is not the repository whose URL you
+pasted. Checking that branch out of the base repository would find nothing, or
+find an unrelated branch of the same name, so `dl` clones the fork and names the
+workspace after it. The line it prints says which repository it picked, and that
+is the case it exists for.
+
+**`gh` is required, and only for this.** Nothing but the GitHub API can say which
+branch a request number is. A host without `gh` gets a refusal saying to name the
+branch instead, which is the remedy that needs nothing installed. Nothing else in
+`dl` depends on `gh` being there: token forwarding is best effort and falls back
+to opening a workspace with no GitHub login.
+
+**Three refusals, before anything is launched.** A spec that names two different
+repositories, `a/b@https://github.com/c/d/pull/5`, is refused rather than resolved
+either way, because both readings are defensible and a wrong guess opens a
+repository you did not ask for. A reference with no usable number, `.../pull/abc`,
+is refused as a malformed reference rather than passed on as a URL, which is what
+kept the old failure obscure: devpod would report, truthfully, that it could not
+clone `.../pull/579`. And a head branch `dl` cannot spell in a spec, one with an
+`@` in it, is refused rather than rewritten, since a rewrite that re-reads as some
+other spec opens the wrong workspace instead of failing.
+
+Two spellings deliberately do **not** work. A bare `owner/repo@579` stays a branch
+name, because `579` is a legal branch name and somebody has one. And a GitHub
+Enterprise URL is not recognised, because resolving a number means asking a host
+about it, and guessing that an unfamiliar host speaks GitHub's API is worse than
+not matching.
+
+A merged or closed request still resolves, and `dl` says which it is before the
+checkout runs. GitHub deletes the head branch of most merged requests, and
+"couldn't find branch" is a confusing way to be told that something landed.
 
 ## What `--` takes
 
