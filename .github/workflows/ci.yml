@@ -105,6 +105,25 @@ jobs:
           git show "$BASE_SHA:CHANGELOG.md" > "$RUNNER_TEMP/base-CHANGELOG.md"
           python3 scripts/changelog_frozen.py \
             "$RUNNER_TEMP/base-CHANGELOG.md" CHANGELOG.md
+      # blooop/devlaunch#591. Two branches bumped to 0.36.0 independently and git
+      # merged it silently, because the same number on both sides is the identical
+      # edit and there is nothing to conflict on. The second merge then published
+      # nothing. This is the last point where the two versions still differ: by the
+      # time the merge is on `main` its version equals its first parent's, so
+      # `publish.yml` has nothing to notice.
+      #
+      # Same `BASE_SHA` the step above fetched, which is the base as of the pull
+      # request rather than the moving tip of `main` -- for #591 that was the commit
+      # before the rival release landed, where the version was still 0.35.0.
+      - name: A version that is already published is not one to bump to
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          git show "$BASE_SHA:rust/Cargo.toml" > "$RUNNER_TEMP/base-Cargo.toml"
+          python3 scripts/version_untaken.py \
+            "$RUNNER_TEMP/base-Cargo.toml" rust/Cargo.toml
       # Flagged `python` since #294, so it is reported as what it is — the
       # harness, the doc guards and `scripts/` — rather than as "the project's
       # coverage". The shipped crates are the `rust` flag, uploaded by the

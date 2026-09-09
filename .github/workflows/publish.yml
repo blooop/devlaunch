@@ -49,17 +49,45 @@ jobs:
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
-          # Already released: a re-run of this workflow over the same commit, or a
-          # later push that did not touch the version. Nothing to do, and saying
-          # so beats a failed upload.
+          git show HEAD^:rust/Cargo.toml > /tmp/previous-cargo.toml 2>/dev/null || : > /tmp/previous-cargo.toml
+          previous=$(read_version /tmp/previous-cargo.toml)
+
+          # Already tagged. Existence is asked of the ref alone, never of the commit
+          # behind it: this is a depth-2 clone, so a tag pointing anywhere but here
+          # may have no commit object to resolve, and a failed resolve must not read
+          # as "free to publish".
           if git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
+            tagged_at=$(git rev-parse -q --verify "refs/tags/v$version^{commit}" || true)
+            if [ -n "$tagged_at" ] && [ "$tagged_at" = "$(git rev-parse HEAD)" ]; then
+              # The tag is on this very commit: a re-run of the workflow over the
+              # release it already published. `gh release create --target
+              # $GITHUB_SHA` is what puts it here, and idempotence is the point.
+              echo "v$version was published from this commit; nothing to publish"
+              echo "publish=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if [ "$version" != "$previous" ]; then
+              # This push moved the version *onto* a number somebody else already
+              # released. Two branches cut the same one, which git merges with no
+              # conflict because the same version line on both sides is one edit
+              # (blooop/devlaunch#591). Refusing to publish is right either way; the
+              # difference is that this says why, instead of reporting the same
+              # "nothing to publish" an ordinary push gets -- which is how #591 sat
+              # merged and released nowhere with nothing red.
+              #
+              # Narrow on purpose. It fires only when the version changed against the
+              # first parent, and #591's own merge did not: both sides were already
+              # 0.36.0, so there was no bump left to see by then. That case is caught
+              # a step earlier, by `scripts/version_untaken.py` on the pull request.
+              echo "::error::this push moves the version to $version, but v$version is already tagged at ${tagged_at:-another commit}. Two branches cut the same release; bump to an unused version and re-file the CHANGELOG entry under it."
+              exit 1
+            fi
+            # A later push that did not touch the version. Nothing to do, and saying
+            # so beats a failed upload.
             echo "v$version is already tagged; nothing to publish"
             echo "publish=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-
-          git show HEAD^:rust/Cargo.toml > /tmp/previous-cargo.toml 2>/dev/null || : > /tmp/previous-cargo.toml
-          previous=$(read_version /tmp/previous-cargo.toml)
 
           if [ "$version" = "$previous" ]; then
             echo "version is still ${version:-unset}; nothing to publish"
