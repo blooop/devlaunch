@@ -2813,6 +2813,11 @@ pub(crate) fn launch_notice(notice: &LaunchNotice) -> Option<String> {
              for its create, so attaching to it would land as root in a container whose setup \
              did not run. Bringing it up instead."
         ),
+        LaunchNotice::SetupPassNeverFinished { workspace_id } => format!(
+            "Workspace {workspace_id}: the last launch's setup pass did not finish, so its \
+             tools, hostname and shell config may be missing. Running it again before \
+             attaching."
+        ),
         LaunchNotice::AlreadyRunning { workspace_id } => {
             format!("Workspace {workspace_id} is already running.")
         }

@@ -491,6 +491,35 @@ Nothing has to be cleaned up, and there is nothing to invalidate by hand: the
 markers are compared, never trusted on age, and deleting the whole directory costs
 one round trip on each workspace's next launch.
 
+### A pass that was interrupted
+
+A pass is up to three trips and the slow ones are the last two: the lend streams
+the host's binaries, and the install fetches a `claude` of a few hundred megabytes.
+A Ctrl-C lands in the middle of that often. What it leaves is the awkward case:
+`devpod up` has already finished, so devpod wrote its create result and the
+container is running, and everything the Ctrl-C stopped was dl's. The container
+looks finished to everything that can be asked about it, so a later launch takes
+the fast path and provisions nothing, forever.
+
+So a pass writes down that it is running before its first trip, in
+`<workspace>.pass` beside the marker, and removes it after its last.
+`dl`'s signal handler exits without unwinding, which is why the evidence has to be
+a file left standing rather than one written on the way out: nothing runs on the
+way out. A launch that finds one still standing for the container standing now runs
+the pass before it hands over a shell, and says so.
+
+The record is anchored to the same `workspace_result.json` mtime the marker is, so
+one left by a container that has since been rebuilt describes nothing that exists
+and is ignored. It is read as positive evidence and never as the absence of it: a
+workspace brought up by VS Code, by a hand-typed `devpod up`, or by a build older
+than the record has no record either, and those keep attaching in one round trip.
+
+A pass whose install ran and *failed* closes the record like any other: it happened
+and it said so, and re-running it on every attach afterwards would be a container
+re-attempting one failing thing forever. The one outcome that leaves the record
+standing is a trip the OS would not make at all, because nothing was learned about
+the container and nothing was done to it, which is the state the record is for.
+
 ### What to bake so a launch does no work at all
 
 To make every `dl` launch of an image stop at trip 1. The probe asks a **login**

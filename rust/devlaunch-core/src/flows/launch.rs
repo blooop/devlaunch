@@ -559,6 +559,10 @@ pub enum LaunchNotice {
     /// devpod holds a record for this workspace and no create result, so an `up`
     /// started and never finished. Its container may well be running.
     CreateNeverFinished { workspace_id: String },
+    /// dl's own setup pass over this container began and never finished -- the
+    /// launch carrying it was killed. The container is sound; the pass is being run
+    /// again before this launch hands over a session.
+    SetupPassNeverFinished { workspace_id: String },
     /// `dl <ws> up` found it already running: nothing to build and nothing to
     /// wait for.
     AlreadyRunning { workspace_id: String },
@@ -1321,6 +1325,23 @@ pub trait Provision {
     fn remembered_claude(&self, _workspace_id: &str) -> Option<ClaudeConfig> {
         None
     }
+
+    /// Whether a setup pass over the container standing now began and never
+    /// finished, from the host's own records and without a round trip.
+    ///
+    /// Asked on the fast-attach arm, which is the one path that opens a session
+    /// having provisioned nothing. A `dl` killed between `devpod up` and the end of
+    /// its pass leaves a container devpod calls Running *and* finished creating, so
+    /// [`CreateRecord`] cannot tell it from a workspace that is ready -- and every
+    /// later launch of it takes that same fast path and provisions nothing again.
+    ///
+    /// **Positive evidence, never the absence of it.** `false` by default, and
+    /// `false` for every doubt in the real implementation: a workspace brought up by
+    /// VS Code, by a hand-typed `devpod up`, or by a build older than the record has
+    /// no record either, and those must go on attaching in one round trip.
+    fn pass_never_finished(&self, _workspace_id: &str) -> bool {
+        false
+    }
 }
 
 /// A launch that lends nothing — `DEVLAUNCH_NO_TOOLS`, and every test that is not
@@ -1433,6 +1454,10 @@ impl Provision for ToolProvisioning<'_> {
 
     fn remembered_claude(&self, workspace_id: &str) -> Option<ClaudeConfig> {
         self.verdicts.remembered_claude(workspace_id)
+    }
+
+    fn pass_never_finished(&self, workspace_id: &str) -> bool {
+        self.verdicts.pass_never_finished(workspace_id)
     }
 }
 
@@ -4211,6 +4236,11 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
                             spec: raw_spec.to_owned(),
                         });
                     }
+                    // Before the session, because the session is what the missing
+                    // tools are missing *from*: a shell handed over first would be
+                    // the one that goes looking for a `claude` the interrupted pass
+                    // never installed.
+                    self.finish_the_interrupted_pass(placement)?;
                     let session = self.attach(placement, verb.command());
                     self.forced_refresh();
                     return session;
@@ -4409,6 +4439,39 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
             self.forced_refresh();
         }
         Ok(refused)
+    }
+
+    /// Run the setup pass again when the last one over this container was cut
+    /// short, and do nothing at all otherwise.
+    ///
+    /// The fast-attach arm's whole worth is that it opens a session in one round
+    /// trip, so this asks the host's records and not the container: a workspace with
+    /// no interrupted pass behind it -- which is every workspace but the one this is
+    /// for -- pays a file read and nothing else.
+    ///
+    /// [`PassOccasion::TopUp`] because the container never stopped, which is that
+    /// arm's definition. It does not mean fewer stages run: the occasion decides
+    /// only whether a remembered verdict may excuse the trip, and there is no
+    /// verdict here -- the pass that would have written one is the pass that was
+    /// interrupted.
+    fn finish_the_interrupted_pass(&mut self, placement: &Placement) -> Result<(), LaunchAborted> {
+        if !self.provision.pass_never_finished(placement.workspace_id()) {
+            return Ok(());
+        }
+        self.notices.say(LaunchNotice::SetupPassNeverFinished {
+            workspace_id: placement.workspace_id().to_owned(),
+        });
+        let seen = self
+            .provision
+            .provision_tools(
+                self.context.runner(),
+                placement.workspace_id(),
+                PassOccasion::TopUp,
+                self.container_title(placement.title()).as_deref(),
+            )
+            .map_err(|DevpodMissing| LaunchAborted::DevpodNotRun(NotRun::NotInstalled))?;
+        self.claude_seen.set(seen);
+        Ok(())
     }
 
     fn attach(
@@ -4918,6 +4981,9 @@ mod tests {
         /// What the host's records say about a workspace no pass ran for, which is
         /// what `dl`'s real implementation reads out of its verdict cache.
         claude_remembered: Option<ClaudeConfig>,
+        /// Whether the host's records say the last pass over this container was cut
+        /// short. Read from the same cache the field above is.
+        pass_never_finished: bool,
     }
 
     impl RecordingProvision {
@@ -4971,6 +5037,10 @@ mod tests {
 
         fn remembered_claude(&self, _workspace_id: &str) -> Option<ClaudeConfig> {
             self.claude_remembered
+        }
+
+        fn pass_never_finished(&self, _workspace_id: &str) -> bool {
+            self.pass_never_finished
         }
     }
 
@@ -9724,6 +9794,102 @@ mod tests {
             }),
             "a workspace devpod never finished is not `already running`"
         );
+    }
+
+    /// The launch that is cut short between `devpod up` and the end of dl's own
+    /// setup pass, which is the moment this whole record exists for.
+    ///
+    /// A Ctrl-C there leaves a container devpod calls `Running` *and* finished
+    /// creating -- devpod wrote its result on the way out of the `up`, and
+    /// everything after it was dl's. So [`CreateRecord`] answers `Completed`, the
+    /// fast-attach arm fires, and the session opens in a container with no `gh`, no
+    /// `claude`, no hostname and no zellij. Nothing about the container says
+    /// otherwise, so every later `dl <ws>` does the same thing: the workspace is
+    /// permanently half-built, and the only recovery is knowing to type
+    /// `dl <ws> up`.
+    ///
+    /// The container itself is sound, so this does not re-run the `up` the way an
+    /// unfinished *create* does. It runs the pass that did not finish, and then
+    /// attaches.
+    #[test]
+    fn a_running_workspace_whose_setup_pass_never_finished_is_provisioned_before_attaching() {
+        let scene = Scene::new()
+            .with_running("myws")
+            .with_create_completed("myws");
+        let updater = SelfInvocation::new("dl");
+        let completion = scene.cache_dir().join("completion.json");
+        let mut parts = launching(&scene.runner, &updater, &completion);
+        parts.provision.pass_never_finished = true;
+        let mut cold = NeverCold;
+        let mut launch = Launch::new(
+            &mut parts.context,
+            &mut parts.refresh,
+            &mut cold,
+            &parts.provision,
+            &scene.host,
+            &mut parts.chatter,
+            &mut parts.said,
+        );
+
+        let launched = launch.run("myws", &LaunchVerb::Attach { command: None }, None);
+
+        drop(launch);
+        assert_eq!(
+            launched,
+            Ok(Launched::Session(Session::RemoteExit { status: 0 })),
+            "the session still opens: the container is sound, only dl's work was not"
+        );
+        assert_eq!(
+            parts.provision.occasions(),
+            [PassOccasion::TopUp],
+            "the container never stopped, so the pass is a top-up and not an after-up"
+        );
+        assert!(
+            !scene
+                .devpod_commands()
+                .iter()
+                .any(|argv| argv.first().map(String::as_str) == Some("up")),
+            "a sound container is not rebuilt to finish dl's own pass: {:?}",
+            scene.devpod_commands()
+        );
+        assert!(
+            parts.said.contains(&LaunchNotice::SetupPassNeverFinished {
+                workspace_id: "myws".to_owned()
+            }),
+            "the extra round trip is explained: {:?}",
+            parts.said
+        );
+    }
+
+    /// The other side of it, and the one that keeps the fast path fast: a workspace
+    /// with no interrupted pass behind it still attaches in one round trip.
+    ///
+    /// Without this, "did the last pass finish" could be answered by provisioning on
+    /// every warm attach -- which would pass the test above and put a `devpod ssh`
+    /// on the hottest path dl has, for every workspace dl never provisioned.
+    #[test]
+    fn a_warm_attach_with_no_interrupted_pass_behind_it_still_runs_none() {
+        let scene = Scene::new()
+            .with_running("myws")
+            .with_create_completed("myws");
+        let updater = SelfInvocation::new("dl");
+        let completion = scene.cache_dir().join("completion.json");
+        let mut parts = launching(&scene.runner, &updater, &completion);
+        let mut cold = NeverCold;
+        let mut launch = Launch::new(
+            &mut parts.context,
+            &mut parts.refresh,
+            &mut cold,
+            &parts.provision,
+            &scene.host,
+            &mut parts.chatter,
+            &mut parts.said,
+        );
+
+        let _ = launch.run("myws", &LaunchVerb::Attach { command: None }, None);
+
+        drop(launch);
+        assert_eq!(parts.provision.occasions(), [], "no pass at all");
     }
 
     /// The other side of the same check: a create devpod *did* finish still takes
