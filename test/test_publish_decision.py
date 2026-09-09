@@ -19,6 +19,7 @@ parent, so there was no bump left to see. `scripts/version_untaken.py` is the gu
 for that, and it runs on the pull request.
 """
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -76,7 +77,10 @@ def decide(repo: Path, tmp_path: Path) -> subprocess.CompletedProcess:
         capture_output=True,
         text=True,
         check=False,
-        env={"PATH": "/usr/bin:/bin:/usr/local/bin", "GITHUB_OUTPUT": str(output)},
+        # The runner's own PATH, not a guessed one: the script needs `git` and
+        # `sed`, and hardcoding where they live is a test that passes here and
+        # fails on a machine that puts them somewhere else.
+        env={"PATH": os.environ["PATH"], "GITHUB_OUTPUT": str(output)},
     )
 
 
