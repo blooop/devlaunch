@@ -166,6 +166,50 @@ impl core::fmt::Debug for devlaunch_core::clients::gh::GhUnavailable
 pub fn devlaunch_core::clients::gh::GhUnavailable::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Copy for devlaunch_core::clients::gh::GhUnavailable
 impl core::marker::StructuralPartialEq for devlaunch_core::clients::gh::GhUnavailable
+pub enum devlaunch_core::clients::gh::PullRequestState
+pub devlaunch_core::clients::gh::PullRequestState::Closed
+pub devlaunch_core::clients::gh::PullRequestState::Merged
+pub devlaunch_core::clients::gh::PullRequestState::Open
+pub devlaunch_core::clients::gh::PullRequestState::Other(alloc::string::String)
+impl core::clone::Clone for devlaunch_core::clients::gh::PullRequestState
+pub fn devlaunch_core::clients::gh::PullRequestState::clone(&self) -> devlaunch_core::clients::gh::PullRequestState
+impl core::cmp::Eq for devlaunch_core::clients::gh::PullRequestState
+impl core::cmp::PartialEq for devlaunch_core::clients::gh::PullRequestState
+pub fn devlaunch_core::clients::gh::PullRequestState::eq(&self, &devlaunch_core::clients::gh::PullRequestState) -> bool
+impl core::fmt::Debug for devlaunch_core::clients::gh::PullRequestState
+pub fn devlaunch_core::clients::gh::PullRequestState::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::clients::gh::PullRequestState
+pub enum devlaunch_core::clients::gh::PullRequestUnavailable
+pub devlaunch_core::clients::gh::PullRequestUnavailable::Blocked(devlaunch_runner::OsFailure)
+pub devlaunch_core::clients::gh::PullRequestUnavailable::GhMissing
+pub devlaunch_core::clients::gh::PullRequestUnavailable::HeadRepositoryGone
+pub devlaunch_core::clients::gh::PullRequestUnavailable::Refused
+pub devlaunch_core::clients::gh::PullRequestUnavailable::Refused::exit: devlaunch_runner::Exit
+pub devlaunch_core::clients::gh::PullRequestUnavailable::Refused::reason: alloc::string::String
+pub devlaunch_core::clients::gh::PullRequestUnavailable::TimedOut
+pub devlaunch_core::clients::gh::PullRequestUnavailable::Unreadable
+impl core::clone::Clone for devlaunch_core::clients::gh::PullRequestUnavailable
+pub fn devlaunch_core::clients::gh::PullRequestUnavailable::clone(&self) -> devlaunch_core::clients::gh::PullRequestUnavailable
+impl core::cmp::Eq for devlaunch_core::clients::gh::PullRequestUnavailable
+impl core::cmp::PartialEq for devlaunch_core::clients::gh::PullRequestUnavailable
+pub fn devlaunch_core::clients::gh::PullRequestUnavailable::eq(&self, &devlaunch_core::clients::gh::PullRequestUnavailable) -> bool
+impl core::fmt::Debug for devlaunch_core::clients::gh::PullRequestUnavailable
+pub fn devlaunch_core::clients::gh::PullRequestUnavailable::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::clients::gh::PullRequestUnavailable
+pub struct devlaunch_core::clients::gh::PullRequestHead
+pub devlaunch_core::clients::gh::PullRequestHead::branch: alloc::string::String
+pub devlaunch_core::clients::gh::PullRequestHead::owner: alloc::string::String
+pub devlaunch_core::clients::gh::PullRequestHead::repo: alloc::string::String
+pub devlaunch_core::clients::gh::PullRequestHead::state: devlaunch_core::clients::gh::PullRequestState
+impl core::clone::Clone for devlaunch_core::clients::gh::PullRequestHead
+pub fn devlaunch_core::clients::gh::PullRequestHead::clone(&self) -> devlaunch_core::clients::gh::PullRequestHead
+impl core::cmp::Eq for devlaunch_core::clients::gh::PullRequestHead
+impl core::cmp::PartialEq for devlaunch_core::clients::gh::PullRequestHead
+pub fn devlaunch_core::clients::gh::PullRequestHead::eq(&self, &devlaunch_core::clients::gh::PullRequestHead) -> bool
+impl core::fmt::Debug for devlaunch_core::clients::gh::PullRequestHead
+pub fn devlaunch_core::clients::gh::PullRequestHead::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::clients::gh::PullRequestHead
+pub fn devlaunch_core::clients::gh::pull_request_head(&dyn devlaunch_runner::Runner, &str, &str, u32) -> core::result::Result<devlaunch_core::clients::gh::PullRequestHead, devlaunch_core::clients::gh::PullRequestUnavailable>
 pub mod devlaunch_core::clients::git
 pub enum devlaunch_core::clients::git::Failure
 pub devlaunch_core::clients::git::Failure::BranchAlreadyExists
@@ -513,6 +557,48 @@ pub fn devlaunch_core::domain::model::WorktreeInfo::fmt(&self, &mut core::fmt::F
 impl core::marker::StructuralPartialEq for devlaunch_core::domain::model::WorktreeInfo
 impl serde_core::ser::Serialize for devlaunch_core::domain::model::WorktreeInfo
 pub fn devlaunch_core::domain::model::WorktreeInfo::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub mod devlaunch_core::domain::pull_request
+pub enum devlaunch_core::domain::pull_request::Classified
+pub devlaunch_core::domain::pull_request::Classified::Malformed(devlaunch_core::domain::pull_request::Malformed)
+pub devlaunch_core::domain::pull_request::Classified::Names(devlaunch_core::domain::pull_request::PullRequestRef)
+pub devlaunch_core::domain::pull_request::Classified::NotOne
+impl core::clone::Clone for devlaunch_core::domain::pull_request::Classified
+pub fn devlaunch_core::domain::pull_request::Classified::clone(&self) -> devlaunch_core::domain::pull_request::Classified
+impl core::cmp::Eq for devlaunch_core::domain::pull_request::Classified
+impl core::cmp::PartialEq for devlaunch_core::domain::pull_request::Classified
+pub fn devlaunch_core::domain::pull_request::Classified::eq(&self, &devlaunch_core::domain::pull_request::Classified) -> bool
+impl core::fmt::Debug for devlaunch_core::domain::pull_request::Classified
+pub fn devlaunch_core::domain::pull_request::Classified::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::domain::pull_request::Classified
+pub enum devlaunch_core::domain::pull_request::Malformed
+pub devlaunch_core::domain::pull_request::Malformed::NotANumber
+pub devlaunch_core::domain::pull_request::Malformed::NotANumber::found: alloc::string::String
+pub devlaunch_core::domain::pull_request::Malformed::RepoMismatch
+pub devlaunch_core::domain::pull_request::Malformed::RepoMismatch::prefix_owner: alloc::string::String
+pub devlaunch_core::domain::pull_request::Malformed::RepoMismatch::prefix_repo: alloc::string::String
+pub devlaunch_core::domain::pull_request::Malformed::RepoMismatch::url_owner: alloc::string::String
+pub devlaunch_core::domain::pull_request::Malformed::RepoMismatch::url_repo: alloc::string::String
+impl core::clone::Clone for devlaunch_core::domain::pull_request::Malformed
+pub fn devlaunch_core::domain::pull_request::Malformed::clone(&self) -> devlaunch_core::domain::pull_request::Malformed
+impl core::cmp::Eq for devlaunch_core::domain::pull_request::Malformed
+impl core::cmp::PartialEq for devlaunch_core::domain::pull_request::Malformed
+pub fn devlaunch_core::domain::pull_request::Malformed::eq(&self, &devlaunch_core::domain::pull_request::Malformed) -> bool
+impl core::fmt::Debug for devlaunch_core::domain::pull_request::Malformed
+pub fn devlaunch_core::domain::pull_request::Malformed::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::domain::pull_request::Malformed
+pub struct devlaunch_core::domain::pull_request::PullRequestRef
+pub devlaunch_core::domain::pull_request::PullRequestRef::number: u32
+pub devlaunch_core::domain::pull_request::PullRequestRef::owner: alloc::string::String
+pub devlaunch_core::domain::pull_request::PullRequestRef::repo: alloc::string::String
+impl core::clone::Clone for devlaunch_core::domain::pull_request::PullRequestRef
+pub fn devlaunch_core::domain::pull_request::PullRequestRef::clone(&self) -> devlaunch_core::domain::pull_request::PullRequestRef
+impl core::cmp::Eq for devlaunch_core::domain::pull_request::PullRequestRef
+impl core::cmp::PartialEq for devlaunch_core::domain::pull_request::PullRequestRef
+pub fn devlaunch_core::domain::pull_request::PullRequestRef::eq(&self, &devlaunch_core::domain::pull_request::PullRequestRef) -> bool
+impl core::fmt::Debug for devlaunch_core::domain::pull_request::PullRequestRef
+pub fn devlaunch_core::domain::pull_request::PullRequestRef::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::domain::pull_request::PullRequestRef
+pub fn devlaunch_core::domain::pull_request::classify(&str) -> devlaunch_core::domain::pull_request::Classified
 pub mod devlaunch_core::domain::spec
 pub enum devlaunch_core::domain::spec::DevcontainerRefError
 pub devlaunch_core::domain::spec::DevcontainerRefError::FlagLike
@@ -2613,6 +2699,39 @@ pub fn devlaunch_core::flows::provision::Switches::fmt(&self, &mut core::fmt::Fo
 impl core::marker::Copy for devlaunch_core::flows::provision::Switches
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::provision::Switches
 pub fn devlaunch_core::flows::provision::provision_tools(&dyn devlaunch_runner::Runner, &str, devlaunch_core::flows::provision::PassOccasion, devlaunch_core::flows::provision::Switches, core::option::Option<&str>, core::option::Option<&devlaunch_core::flows::provision::HostLayout>, core::option::Option<&devlaunch_core::flows::provision::verdict_cache::VerdictCache>, &mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::provision::ProvisionEvent>) -> core::result::Result<devlaunch_core::flows::provision::Pass, devlaunch_core::flows::provision::DevpodMissing>
+pub mod devlaunch_core::flows::pull_request
+pub enum devlaunch_core::flows::pull_request::Refusal
+pub devlaunch_core::flows::pull_request::Refusal::Malformed(devlaunch_core::domain::pull_request::Malformed)
+pub devlaunch_core::flows::pull_request::Refusal::NotLookedUp
+pub devlaunch_core::flows::pull_request::Refusal::NotLookedUp::named: devlaunch_core::domain::pull_request::PullRequestRef
+pub devlaunch_core::flows::pull_request::Refusal::NotLookedUp::why: devlaunch_core::clients::gh::PullRequestUnavailable
+pub devlaunch_core::flows::pull_request::Refusal::Unusable
+pub devlaunch_core::flows::pull_request::Refusal::Unusable::named: devlaunch_core::domain::pull_request::PullRequestRef
+pub devlaunch_core::flows::pull_request::Refusal::Unusable::spelled: alloc::string::String
+impl core::clone::Clone for devlaunch_core::flows::pull_request::Refusal
+pub fn devlaunch_core::flows::pull_request::Refusal::clone(&self) -> devlaunch_core::flows::pull_request::Refusal
+impl core::cmp::Eq for devlaunch_core::flows::pull_request::Refusal
+impl core::cmp::PartialEq for devlaunch_core::flows::pull_request::Refusal
+pub fn devlaunch_core::flows::pull_request::Refusal::eq(&self, &devlaunch_core::flows::pull_request::Refusal) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::pull_request::Refusal
+pub fn devlaunch_core::flows::pull_request::Refusal::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::pull_request::Refusal
+pub enum devlaunch_core::flows::pull_request::Resolved
+pub devlaunch_core::flows::pull_request::Resolved::AsTyped
+pub devlaunch_core::flows::pull_request::Resolved::Refused(devlaunch_core::flows::pull_request::Refusal)
+pub devlaunch_core::flows::pull_request::Resolved::Rewritten
+pub devlaunch_core::flows::pull_request::Resolved::Rewritten::head: devlaunch_core::clients::gh::PullRequestHead
+pub devlaunch_core::flows::pull_request::Resolved::Rewritten::named: devlaunch_core::domain::pull_request::PullRequestRef
+pub devlaunch_core::flows::pull_request::Resolved::Rewritten::spec: alloc::string::String
+impl core::clone::Clone for devlaunch_core::flows::pull_request::Resolved
+pub fn devlaunch_core::flows::pull_request::Resolved::clone(&self) -> devlaunch_core::flows::pull_request::Resolved
+impl core::cmp::Eq for devlaunch_core::flows::pull_request::Resolved
+impl core::cmp::PartialEq for devlaunch_core::flows::pull_request::Resolved
+pub fn devlaunch_core::flows::pull_request::Resolved::eq(&self, &devlaunch_core::flows::pull_request::Resolved) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::pull_request::Resolved
+pub fn devlaunch_core::flows::pull_request::Resolved::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::pull_request::Resolved
+pub fn devlaunch_core::flows::pull_request::resolve(&dyn devlaunch_runner::Runner, &str) -> devlaunch_core::flows::pull_request::Resolved
 pub mod devlaunch_core::flows::records
 pub fn devlaunch_core::flows::records::open_records<'r>(&'r dyn devlaunch_runner::Runner) -> core::result::Result<devlaunch_core::flows::records::Records<'r>, devlaunch_core::flows::records::StartupError>
 pub fn devlaunch_core::flows::records::open_storage() -> core::result::Result<(devlaunch_core::domain::metadata::MetadataStorage, alloc::vec::Vec<devlaunch_core::domain::metadata::Notice>), devlaunch_core::flows::records::StartupError>
