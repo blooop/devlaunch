@@ -29,6 +29,8 @@ pays it.
 
 from __future__ import annotations
 
+import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -46,6 +48,10 @@ from test_readme_cli_doc import LONG_FLAG, MUTUALLY_EXCLUSIVE_PROBE, dl_command_
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PAGE = REPO_ROOT / "docs" / "agents-using-dl.md"
 CLI_RS = REPO_ROOT / "rust" / "dl" / "src" / "cli.rs"
+# Where `unsaved` is built. Read rather than restated, so a key added to the wire
+# has to be added to the page before this suite goes green again.
+UNSAVED_RS = REPO_ROOT / "rust" / "devlaunch-core" / "src" / "flows" / "agent_worktrees.rs"
+LISTING_HEADING = "## Finding out what is there"
 
 # The URL the help block prints, and the path inside it that has to resolve. Spelled
 # once, here, so the assertion that the page exists and the assertion that `--help`
@@ -77,8 +83,8 @@ def test_the_page_a_reader_is_sent_to_is_there():
     """The premise every assertion below rests on.
 
     A missing page would leave the parametrized promise check collecting four
-    failures with the same unhelpful cause, and the flag check collecting nothing
-    at all, which reads like a clean run.
+    failures with the same unhelpful cause, and this is the one that names the
+    reason once.
     """
     assert PAGE.is_file(), (
         f"{PAGE.relative_to(REPO_ROOT)} is gone; `dl --help` and the README's Docs "
@@ -102,6 +108,87 @@ def test_the_page_still_promises_what_the_e2e_test_proves(promise):
         f"under {CONTRACT_HEADING!r}. test/e2e/test_agent_subprocess_contract.py "
         "still tests it, so either the page lost a claim or the pair has come apart"
     )
+
+
+@pytest.mark.unit
+def test_the_page_gives_the_exit_status_a_signalled_command_actually_has():
+    """The number, measured on the transport this page is about.
+
+    `dl <ws> -- <cmd>` never reaches `Ending::Child`: it returns
+    `Ending::Session(Session::exit_status(..))`, and over the piped transport a
+    script gets, devpod reports a signalled remote process as `Process exited with
+    status 255`. Measured on a real container by
+    `test_a_signalled_command_comes_back_as_255_whichever_signal_it_was`, for
+    SIGINT, SIGTERM and SIGKILL alike.
+
+    The page said 254, `-2` truncated, citing `Ending::Child`, which this path
+    does not reach. 130 is checked for by hand rather than by this guard: the page
+    names it deliberately, to say it is `dl`'s own Ctrl-C exit and not this.
+    """
+    contract = section(PAGE, CONTRACT_HEADING)
+    assert "255" in contract, (
+        f"{PAGE.relative_to(REPO_ROOT)} does not give the status a signalled "
+        "command comes back with, which is 255 for every signal"
+    )
+    assert "254" not in contract, (
+        f"{PAGE.relative_to(REPO_ROOT)} still offers 254 as the status of a "
+        "signalled command; measured, every signal comes back 255"
+    )
+
+
+def _unsaved_keys() -> set[str]:
+    """Every key `Verdict::unsaved_json` can put in the object, read off its source.
+
+    A regex over one function rather than a list kept here by hand: the point of
+    the guard is that the page and the wire cannot drift, and a hand-kept list
+    drifts from both at once.
+    """
+    source = UNSAVED_RS.read_text(encoding="utf-8")
+    body = source.split("pub fn unsaved_json", 1)[1].split("\n    }\n", 1)[0]
+    return set(re.findall(r'"([a-zA-Z]+)"\]?\s*(?:=|:)', body))
+
+
+@pytest.mark.unit
+def test_the_page_names_every_shape_unsaved_can_arrive_in():
+    """The field a caller reads before deleting, so a shape it omits destroys work.
+
+    `unsaved` is not two-valued. `Verdict::unsaved_json` emits `nothingToLose`,
+    `wouldLose`, `couldNotTell`, or `wouldLose` and `couldNotTell` together, and
+    `listing.rs` emits `null` for a row `dl` did not make. A caller told only about
+    the first two tests for `wouldLose`, does not find it on a `couldNotTell` row
+    that `dl <ws> rm` would itself have refused, and force-deletes.
+    """
+    listing = section(PAGE, LISTING_HEADING)
+    for key in sorted(_unsaved_keys()):
+        assert key in listing, (
+            f"{PAGE.relative_to(REPO_ROOT)} does not name `{key}`, which "
+            f"{UNSAVED_RS.relative_to(REPO_ROOT)} can put in `unsaved`. A caller "
+            "reading only the shapes the page names deletes work on the ones it "
+            "does not"
+        )
+    assert "null" in listing, (
+        f"{PAGE.relative_to(REPO_ROOT)} does not say `unsaved` is null for a "
+        "workspace dl did not make, which TypeErrors a naive reader"
+    )
+
+
+@pytest.mark.unit
+def test_the_page_still_promises_what_the_e2e_test_proves_about_the_listing():
+    """`--ls --json` is an array of rows, and an example that is one bare object
+    teaches `json.loads(out)["state"]`, which raises on every real invocation.
+
+    `json_document` in `flows/listing.rs` is
+    `serde_json::Value::Array(rows.iter().map(json_row).collect())`.
+    """
+    listing = section(PAGE, LISTING_HEADING)
+    fenced = listing.split("```json", 1)
+    assert len(fenced) == 2, f"{PAGE.relative_to(REPO_ROOT)} lost its json example"
+    example = fenced[1].split("```", 1)[0].strip()
+    assert example.startswith("["), (
+        f"{PAGE.relative_to(REPO_ROOT)}'s `--ls --json` example is not an array. "
+        "The document is one, so a caller copying this indexes a list with a string"
+    )
+    assert isinstance(json.loads(example), list)
 
 
 @pytest.mark.unit

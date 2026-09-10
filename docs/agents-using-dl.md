@@ -16,11 +16,29 @@ that matter most to a caller are exactly the parts a refactor cannot see it is b
 `dl <workspace> -- <command>` is an ordinary subprocess, and four things about it are
 promised rather than incidental.
 
-**The exit status is the command's.** `dl ws -- sh -c 'exit 42'` exits 42. A child
-killed by a signal comes back negative and truncated to its low eight bits, so a
-SIGINT'd command exits 254, which is what Python's `sys.exit(-2)` did before the port
-and what `Ending::Child` in `rust/dl/src/commands.rs` preserves on purpose. `dl`'s own
+**The exit status is the command's.** `dl ws -- sh -c 'exit 42'` exits 42. `dl`'s own
 failures are distinguishable: 1 for a refusal, 127 for a missing devpod.
+
+A command that dies of a **signal** is the exception, and it is worth knowing before
+you write the branch. It does not come back as 128 plus the signal number, the way a
+shell would report it. Measured on this transport, every signal comes back as **255**:
+
+```bash
+$ dl ws -- sh -c 'kill -INT $$';   echo $?   # 255
+$ dl ws -- sh -c 'kill -TERM $$';  echo $?   # 255
+$ dl ws -- sh -c 'kill -KILL $$';  echo $?   # 255
+```
+
+devpod's ssh server reports a signalled remote process as `Process exited with status
+255`, with no signal in the line, and `dl` passes that number through rather than
+inventing one. So a caller can tell a signalled command from `exit 42`, and cannot tell
+*which* signal, or tell either from a command that genuinely exited 255. If your
+orchestrator needs the distinction, have the command report it itself, for example
+`sh -c 'cmd; echo $? > /tmp/rc'`, rather than reading it off `dl`.
+
+This is not the 130 that [cli.md](cli.md) documents for Ctrl-C. That number is `dl`'s
+own exit when a signal reaches `dl`, which is a different event from the command inside
+the container dying of one.
 
 **stdout is the command's, verbatim.** Nothing `dl` prints goes there. Every progress
 line, every "already running, attaching...", every echoed ssh invocation is on stderr,
@@ -94,25 +112,48 @@ process does, so a killed agent does not wedge the cache for the others.
 caller deciding what to do:
 
 ```json
-{
-  "id": "bencher-ruff-waxd",
-  "devlaunch": true,
-  "repo": "blooop/bencher",
-  "branch": "ruff",
-  "checkedOut": "ruff",
-  "path": "/home/user/.cache/devlaunch/repos/blooop/bencher/bencher-ruff-waxd",
-  "state": "Running",
-  "lastUsed": "2026-09-10T09:24:10Z",
-  "unsaved": { "nothingToLose": true }
-}
+[
+  {
+    "id": "bencher-ruff-waxd",
+    "devlaunch": true,
+    "repo": "blooop/bencher",
+    "branch": "ruff",
+    "checkedOut": "ruff",
+    "path": "/home/user/.cache/devlaunch/repos/blooop/bencher/bencher-ruff-waxd",
+    "state": "Running",
+    "lastUsed": "2026-09-10T09:24:10Z",
+    "unsaved": { "nothingToLose": true }
+  }
+]
 ```
 
+The document is an **array** of those, always, including when it holds one row or
+none. `json.loads(out)` is a list.
+
 Three fields earn their place in a script. `state` says whether a call will pay a cold
-start. `devlaunch` separates the workspaces `dl` made from the ones it merely found, so
-a cleanup pass can leave other people's alone. And `unsaved` is the one worth reading
-before anything destructive: it reports `nothingToLose`, or a `wouldLose` naming what a
-delete would take with it, which is the same judgement the `rm` verb makes and the only
-way to make it without a `dl` process in the loop.
+start, and is `null` when `devpod status` would not answer. `devlaunch` separates the
+workspaces `dl` made from the ones it merely found, so a cleanup pass can leave other
+people's alone; on a row where it is `false`, `repo`, `branch`, `checkedOut` and `path`
+are `null` too, because there is no clone behind it for `dl` to have read them from.
+
+And `unsaved` is the one worth reading before anything destructive. It is the same
+judgement the `rm` verb makes, and it is the only way to make it without a `dl` process
+in the loop. **It is not two-valued**, and a caller that treats it as two-valued deletes
+work:
+
+- `{ "nothingToLose": true }`. Nothing would be lost.
+- `{ "wouldLose": "..." }`. Named work a delete would take with it.
+- `{ "couldNotTell": "..." }`. git could not be read, so nothing is known either way.
+  `dl <ws> rm` refuses on this rather than waving it through, and so should you: it is
+  the absence of an answer, not an answer of no.
+- `{ "wouldLose": "...", "couldNotTell": "..." }`. Both at once, when part of it could
+  be read and part could not. Refuse on this too.
+- `null`, for a workspace `dl` did not make and has no clone for. Indexing it raises.
+
+So the only safe test is `nothingToLose` present and true. Everything else, `null`
+included, is a reason not to destroy anything without a person in the loop, and a
+caller that tests for `wouldLose` alone will force-delete exactly the rows `rm` itself
+would have stopped at.
 
 `--json` is currently `--ls` only. Other commands report in English, so a caller that
 creates a workspace and then needs to address it should derive the id from a subsequent

@@ -17,7 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one a refactor cannot see it is breaking. `docs/agents-using-dl.md` states it,
   along with the one thing an orchestrator most needs to know (a workspace is one
   branch, so two agents on one branch share one clone and collide inside it),
-  what `--ls --json` guarantees, and which of the three deletions to reach for.
+  what `--ls --json` guarantees (an array, and the five shapes `unsaved` can
+  arrive in, two of which mean "do not delete this"), and which of the three
+  deletions to reach for.
   `dl --help` now ends with a four-line pointer to it, spelled as a URL because
   an agent handed the binary out of a pixi environment has no repository to
   resolve a relative path against.
@@ -95,6 +97,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Known issues
 
+- **A command killed by a signal comes back as 255, whichever signal it was.**
+  `dl <ws> -- <cmd>` passes through the status devpod's ssh server reports, and
+  that server reports a signalled remote process as `Process exited with status
+  255` without naming the signal. So a caller can tell a signalled command from
+  one that exited 42, and cannot tell SIGINT from SIGKILL, or either from a
+  command that genuinely exited 255. Measured on a container across SIGINT,
+  SIGTERM and SIGKILL; the page says so and says to have the command report its
+  own status when the distinction matters.
 - **A command's stderr still comes back reformatted by devpod's stream logger**,
   timestamped and ANSI-coloured with a Go source location appended, which is
   what a caller reading a compiler or a test runner cannot parse. The documented
