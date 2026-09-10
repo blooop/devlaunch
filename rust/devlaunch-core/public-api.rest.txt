@@ -1628,7 +1628,7 @@ pub fn devlaunch_core::flows::kill::Sweep::eq(&self, &devlaunch_core::flows::kil
 impl core::fmt::Debug for devlaunch_core::flows::kill::Sweep
 pub fn devlaunch_core::flows::kill::Sweep::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::kill::Sweep
-pub fn devlaunch_core::flows::kill::release_the_lock(&dyn devlaunch_runner::Runner, &str, u32, &mut dyn core::ops::function::FnMut(core::time::Duration)) -> devlaunch_core::flows::kill::Released
+pub fn devlaunch_core::flows::kill::release_the_lock(&dyn devlaunch_runner::Runner, &str, &mut dyn core::ops::function::FnMut(core::time::Duration)) -> devlaunch_core::flows::kill::Released
 pub fn devlaunch_core::flows::kill::workspace_kill(&dyn devlaunch_runner::Runner, core::option::Option<&devlaunch_core::clients::devpod_home::DevpodHome>, &str, &mut dyn core::ops::function::FnMut(core::time::Duration)) -> devlaunch_core::flows::kill::Killed
 pub mod devlaunch_core::flows::launch
 pub enum devlaunch_core::flows::launch::BranchNotNamed

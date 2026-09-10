@@ -1723,15 +1723,7 @@ fn up_under_stage(
             // this call site is core's own, and there is no launch-side clock to
             // thread through eight parameters for the sake of two seconds that
             // only elapse when an orphan actually has to be signalled.
-            // This process's own pid, so the sweep can tell the `up` it is
-            // watching from the one wedging it: the launch's own devpod is a
-            // direct child of this `dl` (devlaunch#602).
-            let released = kill::release_the_lock(
-                runner,
-                &blocked_on,
-                std::process::id(),
-                &mut std::thread::sleep,
-            );
+            let released = kill::release_the_lock(runner, &blocked_on, &mut std::thread::sleep);
             notices.say(LaunchNotice::SweptTheLockHolders {
                 workspace_id: blocked_on.clone(),
                 released,

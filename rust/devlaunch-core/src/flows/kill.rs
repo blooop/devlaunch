@@ -772,13 +772,25 @@ pub fn workspace_kill(
 /// It adds no wait of its own beyond the escalation's grace: the caller is
 /// already blocked in a `devpod up` that recovers by itself once the flock is
 /// free, so there is nothing here to wait for.
+///
+/// **The pid it excludes is read here, not passed in.** It used to be a `u32`
+/// parameter, and the only value that is ever correct for it is this process's
+/// own: the `up` being waited on is a direct child of the `dl` calling this.
+/// Any other value is a wrong answer the type invited -- `release_the_lock(.., 1,
+/// ..)` excludes every init-reparented devpod on the host, which is exactly the
+/// orphan devlaunch#602 exists to clear, and the launch then reports that nothing
+/// is holding the workspace while the orphan holds it.
 pub fn release_the_lock(
     runner: &dyn Runner,
     workspace_id: &str,
-    own_pid: u32,
     wait: &mut dyn FnMut(Duration),
 ) -> Released {
-    match sweep_holders(runner, workspace_id, Ours::ChildrenOf(own_pid), wait) {
+    match sweep_holders(
+        runner,
+        workspace_id,
+        Ours::ChildrenOf(std::process::id()),
+        wait,
+    ) {
         Ok((signalled, holding)) => Released::Swept(Release { signalled, holding }),
         Err(cannot) => Released::Unavailable(cannot),
     }
@@ -1195,11 +1207,6 @@ mod tests {
 
     // --------------------------------------------------- the escalation
 
-    /// A pid no row in these tables names as its parent, so `Ours::ChildrenOf`
-    /// claims nothing: the release tests below are about the sweep, not about
-    /// self-exclusion, and that has its own test.
-    const NOBODYS_CHILD: u32 = u32::MAX;
-
     /// The issue's row, as `ps` prints it.
     const WEDGED: &str = "732721       1 devpod up my-ws --ide none\n";
     const NOTHING: &str = "    1       0 /sbin/init\n";
@@ -1255,7 +1262,7 @@ mod tests {
     fn a_launch_releasing_the_lock_clears_the_orphan_holding_it() {
         let fake = host_showing(WEDGED);
 
-        let release = released(release_the_lock(&fake, "my-ws", NOBODYS_CHILD, &mut |_| {
+        let release = released(release_the_lock(&fake, "my-ws", &mut |_| {
             showing(&fake, NOTHING);
         }));
 
@@ -1278,7 +1285,7 @@ mod tests {
             "    1       0 /sbin/init\n 5000       1 dl my-ws\n 5001    5000 devpod up my-ws\n",
         );
 
-        let release = released(release_the_lock(&fake, "my-ws", NOBODYS_CHILD, &mut |_| {}));
+        let release = released(release_the_lock(&fake, "my-ws", &mut |_| {}));
 
         assert!(fake.args_to("kill").is_empty(), "nothing was signalled");
         assert!(
@@ -1296,7 +1303,7 @@ mod tests {
     fn a_release_that_only_found_survivors_freed_nothing() {
         let fake = host_showing(WEDGED);
 
-        let release = released(release_the_lock(&fake, "my-ws", NOBODYS_CHILD, &mut |_| {}));
+        let release = released(release_the_lock(&fake, "my-ws", &mut |_| {}));
 
         assert_eq!(
             release
@@ -1320,7 +1327,7 @@ mod tests {
     fn a_release_that_left_a_build_and_an_unstoppable_orphan_keeps_the_two_apart() {
         let fake = host_showing(MIXED);
 
-        let release = released(release_the_lock(&fake, "my-ws", NOBODYS_CHILD, &mut |_| {}));
+        let release = released(release_the_lock(&fake, "my-ws", &mut |_| {}));
 
         let Freed::Nothing { still_held } = release.freed() else {
             panic!("nothing let go: {release:?}");
@@ -1355,7 +1362,7 @@ mod tests {
     fn a_release_that_found_no_holder_at_all_says_so() {
         let fake = host_showing(NOTHING);
 
-        let release = released(release_the_lock(&fake, "my-ws", NOBODYS_CHILD, &mut |_| {}));
+        let release = released(release_the_lock(&fake, "my-ws", &mut |_| {}));
 
         assert!(fake.args_to("kill").is_empty());
         assert!(release.signalled.is_empty(), "{release:?}");
@@ -1372,7 +1379,7 @@ mod tests {
 
         assert!(
             matches!(
-                release_the_lock(&fake, "my-ws", NOBODYS_CHILD, &mut |_| {}),
+                release_the_lock(&fake, "my-ws", &mut |_| {}),
                 Released::Unavailable(HostCannot::ReadItsProcessTable(TableUnreadable::NoPs)),
             ),
             "a host with no ps must not report an empty sweep",
@@ -1388,7 +1395,7 @@ mod tests {
     fn a_launch_releasing_the_lock_touches_neither_the_busy_marker_nor_any_container() {
         let fake = host_showing(WEDGED);
 
-        released(release_the_lock(&fake, "my-ws", NOBODYS_CHILD, &mut |_| {
+        released(release_the_lock(&fake, "my-ws", &mut |_| {
             showing(&fake, NOTHING);
         }));
 
