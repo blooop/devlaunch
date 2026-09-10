@@ -2659,6 +2659,18 @@ impl core::fmt::Debug for devlaunch_core::flows::provision::ClaudeConfig
 pub fn devlaunch_core::flows::provision::ClaudeConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Copy for devlaunch_core::flows::provision::ClaudeConfig
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::provision::ClaudeConfig
+pub enum devlaunch_core::flows::provision::CodexSwitch
+pub devlaunch_core::flows::provision::CodexSwitch::Install
+pub devlaunch_core::flows::provision::CodexSwitch::Skip
+impl core::clone::Clone for devlaunch_core::flows::provision::CodexSwitch
+pub fn devlaunch_core::flows::provision::CodexSwitch::clone(&self) -> devlaunch_core::flows::provision::CodexSwitch
+impl core::cmp::Eq for devlaunch_core::flows::provision::CodexSwitch
+impl core::cmp::PartialEq for devlaunch_core::flows::provision::CodexSwitch
+pub fn devlaunch_core::flows::provision::CodexSwitch::eq(&self, &devlaunch_core::flows::provision::CodexSwitch) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::provision::CodexSwitch
+pub fn devlaunch_core::flows::provision::CodexSwitch::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for devlaunch_core::flows::provision::CodexSwitch
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::provision::CodexSwitch
 pub enum devlaunch_core::flows::provision::FailureLevel
 pub devlaunch_core::flows::provision::FailureLevel::Info
 pub devlaunch_core::flows::provision::FailureLevel::Warning
@@ -2765,9 +2777,11 @@ impl core::fmt::Debug for devlaunch_core::flows::provision::Pass
 pub fn devlaunch_core::flows::provision::Pass::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::provision::Pass
 pub struct devlaunch_core::flows::provision::Switches
+pub devlaunch_core::flows::provision::Switches::codex: devlaunch_core::flows::provision::CodexSwitch
 pub devlaunch_core::flows::provision::Switches::tools: devlaunch_core::flows::provision::ToolsSwitch
 pub devlaunch_core::flows::provision::Switches::zellij: devlaunch_core::flows::provision::ZellijSwitch
 impl devlaunch_core::flows::provision::Switches
+pub fn devlaunch_core::flows::provision::Switches::for_agent(self, core::option::Option<&str>) -> Self
 pub fn devlaunch_core::flows::provision::Switches::from_env() -> Self
 impl core::clone::Clone for devlaunch_core::flows::provision::Switches
 pub fn devlaunch_core::flows::provision::Switches::clone(&self) -> devlaunch_core::flows::provision::Switches

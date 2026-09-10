@@ -456,14 +456,22 @@ fn each_agent_is_started_the_way_its_own_cli_takes_a_prompt() {
         &format!("devpod ssh {MAIN} --command bash -lc 'gemini --yolo'")
     );
 
+    // codex is the one agent whose payload carries a prefix, because it is the one
+    // that cannot authenticate from a forwarded variable alone: `dl` writes it the
+    // redacted `auth.json` the host's login was reduced to before starting it.
+    // `devlaunch_core::clients::codex` has the whole argument. Asserted by part
+    // rather than as one string, since the prefix is a shell block and the point
+    // here is that codex gets one and the other agents do not.
     let codex = World::with(&["--warm"]);
     codex.aid(&["--codex", MAIN, "hi"]).exited(0);
-    assert_eq!(
-        codex.devpod_calls().last().expect("a session"),
-        &format!(
-            "devpod ssh {MAIN} --command bash -lc 'codex --dangerously-bypass-approvals-and-sandbox hi'"
-        )
-    );
+    let session = codex.devpod_calls().last().expect("a session").clone();
+    for part in [
+        "DEVLAUNCH_CODEX_AUTH",
+        "auth.json",
+        "codex --dangerously-bypass-approvals-and-sandbox hi",
+    ] {
+        assert!(session.contains(part), "{part}: {session}");
+    }
 }
 
 #[test]

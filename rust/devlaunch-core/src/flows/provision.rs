@@ -251,6 +251,7 @@ pub(crate) const HOSTNAME_STAGE: StageName = StageName::new("hostname");
 /// The stage that puts `zellij` in the container (see [`ZELLIJ_TOOL`]). Also free
 /// of round trips: it rides the pass every entry into Running already pays.
 pub(crate) const ZELLIJ_STAGE: StageName = StageName::new("zellij");
+pub(crate) const CODEX_STAGE: StageName = StageName::new("codex");
 
 /// The stage that teaches the shell to keep naming the terminal after this
 /// workspace. Rides the same trip as the two above it.
@@ -350,6 +351,25 @@ pub(crate) const REQUIRED_TOOLS: [Tool; 2] = [
 /// and named by construction.
 pub(crate) const ZELLIJ_TOOL: Tool = Tool::new("zellij", "zellij");
 
+/// The other agent `aid` can start (`aid --codex`). A `codex` on PATH is the whole
+/// of what that needs from a container.
+///
+/// **Not lent from the host, unlike claude, and the size is the reason.** The lending
+/// payload carries claude because the host's is a ~21KB shim; codex is a 244MB
+/// binary, which is five times the whole rest of the payload and would be streamed
+/// over the ssh channel on every cold provision. It is on conda-forge for linux-64,
+/// so the network rung installs it for the price of a `pixi global install` — the
+/// same rung [`ZELLIJ_TOOL`] rides.
+///
+/// Deliberately **not** a third row in [`REQUIRED_TOOLS`], for the reason
+/// [`ZELLIJ_TOOL`] is not: that array is what [`probe_script`] asks about *as a
+/// whole*, so a container answering "missing" is lent the host's claude. A codex
+/// row there would put every container that already has gh and claude back onto
+/// the lending path, and would still never install codex — a successful lend
+/// returns before the network trip. So this is a stage of the setup pass, where a
+/// failure is contained and named by construction.
+pub(crate) const CODEX_TOOL: Tool = Tool::new("codex", "codex");
+
 /// Whether `value` is a `DEVLAUNCH_*` switch set to something other than a denial.
 ///
 /// Named for [`DISABLE_VAR`], which is the switch it was written for and where
@@ -437,7 +457,45 @@ impl ZellijSwitch {
     }
 }
 
-/// The two opt-outs one pass reads, carried as one value.
+/// Whether this pass carries the codex stage.
+///
+/// Its own type for [`ZellijSwitch`]'s reason — three switches of one bool type in
+/// one signature are three a caller can swap without the compiler noticing — but
+/// derived from a different kind of fact, which is the part worth reading. The other
+/// two answer environment variables. This one answers **what this launch was asked
+/// to run**: `aid --codex` becomes `dl <ws> -- codex ...`, so the command already
+/// names the agent and [`crate::flows::launch::RemoteCommand::agent`] already reads
+/// it for the session manager. Installing codex into every workspace on the chance
+/// somebody wants it would be a 244MB package most launches never call, and a
+/// consent variable would make the batteries-included case something a user has to
+/// find out about.
+///
+/// The consequence worth naming: a workspace first provisioned by `dl <ws>` and then
+/// used by `aid --codex <ws>` is a cache miss in [`verdict_cache`], because the
+/// switches a marker was written under are part of its key. That costs the second
+/// launch one pass — the pass that installs codex — which is exactly what has to
+/// happen and is why the switch belongs in [`Switches`] rather than beside it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CodexSwitch {
+    Install,
+    Skip,
+}
+
+impl CodexSwitch {
+    /// What a launch of `agent` needs from this pass.
+    ///
+    /// Keyed on [`crate::clients::herdr`]'s spelling of the name rather than a
+    /// literal, so the one list of agents devlaunch knows stays the one list.
+    pub(crate) fn for_agent(agent: Option<&str>) -> Self {
+        if agent == Some(CODEX_TOOL.command) {
+            Self::Install
+        } else {
+            Self::Skip
+        }
+    }
+}
+
+/// The opt-outs and consents one pass reads, carried as one value.
 ///
 /// Not a convenience: [`provision_tools`] already takes a runner, a workspace, an
 /// occasion, a host layout, a verdict cache and an events sink, and two more
@@ -449,14 +507,32 @@ impl ZellijSwitch {
 pub struct Switches {
     pub tools: ToolsSwitch,
     pub zellij: ZellijSwitch,
+    pub codex: CodexSwitch,
 }
 
 impl Switches {
-    /// Both switches as the process environment sets them.
+    /// The switches as the process environment sets them.
     pub fn from_env() -> Self {
         Self {
             tools: ToolsSwitch::from_env(),
             zellij: ZellijSwitch::from_env(),
+            // Skip, because the environment is not what decides this one: no
+            // variable asks for codex, the command does. A caller that has parsed
+            // one adds it with [`Self::for_agent`].
+            codex: CodexSwitch::Skip,
+        }
+    }
+
+    /// The same switches, with the codex stage decided by what this launch runs.
+    ///
+    /// Separate from [`Self::from_env`] rather than a parameter on it, because the
+    /// two facts arrive at different times: the environment is known when dl starts,
+    /// and the command is known once the CLI has parsed one. A launch with no
+    /// `-- <cmd>` never calls this and gets [`CodexSwitch::Skip`].
+    pub fn for_agent(self, agent: Option<&str>) -> Self {
+        Self {
+            codex: CodexSwitch::for_agent(agent),
+            ..self
         }
     }
 
@@ -467,6 +543,7 @@ impl Switches {
     pub(crate) const INSTALLING: Self = Self {
         tools: ToolsSwitch::Install,
         zellij: ZellijSwitch::Install,
+        codex: CodexSwitch::Skip,
     };
 }
 
@@ -802,6 +879,38 @@ pub(crate) fn zellij_script() -> String {
         PIXI_HOME_EXPORT.to_owned(),
         PIXI_BOOTSTRAP.to_owned(),
         install_line(&ZELLIJ_TOOL),
+        profile_resolution("$HOME"),
+        profile_prepend(PIXI_BIN_LINE, Some("failed=1")),
+        "exit \"$failed\"".to_owned(),
+    ]
+    .join("\n")
+}
+
+/// The [`CODEX_STAGE`]'s script: put a `codex` on PATH, and nothing else.
+///
+/// [`zellij_script`] line for line, and the sameness is deliberate — both are "one
+/// package from the network rung, contained in a stage" — so the two are worth
+/// diffing rather than reading twice. The early exit on a `codex` already present is
+/// what makes a stage on every codex launch affordable.
+///
+/// **No credential here, and that is the whole boundary.** This runs on the `up`
+/// trip, whose environment devpod persists in the workspace's configuration; the
+/// Codex access token rides `--send-env` on the sessions dl opens instead, for the
+/// reasons [`crate::clients::codex`] gives. So this stage installs a codex that is
+/// not logged in, and the session that follows is what logs it in. The two halves
+/// are separable on purpose: a workspace can be warmed by `dl <ws> up` with no
+/// credential anywhere near it.
+pub(crate) fn codex_script() -> String {
+    [
+        "set -u".to_owned(),
+        "failed=0".to_owned(),
+        format!(
+            "if command -v {} >/dev/null 2>&1; then exit 0; fi",
+            quote(CODEX_TOOL.command)
+        ),
+        PIXI_HOME_EXPORT.to_owned(),
+        PIXI_BOOTSTRAP.to_owned(),
+        install_line(&CODEX_TOOL),
         profile_resolution("$HOME"),
         profile_prepend(PIXI_BIN_LINE, Some("failed=1")),
         "exit \"$failed\"".to_owned(),
@@ -1488,6 +1597,7 @@ pub(crate) fn setup_stages(
     workspace: &str,
     tools: ToolsSwitch,
     zellij: ZellijSwitch,
+    codex: CodexSwitch,
     title: Option<&str>,
 ) -> Vec<Stage> {
     let mut stages = vec![
@@ -1527,6 +1637,20 @@ pub(crate) fn setup_stages(
             // redirected into that buffer is a cold launch that looks hung with
             // nothing to show for it.
             format!("bash -c {} >&2", quote(&zellij_script())),
+        ));
+    }
+    if let (ToolsSwitch::Install, CodexSwitch::Install) = (tools, codex) {
+        // Nested `bash -c`, redirected whole to stderr, for the zellij stage's two
+        // reasons: a stage is interpolated into `if <command>; then` and this script
+        // is more than one line, and pixi is loud enough that its progress on the
+        // probe's stdout is one unlucky line from being read as protocol.
+        //
+        // Gated on `tools` as well as its own switch, because `DEVLAUNCH_NO_TOOLS=1`
+        // means this pass installs nothing — a launch asking for codex does not
+        // override a machine that has turned provisioning off.
+        stages.push(Stage::new(
+            CODEX_STAGE,
+            format!("bash -c {} >&2", quote(&codex_script())),
         ));
     }
     if let Some(title) = title {
@@ -2583,7 +2707,13 @@ fn setup_pass(
     host_home: Option<&str>,
     events: &mut dyn Notices<ProvisionEvent>,
 ) -> Result<PassReport, NotRun> {
-    let stages = setup_stages(workspace, switches.tools, switches.zellij, title);
+    let stages = setup_stages(
+        workspace,
+        switches.tools,
+        switches.zellij,
+        switches.codex,
+        title,
+    );
     let call = Call::new([
         "ssh",
         workspace,
@@ -3733,7 +3863,13 @@ fi
         // The round trip Python's own tests assert with `shlex.split(runner.script())`:
         // whatever the quoting, the remote shell has to recover exactly `bash`, the
         // flag, and one script.
-        let stages = setup_stages("myws", ToolsSwitch::Install, ZellijSwitch::Install, None);
+        let stages = setup_stages(
+            "myws",
+            ToolsSwitch::Install,
+            ZellijSwitch::Install,
+            CodexSwitch::Skip,
+            None,
+        );
         for (payload, flag, script) in [
             (
                 format!("bash -lc {}", quote(&setup_script(&stages))),
@@ -3756,11 +3892,124 @@ fi
         }
     }
 
+    /// The switch is a function of the command, so the stage is carried exactly when
+    /// a launch asked for codex and not once otherwise. The cost of getting this
+    /// wrong is a 244MB package installed into workspaces nothing will run it in.
+    #[test]
+    fn the_codex_stage_is_carried_only_by_a_launch_that_runs_codex() {
+        let names = |codex| {
+            setup_stages(
+                "myws",
+                ToolsSwitch::Install,
+                ZellijSwitch::Skip,
+                codex,
+                None,
+            )
+            .into_iter()
+            .map(|stage| stage.name)
+            .collect::<Vec<_>>()
+        };
+        assert!(names(CodexSwitch::Install).contains(&CODEX_STAGE));
+        assert!(!names(CodexSwitch::Skip).contains(&CODEX_STAGE));
+    }
+
+    /// `DEVLAUNCH_NO_TOOLS=1` means this pass installs nothing, and a launch asking
+    /// for codex does not get to override a machine that has turned provisioning off.
+    #[test]
+    fn the_codex_stage_answers_the_tools_opt_out_like_every_other_install() {
+        let stages = setup_stages(
+            "myws",
+            ToolsSwitch::Skip,
+            ZellijSwitch::Skip,
+            CodexSwitch::Install,
+            None,
+        );
+        assert!(!stages.into_iter().any(|stage| stage.name == CODEX_STAGE));
+    }
+
+    #[test]
+    fn only_a_codex_command_asks_for_the_codex_stage() {
+        assert_eq!(CodexSwitch::for_agent(Some("codex")), CodexSwitch::Install);
+        for other in [None, Some("claude"), Some("gemini"), Some("make")] {
+            assert_eq!(
+                CodexSwitch::for_agent(other),
+                CodexSwitch::Skip,
+                "{other:?} asked for the codex stage"
+            );
+        }
+    }
+
+    /// The stage installs a codex and touches no credential: the access token rides
+    /// the session, because the `up` trip's environment is persisted in the
+    /// workspace's configuration. See `clients::codex`.
+    #[test]
+    fn the_codex_stage_carries_no_credential() {
+        let script = codex_script();
+        for secret in [
+            crate::clients::codex::AUTH_VAR,
+            crate::clients::codex::AUTH_FILENAME,
+            // The login command itself, not the bare word: `profile_resolution`
+            // writes `.bash_login`, which is a profile filename and not this.
+            "codex login",
+            "refresh",
+        ] {
+            assert!(
+                !script.contains(secret),
+                "the codex stage mentions {secret:?}: {script}"
+            );
+        }
+    }
+
+    /// Its early exit is what makes a stage on every codex launch affordable, and it
+    /// is the same shape the zellij stage's is.
+    #[test]
+    fn a_codex_already_in_the_container_costs_nothing() {
+        assert!(
+            codex_script().contains("if command -v codex >/dev/null 2>&1; then exit 0; fi"),
+            "{}",
+            codex_script()
+        );
+    }
+
+    #[test]
+    fn the_codex_stage_is_one_word_the_pass_shell_hands_to_a_nested_bash() {
+        let stages = setup_stages(
+            "myws",
+            ToolsSwitch::Install,
+            ZellijSwitch::Skip,
+            CodexSwitch::Install,
+            None,
+        );
+        let command = &stages
+            .iter()
+            .find(|stage| stage.name == CODEX_STAGE)
+            .expect("the codex stage")
+            .command;
+        let words = shlex::split(command).expect("a stage a shell can read");
+        assert_eq!(
+            words,
+            vec![
+                "bash".to_owned(),
+                "-c".to_owned(),
+                codex_script(),
+                // The stage redirects itself, because it cannot be redirected from
+                // outside: `stage_snippet` interpolates it into `if <command>; then`.
+                ">&2".to_owned(),
+            ]
+        );
+    }
+
     #[test]
     fn the_zellij_stage_is_one_word_the_pass_shell_hands_to_a_nested_bash() {
         // The stage is interpolated into `if <command>; then`, so the quoting has to
         // survive being read by the *pass's* shell before the nested bash sees it.
-        let stages = setup_stages("myws", ToolsSwitch::Install, ZellijSwitch::Install, None);
+        let stages = setup_stages(
+            "myws",
+            ToolsSwitch::Install,
+            ZellijSwitch::Install,
+            CodexSwitch::Skip,
+            None,
+        );
         let command = &stages[1].command;
         let words = shlex::split(command).expect("a stage a shell can read");
         assert_eq!(
@@ -3826,6 +4075,7 @@ fi
             "myws",
             ToolsSwitch::Install,
             ZellijSwitch::Install,
+            CodexSwitch::Skip,
             None,
         ));
         assert_eq!(
@@ -3839,6 +4089,7 @@ fi
             "myws",
             ToolsSwitch::Skip,
             ZellijSwitch::Install,
+            CodexSwitch::Skip,
             None,
         ));
         assert_eq!(
@@ -4761,7 +5012,13 @@ fi
             (ToolsSwitch::Install, ZellijSwitch::Skip),
             (ToolsSwitch::Skip, ZellijSwitch::Skip),
         ] {
-            let stages = setup_stages("myws", tools, zellij, Some("repo@branch"));
+            let stages = setup_stages(
+                "myws",
+                tools,
+                zellij,
+                CodexSwitch::Skip,
+                Some("repo@branch"),
+            );
             assert_eq!(
                 stages.last().map(|stage| stage.name),
                 Some(ONBOARDING_STAGE),
@@ -4776,7 +5033,13 @@ fi
         // The zellij stage's property, for the zellij stage's reason: the quoting has
         // to survive being read by the *pass's* shell before the nested bash sees a
         // script with quotes and braces of its own in it.
-        let stages = setup_stages("myws", ToolsSwitch::Skip, ZellijSwitch::Skip, None);
+        let stages = setup_stages(
+            "myws",
+            ToolsSwitch::Skip,
+            ZellijSwitch::Skip,
+            CodexSwitch::Skip,
+            None,
+        );
         let command = &stages.last().expect("the onboarding stage").command;
         assert_eq!(
             shlex::split(command).expect("a stage a shell can read"),
@@ -5358,6 +5621,7 @@ fi
             "myws",
             ToolsSwitch::Install,
             ZellijSwitch::Install,
+            CodexSwitch::Skip,
             None,
         ));
         assert!(script.contains(&probe_script()));
@@ -5368,7 +5632,13 @@ fi
         // Order, and it is not cosmetic: the probe exits early when a tool is
         // missing, which is the commonest cold-path answer, so a stage placed behind
         // it would report "not reached" on the very launches the fold exists for.
-        let stages = setup_stages("myws", ToolsSwitch::Install, ZellijSwitch::Install, None);
+        let stages = setup_stages(
+            "myws",
+            ToolsSwitch::Install,
+            ZellijSwitch::Install,
+            CodexSwitch::Skip,
+            None,
+        );
         let script = setup_script(&stages);
         let probe_at = script.find(&probe_script()).expect("the probe is in there");
         for stage in &stages {
@@ -5394,6 +5664,7 @@ fi
             id,
             ToolsSwitch::Install,
             ZellijSwitch::Install,
+            CodexSwitch::Skip,
             None,
         ));
 
@@ -5410,6 +5681,7 @@ fi
             "myws",
             ToolsSwitch::Install,
             ZellijSwitch::Install,
+            CodexSwitch::Skip,
             None,
         ));
         assert!(!script.contains("set -e"));
@@ -5423,6 +5695,7 @@ fi
             name,
             ToolsSwitch::Install,
             ZellijSwitch::Install,
+            CodexSwitch::Skip,
             None,
         ));
         assert!(script.contains(&format!("hostname {}", quote(name))));
@@ -5460,6 +5733,7 @@ fi
             workspace,
             ToolsSwitch::Install,
             ZellijSwitch::Install,
+            CodexSwitch::Skip,
             None,
         ));
         let ran = bash_with(
@@ -5484,7 +5758,13 @@ fi
     fn outcome_of(report: &str, stage: StageName) -> Option<StageOutcome> {
         stage_outcomes(
             report,
-            &setup_stages("myws", ToolsSwitch::Install, ZellijSwitch::Install, None),
+            &setup_stages(
+                "myws",
+                ToolsSwitch::Install,
+                ZellijSwitch::Install,
+                CodexSwitch::Skip,
+                None,
+            ),
         )
         .into_iter()
         .find(|outcome| outcome.stage == stage)
@@ -5511,6 +5791,7 @@ fi
             "devlaunch-main-3j1t",
             ToolsSwitch::Install,
             ZellijSwitch::Install,
+            CodexSwitch::Skip,
             None,
         ));
 
@@ -5586,11 +5867,16 @@ fi
     /// the one stage because every assertion below is about how one reported line is
     /// *read*.
     fn hostname_outcome(report: &str) -> Vec<StageOutcome> {
-        let stages: Vec<Stage> =
-            setup_stages("myws", ToolsSwitch::Install, ZellijSwitch::Install, None)
-                .into_iter()
-                .filter(|stage| stage.name == HOSTNAME_STAGE)
-                .collect();
+        let stages: Vec<Stage> = setup_stages(
+            "myws",
+            ToolsSwitch::Install,
+            ZellijSwitch::Install,
+            CodexSwitch::Skip,
+            None,
+        )
+        .into_iter()
+        .filter(|stage| stage.name == HOSTNAME_STAGE)
+        .collect();
         assert!(!stages.is_empty(), "the pass no longer names the container");
         stage_outcomes(report, &stages)
     }
@@ -5700,7 +5986,8 @@ fi
                 "myws",
                 ToolsSwitch::Install,
                 ZellijSwitch::Install,
-                None,
+                CodexSwitch::Skip,
+                None
             ))
         );
     }
@@ -5935,6 +6222,7 @@ fi
         let (outcome, events) = events_of(
             &runner,
             Switches {
+                codex: CodexSwitch::Skip,
                 tools: ToolsSwitch::Skip,
                 zellij: ZellijSwitch::Install,
             },
@@ -5952,7 +6240,8 @@ fi
                 "myws",
                 ToolsSwitch::Skip,
                 ZellijSwitch::Install,
-                None,
+                CodexSwitch::Skip,
+                None
             ))
         );
         assert!(words[2].contains("sudo hostname myws"));
@@ -6008,16 +6297,22 @@ fi
             "myws",
             ToolsSwitch::Install,
             ZellijSwitch::Install,
+            CodexSwitch::Skip,
             Some("devlaunch-main-3j1t"),
         )
         .iter()
         .map(|stage| stage.name)
         .collect();
-        let unnamed: Vec<StageName> =
-            setup_stages("myws", ToolsSwitch::Install, ZellijSwitch::Install, None)
-                .iter()
-                .map(|stage| stage.name)
-                .collect();
+        let unnamed: Vec<StageName> = setup_stages(
+            "myws",
+            ToolsSwitch::Install,
+            ZellijSwitch::Install,
+            CodexSwitch::Skip,
+            None,
+        )
+        .iter()
+        .map(|stage| stage.name)
+        .collect();
 
         assert!(named.contains(&TITLE_STAGE), "{named:?}");
         assert!(!unnamed.contains(&TITLE_STAGE), "{unnamed:?}");
@@ -6033,11 +6328,16 @@ fi
             (ToolsSwitch::Skip, ZellijSwitch::Install),
             (ToolsSwitch::Install, ZellijSwitch::Skip),
         ] {
-            let names: Vec<StageName> =
-                setup_stages("myws", tools, zellij, Some("devlaunch-main-3j1t"))
-                    .iter()
-                    .map(|stage| stage.name)
-                    .collect();
+            let names: Vec<StageName> = setup_stages(
+                "myws",
+                tools,
+                zellij,
+                CodexSwitch::Skip,
+                Some("devlaunch-main-3j1t"),
+            )
+            .iter()
+            .map(|stage| stage.name)
+            .collect();
 
             assert!(
                 names.contains(&TITLE_STAGE),
@@ -6127,6 +6427,7 @@ fi
             "myws",
             ToolsSwitch::Install,
             ZellijSwitch::Install,
+            CodexSwitch::Skip,
             Some("devlaunch-main-3j1t"),
         );
         let stage = stages
@@ -6150,6 +6451,7 @@ fi
             "myws",
             ToolsSwitch::Skip,
             ZellijSwitch::Skip,
+            CodexSwitch::Skip,
             Some("devlaunch-main-3j1t"),
         );
         let stage = stages
@@ -6216,6 +6518,7 @@ fi
             "myws",
             ToolsSwitch::Skip,
             ZellijSwitch::Skip,
+            CodexSwitch::Skip,
             Some("blooop/devlaunch@main"),
         );
         let stage = stages
@@ -6278,6 +6581,7 @@ fi
             "myws",
             ToolsSwitch::Install,
             ZellijSwitch::Install,
+            CodexSwitch::Skip,
             None,
         ));
 
@@ -6332,6 +6636,7 @@ fi
             "myws",
             ToolsSwitch::Install,
             ZellijSwitch::Skip,
+            CodexSwitch::Skip,
             Some("blooop/devlaunch@main"),
         )
         .iter()
@@ -6348,6 +6653,7 @@ fi
         let (_, _, calls) = run_zellij_pass(
             scratch.path(),
             Switches {
+                codex: CodexSwitch::Skip,
                 tools: ToolsSwitch::Install,
                 zellij: ZellijSwitch::Skip,
             },
@@ -6369,11 +6675,18 @@ fi
             "myws",
             ToolsSwitch::Install,
             ZellijSwitch::Skip,
+            CodexSwitch::Skip,
             None,
         ));
         for tools in [ToolsSwitch::Install, ToolsSwitch::Skip] {
             assert_eq!(
-                setup_script(&setup_stages("myws", tools, ZellijSwitch::Skip, None)),
+                setup_script(&setup_stages(
+                    "myws",
+                    tools,
+                    ZellijSwitch::Skip,
+                    CodexSwitch::Skip,
+                    None
+                )),
                 without,
                 "{tools:?}"
             );
@@ -6383,7 +6696,8 @@ fi
                 "myws",
                 ToolsSwitch::Skip,
                 ZellijSwitch::Install,
-                None,
+                CodexSwitch::Skip,
+                None
             )),
             without
         );
@@ -6392,7 +6706,8 @@ fi
                 "myws",
                 ToolsSwitch::Install,
                 ZellijSwitch::Install,
-                None,
+                CodexSwitch::Skip,
+                None
             )),
             without,
             "the stage is there when a launch asked for it"
@@ -6412,6 +6727,7 @@ fi
         let (outcome, _) = events_of(
             &runner,
             Switches {
+                codex: CodexSwitch::Skip,
                 tools: ToolsSwitch::Install,
                 zellij: ZellijSwitch::Skip,
             },
@@ -6489,6 +6805,7 @@ fi
                 "myws",
                 ToolsSwitch::Install,
                 ZellijSwitch::requested(value),
+                CodexSwitch::Skip,
                 None,
             )
             .iter()
@@ -7110,11 +7427,16 @@ fi
             Stage::new(StageName::new("x"), "true").failure_level,
             FailureLevel::Warning
         );
-        let levels: Vec<(StageName, FailureLevel)> =
-            setup_stages("myws", ToolsSwitch::Install, ZellijSwitch::Install, None)
-                .iter()
-                .map(|stage| (stage.name, stage.failure_level))
-                .collect();
+        let levels: Vec<(StageName, FailureLevel)> = setup_stages(
+            "myws",
+            ToolsSwitch::Install,
+            ZellijSwitch::Install,
+            CodexSwitch::Skip,
+            None,
+        )
+        .iter()
+        .map(|stage| (stage.name, stage.failure_level))
+        .collect();
         assert_eq!(
             levels,
             vec![
@@ -7579,7 +7901,13 @@ fi
     ) -> (PathBuf, Output, String) {
         let (home, sysbin, log) = zellij_sandbox(scratch, has_zellij, pixi_exit);
         let ran = bash_with(
-            &setup_script(&setup_stages("myws", switches.tools, switches.zellij, None)),
+            &setup_script(&setup_stages(
+                "myws",
+                switches.tools,
+                switches.zellij,
+                CodexSwitch::Skip,
+                None,
+            )),
             &[
                 ("HOME", &home.to_string_lossy()),
                 ("PATH", &sysbin.to_string_lossy()),
@@ -7612,11 +7940,16 @@ fi
         // through. No dotfiles, no devcontainer.json, no repo cooperation — the ask
         // comes from the invocation, and it works in images `dl` has never seen.
         // What changed in #391 is only who asks, not how it arrives.
-        let names: Vec<StageName> =
-            setup_stages("myws", ToolsSwitch::Install, ZellijSwitch::Install, None)
-                .iter()
-                .map(|stage| stage.name)
-                .collect();
+        let names: Vec<StageName> = setup_stages(
+            "myws",
+            ToolsSwitch::Install,
+            ZellijSwitch::Install,
+            CodexSwitch::Skip,
+            None,
+        )
+        .iter()
+        .map(|stage| stage.name)
+        .collect();
         assert!(names.contains(&ZELLIJ_STAGE), "{names:?}");
     }
 
@@ -7742,11 +8075,16 @@ fi
         // the hostname stage, which is not tools work and is deliberately left
         // outside that switch — a machine that turned tool installs off has not
         // thereby asked for unnamed containers.
-        let names: Vec<StageName> =
-            setup_stages("myws", ToolsSwitch::Skip, ZellijSwitch::Install, None)
-                .iter()
-                .map(|stage| stage.name)
-                .collect();
+        let names: Vec<StageName> = setup_stages(
+            "myws",
+            ToolsSwitch::Skip,
+            ZellijSwitch::Install,
+            CodexSwitch::Skip,
+            None,
+        )
+        .iter()
+        .map(|stage| stage.name)
+        .collect();
         assert!(!names.contains(&ZELLIJ_STAGE), "{names:?}");
         assert!(names.contains(&HOSTNAME_STAGE), "{names:?}");
 
@@ -7754,6 +8092,7 @@ fi
         let (_, _, calls) = run_zellij_pass(
             scratch.path(),
             Switches {
+                codex: CodexSwitch::Skip,
                 tools: ToolsSwitch::Skip,
                 zellij: ZellijSwitch::Install,
             },

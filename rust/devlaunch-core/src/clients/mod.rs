@@ -2,6 +2,10 @@
 // the Claude login, and what it produces reaches a caller as flags and an
 // environment through `flows::launch`.
 pub(crate) mod claude;
+// Crate-private, like `claude`, whose module note this one is read against:
+// nothing outside core names the Codex login either, and what it produces reaches
+// a caller as flags and an environment through `flows::launch`.
+pub(crate) mod codex;
 // binary surface — not part of the frozen wf API (#251 §7)
 pub mod devpod;
 // devpod-the-filesystem, where `devpod` above is devpod-the-command.
