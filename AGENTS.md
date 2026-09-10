@@ -1,5 +1,11 @@
 # Agent Instructions
 
+This file is for an agent **working on devlaunch**: how to build the tree, which
+of the two installs to run, what the guards expect. If you are an agent or a
+script **using `dl` as a tool** to get work done in some other repository, the
+page you want is [docs/agents-using-dl.md](docs/agents-using-dl.md), which states
+the subprocess contract `dl <ws> -- <command>` keeps and what it does not.
+
 ## Development Environment
 
 This project uses a devcontainer with pixi for environment management.
@@ -209,7 +215,7 @@ checking rather than trusting, because a private package fails at nothing. See
 - **README orients, `docs/` explains.** The README is deliberately short: what
   `dl` is, the quickstart, the command tables, and one environment-variable
   table. Depth lives in `docs/` (`cli.md`, `workspaces.md`, `workspace-tools.md`,
-  `cleanup.md`, `performance.md`, `development.md`) and is linked from the README's
+  `cleanup.md`, `performance.md`, `development.md`, `agents-using-dl.md`) and is linked from the README's
   Docs table. A new paragraph of design rationale belongs in the docs page for its
   topic, not in the README. Adding a flag still means naming it in the README,
   because `test/test_readme_cli_doc.py` requires every flag `dl --help` offers to
@@ -217,7 +223,9 @@ checking rather than trusting, because a private package fails at nothing. See
 
 - **Some guards read a specific document.** `test_readme_cli_doc.py` reads the
   README; `test_bench_doc.py` reads `docs/performance.md`;
-  `test_public_api_snapshots_doc.py` reads `docs/development.md`; and the Rust
+  `test_public_api_snapshots_doc.py` reads `docs/development.md`;
+  `test_agent_contract_doc.py` reads `docs/agents-using-dl.md` and the `--help`
+  block that points at it; and the Rust
   `flows::provision::lending_contract` module reads `docs/workspace-tools.md`,
   matching on headings. Moving one of those sections between files means moving
   the path in its guard, in the same change.

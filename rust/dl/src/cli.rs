@@ -515,7 +515,7 @@ pub(crate) enum GrammarError {
     // somebody opened `--help` to find. The same reordering the README got, for the
     // same reason.
     before_help = GRAMMAR,
-    after_help = ENVIRONMENT,
+    after_help = AFTER_HELP,
     // clap's own default template with `{before-help}` moved from the top to just
     // above `{all-args}`. Every marker here is one the default already uses — the
     // order is the only change — because an unknown marker is not a compile error,
@@ -734,16 +734,35 @@ is how a run outlives its terminal in the first place.
 --stop is retired, and --autorm is what --rm is now called. Both are still recognised
 and say so.";
 
-/// What no flag and no verb names: the variables that change a launch.
+/// What no flag and no verb names: the variables that change a launch, and the
+/// one pointer addressed to a reader who is not a person.
 ///
 /// Last, below the options table, because reading it is what somebody does once
 /// and then puts in a shell profile.
-const ENVIRONMENT: &str = "Environment:
+///
+/// The scripting block is last of all, and it is four lines rather than a
+/// section because a caller that needs it is not reading `--help` for pleasure:
+/// what it has to carry is that the contract exists, the one workaround a script
+/// needs today, and where the rest is written down. An agent handed a binary and
+/// no repository has `--help` and nothing else, so the pointer is a URL rather
+/// than a relative path -- `docs/agents-using-dl.md` names nothing from inside a
+/// pixi environment. `test_agent_contract_doc.py` holds the two ends together:
+/// the page the URL names has to be in the tree, and this block has to keep
+/// naming it.
+const AFTER_HELP: &str = "Environment:
   DEVLAUNCH_TIMING=1|json            Write a timing summary to stderr
   DEVLAUNCH_NO_GH_TOKEN=1            Do not forward the host's gh login
   DEVLAUNCH_NO_CLAUDE_TOKEN=1        Do not forward the host's Claude login
   DEVLAUNCH_DOTFILES_ON_ATTACH=1     Refresh dotfiles before every attach
-  DEVLAUNCH_NO_TITLE=1               Do not name the terminal after the workspace";
+  DEVLAUNCH_NO_TITLE=1               Do not name the terminal after the workspace
+
+Scripting dl, or driving it from an agent:
+  dl <ws> -- <cmd> is a subprocess: the exit status, stdout and stdin are the
+  command's, and no terminal is needed. dl --ls --json is the listing to read.
+  Merge stderr inside the container (dl <ws> -- sh -c 'cmd 2>&1'), because devpod
+  reformats it on the way out. One branch is one workspace, so give each agent
+  its own branch. The contract in full:
+  https://github.com/blooop/devlaunch/blob/main/docs/agents-using-dl.md";
 
 /// Which command flag was given, if any.
 ///
