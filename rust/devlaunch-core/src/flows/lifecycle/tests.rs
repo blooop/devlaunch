@@ -271,6 +271,14 @@ impl Runner for Devpod {
         }
     }
 
+    fn watched(&self, spec: &SpawnSpec, on_line: &mut dyn FnMut(&str)) -> Outcome {
+        if faked(&spec.invocation.program) {
+            self.fake.watched(spec, on_line)
+        } else {
+            self.processes.watched(spec, on_line)
+        }
+    }
+
     /// Every detached spawn is recorded and never started: the refresh child is
     /// a whole second `dl` run, and a unit test that really forked one would be
     /// running an unrelated program against the developer's own cache.
@@ -1826,8 +1834,8 @@ fn deadline_on_a_delete(persistence: Persistence) -> Option<Duration> {
     .expect("devpod ran");
 
     match world.devpod.fake.calls().first() {
-        Some(devlaunch_test_support::Call::Session(spec)) => spec.timeout,
-        other => panic!("the delete was not a passthrough: {other:?}"),
+        Some(devlaunch_test_support::Call::Watched(spec)) => spec.timeout,
+        other => panic!("the delete was not a watched passthrough: {other:?}"),
     }
 }
 
@@ -1844,6 +1852,46 @@ fn a_delete_blocked_on_the_workspace_lock_says_so_while_it_is_blocked() {
     world.devpod.fake.script(
         ["devpod", "delete"],
         Response::exited(0).and_stderr(
+            "info Trying to lock workspace, seems like another process is running that \
+             blocks this workspace machine_client.go:311\n",
+        ),
+    );
+    let mut world_cache = World::empty();
+    let clones = clones_for(&world_cache.repos_dir, &world_cache.devpod);
+    let mut context = CommandContext::new(&world.devpod);
+    let mut refresh = Refresh::new(&world.updater, &world.cache_path);
+    let mut stalls = 0;
+
+    let copies = world_cache.copies();
+    workspace_delete(
+        &mut context,
+        &mut refresh,
+        &clones,
+        &mut world_cache.storage,
+        None,
+        &copies,
+        "myws",
+        Insistence::NotInsisted,
+        Persistence::Ordinary,
+        &mut |DeleteStalled::OnTheLock| stalls += 1,
+        &mut ignoring(),
+    )
+    .expect("devpod ran");
+
+    assert_eq!(stalls, 1);
+}
+
+/// And it is seen where devpod actually writes it. devpod's logger sends `info` to
+/// **stdout** and only `error` and `fatal` to stderr, and the lock line is an
+/// `info`: the stderr-only watch this delete used from devlaunch#484 until
+/// devlaunch#600 never fired against a real devpod, and the test above, with its
+/// line on stderr, could not tell.
+#[test]
+fn a_delete_blocked_on_the_workspace_lock_sees_the_line_on_stdout() {
+    let world = a_stopping_world();
+    world.devpod.fake.script(
+        ["devpod", "delete"],
+        Response::exited(0).and_stdout(
             "info Trying to lock workspace, seems like another process is running that \
              blocks this workspace machine_client.go:311\n",
         ),

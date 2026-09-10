@@ -1657,11 +1657,13 @@ fn up_under_stage(
     // `dl` -- returns when that holder dies and not before, and nothing downstream
     // of this call can report what the call never returns from. `rm` has watched
     // for the same line since devlaunch#484; the launch was the verb that did not
-    // (devlaunch#600). Said once: devpod repeats itself every five seconds, and
-    // advice on that timer buries itself. The id is the one `kill` wants, which
-    // for a workspace nothing named is whatever devpod was handed as the source.
+    // (devlaunch#600). Both of devpod's streams are read, because the line is an
+    // `info` and devpod logs those to stdout. Said once: devpod repeats itself
+    // every five seconds, and advice on that timer buries itself. The id is the
+    // one `kill` wants, which for a workspace nothing named is whatever devpod
+    // was handed as the source.
     let mut said = false;
-    let exit = devpod::run_watching_stderr(
+    let exit = devpod::run_watching(
         context.runner(),
         &Call::new(args).leading_its_own_group(),
         &mut |line| {
@@ -5684,6 +5686,18 @@ mod tests {
                 exit: Exit::Code(1)
             })
         );
+        assert_eq!(blocked_notices(&notices), 1, "{notices:?}");
+    }
+
+    /// devpod's logger splits by level: `info` goes to **stdout**, only `error`
+    /// and `fatal` to stderr, and the lock line is an `info`. A watch on stderr
+    /// alone never fires against a real devpod, which is how this fix's first cut
+    /// behaved when run against the very orphan devlaunch#600 reports.
+    #[test]
+    fn an_up_blocked_on_the_workspace_lock_says_so_when_devpod_logs_it_on_stdout() {
+        let (outcome, notices) = up_answered(Response::exited(0).and_stdout(BLOCKED_ON_THE_LOCK));
+
+        assert_eq!(outcome, Ok(UpOutcome::Started));
         assert_eq!(blocked_notices(&notices), 1, "{notices:?}");
     }
 

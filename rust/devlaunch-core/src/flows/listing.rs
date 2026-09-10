@@ -1613,6 +1613,14 @@ mod tests {
             }
         }
 
+        fn watched(&self, spec: &SpawnSpec, on_line: &mut dyn FnMut(&str)) -> Outcome {
+            if Self::is_devpod(spec) {
+                self.devpod.watched(spec, on_line)
+            } else {
+                self.processes.watched(spec, on_line)
+            }
+        }
+
         fn detach(&self, what: &Invocation) -> DetachOutcome {
             if what.program == devpod::PROGRAM {
                 self.devpod.detach(what)
@@ -2995,6 +3003,10 @@ mod tests {
 
         fn session(&self, _spec: &SpawnSpec, _on_stderr_line: &mut dyn FnMut(&str)) -> Outcome {
             unreachable!("a listing opens no session")
+        }
+
+        fn watched(&self, _spec: &SpawnSpec, _on_line: &mut dyn FnMut(&str)) -> Outcome {
+            unreachable!("a listing watches no run")
         }
 
         fn detach(&self, _what: &Invocation) -> DetachOutcome {

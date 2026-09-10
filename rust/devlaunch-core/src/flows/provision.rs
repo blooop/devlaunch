@@ -3294,6 +3294,10 @@ fi
             panic!("provisioning never opens a session")
         }
 
+        fn watched(&self, _spec: &SpawnSpec, _on_line: &mut dyn FnMut(&str)) -> Outcome {
+            panic!("provisioning never watches a run")
+        }
+
         fn detach(&self, _what: &Invocation) -> DetachOutcome {
             panic!("provisioning never detaches")
         }
@@ -6879,6 +6883,10 @@ fi
 
         fn session(&self, _spec: &SpawnSpec, _on_stderr_line: &mut dyn FnMut(&str)) -> Outcome {
             panic!("provisioning never opens a session")
+        }
+
+        fn watched(&self, _spec: &SpawnSpec, _on_line: &mut dyn FnMut(&str)) -> Outcome {
+            panic!("provisioning never watches a run")
         }
 
         fn detach(&self, _what: &Invocation) -> DetachOutcome {

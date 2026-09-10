@@ -81,14 +81,30 @@ impl Response {
         self
     }
 
+    /// Also write this to stdout, keeping the exit already chosen. devpod logs at
+    /// `info` to stdout and only `error` and `fatal` to stderr, so a fake devpod
+    /// whose lock line is on stderr is a devpod that does not exist.
+    #[must_use]
+    pub fn and_stdout(mut self, text: impl Into<String>) -> Self {
+        if let Self::Ran { stdout, .. } = &mut self {
+            *stdout = text.into();
+        }
+        self
+    }
+
+    /// What the child wrote to stdout, as the lines a watched run would be handed.
+    pub(crate) fn stdout_lines(&self) -> Vec<String> {
+        match self {
+            Self::Ran { stdout, .. } => lines_of(stdout),
+            _ => Vec::new(),
+        }
+    }
+
     /// What the child wrote to stderr, as the lines a session would be handed:
     /// no newlines, and no empty last line for a stream that ended with one.
     pub(crate) fn stderr_lines(&self) -> Vec<String> {
         match self {
-            Self::Ran { stderr, .. } => stderr
-                .split_inclusive('\n')
-                .map(|line| line.trim_end_matches(['\n', '\r']).to_string())
-                .collect(),
+            Self::Ran { stderr, .. } => lines_of(stderr),
             _ => Vec::new(),
         }
     }
@@ -130,4 +146,13 @@ impl Response {
             Self::NotStarted(failure) => DetachOutcome::NotStarted(failure),
         }
     }
+}
+
+/// One stream as the runner's reader thread hands it over: split at `\n`, each
+/// line without its ending (and without the `\r` a Windows-minded logger puts
+/// before it), and no empty last line for a stream that ended with one.
+fn lines_of(text: &str) -> Vec<String> {
+    text.split_inclusive('\n')
+        .map(|line| line.trim_end_matches(['\n', '\r']).to_string())
+        .collect()
 }

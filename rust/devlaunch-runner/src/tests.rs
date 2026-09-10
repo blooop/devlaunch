@@ -756,6 +756,61 @@ fn session_keeps_the_child_in_our_group_by_default() {
     );
 }
 
+/// `watched` reads both of the child's streams and hands every line over, which is
+/// the whole reason it exists beside `session`: devpod logs `info` to stdout, and
+/// the line a launch acts on is an `info` (devlaunch#600).
+#[test]
+fn watched_hands_over_lines_from_both_streams() {
+    let mut seen = Vec::new();
+    let outcome = ProcessRunner.watched(
+        &SpawnSpec::from(sh("echo out-1; echo err-1 >&2; echo out-2")),
+        &mut |line| seen.push(line.to_owned()),
+    );
+    assert!(matches!(outcome, Outcome::Ran { exit, .. } if exit.is_success()));
+
+    seen.sort();
+    assert_eq!(seen, ["err-1", "out-1", "out-2"]);
+}
+
+/// And it keeps each stream's own order: two pipes, one reader thread each, and
+/// the lines of one pipe cannot overtake each other.
+#[test]
+fn watched_keeps_the_order_within_a_stream() {
+    let mut seen = Vec::new();
+    let outcome = ProcessRunner.watched(
+        &SpawnSpec::from(sh("for i in 1 2 3 4 5; do echo out-$i; done")),
+        &mut |line| seen.push(line.to_owned()),
+    );
+    assert!(matches!(outcome, Outcome::Ran { exit, .. } if exit.is_success()));
+
+    assert_eq!(seen, ["out-1", "out-2", "out-3", "out-4", "out-5"]);
+}
+
+/// `watched` honours the group flag as `session` and `passthrough` do: it is the
+/// route `devpod up` takes now, and the interrupt drain `killpg`s that build.
+#[test]
+fn watched_gives_the_child_its_own_group_when_asked() {
+    let dir = tmp();
+    let out = dir.path().join("group");
+    let spec = SpawnSpec::from(sh(&pgrp_probe(&out))).leading_its_own_group();
+    let outcome = ProcessRunner.watched(&spec, &mut |_| {});
+    assert!(matches!(outcome, Outcome::Ran { exit, .. } if exit.is_success()));
+
+    let recorded = fs::read_to_string(&out).expect("the child wrote its group");
+    let (pgrp, pid) = recorded.split_once(':').expect("pgrp:pid");
+    assert_eq!(pgrp.trim(), pid.trim(), "the child leads its own group");
+}
+
+/// A `watched` child that outlives its timeout is killed, as a `session`'s is.
+#[test]
+fn a_watched_timeout_kills_the_child() {
+    let spec = SpawnSpec::from(sh("sleep 30")).with_timeout(Duration::from_millis(200));
+    let started = Instant::now();
+    let outcome = ProcessRunner.watched(&spec, &mut |_| {});
+    assert!(matches!(outcome, Outcome::TimedOut), "{outcome:?}");
+    assert!(started.elapsed() < Duration::from_secs(10));
+}
+
 /// A reader that yields its pieces in order, raising `EINTR` between them.
 ///
 /// Not a mock of a pipe — a pipe is what every other test here uses — but the

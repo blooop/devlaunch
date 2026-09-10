@@ -105,9 +105,9 @@ pub(crate) struct Call {
     env: EnvSpec,
     stdin: StdinPlan,
     timeout: Option<Duration>,
-    /// Whether a passthrough of this call leads a process group of its own, so
+    /// Whether the child running this call leads a process group of its own, so
     /// `dl`'s interrupt handler can tear it down independently. Only `devpod up`
-    /// sets it; see [`SpawnSpec::own_group`].
+    /// sets it, and it runs through [`run_watching`]; see [`SpawnSpec::own_group`].
     own_group: bool,
 }
 
@@ -150,9 +150,10 @@ impl Call {
         self
     }
 
-    /// A passthrough of this call should lead a process group of its own, so
-    /// `dl`'s interrupt handler can `killpg` it — for the long `devpod up` build.
-    /// See [`SpawnSpec::own_group`].
+    /// The child running this call should lead a process group of its own, so
+    /// `dl`'s interrupt handler can `killpg` it — for the long `devpod up` build,
+    /// whichever of [`run`] and [`run_watching`] spawns it. See
+    /// [`SpawnSpec::own_group`].
     #[must_use]
     pub(crate) fn leading_its_own_group(mut self) -> Self {
         self.own_group = true;
@@ -225,27 +226,30 @@ pub(crate) fn run(runner: &dyn Runner, call: &Call) -> Result<Exit, NotRun> {
     ran(runner.passthrough(&call.spec())).map(|(exit, ())| exit)
 }
 
-/// The same call, with devpod's stderr read a line at a time as it arrives.
+/// The same call, with every line devpod prints read on its way past.
 ///
-/// stdin and stdout are still this process's, so a caller that was a passthrough
-/// stays one from the outside: every line handed over is written straight back to
-/// stderr, in order, and the only thing that changed is that dl has seen it.
+/// stdin is still this process's, and every line is written back to the stream
+/// it arrived on before `on_line` sees it, so a caller that was a passthrough
+/// stays one from the outside: the only thing that changed is that dl has seen
+/// each line.
 ///
 /// For the calls where a line devpod prints is worth *acting* on rather than only
 /// showing. That is a narrow set and deliberately so: it is the lines that mean
 /// the call is not going to finish, which nothing downstream of it can report,
 /// because there is no downstream.
-pub(crate) fn run_watching_stderr(
+///
+/// **Both streams, not stderr.** devpod's logger splits by level -- `info` to
+/// stdout, `error` and `fatal` to stderr -- and the line this exists for is an
+/// `info`. The first cut of devlaunch#600 read stderr alone, on the model of the
+/// session filter, and said nothing when run against the very orphan that ticket
+/// reports. See `dl/tests/up_blocked.rs`.
+pub(crate) fn run_watching(
     runner: &dyn Runner,
     call: &Call,
     on_line: &mut dyn FnMut(&str),
 ) -> Result<Exit, NotRun> {
     let _span = timing::span(call.round_trip());
-    let mut forward = |line: &str| {
-        eprintln!("{line}");
-        on_line(line);
-    };
-    ran(runner.session(&call.spec(), &mut forward)).map(|(exit, ())| exit)
+    ran(runner.watched(&call.spec(), on_line)).map(|(exit, ())| exit)
 }
 
 /// Whether this is devpod saying it is blocked on a workspace's lock.
