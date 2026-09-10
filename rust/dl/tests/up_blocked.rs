@@ -81,9 +81,10 @@ const COLD: &str = "devlaunch-cold-8iyb";
 /// anything with somebody behind it.
 static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
 
-/// The lock above, unpoisoned: a test that panicked while holding it has left the
-/// host's process table exactly as tidy as it found it, and failing the other
-/// test with a poisoning error would hide the failure that matters.
+/// The lock above, unpoisoned: [`Orphan`]'s `Drop` is what clears the process
+/// table after a panic, so the second test's world is sound whatever happened to
+/// the first, and failing it with a poisoning error would hide the failure that
+/// matters.
 fn one_at_a_time() -> MutexGuard<'static, ()> {
     ONE_AT_A_TIME
         .lock()
@@ -195,43 +196,70 @@ impl World {
     }
 }
 
-/// Start a process that looks to `ps` exactly like the orphan devlaunch#602 was
-/// opened about, and wait until the kernel has reparented it.
+/// A process that looks to `ps` exactly like the orphan devlaunch#602 was opened
+/// about, owned so that it cannot outlive the test that started it.
+///
+/// **A handle with a `Drop` rather than a bare pid**, because the only thing that
+/// ever reaps this process on the happy path is the code under test. An assertion
+/// that fires before that leaves a detached `sleep` on the host for two minutes,
+/// with argv naming a workspace, and the next test is serialized behind this one
+/// and launches that same workspace: it sweeps the leftover, prints a clearance
+/// where it asserts there is nothing to clear, and fails with a message about the
+/// wrong thing. A failing test must not turn the next one into a liar.
 ///
 /// **argv, not a name.** The sweep picks holders by two tests over the command
-/// line — that it runs devpod, and that it names the workspace as a whole word —
-/// so `exec -a` is what makes `sleep` answer both. A process merely *called*
-/// devpod would not name the workspace and would be left alone.
+/// line, that it runs devpod and that it names the workspace as a whole word, so
+/// `exec -a` is what makes `sleep` answer both. A process merely *called* devpod
+/// would not name the workspace and would be left alone.
 ///
 /// **Reparented, not merely backgrounded.** The distinction the sweep turns on is
 /// whether anything is waiting on the holder; a child of this test process is
 /// attended and would be spared, which is the sweep working correctly and the
 /// test proving nothing. The shell that starts it exits immediately, so the
 /// kernel hands it to init.
-fn orphan_holding(workspace_id: &str, pidfile: &Path) -> u32 {
-    let started = Command::new("bash")
-        .arg("-c")
-        .arg(format!(
-            "setsid bash -c 'echo $$ > {pidfile}; exec -a \"devpod up {workspace_id} --ide none\" \
-             sleep 120' &",
-            pidfile = pidfile.display(),
-        ))
-        .status()
-        .expect("bash is installed");
-    assert!(started.success(), "spawning the orphan");
+struct Orphan {
+    pid: u32,
+}
 
-    assert!(
-        wait_for(|| std::fs::read_to_string(pidfile)
-            .ok()
-            .and_then(|text| text.trim().parse::<u32>().ok())
-            .is_some_and(|pid| parent_of(pid) == Some(1))),
-        "the orphan never reparented to init",
-    );
+impl Orphan {
+    fn holding(workspace_id: &str, pidfile: &Path) -> Self {
+        let started = Command::new("bash")
+            .arg("-c")
+            .arg(format!(
+                "setsid bash -c 'echo $$ > {pidfile}; exec -a \"devpod up {workspace_id} \
+                 --ide none\" sleep 120' &",
+                pidfile = pidfile.display(),
+            ))
+            .status()
+            .expect("bash is installed");
+        assert!(started.success(), "spawning the orphan");
+
+        assert!(
+            wait_for(|| read_pid(pidfile).is_some_and(|pid| parent_of(pid) == Some(1))),
+            "the orphan never reparented to init",
+        );
+        Orphan {
+            pid: read_pid(pidfile).expect("the orphan's pidfile"),
+        }
+    }
+}
+
+impl Drop for Orphan {
+    fn drop(&mut self) {
+        // Best effort and SIGKILL: on the happy path the code under test has
+        // already taken it, so the usual outcome here is "no such process".
+        let _ = Command::new("kill")
+            .args(["-KILL", &self.pid.to_string()])
+            .output();
+    }
+}
+
+fn read_pid(pidfile: &Path) -> Option<u32> {
     std::fs::read_to_string(pidfile)
-        .expect("the orphan's pidfile")
+        .ok()?
         .trim()
-        .parse()
-        .expect("a pid")
+        .parse::<u32>()
+        .ok()
 }
 
 /// The parent of `pid`, or `None` once it has left the table.
@@ -411,7 +439,7 @@ fn a_launch_blocked_behind_an_orphan_clears_it_and_gets_past_the_up() {
         .tempdir_in("/tmp")
         .expect("a scratch directory under /tmp");
     let pidfile = scratch.path().join("orphan.pid");
-    let orphan = orphan_holding(COLD, &pidfile);
+    let orphan = Orphan::holding(COLD, &pidfile);
     let world = World::blocked_while_holder_lives(&pidfile);
     let root = world.root.display().to_string();
     let out_path = world.root.join("launch.stdout");
@@ -452,7 +480,7 @@ fn a_launch_blocked_behind_an_orphan_clears_it_and_gets_past_the_up() {
     );
 
     assert!(
-        !alive(orphan),
+        !alive(orphan.pid),
         "the launch left the orphan holding the workspace"
     );
     assert!(
@@ -467,7 +495,7 @@ fn a_launch_blocked_behind_an_orphan_clears_it_and_gets_past_the_up() {
         .find(|line| line.contains(CLEARED))
         .expect("the sweep's line");
     assert!(
-        cleared.contains(&orphan.to_string()) && cleared.contains("devpod up"),
+        cleared.contains(&orphan.pid.to_string()) && cleared.contains("devpod up"),
         "the line names the pid and command it killed: {cleared}"
     );
     // And the `up` that was blocked is the one that built: the shim only prints
@@ -475,5 +503,28 @@ fn a_launch_blocked_behind_an_orphan_clears_it_and_gets_past_the_up() {
     assert!(
         stderr.contains(PAST_THE_LOCK),
         "the blocked up never got past the lock:\n{stderr}"
+    );
+}
+
+/// The fixture's own promise, since nothing else checks it: an [`Orphan`] that
+/// goes out of scope takes its process with it.
+///
+/// Its own workspace id, so it cannot be swept by either test above and does not
+/// need the lock they share.
+#[test]
+fn an_orphan_fixture_does_not_outlive_the_test_that_started_it() {
+    let scratch = tempfile::Builder::new()
+        .prefix("dlguard")
+        .tempdir_in("/tmp")
+        .expect("a scratch directory under /tmp");
+    let pid = {
+        let orphan = Orphan::holding("dl602-guard-probe", &scratch.path().join("orphan.pid"));
+        assert!(alive(orphan.pid), "the fixture starts a live process");
+        orphan.pid
+    };
+
+    assert!(
+        wait_for(|| !alive(pid)),
+        "the orphan outlived its handle and is still on the host as {pid}"
     );
 }
