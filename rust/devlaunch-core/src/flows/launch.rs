@@ -78,6 +78,7 @@ use crate::domain::workspace_id::{
 };
 use crate::domain::workspace_state::NonEmpty;
 use crate::flows::kept_copies::KeptCopies;
+use crate::flows::kill;
 use crate::flows::launch_locks::LaunchLocks;
 use crate::flows::lifecycle::{
     self, KnownWorkspace, LifecycleNotice, Refresh, RefreshReason, StopOutcome,
@@ -573,7 +574,7 @@ pub enum LaunchNotice {
     /// running, and switching config means recreating it.
     DevcontainerIgnoredRunning { workspace_id: String, spec: String },
 
-    // --- devpod's own lock (devlaunch#600)
+    // --- devpod's own lock (devlaunch#600, devlaunch#602)
     /// This launch's `devpod up` is waiting on devpod's workspace lock, which
     /// something else holds, and devpod's acquire has no deadline behind it: the
     /// `up` returns when the holder dies and not before. Said once per launch
@@ -581,8 +582,26 @@ pub enum LaunchNotice {
     /// the `up` is blocked, because there is no outcome to carry it afterwards.
     ///
     /// `workspace_id` is the id the workspace answers to, or the `up`'s source
-    /// where nothing named it: the argument `dl <ws> kill` wants, either way.
+    /// where nothing named it: the argument the sweep below is given, either way.
     UpBlockedOnTheLock { workspace_id: String },
+    /// What this launch's own sweep of that lock came to (devlaunch#602).
+    ///
+    /// Said straight after [`UpBlockedOnTheLock`](Self::UpBlockedOnTheLock) and
+    /// always, including when the sweep found nothing to take: a launch that
+    /// announces a wedge and then goes quiet has told the reader less than one
+    /// that never spoke, and the sweep's own finding — that nothing on this host
+    /// holds the workspace — is the one that sends them somewhere else to look.
+    ///
+    /// Carries [`kill::Released`] whole rather than a verdict boiled out of it.
+    /// What the sweep came to is [`kill::Release::freed`], derived from both
+    /// halves of the value rather than stored beside them, so a notice claiming a
+    /// clearance it did not get is not constructible; the pids and command lines
+    /// the report names are the same value's, so the sentence and the fact cannot
+    /// drift.
+    SweptTheLockHolders {
+        workspace_id: String,
+        released: kill::Released,
+    },
 
     // --- passed through from the layers below
     /// Something one of the storage flows reported on the way through.
@@ -1662,21 +1681,53 @@ fn up_under_stage(
     // every five seconds, and advice on that timer buries itself. The id is the
     // one `kill` wants, which for a workspace nothing named is whatever devpod
     // was handed as the source.
+    //
+    // And then *cleared*, rather than described (devlaunch#602). Everything the
+    // notice used to tell the reader to go and do in another terminal, dl can do
+    // from here: `kill` already draws the one distinction that makes it safe, so
+    // this reaches the same sweep and carries on. The `up` above is not restarted
+    // or abandoned — devpod's acquire is a poll loop behind that five-second line,
+    // so the *blocked* `up` takes the flock itself within five seconds of the
+    // holder letting go, measured on the host in devlaunch#602. Nothing here waits
+    // for that: the sweep returns and the `up` this is watching goes on to build.
+    //
+    // Once per launch, which is the guard `said` was already keeping: the sweep
+    // reads the process table and spends the escalation's grace, and devpod's line
+    // arrives every five seconds for as long as anything is still held.
+    //
+    // The runner is lifted out of `context` first because the closure needs it too
+    // — `runner()` hands back a borrow of the command's lifetime rather than of
+    // `context`, so the `forget_workspaces` below still has its `&mut`.
+    let runner = context.runner();
+    // The id `kill` wants, or the `up`'s source where nothing named it, resolved
+    // once: it is what the notice reports and what the sweep is aimed at, and two
+    // resolutions could aim at a workspace the notice did not name.
+    let blocked_on = request
+        .naming
+        .identity()
+        .unwrap_or(request.source)
+        .to_owned();
     let mut said = false;
     let exit = devpod::run_watching(
-        context.runner(),
+        runner,
         &Call::new(args).leading_its_own_group(),
         &mut |line| {
-            if !said && devpod::says_it_is_blocked(line) {
-                said = true;
-                notices.say(LaunchNotice::UpBlockedOnTheLock {
-                    workspace_id: request
-                        .naming
-                        .identity()
-                        .unwrap_or(request.source)
-                        .to_owned(),
-                });
+            if said || !devpod::says_it_is_blocked(line) {
+                return;
             }
+            said = true;
+            notices.say(LaunchNotice::UpBlockedOnTheLock {
+                workspace_id: blocked_on.clone(),
+            });
+            // The grace period, really spent, as the binary spends it for `kill`:
+            // this call site is core's own, and there is no launch-side clock to
+            // thread through eight parameters for the sake of two seconds that
+            // only elapse when an orphan actually has to be signalled.
+            let released = kill::release_the_lock(runner, &blocked_on, &mut std::thread::sleep);
+            notices.say(LaunchNotice::SweptTheLockHolders {
+                workspace_id: blocked_on.clone(),
+                released,
+            });
         },
     )?;
     // `up` creates and starts workspaces, so any snapshot of `devpod list` taken
@@ -5699,6 +5750,329 @@ mod tests {
 
         assert_eq!(outcome, Ok(UpOutcome::Started));
         assert_eq!(blocked_notices(&notices), 1, "{notices:?}");
+    }
+
+    /// The issue's own orphan, as `ps` prints it: reparented to init, naming the
+    /// workspace this launch is trying to bring up.
+    const AN_ORPHAN_HOLDING_MYWS: &str = "    1       0 /sbin/init\n\
+                                          732721       1 devpod up myws --ide none\n";
+
+    /// What one blocked `up` did, beyond what it said.
+    struct Blocked {
+        notices: Vec<LaunchNotice>,
+        /// Every `kill` the launch ran, in order.
+        signals: Vec<Vec<String>>,
+        /// How many times it read the host's process table.
+        tables_read: usize,
+    }
+
+    /// One `up` of `myws` that devpod parks on its workspace lock, against a host
+    /// whose process table is `table`.
+    fn up_blocked_against(table: &str) -> Blocked {
+        let scene = Scene::new();
+        scene.runner.script(
+            ["devpod", "up"],
+            Response::exited(0).and_stdout(BLOCKED_ON_THE_LOCK),
+        );
+        scene
+            .runner
+            .script(["ps"], Response::stdout(table.to_owned()));
+        let mut context = CommandContext::new(&scene.runner);
+        let token = HostToken::new();
+        let request = UpRequest::new(
+            "owner/repo",
+            Naming::Create {
+                workspace_id: "myws",
+            },
+        );
+        let mut notices = Vec::new();
+
+        let outcome = workspace_up(
+            &mut context,
+            &scene.host,
+            &token,
+            &ClaudeSeen::new(),
+            &NoProvisioning,
+            &request,
+            None,
+            &mut notices,
+        );
+
+        assert_eq!(outcome, Ok(UpOutcome::Started));
+        Blocked {
+            notices,
+            signals: scene.runner.args_to("kill"),
+            tables_read: scene.runner.calls_to("ps").len(),
+        }
+    }
+
+    /// Every release the launch reported.
+    fn releases(notices: &[LaunchNotice]) -> Vec<&kill::Released> {
+        notices
+            .iter()
+            .filter_map(|notice| match notice {
+                LaunchNotice::SweptTheLockHolders { released, .. } => Some(released),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The bar devlaunch#602 sets, at this seam: a launch that finds devpod's lock
+    /// held by an orphan **clears it** rather than describing it. Before this, the
+    /// launch said the right thing and then waited for as long as the orphan
+    /// lived, which for an init-reparented process is until the machine reboots.
+    ///
+    /// The `up` itself is neither restarted nor abandoned: devpod's acquire polls
+    /// behind its five-second line, so the blocked `up` takes the flock within
+    /// five seconds of the orphan letting go. Nothing here has to re-run it.
+    #[test]
+    fn an_up_blocked_on_the_workspace_lock_sweeps_the_orphan_holding_it() {
+        let blocked = up_blocked_against(AN_ORPHAN_HOLDING_MYWS);
+
+        assert_eq!(
+            blocked.signals.first().map(Vec::as_slice),
+            Some(["-TERM".to_owned(), "732721".to_owned()].as_slice()),
+            "the launch signalled the orphan holding its workspace: {:?}",
+            blocked.signals,
+        );
+        assert_eq!(
+            releases(&blocked.notices).len(),
+            1,
+            "the launch reported what its sweep did: {:?}",
+            blocked.notices,
+        );
+    }
+
+    /// And the notice that used to be the whole answer is still said first: the
+    /// reader is told devpod is blocked before they are told what dl did about
+    /// it, because the sweep costs a process-table read and a grace period and a
+    /// silent terminal through it is what devlaunch#600 was opened about.
+    #[test]
+    fn an_up_blocked_on_the_workspace_lock_says_so_before_it_sweeps() {
+        let blocked = up_blocked_against(AN_ORPHAN_HOLDING_MYWS);
+
+        let said: Vec<&LaunchNotice> = blocked
+            .notices
+            .iter()
+            .filter(|notice| {
+                matches!(
+                    notice,
+                    LaunchNotice::UpBlockedOnTheLock { .. }
+                        | LaunchNotice::SweptTheLockHolders { .. }
+                )
+            })
+            .collect();
+        assert!(
+            matches!(
+                said.as_slice(),
+                [
+                    LaunchNotice::UpBlockedOnTheLock { .. },
+                    LaunchNotice::SweptTheLockHolders { .. }
+                ]
+            ),
+            "the block is announced, then its sweep: {said:?}",
+        );
+    }
+
+    /// The one thing this must never do. Somebody else's `devpod up`, with a live
+    /// `dl` behind it, is a build mid-flight: killing it takes a workspace away
+    /// from whoever asked for it, and the launch waits instead — which is exactly
+    /// what devlaunch#601 already did for this case and is right for it.
+    #[test]
+    fn an_up_blocked_behind_somebody_elses_live_build_sweeps_nothing_and_waits() {
+        let blocked = up_blocked_against(
+            "    1       0 /sbin/init\n 5000       1 dl myws\n 5001    5000 devpod up myws\n",
+        );
+
+        assert!(
+            blocked.signals.is_empty(),
+            "a live build must not be signalled by a launch that wants its lock: {:?}",
+            blocked.signals,
+        );
+        // One reading, and the assertion is that there was one at all: "nothing
+        // was signalled" is also what a launch that never swept would look like
+        // from the outside, and the two mean opposite things.
+        assert_eq!(
+            blocked.tables_read, 1,
+            "the sweep ran and spared the build, rather than never running",
+        );
+        let reported = releases(&blocked.notices);
+        let [released] = reported.as_slice() else {
+            panic!("one release was reported: {:?}", blocked.notices);
+        };
+        let kill::Released::Swept(release) = released else {
+            panic!("the sweep ran: {released:?}");
+        };
+        assert!(
+            matches!(release.freed(), kill::Freed::Nothing { .. }),
+            "{release:?}"
+        );
+        assert!(
+            release.holding.any_attended(),
+            "the build is reported as the live holder it is: {release:?}",
+        );
+    }
+
+    /// The launch's own `devpod up` is not something holding the workspace: it is
+    /// the process *waiting* for it. It names the workspace in its own argv and
+    /// its parent is this live `dl`, so the sweep's own reading finds it, calls it
+    /// attended and — before devlaunch#602's second pass — reported it as a live
+    /// holder to wait for. Measured on a host: a launch behind a lock nothing
+    /// could clear told the reader
+    ///
+    /// > bencher-nb1-8vqa is held by work somebody is still waiting on, which dl
+    /// > will not interrupt -- 667824 (devpod up bencher-nb1-8vqa ...)
+    ///
+    /// naming the reader's own launch. It also made two of the report's arms dead:
+    /// with an attended holder always present, `any_attended` never went false, so
+    /// "nothing on this host is holding it" and "signalled and could not stop
+    /// them" were unreachable in production while passing their own tests.
+    ///
+    /// The table here is the shape of that host: `ps` showing a `devpod up` whose
+    /// parent is this process, which is what the launch passes as its own.
+    #[test]
+    fn a_launch_does_not_count_its_own_blocked_up_among_the_holders() {
+        let table = format!(
+            "    1       0 /sbin/init\n{:>7} {:>7} devpod up myws --ide none\n",
+            4711,
+            std::process::id(),
+        );
+
+        let blocked = up_blocked_against(&table);
+
+        assert!(
+            blocked.signals.is_empty(),
+            "a launch must never signal its own up: {:?}",
+            blocked.signals,
+        );
+        let reported = releases(&blocked.notices);
+        let [kill::Released::Swept(release)] = reported.as_slice() else {
+            panic!("one sweep was reported: {:?}", blocked.notices);
+        };
+        assert_eq!(
+            release.holding,
+            kill::Holding::Free,
+            "the launch's own up was reported as holding the workspace it waits for",
+        );
+    }
+
+    /// Once per launch, however long devpod goes on repeating its line. The sweep
+    /// reads the process table and spends the escalation's grace, so a sweep on
+    /// devpod's five-second timer would spend the whole of a long wait signalling
+    /// things it had already signalled.
+    #[test]
+    fn an_up_that_stays_blocked_sweeps_once() {
+        let scene = Scene::new();
+        let repeated = format!("{BLOCKED_ON_THE_LOCK}{BLOCKED_ON_THE_LOCK}{BLOCKED_ON_THE_LOCK}");
+        scene
+            .runner
+            .script(["devpod", "up"], Response::exited(0).and_stdout(repeated));
+        scene.runner.script(
+            ["ps"],
+            Response::stdout("    1       0 /sbin/init\n".to_owned()),
+        );
+        let mut context = CommandContext::new(&scene.runner);
+        let request = UpRequest::new(
+            "owner/repo",
+            Naming::Create {
+                workspace_id: "myws",
+            },
+        );
+        let mut notices = Vec::new();
+
+        let outcome = workspace_up(
+            &mut context,
+            &scene.host,
+            &HostToken::new(),
+            &ClaudeSeen::new(),
+            &NoProvisioning,
+            &request,
+            None,
+            &mut notices,
+        );
+
+        assert_eq!(outcome, Ok(UpOutcome::Started));
+        assert_eq!(blocked_notices(&notices), 1, "{notices:?}");
+        assert_eq!(releases(&notices).len(), 1, "{notices:?}");
+    }
+
+    /// An `up` that was never blocked never reads the host's process table. The
+    /// sweep is reached from devpod's line and from nothing else, so the ordinary
+    /// launch pays neither the `ps` nor the risk of signalling anything.
+    #[test]
+    fn an_up_that_is_not_blocked_never_reads_the_process_table() {
+        let scene = Scene::new();
+        scene.runner.script(
+            ["devpod", "up"],
+            Response::exited(0).and_stderr("info creating devcontainer up.go:581\n"),
+        );
+        let mut context = CommandContext::new(&scene.runner);
+        let request = UpRequest::new(
+            "owner/repo",
+            Naming::Create {
+                workspace_id: "myws",
+            },
+        );
+        let mut notices = Vec::new();
+
+        let outcome = workspace_up(
+            &mut context,
+            &scene.host,
+            &HostToken::new(),
+            &ClaudeSeen::new(),
+            &NoProvisioning,
+            &request,
+            None,
+            &mut notices,
+        );
+
+        assert_eq!(outcome, Ok(UpOutcome::Started));
+        assert!(
+            scene.runner.calls_to("ps").is_empty(),
+            "an unblocked launch read the process table",
+        );
+        assert!(releases(&notices).is_empty(), "{notices:?}");
+    }
+
+    /// A host that cannot be read has not established that nothing holds the
+    /// workspace. The launch says so and goes on waiting, rather than reporting a
+    /// sweep that never happened.
+    #[test]
+    fn an_up_blocked_on_a_host_with_no_ps_reports_that_it_could_not_look() {
+        let scene = Scene::new();
+        scene.runner.script(
+            ["devpod", "up"],
+            Response::exited(0).and_stdout(BLOCKED_ON_THE_LOCK),
+        );
+        scene.runner.script_missing("ps");
+        let mut context = CommandContext::new(&scene.runner);
+        let request = UpRequest::new(
+            "owner/repo",
+            Naming::Create {
+                workspace_id: "myws",
+            },
+        );
+        let mut notices = Vec::new();
+
+        let outcome = workspace_up(
+            &mut context,
+            &scene.host,
+            &HostToken::new(),
+            &ClaudeSeen::new(),
+            &NoProvisioning,
+            &request,
+            None,
+            &mut notices,
+        );
+
+        assert_eq!(outcome, Ok(UpOutcome::Started));
+        assert!(
+            matches!(
+                releases(&notices).as_slice(),
+                [kill::Released::Unavailable(_)]
+            ),
+            "{notices:?}",
+        );
     }
 
     /// Every other line devpod writes during an `up` is the build's, and is not

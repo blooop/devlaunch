@@ -29,6 +29,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `test_interactive_session.py` already covers, and `test_agent_contract_doc.py`
   holds the page and the `--help` pointer to still saying what those tests prove.
 
+### Fixed
+
+- **A launch blocked on devpod's workspace lock now clears the orphan holding it
+  and connects.** #601 gave that launch a voice: it printed, once, that devpod
+  was waiting for another process to let go of the workspace and that `dl <ws>
+  kill` in another terminal would clear it. The advice was right and the launch
+  still waited for as long as the holder lived, which for a `devpod up`
+  reparented to init is until the machine reboots — so the person who read the
+  line had to go and act on it by hand, from under fifty-odd devpod log lines
+  arriving every five seconds (#602).
+
+  Everything that line told them to do, dl now does. On devpod's lock line the
+  launch reaches the same sweep `dl <ws> kill` runs, kills whatever holds the
+  workspace that nothing is waiting on, and says what it killed by pid and
+  command line. The `up` is neither restarted nor abandoned: devpod's acquire
+  polls behind that five-second line, so the *blocked* `up` takes the freed flock
+  itself and goes on to build. Measured on a host, it does so within one second.
+
+  What it will not do is as much of the fix as what it will:
+
+  - **A holder somebody is waiting on is never signalled.** The distinction is
+    `kill`'s own — a `devpod up` with a live `dl` behind it is somebody's build,
+    and taking their workspace to get on with yours is not a repair. Behind one
+    of those the launch keeps #601's notice and #601's wait, which are right for
+    it.
+  - **Nothing is deleted.** `dl <ws> kill` deletes the workspace, because
+    somebody typing it has finished with it; somebody typing a launch is asking
+    for it. A fully built workspace wedged behind an orphaned `devpod`
+    subcommand needs its lock back and nothing else, and deleting it would throw
+    away a container and its volumes to fix a lock.
+  - **The flock is never unlinked**, devpod's busy marker is never touched, and
+    no container is killed. The kernel drops the lock when the holder dies, which
+    is why the sweep kills the holder; the marker and the containers belong to
+    the build this launch is itself running.
+
+  The notice it used to print has been rewritten, since it now describes work in
+  progress rather than homework: it says devpod is waiting and that the wait has
+  no deadline, and the line after it says what the sweep found. There are four
+  things that line can say, and they are read off both halves of the result
+  rather than off "did anything let go" alone: everything cleared, some cleared
+  and something still holding, nothing cleared, or nothing on this host holding
+  it at all. The third and fourth are findings rather than failures — one names a
+  holder to go and deal with, the other says the wait is out of dl's reach.
+
+  Wherever the sweep leaves a holder standing, the line also says what is left to
+  do, because those are the cases where dl looked and chose not to act. Behind
+  somebody's build that is `dl <ws> kill`, named with what it costs, since it
+  deletes the workspace under the build. Behind an orphan that sat through
+  SIGKILL it is nobody's command to type: `kill` would fail there for the reason
+  the sweep did, that the process is almost certainly another user's, so the line
+  says only that user or root can end it. The two kinds are kept apart rather
+  than folded together, so a workspace held by one of each is not reported as
+  though both were somebody's live work.
+
+  The launch's own `devpod up` is not counted among the holders. It names the
+  workspace in its own argv and has a live `dl` behind it, so the sweep's reading
+  finds it; it is the process *waiting* for the lock rather than one holding it,
+  and counting it made the report name the reader's own launch as the thing it
+  was waiting for.
+
+  **Not done here:** `ContainerState::Busy` is still dead data. devpod's status
+  parses the word, nothing reads it, so "another process is holding this
+  workspace right now" and "it is stopped" still reach a launch as the same
+  answer. Acting on it would let a launch heal a round trip earlier, before the
+  `up` is attempted. It is its own change and is not in this one.
+
 ### Known issues
 
 - **A command killed by a signal comes back as 255, whichever signal it was.**
