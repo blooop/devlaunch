@@ -33,8 +33,8 @@ use devlaunch_core::flows::claude_profiles;
 use devlaunch_core::flows::completion_cache::CompletionData;
 use devlaunch_core::flows::disk_usage::describe_usage;
 use devlaunch_core::flows::kill::{
-    ContainerRefusal, Containers, Ending, Holding, HostCannot, Marker, NoSignal, Standing, Sweep,
-    TableUnreadable,
+    Cleared, ContainerRefusal, Containers, Ending, Freed, Holding, HostCannot, HostProcess, LetGo,
+    Marker, NoSignal, Released, Standing, StillHeld, Sweep, TableUnreadable,
 };
 use devlaunch_core::flows::launch::{
     BranchNotNamed, ClaudeProfileProblem, ColdRefused, LaunchAborted, LaunchNotice, LaunchRefusal,
@@ -1793,6 +1793,169 @@ pub(crate) fn kill_delete_withheld(workspace_id: &str) -> String {
     )
 }
 
+/// How a blocked launch's own sweep of devpod's lock ended (devlaunch#602).
+///
+/// One line, because a notice is one line, and the whole of the report `dl <ws>
+/// kill` spreads over several has to fit in it. What survives the compression is
+/// what [`killed`] argues for keeping: **the pid and the command line**, per
+/// process. Somebody reading this is looking at a launch that just killed
+/// something on their behalf, and "cleared 1 process" asks them to go and work
+/// out what it was, from a process that no longer exists.
+///
+/// **Every arm ends by saying where the launch now stands**, which is the one
+/// thing the reader cannot see for themselves: the terminal is still sitting in
+/// the same `devpod up`, and whether that is about to finish or about to wait
+/// forever is exactly what this is for.
+///
+/// The match is over [`Freed`] rather than over the two halves of [`Release`]
+/// separately, and that is the fix for a defect this function had: it tested
+/// "did anything let go" alone, so a sweep that cleared one orphan and failed to
+/// kill a second said the lock was free and dropped the survivor from the
+/// report. `Freed` answers both questions at once, and its arms are the four
+/// sentences.
+fn swept_the_lock(workspace_id: &str, released: &Released) -> String {
+    let release = match released {
+        // The sweep never ran. The reason is `kill`'s own, shared through
+        // `cannot_sweep` so the two verbs cannot describe one broken host
+        // differently; the frame round it is this launch's, because this launch
+        // has not failed and is about to go on waiting in its own `up`.
+        Released::Unavailable(cannot) => {
+            return format!(
+                "dl: {}, so nothing was cleared and this launch is still waiting.",
+                cannot_sweep(cannot)
+            );
+        }
+        Released::Swept(release) => release,
+    };
+    match release.freed() {
+        // The good ending, and the one the whole ticket is for. It says the `up`
+        // carries on rather than telling anybody to launch again, because the
+        // blocked `up` is still running and takes the flock itself: devpod's
+        // acquire is a poll behind that five-second line.
+        Freed::Entirely { cleared } => format!(
+            "dl: cleared what was holding {workspace_id}, and nothing was waiting on it — {}. \
+             This launch's own devpod up takes the lock from here.",
+            named(cleared.iter().copied().map(cleared_line))
+        ),
+        // Half of it. Both halves are said and neither is allowed to imply the
+        // other: what went is named because dl killed it, and what stayed is
+        // named because it is the reason the terminal has not moved.
+        Freed::Partly {
+            cleared,
+            still_held,
+        } => format!(
+            "dl: cleared {} from {workspace_id}, and {}, so this launch is still waiting.{}",
+            named(cleared.iter().copied().map(cleared_line)),
+            what_is_left(&still_held),
+            what_is_left_to_do(workspace_id, &still_held),
+        ),
+        // Nothing was dl's to take. Which of the three sentences is a match on
+        // `StillHeld` rather than a fold to `bool` over the holders: a spared
+        // build beside an unstoppable orphan is both findings, and asking
+        // `any_attended` reported it as only the first.
+        Freed::Nothing { still_held } => format!(
+            "dl: {workspace_id} {}. This launch is still waiting.{}",
+            what_is_left(&still_held),
+            what_is_left_to_do(workspace_id, &still_held),
+        ),
+        // The sweep looked and found no holder. A finding rather than a failure,
+        // and the one that says the wait is not an orphan and not dl's to clear.
+        Freed::NothingHeldIt => format!(
+            "dl: nothing on this host is holding {workspace_id}, so whatever devpod is waiting \
+             on is out of dl's reach. This launch is still waiting."
+        ),
+    }
+}
+
+/// What a release left holding the workspace, as one clause.
+///
+/// Total over [`StillHeld`], so the mixed case has a sentence of its own instead
+/// of borrowing the attended one and burying the orphan inside it.
+fn what_is_left(still_held: &StillHeld<'_>) -> String {
+    let waiting_on = |attended: &NonEmpty<&HostProcess>| {
+        format!(
+            "is held by work somebody is still waiting on, which dl will not interrupt — {}",
+            named(attended.iter().copied().map(process_named))
+        )
+    };
+    let could_not_stop = |unstoppable: &NonEmpty<&HostProcess>| {
+        format!(
+            "is still held by {}, which dl signalled and could not stop — almost certainly \
+             another user's",
+            named(unstoppable.iter().copied().map(process_named))
+        )
+    };
+    match still_held {
+        StillHeld::Attended(attended) => waiting_on(attended),
+        StillHeld::Unstoppable(unstoppable) => could_not_stop(unstoppable),
+        StillHeld::Both {
+            attended,
+            unstoppable,
+        } => format!(
+            "{}, and {}",
+            waiting_on(attended),
+            could_not_stop(unstoppable)
+        ),
+    }
+}
+
+/// What the reader can do about what dl would not or could not clear.
+///
+/// devlaunch#602 item 2: "If every holder is `Attended`, there is nothing to
+/// heal: keep today's notice and today's wait, which are right for that case."
+/// The wait is kept upstream of here. This is the notice half, and it is the
+/// half that went missing: devlaunch#601's line named `dl <ws> kill` as the way
+/// out, this branch took that out of the *blocked* notice because dl now does it
+/// unasked, and in these arms it explicitly does not -- so the reader was left
+/// waiting with no command at all.
+///
+/// The two arms need different answers, which is why it is not one sentence.
+/// Against a spared build, `kill` works and the sentence has to say what it
+/// costs, because the build is somebody else's and `kill` deletes the workspace
+/// under it. Against an orphan that sat through SIGKILL, `kill` would fail
+/// exactly as this sweep just did, for the same reason -- it is another user's
+/// and dl has no privilege to add -- so naming it would send the reader round
+/// the same loop.
+fn what_is_left_to_do(workspace_id: &str, still_held: &StillHeld<'_>) -> String {
+    let end_the_build = format!(
+        " If that build is not wanted, 'dl {workspace_id} kill' ends it and deletes the \
+                 workspace."
+    );
+    let not_ours = " Only whoever owns that process, or root, can end it.";
+    match still_held {
+        StillHeld::Attended(_) => end_the_build,
+        StillHeld::Unstoppable(_) => not_ours.to_owned(),
+        StillHeld::Both { .. } => format!("{end_the_build}{not_ours}"),
+    }
+}
+
+/// One holder the sweep took off the workspace.
+///
+/// Total over [`LetGo`], which is [`Ending`] without the arm that did not let go:
+/// there is no "still running after SIGKILL" to phrase here, because [`Freed`]
+/// cannot put one in this list.
+fn cleared_line(cleared: Cleared<'_>) -> String {
+    let how = match cleared.how {
+        LetGo::Terminated => "SIGTERM",
+        LetGo::Killed => "SIGKILL",
+    };
+    format!(
+        "{} ({how}): {}",
+        cleared.process.pid, cleared.process.command
+    )
+}
+
+/// One holder left standing, named as [`killed`] names it.
+fn process_named(process: &HostProcess) -> String {
+    format!("{} ({})", process.pid, process.command)
+}
+
+/// Several processes on one line, in the order the sweep reported them.
+fn named(processes: impl Iterator<Item = String>) -> String {
+    let named: Vec<String> = processes.collect();
+    named.join("; ")
+}
+
 /// A host `dl <ws> kill` cannot work on, and which tool is missing.
 ///
 /// Its own sentence rather than an empty sweep, because the two would look alike
@@ -1800,32 +1963,53 @@ pub(crate) fn kill_delete_withheld(workspace_id: &str) -> String {
 /// is holding the workspace, it has failed to look.
 pub(crate) fn kill_unavailable(cannot: &HostCannot) -> String {
     match cannot {
+        // `kill`'s own opening, kept: its reader typed the verb, so naming it is
+        // what tells them which of their commands could not run.
         HostCannot::ReadItsProcessTable(TableUnreadable::NoPs) => {
             "error: `dl <workspace> kill` reads the host's process table with `ps`, and this \
              host has none"
                 .to_owned()
+        }
+        other => format!("error: {}", cannot_sweep(other)),
+    }
+}
+
+/// Why a sweep could not run on this host, with no verb and no severity on it.
+///
+/// The two callers agree about the host and disagree about everything round it.
+/// `dl <ws> kill` has failed and says `error:`; a launch that could not sweep has
+/// not failed -- it goes on waiting in the `devpod up` it was already in, and
+/// most of the time that `up` then builds and drops the reader in a shell. It
+/// reached for `kill_unavailable` wholesale at first, and printed `error:` on a
+/// launch that was about to succeed, over the name of a command its reader had
+/// not run and that devlaunch#602 is the change that stopped advising.
+///
+/// Sharing the reason and not the frame is what keeps the two from describing
+/// one broken host two different ways, which is what the wholesale reuse was for.
+fn cannot_sweep(cannot: &HostCannot) -> String {
+    match cannot {
+        HostCannot::ReadItsProcessTable(TableUnreadable::NoPs) => {
+            "reading the host's process table needs `ps`, and this host has none".to_owned()
         }
         HostCannot::ReadItsProcessTable(TableUnreadable::Refused { exit, stderr }) => {
             let said = match stderr.trim() {
                 "" => format!("it exited {}", exit_status(*exit)),
                 said => said.to_owned(),
             };
-            format!("error: `ps` would not read this host's process table: {said}")
+            format!("`ps` would not read this host's process table: {said}")
         }
-        HostCannot::ReadItsProcessTable(TableUnreadable::NotStarted(failure)) => format!(
-            "error: `ps` could not be run ({})",
-            os_error_phrase(failure)
-        ),
+        HostCannot::ReadItsProcessTable(TableUnreadable::NotStarted(failure)) => {
+            format!("`ps` could not be run ({})", os_error_phrase(failure))
+        }
         HostCannot::SendASignal(NoSignal::NoKillHere) => {
-            "error: something is holding this workspace and this host has no `kill` to signal \
-             it with"
+            "something is holding this workspace and this host has no `kill` to signal it with"
                 .to_owned()
         }
         // Its own sentence, because the one above sends its reader looking for a
         // program that is already installed. A `kill` the OS would not start is a
         // fact about this run, not about the machine's toolchain.
         HostCannot::SendASignal(NoSignal::NotRun(failure)) => format!(
-            "error: something is holding this workspace and `kill` could not be run ({})",
+            "something is holding this workspace and `kill` could not be run ({})",
             os_error_phrase(failure)
         ),
     }
@@ -2829,21 +3013,28 @@ pub(crate) fn launch_notice(notice: &LaunchNotice) -> Option<String> {
              --devcontainer ...' to switch config."
         ),
 
-        // --- devpod's own lock (devlaunch#600; no Python line, Python never watched)
+        // --- devpod's own lock (devlaunch#600, devlaunch#602; no Python line,
+        // Python never watched)
         //
-        // Modelled on [`delete_blocked`], and it keeps that line's two judgements:
-        // it names **another terminal**, because this one is busy holding the
-        // launch the advice is about, and it says the wait has no deadline. One
-        // more it owes that `rm` does not: `kill` *deletes* the workspace, and
-        // somebody who typed a launch did not ask for that. For a workspace that
-        // never finished creating it is what they want anyway, and a launch typed
-        // again afterwards builds it fresh, which is the last sentence.
+        // **Rewritten by devlaunch#602, and the rewrite is the point of it.** The
+        // line this replaces sent the reader to another terminal to run 'dl <ws>
+        // kill' by hand — correct advice, and dl is now doing it itself, so
+        // repeating it would be telling somebody to go and do the thing happening
+        // in front of them. What is left is the fact that starts the story and no
+        // instruction: the sweep's own line, below, says how it ended.
+        //
+        // It keeps the one judgement the old line shared with [`delete_blocked`]:
+        // devpod's wait has no deadline behind it. That is why the sentence after
+        // it matters, and why neither line ends without saying where the launch
+        // stands.
         LaunchNotice::UpBlockedOnTheLock { workspace_id } => format!(
-            "dl: devpod is waiting for another process to let go of {workspace_id}, and it will \
-             wait for as long as that takes. In another terminal, 'dl {workspace_id} kill' \
-             clears whatever is holding it and deletes the workspace; launch it again after \
-             that. (This launch is still waiting.)"
+            "dl: devpod is waiting for another process to let go of {workspace_id}, and its \
+             wait has no deadline behind it. Looking for what is holding it..."
         ),
+        LaunchNotice::SweptTheLockHolders {
+            workspace_id,
+            released,
+        } => swept_the_lock(workspace_id, released),
 
         // --- the terminal title (no level at all: not a sentence)
         //
@@ -3652,7 +3843,7 @@ mod tests {
     use std::path::PathBuf;
 
     use devlaunch_core::flows::agent_worktrees::WorktreeReport;
-    use devlaunch_core::flows::kill::{HostProcess, Signalled};
+    use devlaunch_core::flows::kill::{Release, Signalled};
     use devlaunch_core::flows::launch::{HerdrTabRename, TerminalTitle};
     use devlaunch_core::flows::lifecycle::LockKept;
     use devlaunch_core::flows::listing::{SourceDescription, SourceKind};
@@ -4651,6 +4842,318 @@ mod tests {
         assert!(
             line.contains("(and 4 of its own it has not pushed)"),
             "{line}"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // a blocked launch's own sweep of devpod's lock (devlaunch#602)
+    // -----------------------------------------------------------------
+
+    fn an_orphan(pid: u32) -> HostProcess {
+        HostProcess {
+            pid,
+            parent: 1,
+            command: "devpod up my-ws --ide none".to_owned(),
+        }
+    }
+
+    fn swept(release: Release) -> String {
+        launch_notice(&LaunchNotice::SweptTheLockHolders {
+            workspace_id: "my-ws".to_owned(),
+            released: Released::Swept(release),
+        })
+        .expect("the sweep is a line")
+    }
+
+    /// The good ending, and the one thing it must not leave out: **the pid and
+    /// the command line**. The process is gone by the time anybody reads this, so
+    /// the report is the only record of what dl killed on their behalf.
+    #[test]
+    fn a_sweep_that_cleared_the_lock_names_what_it_killed_and_says_the_up_carries_on() {
+        let line = swept(Release {
+            signalled: vec![Signalled {
+                process: an_orphan(732_721),
+                ending: Ending::Terminated,
+            }],
+            holding: Holding::Free,
+        });
+
+        assert!(line.contains("732721"), "{line}");
+        assert!(line.contains("devpod up my-ws --ide none"), "{line}");
+        assert!(line.contains("SIGTERM"), "{line}");
+        assert!(
+            line.contains("takes the lock from here"),
+            "the reader is told the launch is carrying on: {line}"
+        );
+    }
+
+    /// Two orphans, one cleared and one that sat through SIGKILL. The lock is
+    /// **not** free, and the report must not say the launch is carrying on: it is
+    /// still behind the survivor, and a sentence claiming otherwise is the one
+    /// thing a reader cannot check for themselves. The survivor must also still
+    /// be named — it is the process they have to go and deal with.
+    #[test]
+    fn a_sweep_that_cleared_one_holder_and_left_another_does_not_claim_the_lock_is_free() {
+        let line = swept(Release {
+            signalled: vec![
+                Signalled {
+                    process: an_orphan(732_721),
+                    ending: Ending::Terminated,
+                },
+                Signalled {
+                    process: an_orphan(2_315_160),
+                    ending: Ending::Survived,
+                },
+            ],
+            holding: Holding::StillHeld {
+                holders: vec![Standing::AnOrphan(an_orphan(2_315_160))],
+            },
+        });
+
+        assert!(
+            line.contains("732721"),
+            "the clearance is still reported: {line}"
+        );
+        assert!(
+            line.contains("2315160"),
+            "the survivor was dropped from the report: {line}"
+        );
+        assert!(
+            !line.contains("takes the lock from here"),
+            "the lock is not free, so the launch is not carrying on: {line}"
+        );
+        assert!(line.contains("still waiting"), "{line}");
+    }
+
+    /// Somebody else's build. The launch waits, as devlaunch#601 had it wait, and
+    /// the line says which of the two it is: a holder to wait for rather than a
+    /// leftover to go and look at.
+    #[test]
+    fn a_sweep_that_spared_a_live_build_says_it_is_waiting_for_it() {
+        let line = swept(Release {
+            signalled: Vec::new(),
+            holding: Holding::StillHeld {
+                holders: vec![Standing::ABuild(HostProcess {
+                    pid: 5001,
+                    parent: 5000,
+                    command: "devpod up my-ws".to_owned(),
+                })],
+            },
+        });
+
+        assert!(line.contains("5001"), "{line}");
+        assert!(
+            line.contains("will not interrupt"),
+            "the line says why nothing was killed: {line}"
+        );
+        assert!(!line.contains("cleared"), "nothing was cleared: {line}");
+    }
+
+    /// An orphan that sat through SIGKILL. Almost always another user's, since
+    /// devlaunch has no privilege to add, and a launch that claimed to have
+    /// cleared it would send somebody back to wait out a process no launch of
+    /// theirs can ever take the lock from.
+    #[test]
+    fn a_sweep_whose_orphans_outlived_sigkill_says_it_could_not_stop_them() {
+        let line = swept(Release {
+            signalled: vec![Signalled {
+                process: an_orphan(2_315_160),
+                ending: Ending::Survived,
+            }],
+            holding: Holding::StillHeld {
+                holders: vec![Standing::AnOrphan(an_orphan(2_315_160))],
+            },
+        });
+
+        assert!(line.contains("2315160"), "{line}");
+        assert!(line.contains("could not stop"), "{line}");
+        assert!(
+            !line.contains("cleared"),
+            "a survivor is not a clearance: {line}"
+        );
+        assert!(line.contains("still waiting"), "{line}");
+    }
+
+    /// A live build and an orphan that sat through SIGKILL, holding the same
+    /// workspace. The two ask opposite things of the reader -- wait for the
+    /// first, go and deal with the second -- and a report that names them in one
+    /// breath as "work somebody is still waiting on" loses the only one they can
+    /// act on.
+    #[test]
+    fn a_sweep_that_left_a_build_and_an_unstoppable_orphan_does_not_call_the_orphan_somebodys_work()
+    {
+        let line = swept(Release {
+            signalled: vec![Signalled {
+                process: an_orphan(2_315_160),
+                ending: Ending::Survived,
+            }],
+            holding: Holding::StillHeld {
+                holders: vec![
+                    Standing::ABuild(HostProcess {
+                        pid: 5001,
+                        parent: 5000,
+                        command: "devpod up my-ws".to_owned(),
+                    }),
+                    Standing::AnOrphan(an_orphan(2_315_160)),
+                ],
+            },
+        });
+
+        assert!(line.contains("5001"), "the build is named: {line}");
+        assert!(line.contains("2315160"), "the orphan is named: {line}");
+        assert!(
+            line.contains("will not interrupt"),
+            "the build is said to be somebody's: {line}"
+        );
+        assert!(
+            line.contains("could not stop"),
+            "the orphan is reported as one dl signalled and failed to stop, not as \
+             somebody's work: {line}"
+        );
+    }
+
+    /// devlaunch#602 item 2: "If every holder is `Attended`, there is nothing to
+    /// heal: keep today's notice and today's wait, which are right for that
+    /// case." The wait was kept and the notice was not -- devlaunch#601's line
+    /// named a way out, this branch took it out of the blocked notice because dl
+    /// now does it itself, and in this arm dl explicitly does not. A reader left
+    /// behind a build they know is abandoned had a command and now has none.
+    #[test]
+    fn a_sweep_that_spared_a_build_still_names_the_way_out_it_did_not_take() {
+        let line = swept(Release {
+            signalled: Vec::new(),
+            holding: Holding::StillHeld {
+                holders: vec![Standing::ABuild(HostProcess {
+                    pid: 5001,
+                    parent: 5000,
+                    command: "devpod up my-ws".to_owned(),
+                })],
+            },
+        });
+
+        assert!(
+            line.contains("'dl my-ws kill'"),
+            "the one command that ends it is named, with the workspace in it: {line}"
+        );
+        assert!(
+            line.contains("deletes the workspace"),
+            "and what it costs, because this arm is somebody else's build: {line}"
+        );
+    }
+
+    /// An orphan dl signalled and could not stop is almost always another user's,
+    /// so `dl <ws> kill` is not the way out -- it would fail the same way, for the
+    /// same reason. Saying who *can* end it is what stops the reader retrying the
+    /// verb that already failed.
+    #[test]
+    fn a_sweep_that_could_not_stop_an_orphan_says_who_can() {
+        let line = swept(Release {
+            signalled: vec![Signalled {
+                process: an_orphan(2_315_160),
+                ending: Ending::Survived,
+            }],
+            holding: Holding::StillHeld {
+                holders: vec![Standing::AnOrphan(an_orphan(2_315_160))],
+            },
+        });
+
+        assert!(
+            line.contains("root"),
+            "the reader is told whose problem it now is: {line}"
+        );
+        assert!(
+            !line.contains("'dl my-ws kill'"),
+            "kill would fail exactly as this sweep did: {line}"
+        );
+    }
+
+    /// The sweep looked and found no holder. A finding rather than a failure, and
+    /// the one that sends the reader somewhere dl does not reach.
+    #[test]
+    fn a_sweep_that_found_no_holder_at_all_says_the_wait_is_out_of_dls_reach() {
+        let line = swept(Release {
+            signalled: Vec::new(),
+            holding: Holding::Free,
+        });
+
+        assert!(
+            line.contains("nothing on this host is holding my-ws"),
+            "{line}"
+        );
+        assert!(line.contains("out of dl's reach"), "{line}");
+    }
+
+    /// A host that could not be read has not established that nothing holds the
+    /// workspace, so the launch says why and goes on waiting.
+    ///
+    /// The old assertion here was `line.starts_with(&kill_unavailable(..))`,
+    /// which compared the function to itself and was green for any sentence it
+    /// returned -- including the one it was returning: `kill`'s, verbatim, which
+    /// opens `error:` and names `dl <workspace> kill`. This launch did not fail
+    /// and did not run that command, and devlaunch#602 is the change that stopped
+    /// telling its reader to.
+    #[test]
+    fn a_sweep_that_could_not_run_says_why_without_borrowing_kills_error() {
+        let line = launch_notice(&LaunchNotice::SweptTheLockHolders {
+            workspace_id: "my-ws".to_owned(),
+            released: Released::Unavailable(HostCannot::ReadItsProcessTable(TableUnreadable::NoPs)),
+        })
+        .expect("the sweep is a line");
+
+        assert!(
+            line.contains("`ps`"),
+            "the reason is still the same reason: {line}"
+        );
+        assert!(
+            !line.contains("error:"),
+            "the launch has not failed; it is about to build: {line}"
+        );
+        assert!(
+            !line.contains("kill`"),
+            "a launch must not name a verb its reader did not run: {line}"
+        );
+        assert!(line.contains("still waiting"), "{line}");
+    }
+
+    /// The two verbs still describe one broken host one way: the reason is
+    /// shared, and only the framing round it differs.
+    #[test]
+    fn a_launch_and_a_kill_give_the_same_reason_for_the_same_broken_host() {
+        for cannot in [
+            HostCannot::ReadItsProcessTable(TableUnreadable::NoPs),
+            HostCannot::SendASignal(NoSignal::NoKillHere),
+        ] {
+            let reason = cannot_sweep(&cannot);
+            assert!(
+                kill_unavailable(&cannot).contains(&reason)
+                    || cannot == HostCannot::ReadItsProcessTable(TableUnreadable::NoPs),
+                "{cannot:?}"
+            );
+            let line = launch_notice(&LaunchNotice::SweptTheLockHolders {
+                workspace_id: "my-ws".to_owned(),
+                released: Released::Unavailable(cannot.clone()),
+            })
+            .expect("the sweep is a line");
+            assert!(line.contains(&reason), "{line}");
+        }
+    }
+
+    /// devlaunch#602 took the instruction out of the notice that opens the story.
+    /// dl sweeps the lock itself now, so telling the reader to go and run `dl <ws>
+    /// kill` in another terminal would be telling them to do the thing happening
+    /// in front of them — and `kill` deletes the workspace they just asked for.
+    #[test]
+    fn the_blocked_notice_no_longer_sends_the_reader_off_to_run_kill() {
+        let line = launch_notice(&LaunchNotice::UpBlockedOnTheLock {
+            workspace_id: "my-ws".to_owned(),
+        })
+        .expect("the notice is a line");
+
+        assert!(!line.contains("kill"), "{line}");
+        assert!(!line.contains("another terminal"), "{line}");
+        assert!(
+            line.contains("no deadline"),
+            "the unbounded wait is still said: {line}"
         );
     }
 

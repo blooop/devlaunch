@@ -81,6 +81,63 @@ struct Holder {
     parentage: Parentage,
 }
 
+/// Which devpod processes on the table belong to the caller, and so are not
+/// holders at all (devlaunch#602).
+///
+/// **A process the caller started is not holding the workspace; it is the one
+/// waiting for it.** The distinction did not exist while `dl <ws> kill` was the
+/// only caller, because that verb runs no devpod of its own: everything naming
+/// the workspace was somebody else's by construction. A blocked launch has
+/// exactly one, its own `devpod up`, and it names the workspace in its argv and
+/// has a live `dl` behind it — so the sweep's own reading finds it, calls it
+/// attended, and without this would report it as a live holder to wait for.
+///
+/// Three things went wrong when it did, and the first is the one a reader sees:
+///
+/// - The report named the reader's **own launch** as the thing it was waiting
+///   for. Measured on a host, behind a lock nothing could clear: "bencher-nb1-8vqa
+///   is held by work somebody is still waiting on, which dl will not interrupt --
+///   667824 (devpod up bencher-nb1-8vqa ...)", where 667824 was that very launch's
+///   `up`.
+/// - [`Holding::Free`] became unreachable for a launch, and with it the finding
+///   that nothing on this host holds the workspace — the one answer that sends a
+///   reader somewhere else to look.
+/// - [`Holding::any_attended`] became permanently true, so an orphan that
+///   outlived SIGKILL was reported as somebody's live build rather than as the
+///   other user's process it almost always is.
+///
+/// Excluded rather than given an arm of its own: [`Holding`] answers "what holds
+/// this workspace", and the caller's blocked `up` is not an answer to it. An arm
+/// would put it in front of every reader of that type to be filtered out again.
+///
+/// Private, and it is worth saying why the alternative is worse rather than
+/// merely wider: made public it would be an argument an outside caller could
+/// get wrong, and `Ours::Nothing` passed to a launch's release is precisely the
+/// bug devlaunch#602 opened with. Neither verb takes it, so nothing outside this
+/// module can name it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Ours {
+    /// Nothing on the table is the caller's. `dl <ws> kill`'s answer.
+    Nothing,
+    /// Every devpod process whose parent is this pid was started by the caller.
+    ///
+    /// The parent and not the pid, because the caller does not know the pid: the
+    /// `up` is spawned inside the watch this sweep is called from. It is a direct
+    /// child — the runner `exec`s devpod rather than going through a shell — so
+    /// one generation is the whole of the relationship.
+    ChildrenOf(u32),
+}
+
+impl Ours {
+    /// Whether this process is one the caller started.
+    fn claims(self, process: &HostProcess) -> bool {
+        match self {
+            Self::Nothing => false,
+            Self::ChildrenOf(pid) => process.parent == pid,
+        }
+    }
+}
+
 /// Every devpod process naming `workspace_id`, classified by what is behind it.
 ///
 /// **Only devpod**, and that is the safety property rather than a filter for
@@ -104,10 +161,14 @@ struct Holder {
 /// being a `delete` in any case — it is killed for having no parent, and an
 /// operation nobody is waiting on has already lost whatever it was mid-way
 /// through.
-fn holders(table: &[HostProcess], workspace_id: &str) -> Vec<Holder> {
+fn holders(table: &[HostProcess], workspace_id: &str, ours: Ours) -> Vec<Holder> {
     table
         .iter()
-        .filter(|process| is_devpod(&process.command) && names(&process.command, workspace_id))
+        .filter(|process| {
+            is_devpod(&process.command)
+                && names(&process.command, workspace_id)
+                && !ours.claims(process)
+        })
         .map(|process| Holder {
             process: process.clone(),
             parentage: parentage(table, process),
@@ -204,6 +265,40 @@ impl Ending {
             Signal::Kill => Self::Killed,
         }
     }
+
+    /// How this ending let go of the workspace, or `None` where it did not.
+    ///
+    /// A `match` and not `!= Survived`, which is what an earlier cut read: the
+    /// negative test is the one place a fourth [`Ending`] would silently count as
+    /// a clearance, and every other reader of this type already matches
+    /// exhaustively.
+    fn let_go(self) -> Option<LetGo> {
+        match self {
+            Self::Terminated => Some(LetGo::Terminated),
+            Self::Killed => Some(LetGo::Killed),
+            Self::Survived => None,
+        }
+    }
+}
+
+/// How a holder that let go was made to (devlaunch#602).
+///
+/// [`Ending`] minus the arm that did not let go, so a report about what a sweep
+/// *cleared* cannot be handed a process that is still there. [`Release::freed`]
+/// is the only way to make one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LetGo {
+    /// SIGTERM was enough, so the unwind ran.
+    Terminated,
+    /// It sat through SIGTERM and went under SIGKILL.
+    Killed,
+}
+
+/// One holder the sweep took off the workspace, and how.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Cleared<'a> {
+    pub process: &'a HostProcess,
+    pub how: LetGo,
 }
 
 /// One orphan and what became of it.
@@ -475,6 +570,157 @@ impl Sweep {
     }
 }
 
+/// What a launch's release of devpod's workspace lock came to.
+///
+/// [`Killed`]'s shape over a narrower act, and a separate type rather than a
+/// reused one because the two verbs do genuinely different amounts. `dl <ws>
+/// kill` sweeps, then takes devpod's busy marker and the workspace's containers
+/// with it; a launch only wants the flock back. Handing a launch a [`Sweep`]
+/// would mean filling [`Marker`] and [`Containers`] with arms meaning "not
+/// asked", and a report is then one `match` away from saying a launch left a
+/// marker alone when it never looked at one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Released {
+    /// The table was read and every orphan holding the workspace was signalled.
+    Swept(Release),
+    /// Nothing was swept, because this host cannot answer what the sweep is built
+    /// on. [`Killed::Unavailable`]'s distinction, for the same reason.
+    Unavailable(HostCannot),
+}
+
+/// What one launch's sweep found and what it did about it.
+///
+/// [`Sweep`] minus the two halves a launch has no business in. The pair is kept
+/// together for [`Sweep`]'s own reason: both answers come off the same last
+/// reading of the process table, and derived separately they can disagree.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Release {
+    /// The orphans, in pid order, and how each one ended.
+    pub signalled: Vec<Signalled>,
+    /// Whether anything is holding the workspace now, and what kind of thing.
+    pub holding: Holding,
+}
+
+/// What a release came to, read off both of its halves at once (devlaunch#602).
+///
+/// **Four arms because the pair cannot answer on its own.** `signalled` says
+/// whether anything let go; `holding` says whether anything is still there; and
+/// the launch behind them needs the *conjunction*, because only one of the four
+/// combinations means it is about to be unblocked.
+///
+/// A reader that consulted the first half alone was a live defect. Two orphans,
+/// one stopped by SIGTERM and one that sat through SIGKILL, rendered as "cleared
+/// what was holding my-ws ... this launch's own devpod up takes the lock from
+/// here" — announcing a clearance it had only half got, and dropping the survivor
+/// the reader had to go and deal with out of the report entirely.
+///
+/// **The collections are [`NonEmpty`], so the arms cannot overlap.** A `Nothing`
+/// holding an empty `still_held` would be [`Freed::NothingHeldIt`] written a
+/// second way, and the two are opposite findings: one is a holder this host
+/// cannot take, the other is nothing on this host holding it at all. What is
+/// still holding it is a [`StillHeld`] rather than a flat list for the same
+/// reason one level down: a reader that folded that list to a `bool` reported a
+/// mixed set as whichever kind it asked about first.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Freed<'a> {
+    /// Something let go and nothing is left holding the workspace. The blocked
+    /// `up` takes the flock from here.
+    Entirely { cleared: NonEmpty<Cleared<'a>> },
+    /// Something let go and something is still holding it. Both halves are true
+    /// and both have to be said: the launch is still waiting.
+    Partly {
+        cleared: NonEmpty<Cleared<'a>>,
+        still_held: StillHeld<'a>,
+    },
+    /// Nothing let go, and this is what is still there.
+    Nothing { still_held: StillHeld<'a> },
+    /// Nothing let go because nothing on this host holds the workspace. A finding
+    /// rather than a failure: it says the wait is out of this verb's reach.
+    NothingHeldIt,
+}
+
+/// The holders a release left standing, split by what the reader can do about them.
+///
+/// **Two kinds, and they are opposite instructions.** A holder somebody is behind
+/// is one to wait for; an orphan that sat through SIGKILL is one to go and deal
+/// with, and it is almost always another user's, because devlaunch has no
+/// privilege to add. A reader given the wrong one of those waits out a process
+/// that will never let go, or goes hunting for somebody else's live build.
+///
+/// **It is a sum because the two can be true at once**, which is the shape that
+/// caught the previous reader out. `Freed::Nothing` carried one flat list and the
+/// renderer chose its sentence with `Holding::any_attended` -- a fold to `bool`
+/// over a set that can hold both kinds. A spared build beside an unstoppable
+/// orphan read as "held by work somebody is still waiting on", naming the orphan
+/// among it, and the finding the reader could act on was gone. Partitioning here
+/// means the renderer matches instead of asking, so a mixed set has a sentence of
+/// its own rather than borrowing one.
+///
+/// The payload is [`HostProcess`] rather than [`Standing`] on both sides because
+/// the arm has already said which kind it is: a `Standing` inside `Unstoppable`
+/// could be an `ABuild`, which is the same contradiction one level down.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StillHeld<'a> {
+    /// Every holder left is somebody's -- a build or a session. Wait for them.
+    Attended(NonEmpty<&'a HostProcess>),
+    /// Every holder left is an orphan dl signalled and could not stop.
+    Unstoppable(NonEmpty<&'a HostProcess>),
+    /// Both at once: something to wait for and something to go and deal with.
+    Both {
+        attended: NonEmpty<&'a HostProcess>,
+        unstoppable: NonEmpty<&'a HostProcess>,
+    },
+}
+
+impl<'a> StillHeld<'a> {
+    /// Partition what the sweep left standing, or `None` if it left nothing.
+    fn of(holders: &'a [Standing]) -> Option<Self> {
+        let (attended, orphaned): (Vec<&Standing>, Vec<&Standing>) =
+            holders.iter().partition(|standing| standing.attended());
+        let attended = NonEmpty::of(attended.into_iter().map(Standing::process));
+        let unstoppable = NonEmpty::of(orphaned.into_iter().map(Standing::process));
+        match (attended, unstoppable) {
+            (Some(attended), Some(unstoppable)) => Some(Self::Both {
+                attended,
+                unstoppable,
+            }),
+            (Some(attended), None) => Some(Self::Attended(attended)),
+            (None, Some(unstoppable)) => Some(Self::Unstoppable(unstoppable)),
+            (None, None) => None,
+        }
+    }
+}
+
+impl Release {
+    /// What this release came to.
+    ///
+    /// Derived on demand rather than stored beside the fields it reads, so a
+    /// value whose verdict disagrees with its own contents is not constructible.
+    ///
+    /// Nothing here claims the launch is now unblocked. The flock is devpod's and
+    /// a holder can arrive in the same instant; what [`Freed::Entirely`] says is
+    /// that this sweep left nothing behind, which is the most any caller can
+    /// honestly report.
+    pub fn freed(&self) -> Freed<'_> {
+        let cleared = NonEmpty::of(self.signalled.iter().filter_map(|signalled| {
+            signalled.ending.let_go().map(|how| Cleared {
+                process: &signalled.process,
+                how,
+            })
+        }));
+        let still_held = StillHeld::of(self.holding.holders());
+        match (cleared, still_held) {
+            (Some(cleared), None) => Freed::Entirely { cleared },
+            (Some(cleared), Some(still_held)) => Freed::Partly {
+                cleared,
+                still_held,
+            },
+            (None, Some(still_held)) => Freed::Nothing { still_held },
+            (None, None) => Freed::NothingHeldIt,
+        }
+    }
+}
+
 /// Kill whatever is holding this workspace, and say what was killed.
 ///
 /// `wait` is the grace period, passed in rather than slept, for the reason
@@ -492,9 +738,84 @@ pub fn workspace_kill(
     workspace_id: &str,
     wait: &mut dyn FnMut(Duration),
 ) -> Killed {
-    let mut current = match look(runner, workspace_id) {
+    let (signalled, holding) = match sweep_holders(runner, workspace_id, Ours::Nothing, wait) {
+        Ok(swept) => swept,
+        Err(cannot) => return Killed::Unavailable(cannot),
+    };
+    Killed::Swept(Sweep {
+        signalled,
+        marker: sweep_marker(devpod_home, workspace_id, &holding),
+        containers: kill_containers(runner, workspace_id, &holding),
+        holding,
+    })
+}
+
+/// Take the orphans off this workspace's lock, and nothing else (devlaunch#602).
+///
+/// The sweep above without its second half, for a launch that found devpod's
+/// flock held and would like it back. Everything the escalation decides is
+/// [`sweep_holders`]'s and is shared verbatim — an attended holder is spared
+/// here exactly as it is spared there, which is the property the whole thing
+/// turns on.
+///
+/// **Three things it deliberately does not do**, each of which `dl <ws> kill`
+/// does and a launch must not:
+///
+/// - **It does not delete the workspace.** `kill`'s caller deletes, because
+///   somebody typing `kill` has finished with the workspace. Somebody typing a
+///   launch is asking for it, and a workspace that is fully built and merely
+///   wedged behind an orphaned `devpod` subcommand needs the flock released and
+///   nothing else — deleting it would throw away a container and its volumes to
+///   fix a lock.
+/// - **It does not touch devpod's busy marker.** A launch reaching here has its
+///   own `devpod up` running, so the marker is that build's and is not stale.
+///   [`sweep_marker`] would reach the same answer through [`Holding::any_attended`],
+///   and not asking is better than relying on it.
+/// - **It does not kill containers.** Same reason, and the same near-miss:
+///   [`kill_containers`] spares them for a live build, and this launch's own `up`
+///   is one. Nothing is left resting on that.
+///
+/// It adds no wait of its own beyond the escalation's grace: the caller is
+/// already blocked in a `devpod up` that recovers by itself once the flock is
+/// free, so there is nothing here to wait for.
+///
+/// **The pid it excludes is read here, not passed in.** It used to be a `u32`
+/// parameter, and the only value that is ever correct for it is this process's
+/// own: the `up` being waited on is a direct child of the `dl` calling this.
+/// Any other value is a wrong answer the type invited -- `release_the_lock(.., 1,
+/// ..)` excludes every init-reparented devpod on the host, which is exactly the
+/// orphan devlaunch#602 exists to clear, and the launch then reports that nothing
+/// is holding the workspace while the orphan holds it.
+pub fn release_the_lock(
+    runner: &dyn Runner,
+    workspace_id: &str,
+    wait: &mut dyn FnMut(Duration),
+) -> Released {
+    match sweep_holders(
+        runner,
+        workspace_id,
+        Ours::ChildrenOf(std::process::id()),
+        wait,
+    ) {
+        Ok((signalled, holding)) => Released::Swept(Release { signalled, holding }),
+        Err(cannot) => Released::Unavailable(cannot),
+    }
+}
+
+/// Signal every orphan holding this workspace, and say what is left.
+///
+/// The escalation both verbs run, factored so there is one of it: `dl <ws> kill`
+/// goes on to the marker and the containers, a blocked launch stops here, and the
+/// judgement about what may be signalled cannot drift between them.
+fn sweep_holders(
+    runner: &dyn Runner,
+    workspace_id: &str,
+    ours: Ours,
+    wait: &mut dyn FnMut(Duration),
+) -> Result<(Vec<Signalled>, Holding), HostCannot> {
+    let mut current = match look(runner, workspace_id, ours) {
         Ok(holders) => holders,
-        Err(why) => return Killed::Unavailable(HostCannot::ReadItsProcessTable(why)),
+        Err(why) => return Err(HostCannot::ReadItsProcessTable(why)),
     };
     let mut signalled: Vec<Signalled> = Vec::new();
     // The set the escalation carries forward, and it is *narrowed* between the
@@ -511,10 +832,10 @@ pub fn workspace_kill(
         match signals::signal(runner, signal, &pids) {
             Sent::Attempted => {}
             Sent::NoKillHere => {
-                return Killed::Unavailable(HostCannot::SendASignal(NoSignal::NoKillHere));
+                return Err(HostCannot::SendASignal(NoSignal::NoKillHere));
             }
             Sent::NotRun(failure) => {
-                return Killed::Unavailable(HostCannot::SendASignal(NoSignal::NotRun(failure)));
+                return Err(HostCannot::SendASignal(NoSignal::NotRun(failure)));
             }
         }
         wait(grace(signal));
@@ -522,7 +843,7 @@ pub fn workspace_kill(
         // what is left, and "nothing is left" is the one thing it must not be
         // read as — that is a report claiming a kill that never happened. The
         // last good reading stands instead.
-        current = look(runner, workspace_id).unwrap_or(current);
+        current = look(runner, workspace_id, ours).unwrap_or(current);
         let (survivors, gone): (Vec<HostProcess>, Vec<HostProcess>) = remaining
             .into_iter()
             .partition(|process| still_there(&current, process));
@@ -553,12 +874,7 @@ pub fn workspace_kill(
             holders: current.into_iter().map(standing).collect(),
         }
     };
-    Killed::Swept(Sweep {
-        signalled,
-        marker: sweep_marker(devpod_home, workspace_id, &holding),
-        containers: kill_containers(runner, workspace_id, &holding),
-        holding,
-    })
+    Ok((signalled, holding))
 }
 
 /// Kill whatever containers this workspace's compose project still has up.
@@ -634,9 +950,13 @@ fn sweep_marker(devpod_home: Option<&DevpodHome>, workspace_id: &str, holding: &
 }
 
 /// Read the host's table and pick out what holds this workspace.
-fn look(runner: &dyn Runner, workspace_id: &str) -> Result<Vec<Holder>, TableUnreadable> {
+fn look(
+    runner: &dyn Runner,
+    workspace_id: &str,
+    ours: Ours,
+) -> Result<Vec<Holder>, TableUnreadable> {
     match ps::processes(runner) {
-        ps::Answer::Read(table) => Ok(holders(&table, workspace_id)),
+        ps::Answer::Read(table) => Ok(holders(&table, workspace_id, ours)),
         ps::Answer::NotInstalled => Err(TableUnreadable::NoPs),
         ps::Answer::Refused { exit, stderr } => Err(TableUnreadable::Refused { exit, stderr }),
         ps::Answer::NotStarted(failure) => Err(TableUnreadable::NotStarted(failure)),
@@ -724,7 +1044,7 @@ mod tests {
         let table = [init(), orphaned_up()];
 
         assert_eq!(
-            holders(&table, "my-ws"),
+            holders(&table, "my-ws", Ours::Nothing),
             [Holder {
                 process: orphaned_up(),
                 parentage: Parentage::Orphaned,
@@ -752,11 +1072,47 @@ mod tests {
         ];
 
         assert_eq!(
-            holders(&table, "my-ws")
+            holders(&table, "my-ws", Ours::Nothing)
                 .iter()
                 .map(|holder| holder.parentage)
                 .collect::<Vec<Parentage>>(),
             [Parentage::Attended]
+        );
+    }
+
+    /// A blocked launch's own `devpod up` is not a holder (devlaunch#602). It
+    /// names the workspace and has a live parent, so every other test in this
+    /// module would call it an attended holder; what makes it different is whose
+    /// it is. `dl <ws> kill` still sees the identical row as a live build to
+    /// spare, which is the pair worth pinning together.
+    #[test]
+    fn the_callers_own_devpod_is_not_a_holder_though_kill_still_sees_one() {
+        let table = [
+            init(),
+            HostProcess {
+                pid: 5000,
+                parent: 1,
+                command: "dl my-ws".to_owned(),
+            },
+            HostProcess {
+                pid: 5001,
+                parent: 5000,
+                command: "devpod up my-ws".to_owned(),
+            },
+        ];
+
+        assert_eq!(
+            holders(&table, "my-ws", Ours::ChildrenOf(5000)),
+            [],
+            "the caller's own up is the process waiting for the lock, not one holding it",
+        );
+        assert_eq!(
+            holders(&table, "my-ws", Ours::Nothing)
+                .iter()
+                .map(|holder| holder.process.pid)
+                .collect::<Vec<u32>>(),
+            [5001],
+            "the same row is still somebody's live build to `dl <ws> kill`",
         );
     }
 
@@ -775,7 +1131,7 @@ mod tests {
         ];
 
         assert_eq!(
-            holders(&table, "my-ws")
+            holders(&table, "my-ws", Ours::Nothing)
                 .iter()
                 .map(|holder| holder.parentage)
                 .collect::<Vec<Parentage>>(),
@@ -803,7 +1159,7 @@ mod tests {
             },
         ];
 
-        assert!(holders(&table, "my-ws").is_empty());
+        assert!(holders(&table, "my-ws", Ours::Nothing).is_empty());
     }
 
     /// devpod is reached by path as often as by name, and a workspace does not
@@ -819,7 +1175,7 @@ mod tests {
             },
         ];
 
-        assert_eq!(holders(&table, "my-ws").len(), 1);
+        assert_eq!(holders(&table, "my-ws", Ours::Nothing).len(), 1);
     }
 
     /// Workspace ids share prefixes by construction — the same repo on two
@@ -836,7 +1192,7 @@ mod tests {
             },
         ];
 
-        assert!(holders(&table, "my-ws").is_empty());
+        assert!(holders(&table, "my-ws", Ours::Nothing).is_empty());
     }
 
     /// devpod's own helpers name the workspace after an `=` rather than as a word
@@ -852,7 +1208,7 @@ mod tests {
             },
         ];
 
-        assert_eq!(holders(&table, "my-ws").len(), 1);
+        assert_eq!(holders(&table, "my-ws", Ours::Nothing).len(), 1);
     }
 
     // --------------------------------------------------- the escalation
@@ -860,6 +1216,13 @@ mod tests {
     /// The issue's row, as `ps` prints it.
     const WEDGED: &str = "732721       1 devpod up my-ws --ide none\n";
     const NOTHING: &str = "    1       0 /sbin/init\n";
+    /// Somebody's build and another user's orphan on one workspace: the sweep
+    /// spares 5001 because 5000 is still there to be waiting on it, and 732721
+    /// sits through both signals because this fake never takes it off the table.
+    const MIXED: &str = "    1       0 /sbin/init\n\
+                         5000       1 dl my-ws\n\
+                         5001    5000 devpod up my-ws\n\
+                       732721       1 devpod up my-ws --ide none\n";
 
     /// A fake whose process table can be swapped between passes, which is what
     /// the injected wait is for: the grace period is where the process actually
@@ -885,6 +1248,168 @@ mod tests {
             Killed::Swept(sweep) => sweep,
             other => panic!("expected a sweep, got {other:?}"),
         }
+    }
+
+    // -----------------------------------------------------------------
+    // `release_the_lock`: the sweep a blocked launch reaches (devlaunch#602)
+    // -----------------------------------------------------------------
+
+    fn released(released: Released) -> Release {
+        match released {
+            Released::Swept(release) => release,
+            other => panic!("expected a release, got {other:?}"),
+        }
+    }
+
+    /// The ending the whole ticket is for: a launch behind an orphan clears it,
+    /// and says it cleared it. `freed()` is what the launch reads to know its
+    /// `devpod up` is about to get the flock.
+    #[test]
+    fn a_launch_releasing_the_lock_clears_the_orphan_holding_it() {
+        let fake = host_showing(WEDGED);
+
+        let release = released(release_the_lock(&fake, "my-ws", &mut |_| {
+            showing(&fake, NOTHING);
+        }));
+
+        assert_eq!(fake.args_to("kill"), [["-TERM", "732721"]]);
+        assert!(
+            matches!(release.freed(), Freed::Entirely { .. }),
+            "{release:?}"
+        );
+        assert_eq!(release.holding, Holding::Free);
+    }
+
+    /// The property the launch's whole claim to safety rests on, and it is the
+    /// sweep's own rather than a second rule written beside it: a `devpod up`
+    /// somebody is waiting on is not signalled, however badly this launch wants
+    /// the lock. The launch behind this one keeps waiting, which is what
+    /// devlaunch#601 already did for the case.
+    #[test]
+    fn a_launch_releasing_the_lock_leaves_an_attended_build_standing() {
+        let fake = host_showing(
+            "    1       0 /sbin/init\n 5000       1 dl my-ws\n 5001    5000 devpod up my-ws\n",
+        );
+
+        let release = released(release_the_lock(&fake, "my-ws", &mut |_| {}));
+
+        assert!(fake.args_to("kill").is_empty(), "nothing was signalled");
+        assert!(
+            matches!(release.freed(), Freed::Nothing { .. }),
+            "{release:?}"
+        );
+        assert!(release.holding.any_attended(), "{release:?}");
+    }
+
+    /// An orphan that sat through SIGKILL is in `signalled` and is still holding
+    /// the workspace. `freed()` reads the endings rather than the length,
+    /// so the launch behind it says it is still waiting instead of announcing a
+    /// clearance and then hanging.
+    #[test]
+    fn a_release_that_only_found_survivors_freed_nothing() {
+        let fake = host_showing(WEDGED);
+
+        let release = released(release_the_lock(&fake, "my-ws", &mut |_| {}));
+
+        assert_eq!(
+            release
+                .signalled
+                .iter()
+                .map(|signalled| signalled.ending)
+                .collect::<Vec<Ending>>(),
+            [Ending::Survived],
+        );
+        assert!(
+            matches!(release.freed(), Freed::Nothing { .. }),
+            "a survivor is not a clearance: {release:?}"
+        );
+    }
+
+    /// A spared build and an orphan that sat through SIGKILL, holding the same
+    /// workspace at once. The two are opposite instructions to whoever reads the
+    /// report, so the pair has to survive as a pair: a reader that asks "is any
+    /// of this attended" gets `true` and reports the orphan as somebody's work.
+    #[test]
+    fn a_release_that_left_a_build_and_an_unstoppable_orphan_keeps_the_two_apart() {
+        let fake = host_showing(MIXED);
+
+        let release = released(release_the_lock(&fake, "my-ws", &mut |_| {}));
+
+        let Freed::Nothing { still_held } = release.freed() else {
+            panic!("nothing let go: {release:?}");
+        };
+        let StillHeld::Both {
+            attended,
+            unstoppable,
+        } = still_held
+        else {
+            panic!("the two kinds were folded into one: {still_held:?}");
+        };
+        assert_eq!(
+            attended
+                .iter()
+                .map(|process| process.pid)
+                .collect::<Vec<u32>>(),
+            [5001],
+        );
+        assert_eq!(
+            unstoppable
+                .iter()
+                .map(|process| process.pid)
+                .collect::<Vec<u32>>(),
+            [732_721],
+        );
+    }
+
+    /// Nothing on the host names the workspace. A finding rather than a failure,
+    /// and the one that tells a blocked launch to look somewhere dl does not
+    /// reach.
+    #[test]
+    fn a_release_that_found_no_holder_at_all_says_so() {
+        let fake = host_showing(NOTHING);
+
+        let release = released(release_the_lock(&fake, "my-ws", &mut |_| {}));
+
+        assert!(fake.args_to("kill").is_empty());
+        assert!(release.signalled.is_empty(), "{release:?}");
+        assert_eq!(release.holding, Holding::Free);
+    }
+
+    /// A host that cannot be read has not established that nothing holds the
+    /// workspace, and a launch told "nothing was holding it" there goes looking
+    /// in the wrong place. [`Killed::Unavailable`]'s distinction, kept.
+    #[test]
+    fn a_release_on_a_host_with_no_ps_is_unavailable_rather_than_an_empty_sweep() {
+        let fake = FakeRunner::new();
+        fake.script_missing("ps");
+
+        assert!(
+            matches!(
+                release_the_lock(&fake, "my-ws", &mut |_| {}),
+                Released::Unavailable(HostCannot::ReadItsProcessTable(TableUnreadable::NoPs)),
+            ),
+            "a host with no ps must not report an empty sweep",
+        );
+    }
+
+    /// The three things a launch's release must not do, and the reason it is a
+    /// verb of its own rather than `workspace_kill` with the delete skipped: it
+    /// never asks devpod's home for a busy marker, never asks docker for a
+    /// container, and so can neither remove the marker of the build it is itself
+    /// running nor kill that build's containers.
+    #[test]
+    fn a_launch_releasing_the_lock_touches_neither_the_busy_marker_nor_any_container() {
+        let fake = host_showing(WEDGED);
+
+        released(release_the_lock(&fake, "my-ws", &mut |_| {
+            showing(&fake, NOTHING);
+        }));
+
+        assert!(
+            fake.args_to("docker").is_empty(),
+            "a launch must not kill containers to get a lock back: {:?}",
+            fake.args_to("docker"),
+        );
     }
 
     /// SIGTERM is an ask, and an orphan that takes it is never hit again. The

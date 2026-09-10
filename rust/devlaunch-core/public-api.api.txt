@@ -88,6 +88,9 @@ pub devlaunch_core::api::LaunchNotice::SshCommand::argv: alloc::vec::Vec<alloc::
 pub devlaunch_core::api::LaunchNotice::SshConfigUnlocatable
 pub devlaunch_core::api::LaunchNotice::StartingForDotfiles
 pub devlaunch_core::api::LaunchNotice::StartingForDotfiles::workspace_id: alloc::string::String
+pub devlaunch_core::api::LaunchNotice::SweptTheLockHolders
+pub devlaunch_core::api::LaunchNotice::SweptTheLockHolders::released: devlaunch_core::flows::kill::Released
+pub devlaunch_core::api::LaunchNotice::SweptTheLockHolders::workspace_id: alloc::string::String
 pub devlaunch_core::api::LaunchNotice::TerminalTitle(devlaunch_core::flows::launch::TerminalTitle)
 pub devlaunch_core::api::LaunchNotice::TokenNotStaged
 pub devlaunch_core::api::LaunchNotice::TokenNotStaged::reason: alloc::string::String
@@ -587,6 +590,9 @@ pub devlaunch_core::flows::launch::LaunchNotice::SshCommand::argv: alloc::vec::V
 pub devlaunch_core::flows::launch::LaunchNotice::SshConfigUnlocatable
 pub devlaunch_core::flows::launch::LaunchNotice::StartingForDotfiles
 pub devlaunch_core::flows::launch::LaunchNotice::StartingForDotfiles::workspace_id: alloc::string::String
+pub devlaunch_core::flows::launch::LaunchNotice::SweptTheLockHolders
+pub devlaunch_core::flows::launch::LaunchNotice::SweptTheLockHolders::released: devlaunch_core::flows::kill::Released
+pub devlaunch_core::flows::launch::LaunchNotice::SweptTheLockHolders::workspace_id: alloc::string::String
 pub devlaunch_core::flows::launch::LaunchNotice::TerminalTitle(devlaunch_core::flows::launch::TerminalTitle)
 pub devlaunch_core::flows::launch::LaunchNotice::TokenNotStaged
 pub devlaunch_core::flows::launch::LaunchNotice::TokenNotStaged::reason: alloc::string::String
