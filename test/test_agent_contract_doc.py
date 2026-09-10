@@ -83,8 +83,8 @@ def test_the_page_a_reader_is_sent_to_is_there():
     """The premise every assertion below rests on.
 
     A missing page would leave the parametrized promise check collecting four
-    failures with the same unhelpful cause, and the flag check collecting nothing
-    at all, which reads like a clean run.
+    failures with the same unhelpful cause, and this is the one that names the
+    reason once.
     """
     assert PAGE.is_file(), (
         f"{PAGE.relative_to(REPO_ROOT)} is gone; `dl --help` and the README's Docs "
