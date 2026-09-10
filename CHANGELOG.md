@@ -31,7 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **A command's stderr still comes back reformatted by devpod's stream logger**,
   timestamped and ANSI-coloured with a Go source location appended, which is
-  unparseable for a caller reading a compiler or a test runner. The documented
+  what a caller reading a compiler or a test runner cannot parse. The documented
   workaround is to merge inside the container (`dl <ws> -- sh -c 'cmd 2>&1'`).
   `test_stderr_is_the_commands_output_verbatim` is a strict `xfail` of the
   behaviour we want, so fixing the transport turns the suite red and the

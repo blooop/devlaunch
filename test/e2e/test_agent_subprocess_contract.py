@@ -18,6 +18,9 @@ The stderr clause is the interesting one and it is an `xfail`. See
 `test_stderr_is_the_commands_output_verbatim`.
 """
 
+# Requesting a fixture shadows its name; that is how pytest is written.
+# pylint: disable=redefined-outer-name
+
 from __future__ import annotations
 
 import os
