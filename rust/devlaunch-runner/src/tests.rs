@@ -708,6 +708,54 @@ fn passthrough_keeps_the_child_in_our_group_by_default() {
     );
 }
 
+/// `session` honours the same flag. It used to spawn every child in this
+/// process's group whatever the spec said, which was fine while its only caller
+/// was an interactive `ssh -t` that must stay there. `devpod up` goes through it
+/// now, to be watched for devpod's lock line (devlaunch#600), and an `up` that
+/// silently lost its own group would be the very orphan the interrupt drain kills
+/// by `killpg` (devlaunch#304).
+#[test]
+fn session_gives_the_child_its_own_group_when_asked() {
+    let dir = tmp();
+    let out = dir.path().join("group");
+    let spec = SpawnSpec::from(sh(&pgrp_probe(&out))).leading_its_own_group();
+    let outcome = ProcessRunner.session(&spec, &mut |_| {});
+    assert!(matches!(outcome, Outcome::Ran { exit, .. } if exit.is_success()));
+
+    let recorded = fs::read_to_string(&out).expect("the child wrote its group");
+    let (pgrp, pid) = recorded.split_once(':').expect("pgrp:pid");
+    assert_eq!(pgrp.trim(), pid.trim(), "the child leads its own group");
+
+    // SAFETY: `getpgrp` reads this process's own process group; it cannot fail.
+    let ours = unsafe { libc::getpgrp() };
+    assert_ne!(
+        pgrp.trim().parse::<i32>().expect("a numeric pgrp"),
+        ours,
+        "the child's group is not this process's"
+    );
+}
+
+/// And a default-spec `session` stays where it always was: the interactive
+/// `ssh -t` reads the PTY from this process's foreground group.
+#[test]
+fn session_keeps_the_child_in_our_group_by_default() {
+    let dir = tmp();
+    let out = dir.path().join("group");
+    let outcome = ProcessRunner.session(&SpawnSpec::from(sh(&pgrp_probe(&out))), &mut |_| {});
+    assert!(matches!(outcome, Outcome::Ran { exit, .. } if exit.is_success()));
+
+    let recorded = fs::read_to_string(&out).expect("the child wrote its group");
+    let (pgrp, _pid) = recorded.split_once(':').expect("pgrp:pid");
+
+    // SAFETY: `getpgrp` reads this process's own process group; it cannot fail.
+    let ours = unsafe { libc::getpgrp() };
+    assert_eq!(
+        pgrp.trim().parse::<i32>().expect("a numeric pgrp"),
+        ours,
+        "the child stays in this process's group"
+    );
+}
+
 /// A reader that yields its pieces in order, raising `EINTR` between them.
 ///
 /// Not a mock of a pipe — a pipe is what every other test here uses — but the

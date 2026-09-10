@@ -248,6 +248,9 @@ outlived SIGKILL, and it says which.
 `rm` is the happy path and keeps its guard and its `--force`: use it whenever the workspace
 might still be wanted, and `kill` when it is stuck and finished with. An `rm` that devpod cannot
 get the workspace's lock for now says so while it waits, and names the `kill` that clears it.
+So does a launch: `dl <ws>`, `up`, `restart`, `recreate`, `reset`, `code` and `dotfiles` all
+say the same thing while their `devpod up` sits behind the lock, and add that `kill` deletes
+the workspace, so the launch is typed again once it has.
 
 [docs/cli.md](docs/cli.md) has the rest: what the delete asks of devpod, what stands it down,
 and why `kill` is the one command in dl with a deadline on it.

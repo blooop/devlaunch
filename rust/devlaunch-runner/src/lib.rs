@@ -240,7 +240,8 @@ pub struct SpawnSpec {
     /// default) keeps the child in this process's group, so it stays the
     /// controlling terminal's foreground group and can read the PTY without
     /// taking SIGTTIN — required for an interactive `ssh -t`, and what the Python
-    /// original did. Only `passthrough` reads this field.
+    /// original did. `passthrough` and `session` read this field; `capture`'s
+    /// children never lead a group, and `detach`'s lead a session.
     pub own_group: bool,
 }
 
@@ -276,9 +277,9 @@ impl SpawnSpec {
         self
     }
 
-    /// The [`Runner::passthrough`] child should lead a process group of its own,
-    /// so this process's SIGINT handler can tear it down independently. For
-    /// `devpod up`; see [`SpawnSpec::own_group`].
+    /// The [`Runner::passthrough`] or [`Runner::session`] child should lead a
+    /// process group of its own, so this process's SIGINT handler can tear it down
+    /// independently. For `devpod up`; see [`SpawnSpec::own_group`].
     #[must_use]
     pub fn leading_its_own_group(mut self) -> Self {
         self.own_group = true;
@@ -551,23 +552,14 @@ impl Runner for ProcessRunner {
         // child in a group of its own is no longer the controlling terminal's
         // foreground group, so its first read of the PTY earns a SIGTTIN and the
         // session hangs. It stays in this process's group, which is also what
-        // the Python original did — as do `session`'s and `capture`'s children,
-        // for the same reason.
+        // the Python original did — as do `capture`'s children, and `session`'s
+        // unless their spec says otherwise, for the same reason.
         let ending = if spec.own_group {
             let mut child = match start(spec, Stdio::inherit(), Stdio::inherit(), OwnGroup::Yes) {
                 Ok(child) => child,
                 Err(outcome) => return outcome.retyped(),
             };
-            // The child led its own group from its `pre_exec`, so its pgid is its
-            // pid; set it from the parent too to close the fork-to-exec window.
-            let pgid = child.id() as i32;
-            // SAFETY: `setpgid` on our own just-spawned child; EACCES (already
-            // exec'd) or ESRCH (already gone) are both fine — the child's own
-            // `pre_exec` establishes the group regardless.
-            unsafe {
-                libc::setpgid(pgid, pgid);
-            }
-            interrupt::note_foreground_child(pgid);
+            note_own_group(&child);
             let ending = wait(&mut child, spec.timeout);
             // Reaped now, so the handler must not signal a possibly-recycled pgid.
             interrupt::clear_foreground_child();
@@ -598,10 +590,24 @@ impl Runner for ProcessRunner {
     }
 
     fn session(&self, spec: &SpawnSpec, on_stderr_line: &mut dyn FnMut(&str)) -> Outcome {
-        let mut child = match start(spec, Stdio::inherit(), Stdio::piped(), OwnGroup::No) {
+        // The spec's decision here as in `passthrough`, and about the same child:
+        // `devpod up` runs through this method so its stderr can be watched for
+        // devpod's lock line (devlaunch#600), and it has to keep the group the
+        // interrupt drain `killpg`s or it is the very orphan that drain exists to
+        // kill (devlaunch#304). The interactive `ssh -t` sets nothing and stays in
+        // ours, for the SIGTTIN reason `passthrough` gives.
+        let own_group = if spec.own_group {
+            OwnGroup::Yes
+        } else {
+            OwnGroup::No
+        };
+        let mut child = match start(spec, Stdio::inherit(), Stdio::piped(), own_group) {
             Ok(child) => child,
             Err(outcome) => return outcome.retyped(),
         };
+        if spec.own_group {
+            note_own_group(&child);
+        }
         // The lines are read on a thread and handed over here as they arrive,
         // so a session that runs for an hour reports devpod's warnings when
         // devpod writes them — and so a timeout can still elapse while the
@@ -677,6 +683,10 @@ impl Runner for ProcessRunner {
         // nothing left here that waiting could collect.
         if !timed_out && let Some(reader) = reader {
             let _ = reader.join();
+        }
+        // Reaped now, so the handler must not signal a possibly-recycled pgid.
+        if spec.own_group {
+            interrupt::clear_foreground_child();
         }
         // As in `passthrough`, and for the same reason: this child had stdin and
         // stdout, which is to say it had the terminal. `devpod ssh` is the other
@@ -789,6 +799,25 @@ fn command(what: &Invocation) -> Command {
         command.env(name, value);
     }
     command
+}
+
+/// Put a child spawned with [`OwnGroup::Yes`] on the interrupt handler's books.
+///
+/// The child led its own group from its `pre_exec`, so its pgid is its pid; set
+/// it from the parent too to close the fork-to-exec window. The caller undoes this
+/// with [`interrupt::clear_foreground_child`] once the child is reaped, so the
+/// handler never signals a possibly-recycled pgid. Shared by `passthrough` and
+/// `session`, because the child it describes is the same `devpod up` on either
+/// route and the two must not drift.
+fn note_own_group(child: &Child) {
+    let pgid = child.id() as i32;
+    // SAFETY: `setpgid` on our own just-spawned child; EACCES (already exec'd) or
+    // ESRCH (already gone) are both fine — the child's own `pre_exec` establishes
+    // the group regardless.
+    unsafe {
+        libc::setpgid(pgid, pgid);
+    }
+    interrupt::note_foreground_child(pgid);
 }
 
 /// Whether a child leads a process group of its own.

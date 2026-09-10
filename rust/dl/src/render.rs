@@ -2829,6 +2829,22 @@ pub(crate) fn launch_notice(notice: &LaunchNotice) -> Option<String> {
              --devcontainer ...' to switch config."
         ),
 
+        // --- devpod's own lock (devlaunch#600; no Python line, Python never watched)
+        //
+        // Modelled on [`delete_blocked`], and it keeps that line's two judgements:
+        // it names **another terminal**, because this one is busy holding the
+        // launch the advice is about, and it says the wait has no deadline. One
+        // more it owes that `rm` does not: `kill` *deletes* the workspace, and
+        // somebody who typed a launch did not ask for that. For a workspace that
+        // never finished creating it is what they want anyway, and a launch typed
+        // again afterwards builds it fresh, which is the last sentence.
+        LaunchNotice::UpBlockedOnTheLock { workspace_id } => format!(
+            "dl: devpod is waiting for another process to let go of {workspace_id}, and it will \
+             wait for as long as that takes. In another terminal, 'dl {workspace_id} kill' \
+             clears whatever is holding it and deletes the workspace; launch it again after \
+             that. (This launch is still waiting.)"
+        ),
+
         // --- the terminal title (no level at all: not a sentence)
         //
         // The one notice with no line. What it carries is an escape sequence, so

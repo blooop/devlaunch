@@ -91,6 +91,8 @@ pub devlaunch_core::api::LaunchNotice::StartingForDotfiles::workspace_id: alloc:
 pub devlaunch_core::api::LaunchNotice::TerminalTitle(devlaunch_core::flows::launch::TerminalTitle)
 pub devlaunch_core::api::LaunchNotice::TokenNotStaged
 pub devlaunch_core::api::LaunchNotice::TokenNotStaged::reason: alloc::string::String
+pub devlaunch_core::api::LaunchNotice::UpBlockedOnTheLock
+pub devlaunch_core::api::LaunchNotice::UpBlockedOnTheLock::workspace_id: alloc::string::String
 pub devlaunch_core::api::LaunchNotice::WaitingForSiblingLaunch
 pub devlaunch_core::api::LaunchNotice::WaitingForSiblingLaunch::workspace_id: alloc::string::String
 impl core::clone::Clone for devlaunch_core::flows::launch::LaunchNotice
@@ -588,6 +590,8 @@ pub devlaunch_core::flows::launch::LaunchNotice::StartingForDotfiles::workspace_
 pub devlaunch_core::flows::launch::LaunchNotice::TerminalTitle(devlaunch_core::flows::launch::TerminalTitle)
 pub devlaunch_core::flows::launch::LaunchNotice::TokenNotStaged
 pub devlaunch_core::flows::launch::LaunchNotice::TokenNotStaged::reason: alloc::string::String
+pub devlaunch_core::flows::launch::LaunchNotice::UpBlockedOnTheLock
+pub devlaunch_core::flows::launch::LaunchNotice::UpBlockedOnTheLock::workspace_id: alloc::string::String
 pub devlaunch_core::flows::launch::LaunchNotice::WaitingForSiblingLaunch
 pub devlaunch_core::flows::launch::LaunchNotice::WaitingForSiblingLaunch::workspace_id: alloc::string::String
 impl core::clone::Clone for devlaunch_core::flows::launch::LaunchNotice

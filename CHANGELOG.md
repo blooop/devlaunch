@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A launch parked on devpod's workspace lock now says so while it waits, and
+  names the `kill` that clears it.** devpod's lock acquire is a blocking `flock`
+  with no deadline: it logs `Trying to lock workspace …` every five seconds for as
+  long as the holder lives, and the usual holder is a `devpod up` that outlived
+  the `dl` that started it. `dl <ws> rm` has watched for that line since #484
+  and said what it means. A launch ran its `devpod up` as a plain passthrough and
+  read nothing, so the same wedge left `dl <ws>`, `up`, `restart`, `recreate`,
+  `reset`, `code` and `dotfiles` sitting silent behind devpod's own log (#600).
+
+  The launch now watches the `up`'s stderr the way the delete does and says,
+  once, that devpod is waiting for another process to let go of the workspace
+  and will wait for as long as that takes, that `dl <ws> kill` in another
+  terminal clears whatever is holding it, and that `kill` deletes the workspace
+  so the launch is typed again after it. Every line devpod prints is still
+  forwarded in order, so nothing about the build's output changes.
+
+  One thing underneath had to move with it: the runner's stderr-watching spawn
+  used to keep every child in `dl`'s own process group whatever the spec said,
+  which was right while its only caller was an interactive `ssh -t`. `devpod up`
+  is spawned in a group of its own so a Ctrl-C tears the build down with `dl`
+  (#304), and it keeps that group on the watched route too.
+
 ## [0.40.0] - 2026-09-09
 
 ### Added
