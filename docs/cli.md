@@ -709,15 +709,30 @@ waits for as long as whatever holds the lock lives. The usual holder is a `devpo
 up` that outlived the `dl` that started it: reparented to init, sleeping, no
 children, and nothing on the machine is ever going to reap it.
 
-dl watches for that line and says what it means. An `rm` behind the lock says so
-while it waits and names the `kill` that clears it. A launch behind it says the same
-thing, once, however many times devpod repeats itself, and adds that `kill` deletes
-the workspace, so the launch is typed again once it has: somebody who typed a launch
-did not ask for a delete, though for a workspace an interrupted create left half
-made it is what they want anyway. Every verb that brings a workspace up is covered,
-`dl <ws>` itself, `up`, `restart`, `recreate`, `reset`, `code` and `dotfiles`, because
-they all run the same `devpod up`. The notice names another terminal on purpose: the
-one it is printed in is busy holding the command the advice is about.
+dl watches for that line. An `rm` behind the lock says so while it waits and names
+the `kill` that clears it; the terminal it is printed in is busy holding the command
+the advice is about, so the advice names another one on purpose.
+
+**A launch behind the lock does not wait for you.** It says devpod is waiting and
+that the wait has no deadline, and then it clears the lock itself: the same sweep
+`kill` runs, over the same process table, killing whatever holds the workspace that
+nothing is waiting on and naming each one by pid and command line. The `up` is not
+restarted and not abandoned. devpod's acquire polls behind that five second line, so
+the `up` that was blocked takes the freed flock itself and goes on to build, about
+a second later, measured. Every verb that brings a workspace up is covered, `dl
+<ws>` itself, `up`, `restart`, `recreate`, `reset`, `code` and `dotfiles`, because
+they all run the same `devpod up`.
+
+Three things it will not do, and they are the reason a launch may do this at all.
+It never signals a holder somebody is waiting on: a `devpod up` with a live `dl`
+behind it is somebody's build, and behind one of those the launch keeps the notice
+and the wait, which are right for it. It never deletes the workspace: `kill`
+deletes because you have finished with the workspace, and a launch is you asking
+for it, so a built workspace merely wedged behind an orphan gets its lock back and
+keeps its container. And it touches neither devpod's busy marker nor any container,
+both of which belong to the build the launch is itself running. A sweep that finds
+nothing holding the workspace says so too, which is the answer that tells you the
+wait is coming from somewhere dl cannot reach.
 
 `dl <ws> kill` is the way out. The sweep asks devpod nothing, which is the point:
 it reads the host's own process table and acts on what is there. It does four

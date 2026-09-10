@@ -475,6 +475,56 @@ impl Sweep {
     }
 }
 
+/// What a launch's release of devpod's workspace lock came to.
+///
+/// [`Killed`]'s shape over a narrower act, and a separate type rather than a
+/// reused one because the two verbs do genuinely different amounts. `dl <ws>
+/// kill` sweeps, then takes devpod's busy marker and the workspace's containers
+/// with it; a launch only wants the flock back. Handing a launch a [`Sweep`]
+/// would mean filling [`Marker`] and [`Containers`] with arms meaning "not
+/// asked", and a report is then one `match` away from saying a launch left a
+/// marker alone when it never looked at one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Released {
+    /// The table was read and every orphan holding the workspace was signalled.
+    Swept(Release),
+    /// Nothing was swept, because this host cannot answer what the sweep is built
+    /// on. [`Killed::Unavailable`]'s distinction, for the same reason.
+    Unavailable(HostCannot),
+}
+
+/// What one launch's sweep found and what it did about it.
+///
+/// [`Sweep`] minus the two halves a launch has no business in. The pair is kept
+/// together for [`Sweep`]'s own reason: both answers come off the same last
+/// reading of the process table, and derived separately they can disagree.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Release {
+    /// The orphans, in pid order, and how each one ended.
+    pub signalled: Vec<Signalled>,
+    /// Whether anything is holding the workspace now, and what kind of thing.
+    pub holding: Holding,
+}
+
+impl Release {
+    /// Whether this release actually took a holder off the workspace.
+    ///
+    /// The one question the launch behind it asks, and it is asked of the
+    /// *endings* rather than of `signalled` being non-empty: an orphan that sat
+    /// through SIGKILL is in the list and still holds the flock exactly as
+    /// firmly, so a launch reading the length would announce it had cleared the
+    /// way and then go on waiting forever behind the thing it named.
+    ///
+    /// Nothing here claims the launch is now unblocked. The flock is devpod's and
+    /// a holder can arrive in the same instant; what this says is that this sweep
+    /// released one, which is the most any caller can honestly report.
+    pub fn freed_anything(&self) -> bool {
+        self.signalled
+            .iter()
+            .any(|signalled| signalled.ending != Ending::Survived)
+    }
+}
+
 /// Kill whatever is holding this workspace, and say what was killed.
 ///
 /// `wait` is the grace period, passed in rather than slept, for the reason
@@ -492,9 +542,70 @@ pub fn workspace_kill(
     workspace_id: &str,
     wait: &mut dyn FnMut(Duration),
 ) -> Killed {
+    let (signalled, holding) = match sweep_holders(runner, workspace_id, wait) {
+        Ok(swept) => swept,
+        Err(cannot) => return Killed::Unavailable(cannot),
+    };
+    Killed::Swept(Sweep {
+        signalled,
+        marker: sweep_marker(devpod_home, workspace_id, &holding),
+        containers: kill_containers(runner, workspace_id, &holding),
+        holding,
+    })
+}
+
+/// Take the orphans off this workspace's lock, and nothing else (devlaunch#602).
+///
+/// The sweep above without its second half, for a launch that found devpod's
+/// flock held and would like it back. Everything the escalation decides is
+/// [`sweep_holders`]'s and is shared verbatim — an attended holder is spared
+/// here exactly as it is spared there, which is the property the whole thing
+/// turns on.
+///
+/// **Three things it deliberately does not do**, each of which `dl <ws> kill`
+/// does and a launch must not:
+///
+/// - **It does not delete the workspace.** `kill`'s caller deletes, because
+///   somebody typing `kill` has finished with the workspace. Somebody typing a
+///   launch is asking for it, and a workspace that is fully built and merely
+///   wedged behind an orphaned `devpod` subcommand needs the flock released and
+///   nothing else — deleting it would throw away a container and its volumes to
+///   fix a lock.
+/// - **It does not touch devpod's busy marker.** A launch reaching here has its
+///   own `devpod up` running, so the marker is that build's and is not stale.
+///   [`sweep_marker`] would reach the same answer through [`Holding::any_attended`],
+///   and not asking is better than relying on it.
+/// - **It does not kill containers.** Same reason, and the same near-miss:
+///   [`kill_containers`] spares them for a live build, and this launch's own `up`
+///   is one. Nothing is left resting on that.
+///
+/// It adds no wait of its own beyond the escalation's grace: the caller is
+/// already blocked in a `devpod up` that recovers by itself once the flock is
+/// free, so there is nothing here to wait for.
+pub fn release_the_lock(
+    runner: &dyn Runner,
+    workspace_id: &str,
+    wait: &mut dyn FnMut(Duration),
+) -> Released {
+    match sweep_holders(runner, workspace_id, wait) {
+        Ok((signalled, holding)) => Released::Swept(Release { signalled, holding }),
+        Err(cannot) => Released::Unavailable(cannot),
+    }
+}
+
+/// Signal every orphan holding this workspace, and say what is left.
+///
+/// The escalation both verbs run, factored so there is one of it: `dl <ws> kill`
+/// goes on to the marker and the containers, a blocked launch stops here, and the
+/// judgement about what may be signalled cannot drift between them.
+fn sweep_holders(
+    runner: &dyn Runner,
+    workspace_id: &str,
+    wait: &mut dyn FnMut(Duration),
+) -> Result<(Vec<Signalled>, Holding), HostCannot> {
     let mut current = match look(runner, workspace_id) {
         Ok(holders) => holders,
-        Err(why) => return Killed::Unavailable(HostCannot::ReadItsProcessTable(why)),
+        Err(why) => return Err(HostCannot::ReadItsProcessTable(why)),
     };
     let mut signalled: Vec<Signalled> = Vec::new();
     // The set the escalation carries forward, and it is *narrowed* between the
@@ -511,10 +622,10 @@ pub fn workspace_kill(
         match signals::signal(runner, signal, &pids) {
             Sent::Attempted => {}
             Sent::NoKillHere => {
-                return Killed::Unavailable(HostCannot::SendASignal(NoSignal::NoKillHere));
+                return Err(HostCannot::SendASignal(NoSignal::NoKillHere));
             }
             Sent::NotRun(failure) => {
-                return Killed::Unavailable(HostCannot::SendASignal(NoSignal::NotRun(failure)));
+                return Err(HostCannot::SendASignal(NoSignal::NotRun(failure)));
             }
         }
         wait(grace(signal));
@@ -553,12 +664,7 @@ pub fn workspace_kill(
             holders: current.into_iter().map(standing).collect(),
         }
     };
-    Killed::Swept(Sweep {
-        signalled,
-        marker: sweep_marker(devpod_home, workspace_id, &holding),
-        containers: kill_containers(runner, workspace_id, &holding),
-        holding,
-    })
+    Ok((signalled, holding))
 }
 
 /// Kill whatever containers this workspace's compose project still has up.
@@ -885,6 +991,126 @@ mod tests {
             Killed::Swept(sweep) => sweep,
             other => panic!("expected a sweep, got {other:?}"),
         }
+    }
+
+    // -----------------------------------------------------------------
+    // `release_the_lock`: the sweep a blocked launch reaches (devlaunch#602)
+    // -----------------------------------------------------------------
+
+    fn released(released: Released) -> Release {
+        match released {
+            Released::Swept(release) => release,
+            other => panic!("expected a release, got {other:?}"),
+        }
+    }
+
+    /// The ending the whole ticket is for: a launch behind an orphan clears it,
+    /// and says it cleared it. `freed_anything` is what the launch reads to know
+    /// its `devpod up` is about to get the flock.
+    #[test]
+    fn a_launch_releasing_the_lock_clears_the_orphan_holding_it() {
+        let fake = host_showing(WEDGED);
+
+        let release = released(release_the_lock(&fake, "my-ws", &mut |_| {
+            showing(&fake, NOTHING);
+        }));
+
+        assert_eq!(fake.args_to("kill"), [["-TERM", "732721"]]);
+        assert!(release.freed_anything(), "{release:?}");
+        assert_eq!(release.holding, Holding::Free);
+    }
+
+    /// The property the launch's whole claim to safety rests on, and it is the
+    /// sweep's own rather than a second rule written beside it: a `devpod up`
+    /// somebody is waiting on is not signalled, however badly this launch wants
+    /// the lock. The launch behind this one keeps waiting, which is what
+    /// devlaunch#601 already did for the case.
+    #[test]
+    fn a_launch_releasing_the_lock_leaves_an_attended_build_standing() {
+        let fake = host_showing(
+            "    1       0 /sbin/init\n 5000       1 dl my-ws\n 5001    5000 devpod up my-ws\n",
+        );
+
+        let release = released(release_the_lock(&fake, "my-ws", &mut |_| {}));
+
+        assert!(fake.args_to("kill").is_empty(), "nothing was signalled");
+        assert!(!release.freed_anything(), "{release:?}");
+        assert!(release.holding.any_attended(), "{release:?}");
+    }
+
+    /// An orphan that sat through SIGKILL is in `signalled` and is still holding
+    /// the workspace. `freed_anything` reads the endings rather than the length,
+    /// so the launch behind it says it is still waiting instead of announcing a
+    /// clearance and then hanging.
+    #[test]
+    fn a_release_that_only_found_survivors_freed_nothing() {
+        let fake = host_showing(WEDGED);
+
+        let release = released(release_the_lock(&fake, "my-ws", &mut |_| {}));
+
+        assert_eq!(
+            release
+                .signalled
+                .iter()
+                .map(|signalled| signalled.ending)
+                .collect::<Vec<Ending>>(),
+            [Ending::Survived],
+        );
+        assert!(
+            !release.freed_anything(),
+            "a survivor is not a clearance: {release:?}"
+        );
+    }
+
+    /// Nothing on the host names the workspace. A finding rather than a failure,
+    /// and the one that tells a blocked launch to look somewhere dl does not
+    /// reach.
+    #[test]
+    fn a_release_that_found_no_holder_at_all_says_so() {
+        let fake = host_showing(NOTHING);
+
+        let release = released(release_the_lock(&fake, "my-ws", &mut |_| {}));
+
+        assert!(fake.args_to("kill").is_empty());
+        assert!(release.signalled.is_empty(), "{release:?}");
+        assert_eq!(release.holding, Holding::Free);
+    }
+
+    /// A host that cannot be read has not established that nothing holds the
+    /// workspace, and a launch told "nothing was holding it" there goes looking
+    /// in the wrong place. [`Killed::Unavailable`]'s distinction, kept.
+    #[test]
+    fn a_release_on_a_host_with_no_ps_is_unavailable_rather_than_an_empty_sweep() {
+        let fake = FakeRunner::new();
+        fake.script_missing("ps");
+
+        assert!(
+            matches!(
+                release_the_lock(&fake, "my-ws", &mut |_| {}),
+                Released::Unavailable(HostCannot::ReadItsProcessTable(TableUnreadable::NoPs)),
+            ),
+            "a host with no ps must not report an empty sweep",
+        );
+    }
+
+    /// The three things a launch's release must not do, and the reason it is a
+    /// verb of its own rather than `workspace_kill` with the delete skipped: it
+    /// never asks devpod's home for a busy marker, never asks docker for a
+    /// container, and so can neither remove the marker of the build it is itself
+    /// running nor kill that build's containers.
+    #[test]
+    fn a_launch_releasing_the_lock_touches_neither_the_busy_marker_nor_any_container() {
+        let fake = host_showing(WEDGED);
+
+        released(release_the_lock(&fake, "my-ws", &mut |_| {
+            showing(&fake, NOTHING);
+        }));
+
+        assert!(
+            fake.args_to("docker").is_empty(),
+            "a launch must not kill containers to get a lock back: {:?}",
+            fake.args_to("docker"),
+        );
     }
 
     /// SIGTERM is an ask, and an orphan that takes it is never hit again. The

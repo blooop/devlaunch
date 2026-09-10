@@ -1471,6 +1471,17 @@ pub fn devlaunch_core::flows::kill::NoSignal::eq(&self, &devlaunch_core::flows::
 impl core::fmt::Debug for devlaunch_core::flows::kill::NoSignal
 pub fn devlaunch_core::flows::kill::NoSignal::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::kill::NoSignal
+pub enum devlaunch_core::flows::kill::Released
+pub devlaunch_core::flows::kill::Released::Swept(devlaunch_core::flows::kill::Release)
+pub devlaunch_core::flows::kill::Released::Unavailable(devlaunch_core::flows::kill::HostCannot)
+impl core::clone::Clone for devlaunch_core::flows::kill::Released
+pub fn devlaunch_core::flows::kill::Released::clone(&self) -> devlaunch_core::flows::kill::Released
+impl core::cmp::Eq for devlaunch_core::flows::kill::Released
+impl core::cmp::PartialEq for devlaunch_core::flows::kill::Released
+pub fn devlaunch_core::flows::kill::Released::eq(&self, &devlaunch_core::flows::kill::Released) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::kill::Released
+pub fn devlaunch_core::flows::kill::Released::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::kill::Released
 pub enum devlaunch_core::flows::kill::Standing
 pub devlaunch_core::flows::kill::Standing::ABuild(devlaunch_core::flows::kill::HostProcess)
 pub devlaunch_core::flows::kill::Standing::ASession(devlaunch_core::flows::kill::HostProcess)
@@ -1511,6 +1522,19 @@ pub fn devlaunch_core::flows::kill::HostProcess::eq(&self, &devlaunch_core::flow
 impl core::fmt::Debug for devlaunch_core::flows::kill::HostProcess
 pub fn devlaunch_core::flows::kill::HostProcess::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::kill::HostProcess
+pub struct devlaunch_core::flows::kill::Release
+pub devlaunch_core::flows::kill::Release::holding: devlaunch_core::flows::kill::Holding
+pub devlaunch_core::flows::kill::Release::signalled: alloc::vec::Vec<devlaunch_core::flows::kill::Signalled>
+impl devlaunch_core::flows::kill::Release
+pub fn devlaunch_core::flows::kill::Release::freed_anything(&self) -> bool
+impl core::clone::Clone for devlaunch_core::flows::kill::Release
+pub fn devlaunch_core::flows::kill::Release::clone(&self) -> devlaunch_core::flows::kill::Release
+impl core::cmp::Eq for devlaunch_core::flows::kill::Release
+impl core::cmp::PartialEq for devlaunch_core::flows::kill::Release
+pub fn devlaunch_core::flows::kill::Release::eq(&self, &devlaunch_core::flows::kill::Release) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::kill::Release
+pub fn devlaunch_core::flows::kill::Release::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::kill::Release
 pub struct devlaunch_core::flows::kill::Signalled
 pub devlaunch_core::flows::kill::Signalled::ending: devlaunch_core::flows::kill::Ending
 pub devlaunch_core::flows::kill::Signalled::process: devlaunch_core::flows::kill::HostProcess
@@ -1537,6 +1561,7 @@ pub fn devlaunch_core::flows::kill::Sweep::eq(&self, &devlaunch_core::flows::kil
 impl core::fmt::Debug for devlaunch_core::flows::kill::Sweep
 pub fn devlaunch_core::flows::kill::Sweep::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::kill::Sweep
+pub fn devlaunch_core::flows::kill::release_the_lock(&dyn devlaunch_runner::Runner, &str, &mut dyn core::ops::function::FnMut(core::time::Duration)) -> devlaunch_core::flows::kill::Released
 pub fn devlaunch_core::flows::kill::workspace_kill(&dyn devlaunch_runner::Runner, core::option::Option<&devlaunch_core::clients::devpod_home::DevpodHome>, &str, &mut dyn core::ops::function::FnMut(core::time::Duration)) -> devlaunch_core::flows::kill::Killed
 pub mod devlaunch_core::flows::launch
 pub enum devlaunch_core::flows::launch::BranchNotNamed

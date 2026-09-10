@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A launch blocked on devpod's workspace lock now clears the orphan holding it
+  and connects.** #601 gave that launch a voice: it printed, once, that devpod
+  was waiting for another process to let go of the workspace and that `dl <ws>
+  kill` in another terminal would clear it. The advice was right and the launch
+  still waited for as long as the holder lived, which for a `devpod up`
+  reparented to init is until the machine reboots — so the person who read the
+  line had to go and act on it by hand, from under fifty-odd devpod log lines
+  arriving every five seconds (#602).
+
+  Everything that line told them to do, dl now does. On devpod's lock line the
+  launch reaches the same sweep `dl <ws> kill` runs, kills whatever holds the
+  workspace that nothing is waiting on, and says what it killed by pid and
+  command line. The `up` is neither restarted nor abandoned: devpod's acquire
+  polls behind that five-second line, so the *blocked* `up` takes the freed flock
+  itself and goes on to build. Measured on a host, it does so within one second.
+
+  What it will not do is as much of the fix as what it will:
+
+  - **A holder somebody is waiting on is never signalled.** The distinction is
+    `kill`'s own — a `devpod up` with a live `dl` behind it is somebody's build,
+    and taking their workspace to get on with yours is not a repair. Behind one
+    of those the launch keeps #601's notice and #601's wait, which are right for
+    it.
+  - **Nothing is deleted.** `dl <ws> kill` deletes the workspace, because
+    somebody typing it has finished with it; somebody typing a launch is asking
+    for it. A fully built workspace wedged behind an orphaned `devpod`
+    subcommand needs its lock back and nothing else, and deleting it would throw
+    away a container and its volumes to fix a lock.
+  - **The flock is never unlinked**, devpod's busy marker is never touched, and
+    no container is killed. The kernel drops the lock when the holder dies, which
+    is why the sweep kills the holder; the marker and the containers belong to
+    the build this launch is itself running.
+
+  The notice it used to print has been rewritten, since it now describes work in
+  progress rather than homework: it says devpod is waiting and that the wait has
+  no deadline, and the line after it says what the sweep found. A sweep that
+  finds nothing on the host says that too — it is the finding that sends the
+  reader somewhere dl does not reach.
+
+
 ## [0.41.0] - 2026-09-10
 
 ### Fixed
