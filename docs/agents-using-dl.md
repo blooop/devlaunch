@@ -112,25 +112,48 @@ process does, so a killed agent does not wedge the cache for the others.
 caller deciding what to do:
 
 ```json
-{
-  "id": "bencher-ruff-waxd",
-  "devlaunch": true,
-  "repo": "blooop/bencher",
-  "branch": "ruff",
-  "checkedOut": "ruff",
-  "path": "/home/user/.cache/devlaunch/repos/blooop/bencher/bencher-ruff-waxd",
-  "state": "Running",
-  "lastUsed": "2026-09-10T09:24:10Z",
-  "unsaved": { "nothingToLose": true }
-}
+[
+  {
+    "id": "bencher-ruff-waxd",
+    "devlaunch": true,
+    "repo": "blooop/bencher",
+    "branch": "ruff",
+    "checkedOut": "ruff",
+    "path": "/home/user/.cache/devlaunch/repos/blooop/bencher/bencher-ruff-waxd",
+    "state": "Running",
+    "lastUsed": "2026-09-10T09:24:10Z",
+    "unsaved": { "nothingToLose": true }
+  }
+]
 ```
 
+The document is an **array** of those, always, including when it holds one row or
+none. `json.loads(out)` is a list.
+
 Three fields earn their place in a script. `state` says whether a call will pay a cold
-start. `devlaunch` separates the workspaces `dl` made from the ones it merely found, so
-a cleanup pass can leave other people's alone. And `unsaved` is the one worth reading
-before anything destructive: it reports `nothingToLose`, or a `wouldLose` naming what a
-delete would take with it, which is the same judgement the `rm` verb makes and the only
-way to make it without a `dl` process in the loop.
+start, and is `null` when `devpod status` would not answer. `devlaunch` separates the
+workspaces `dl` made from the ones it merely found, so a cleanup pass can leave other
+people's alone; on a row where it is `false`, `repo`, `branch`, `checkedOut` and `path`
+are `null` too, because there is no clone behind it for `dl` to have read them from.
+
+And `unsaved` is the one worth reading before anything destructive. It is the same
+judgement the `rm` verb makes, and it is the only way to make it without a `dl` process
+in the loop. **It is not two-valued**, and a caller that treats it as two-valued deletes
+work:
+
+- `{ "nothingToLose": true }`. Nothing would be lost.
+- `{ "wouldLose": "..." }`. Named work a delete would take with it.
+- `{ "couldNotTell": "..." }`. git could not be read, so nothing is known either way.
+  `dl <ws> rm` refuses on this rather than waving it through, and so should you: it is
+  the absence of an answer, not an answer of no.
+- `{ "wouldLose": "...", "couldNotTell": "..." }`. Both at once, when part of it could
+  be read and part could not. Refuse on this too.
+- `null`, for a workspace `dl` did not make and has no clone for. Indexing it raises.
+
+So the only safe test is `nothingToLose` present and true. Everything else, `null`
+included, is a reason not to destroy anything without a person in the loop, and a
+caller that tests for `wouldLose` alone will force-delete exactly the rows `rm` itself
+would have stopped at.
 
 `--json` is currently `--ls` only. Other commands report in English, so a caller that
 creates a workspace and then needs to address it should derive the id from a subsequent

@@ -29,6 +29,8 @@ pays it.
 
 from __future__ import annotations
 
+import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -46,6 +48,10 @@ from test_readme_cli_doc import LONG_FLAG, MUTUALLY_EXCLUSIVE_PROBE, dl_command_
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PAGE = REPO_ROOT / "docs" / "agents-using-dl.md"
 CLI_RS = REPO_ROOT / "rust" / "dl" / "src" / "cli.rs"
+# Where `unsaved` is built. Read rather than restated, so a key added to the wire
+# has to be added to the page before this suite goes green again.
+UNSAVED_RS = REPO_ROOT / "rust" / "devlaunch-core" / "src" / "flows" / "agent_worktrees.rs"
+LISTING_HEADING = "## Finding out what is there"
 
 # The URL the help block prints, and the path inside it that has to resolve. Spelled
 # once, here, so the assertion that the page exists and the assertion that `--help`
@@ -128,6 +134,61 @@ def test_the_page_gives_the_exit_status_a_signalled_command_actually_has():
         f"{PAGE.relative_to(REPO_ROOT)} still offers 254 as the status of a "
         "signalled command; measured, every signal comes back 255"
     )
+
+
+def _unsaved_keys() -> set[str]:
+    """Every key `Verdict::unsaved_json` can put in the object, read off its source.
+
+    A regex over one function rather than a list kept here by hand: the point of
+    the guard is that the page and the wire cannot drift, and a hand-kept list
+    drifts from both at once.
+    """
+    source = UNSAVED_RS.read_text(encoding="utf-8")
+    body = source.split("pub fn unsaved_json", 1)[1].split("\n    }\n", 1)[0]
+    return set(re.findall(r'"([a-zA-Z]+)"\]?\s*(?:=|:)', body))
+
+
+@pytest.mark.unit
+def test_the_page_names_every_shape_unsaved_can_arrive_in():
+    """The field a caller reads before deleting, so a shape it omits destroys work.
+
+    `unsaved` is not two-valued. `Verdict::unsaved_json` emits `nothingToLose`,
+    `wouldLose`, `couldNotTell`, or `wouldLose` and `couldNotTell` together, and
+    `listing.rs` emits `null` for a row `dl` did not make. A caller told only about
+    the first two tests for `wouldLose`, does not find it on a `couldNotTell` row
+    that `dl <ws> rm` would itself have refused, and force-deletes.
+    """
+    listing = section(PAGE, LISTING_HEADING)
+    for key in sorted(_unsaved_keys()):
+        assert key in listing, (
+            f"{PAGE.relative_to(REPO_ROOT)} does not name `{key}`, which "
+            f"{UNSAVED_RS.relative_to(REPO_ROOT)} can put in `unsaved`. A caller "
+            "reading only the shapes the page names deletes work on the ones it "
+            "does not"
+        )
+    assert "null" in listing, (
+        f"{PAGE.relative_to(REPO_ROOT)} does not say `unsaved` is null for a "
+        "workspace dl did not make, which TypeErrors a naive reader"
+    )
+
+
+@pytest.mark.unit
+def test_the_page_still_promises_what_the_e2e_test_proves_about_the_listing():
+    """`--ls --json` is an array of rows, and an example that is one bare object
+    teaches `json.loads(out)["state"]`, which raises on every real invocation.
+
+    `json_document` in `flows/listing.rs` is
+    `serde_json::Value::Array(rows.iter().map(json_row).collect())`.
+    """
+    listing = section(PAGE, LISTING_HEADING)
+    fenced = listing.split("```json", 1)
+    assert len(fenced) == 2, f"{PAGE.relative_to(REPO_ROOT)} lost its json example"
+    example = fenced[1].split("```", 1)[0].strip()
+    assert example.startswith("["), (
+        f"{PAGE.relative_to(REPO_ROOT)}'s `--ls --json` example is not an array. "
+        "The document is one, so a caller copying this indexes a list with a string"
+    )
+    assert isinstance(json.loads(example), list)
 
 
 @pytest.mark.unit
