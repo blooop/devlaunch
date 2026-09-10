@@ -1407,6 +1407,23 @@ impl core::fmt::Debug for devlaunch_core::flows::kill::Ending
 pub fn devlaunch_core::flows::kill::Ending::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Copy for devlaunch_core::flows::kill::Ending
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::kill::Ending
+pub enum devlaunch_core::flows::kill::Freed<'a>
+pub devlaunch_core::flows::kill::Freed::Entirely
+pub devlaunch_core::flows::kill::Freed::Entirely::cleared: devlaunch_core::domain::workspace_state::NonEmpty<devlaunch_core::flows::kill::Cleared<'a>>
+pub devlaunch_core::flows::kill::Freed::Nothing
+pub devlaunch_core::flows::kill::Freed::Nothing::still_held: devlaunch_core::domain::workspace_state::NonEmpty<&'a devlaunch_core::flows::kill::Standing>
+pub devlaunch_core::flows::kill::Freed::NothingHeldIt
+pub devlaunch_core::flows::kill::Freed::Partly
+pub devlaunch_core::flows::kill::Freed::Partly::cleared: devlaunch_core::domain::workspace_state::NonEmpty<devlaunch_core::flows::kill::Cleared<'a>>
+pub devlaunch_core::flows::kill::Freed::Partly::still_held: devlaunch_core::domain::workspace_state::NonEmpty<&'a devlaunch_core::flows::kill::Standing>
+impl<'a> core::clone::Clone for devlaunch_core::flows::kill::Freed<'a>
+pub fn devlaunch_core::flows::kill::Freed<'a>::clone(&self) -> devlaunch_core::flows::kill::Freed<'a>
+impl<'a> core::cmp::Eq for devlaunch_core::flows::kill::Freed<'a>
+impl<'a> core::cmp::PartialEq for devlaunch_core::flows::kill::Freed<'a>
+pub fn devlaunch_core::flows::kill::Freed<'a>::eq(&self, &devlaunch_core::flows::kill::Freed<'a>) -> bool
+impl<'a> core::fmt::Debug for devlaunch_core::flows::kill::Freed<'a>
+pub fn devlaunch_core::flows::kill::Freed<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::marker::StructuralPartialEq for devlaunch_core::flows::kill::Freed<'a>
 pub enum devlaunch_core::flows::kill::Holding
 pub devlaunch_core::flows::kill::Holding::Free
 pub devlaunch_core::flows::kill::Holding::StillHeld
@@ -1444,6 +1461,18 @@ pub fn devlaunch_core::flows::kill::Killed::eq(&self, &devlaunch_core::flows::ki
 impl core::fmt::Debug for devlaunch_core::flows::kill::Killed
 pub fn devlaunch_core::flows::kill::Killed::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::kill::Killed
+pub enum devlaunch_core::flows::kill::LetGo
+pub devlaunch_core::flows::kill::LetGo::Killed
+pub devlaunch_core::flows::kill::LetGo::Terminated
+impl core::clone::Clone for devlaunch_core::flows::kill::LetGo
+pub fn devlaunch_core::flows::kill::LetGo::clone(&self) -> devlaunch_core::flows::kill::LetGo
+impl core::cmp::Eq for devlaunch_core::flows::kill::LetGo
+impl core::cmp::PartialEq for devlaunch_core::flows::kill::LetGo
+pub fn devlaunch_core::flows::kill::LetGo::eq(&self, &devlaunch_core::flows::kill::LetGo) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::kill::LetGo
+pub fn devlaunch_core::flows::kill::LetGo::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for devlaunch_core::flows::kill::LetGo
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::kill::LetGo
 pub enum devlaunch_core::flows::kill::Marker
 pub devlaunch_core::flows::kill::Marker::Absent
 pub devlaunch_core::flows::kill::Marker::LeftForALiveHolder
@@ -1522,6 +1551,18 @@ pub fn devlaunch_core::flows::kill::TableUnreadable::eq(&self, &devlaunch_core::
 impl core::fmt::Debug for devlaunch_core::flows::kill::TableUnreadable
 pub fn devlaunch_core::flows::kill::TableUnreadable::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::kill::TableUnreadable
+pub struct devlaunch_core::flows::kill::Cleared<'a>
+pub devlaunch_core::flows::kill::Cleared::how: devlaunch_core::flows::kill::LetGo
+pub devlaunch_core::flows::kill::Cleared::process: &'a devlaunch_core::flows::kill::HostProcess
+impl<'a> core::clone::Clone for devlaunch_core::flows::kill::Cleared<'a>
+pub fn devlaunch_core::flows::kill::Cleared<'a>::clone(&self) -> devlaunch_core::flows::kill::Cleared<'a>
+impl<'a> core::cmp::Eq for devlaunch_core::flows::kill::Cleared<'a>
+impl<'a> core::cmp::PartialEq for devlaunch_core::flows::kill::Cleared<'a>
+pub fn devlaunch_core::flows::kill::Cleared<'a>::eq(&self, &devlaunch_core::flows::kill::Cleared<'a>) -> bool
+impl<'a> core::fmt::Debug for devlaunch_core::flows::kill::Cleared<'a>
+pub fn devlaunch_core::flows::kill::Cleared<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::marker::Copy for devlaunch_core::flows::kill::Cleared<'a>
+impl<'a> core::marker::StructuralPartialEq for devlaunch_core::flows::kill::Cleared<'a>
 pub struct devlaunch_core::flows::kill::HostProcess
 pub devlaunch_core::flows::kill::HostProcess::command: alloc::string::String
 pub devlaunch_core::flows::kill::HostProcess::parent: u32
@@ -1538,7 +1579,7 @@ pub struct devlaunch_core::flows::kill::Release
 pub devlaunch_core::flows::kill::Release::holding: devlaunch_core::flows::kill::Holding
 pub devlaunch_core::flows::kill::Release::signalled: alloc::vec::Vec<devlaunch_core::flows::kill::Signalled>
 impl devlaunch_core::flows::kill::Release
-pub fn devlaunch_core::flows::kill::Release::freed_anything(&self) -> bool
+pub fn devlaunch_core::flows::kill::Release::freed(&self) -> devlaunch_core::flows::kill::Freed<'_>
 impl core::clone::Clone for devlaunch_core::flows::kill::Release
 pub fn devlaunch_core::flows::kill::Release::clone(&self) -> devlaunch_core::flows::kill::Release
 impl core::cmp::Eq for devlaunch_core::flows::kill::Release

@@ -593,11 +593,11 @@ pub enum LaunchNotice {
     /// holds the workspace — is the one that sends them somewhere else to look.
     ///
     /// Carries [`kill::Released`] whole rather than a verdict boiled out of it.
-    /// Whether the lock was actually freed is [`kill::Release::freed_anything`],
-    /// which is derived from the endings rather than stored beside them, so a
-    /// notice claiming a clearance it did not get is not constructible; the pids
-    /// and command lines the report names are the same value's, so the sentence
-    /// and the fact cannot drift.
+    /// What the sweep came to is [`kill::Release::freed`], derived from both
+    /// halves of the value rather than stored beside them, so a notice claiming a
+    /// clearance it did not get is not constructible; the pids and command lines
+    /// the report names are the same value's, so the sentence and the fact cannot
+    /// drift.
     SweptTheLockHolders {
         workspace_id: String,
         released: kill::Released,
@@ -5911,7 +5911,10 @@ mod tests {
         let kill::Released::Swept(release) = released else {
             panic!("the sweep ran: {released:?}");
         };
-        assert!(!release.freed_anything(), "{release:?}");
+        assert!(
+            matches!(release.freed(), kill::Freed::Nothing { .. }),
+            "{release:?}"
+        );
         assert!(
             release.holding.any_attended(),
             "the build is reported as the live holder it is: {release:?}",

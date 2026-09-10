@@ -259,6 +259,40 @@ impl Ending {
             Signal::Kill => Self::Killed,
         }
     }
+
+    /// How this ending let go of the workspace, or `None` where it did not.
+    ///
+    /// A `match` and not `!= Survived`, which is what an earlier cut read: the
+    /// negative test is the one place a fourth [`Ending`] would silently count as
+    /// a clearance, and every other reader of this type already matches
+    /// exhaustively.
+    fn let_go(self) -> Option<LetGo> {
+        match self {
+            Self::Terminated => Some(LetGo::Terminated),
+            Self::Killed => Some(LetGo::Killed),
+            Self::Survived => None,
+        }
+    }
+}
+
+/// How a holder that let go was made to (devlaunch#602).
+///
+/// [`Ending`] minus the arm that did not let go, so a report about what a sweep
+/// *cleared* cannot be handed a process that is still there. [`Release::freed`]
+/// is the only way to make one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LetGo {
+    /// SIGTERM was enough, so the unwind ran.
+    Terminated,
+    /// It sat through SIGTERM and went under SIGKILL.
+    Killed,
+}
+
+/// One holder the sweep took off the workspace, and how.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Cleared<'a> {
+    pub process: &'a HostProcess,
+    pub how: LetGo,
 }
 
 /// One orphan and what became of it.
@@ -561,22 +595,68 @@ pub struct Release {
     pub holding: Holding,
 }
 
+/// What a release came to, read off both of its halves at once (devlaunch#602).
+///
+/// **Four arms because the pair cannot answer on its own.** `signalled` says
+/// whether anything let go; `holding` says whether anything is still there; and
+/// the launch behind them needs the *conjunction*, because only one of the four
+/// combinations means it is about to be unblocked.
+///
+/// A reader that consulted the first half alone was a live defect. Two orphans,
+/// one stopped by SIGTERM and one that sat through SIGKILL, rendered as "cleared
+/// what was holding my-ws ... this launch's own devpod up takes the lock from
+/// here" — announcing a clearance it had only half got, and dropping the survivor
+/// the reader had to go and deal with out of the report entirely.
+///
+/// **The collections are [`NonEmpty`], so the arms cannot overlap.** A `Nothing`
+/// holding an empty `still_held` would be [`Freed::NothingHeldIt`] written a
+/// second way, and the two are opposite findings: one is a holder this host
+/// cannot take, the other is nothing on this host holding it at all.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Freed<'a> {
+    /// Something let go and nothing is left holding the workspace. The blocked
+    /// `up` takes the flock from here.
+    Entirely { cleared: NonEmpty<Cleared<'a>> },
+    /// Something let go and something is still holding it. Both halves are true
+    /// and both have to be said: the launch is still waiting.
+    Partly {
+        cleared: NonEmpty<Cleared<'a>>,
+        still_held: NonEmpty<&'a Standing>,
+    },
+    /// Nothing let go, and this is what is still there.
+    Nothing { still_held: NonEmpty<&'a Standing> },
+    /// Nothing let go because nothing on this host holds the workspace. A finding
+    /// rather than a failure: it says the wait is out of this verb's reach.
+    NothingHeldIt,
+}
+
 impl Release {
-    /// Whether this release actually took a holder off the workspace.
+    /// What this release came to.
     ///
-    /// The one question the launch behind it asks, and it is asked of the
-    /// *endings* rather than of `signalled` being non-empty: an orphan that sat
-    /// through SIGKILL is in the list and still holds the flock exactly as
-    /// firmly, so a launch reading the length would announce it had cleared the
-    /// way and then go on waiting forever behind the thing it named.
+    /// Derived on demand rather than stored beside the fields it reads, so a
+    /// value whose verdict disagrees with its own contents is not constructible.
     ///
     /// Nothing here claims the launch is now unblocked. The flock is devpod's and
-    /// a holder can arrive in the same instant; what this says is that this sweep
-    /// released one, which is the most any caller can honestly report.
-    pub fn freed_anything(&self) -> bool {
-        self.signalled
-            .iter()
-            .any(|signalled| signalled.ending != Ending::Survived)
+    /// a holder can arrive in the same instant; what [`Freed::Entirely`] says is
+    /// that this sweep left nothing behind, which is the most any caller can
+    /// honestly report.
+    pub fn freed(&self) -> Freed<'_> {
+        let cleared = NonEmpty::of(self.signalled.iter().filter_map(|signalled| {
+            signalled.ending.let_go().map(|how| Cleared {
+                process: &signalled.process,
+                how,
+            })
+        }));
+        let still_held = NonEmpty::of(self.holding.holders().iter());
+        match (cleared, still_held) {
+            (Some(cleared), None) => Freed::Entirely { cleared },
+            (Some(cleared), Some(still_held)) => Freed::Partly {
+                cleared,
+                still_held,
+            },
+            (None, Some(still_held)) => Freed::Nothing { still_held },
+            (None, None) => Freed::NothingHeldIt,
+        }
     }
 }
 
@@ -1107,8 +1187,8 @@ mod tests {
     }
 
     /// The ending the whole ticket is for: a launch behind an orphan clears it,
-    /// and says it cleared it. `freed_anything` is what the launch reads to know
-    /// its `devpod up` is about to get the flock.
+    /// and says it cleared it. `freed()` is what the launch reads to know its
+    /// `devpod up` is about to get the flock.
     #[test]
     fn a_launch_releasing_the_lock_clears_the_orphan_holding_it() {
         let fake = host_showing(WEDGED);
@@ -1118,7 +1198,10 @@ mod tests {
         }));
 
         assert_eq!(fake.args_to("kill"), [["-TERM", "732721"]]);
-        assert!(release.freed_anything(), "{release:?}");
+        assert!(
+            matches!(release.freed(), Freed::Entirely { .. }),
+            "{release:?}"
+        );
         assert_eq!(release.holding, Holding::Free);
     }
 
@@ -1136,12 +1219,15 @@ mod tests {
         let release = released(release_the_lock(&fake, "my-ws", NOBODYS_CHILD, &mut |_| {}));
 
         assert!(fake.args_to("kill").is_empty(), "nothing was signalled");
-        assert!(!release.freed_anything(), "{release:?}");
+        assert!(
+            matches!(release.freed(), Freed::Nothing { .. }),
+            "{release:?}"
+        );
         assert!(release.holding.any_attended(), "{release:?}");
     }
 
     /// An orphan that sat through SIGKILL is in `signalled` and is still holding
-    /// the workspace. `freed_anything` reads the endings rather than the length,
+    /// the workspace. `freed()` reads the endings rather than the length,
     /// so the launch behind it says it is still waiting instead of announcing a
     /// clearance and then hanging.
     #[test]
@@ -1159,7 +1245,7 @@ mod tests {
             [Ending::Survived],
         );
         assert!(
-            !release.freed_anything(),
+            matches!(release.freed(), Freed::Nothing { .. }),
             "a survivor is not a clearance: {release:?}"
         );
     }

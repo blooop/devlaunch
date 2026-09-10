@@ -85,7 +85,9 @@ static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
 /// host's process table exactly as tidy as it found it, and failing the other
 /// test with a poisoning error would hide the failure that matters.
 fn one_at_a_time() -> MutexGuard<'static, ()> {
-    ONE_AT_A_TIME.lock().unwrap_or_else(|held| held.into_inner())
+    ONE_AT_A_TIME
+        .lock()
+        .unwrap_or_else(|held| held.into_inner())
 }
 
 fn repo_root() -> PathBuf {
@@ -387,7 +389,6 @@ fn a_launch_blocked_on_the_workspace_lock_says_so_once_while_it_is_blocked() {
         "the notice was said exactly once:\n{stderr}"
     );
 }
-
 
 /// The bar devlaunch#602 sets, at the binary boundary: the second command
 /// **connects**.

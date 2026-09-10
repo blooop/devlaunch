@@ -44,9 +44,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   The notice it used to print has been rewritten, since it now describes work in
   progress rather than homework: it says devpod is waiting and that the wait has
-  no deadline, and the line after it says what the sweep found. A sweep that
-  finds nothing on the host says that too — it is the finding that sends the
-  reader somewhere dl does not reach.
+  no deadline, and the line after it says what the sweep found. There are four
+  things that line can say, and they are read off both halves of the result
+  rather than off "did anything let go" alone: everything cleared, some cleared
+  and something still holding, nothing cleared, or nothing on this host holding
+  it at all. The third and fourth are findings rather than failures — one names a
+  holder to go and deal with, the other says the wait is out of dl's reach.
+
+  The launch's own `devpod up` is not counted among the holders. It names the
+  workspace in its own argv and has a live `dl` behind it, so the sweep's reading
+  finds it; it is the process *waiting* for the lock rather than one holding it,
+  and counting it made the report name the reader's own launch as the thing it
+  was waiting for.
+
+  **Not done here:** `ContainerState::Busy` is still dead data. devpod's status
+  parses the word, nothing reads it, so "another process is holding this
+  workspace right now" and "it is stopped" still reach a launch as the same
+  answer. Acting on it would let a launch heal a round trip earlier, before the
+  `up` is attempted. It is its own change and is not in this one.
 
 
 ## [0.41.0] - 2026-09-10
