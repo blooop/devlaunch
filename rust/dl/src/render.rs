@@ -33,8 +33,8 @@ use devlaunch_core::flows::claude_profiles;
 use devlaunch_core::flows::completion_cache::CompletionData;
 use devlaunch_core::flows::disk_usage::describe_usage;
 use devlaunch_core::flows::kill::{
-    Cleared, ContainerRefusal, Containers, Ending, Freed, Holding, HostCannot, LetGo, Marker,
-    NoSignal, Released, Standing, Sweep, TableUnreadable,
+    Cleared, ContainerRefusal, Containers, Ending, Freed, Holding, HostCannot, HostProcess, LetGo,
+    Marker, NoSignal, Released, Standing, StillHeld, Sweep, TableUnreadable,
 };
 use devlaunch_core::flows::launch::{
     BranchNotNamed, ClaudeProfileProblem, ColdRefused, LaunchAborted, LaunchNotice, LaunchRefusal,
@@ -1844,32 +1844,55 @@ fn swept_the_lock(workspace_id: &str, released: &Released) -> String {
             cleared,
             still_held,
         } => format!(
-            "dl: cleared {} from {workspace_id}, and {} is still holding it, so this launch is \
-             still waiting.",
+            "dl: cleared {} from {workspace_id}, and {}, so this launch is still waiting.",
             named(cleared.iter().copied().map(cleared_line)),
-            named(still_held.iter().copied().map(standing_named)),
+            what_is_left(&still_held),
         ),
-        // Nothing was dl's to take. Two reasons, and they ask different things of
-        // the reader: wait for somebody, or go and deal with a process no launch
-        // can clear.
-        Freed::Nothing { still_held } if release.holding.any_attended() => format!(
-            "dl: {workspace_id} is held by work somebody is still waiting on, which dl will not \
-             interrupt — {}. This launch waits for it, as it did before.",
-            named(still_held.iter().copied().map(standing_named))
-        ),
-        // Orphans that sat through SIGKILL. Almost always another user's, since
-        // devlaunch has no privilege to add, and saying so is what stops somebody
-        // waiting out a process no launch of theirs can ever clear.
+        // Nothing was dl's to take. Which of the three sentences is a match on
+        // `StillHeld` rather than a fold to `bool` over the holders: a spared
+        // build beside an unstoppable orphan is both findings, and asking
+        // `any_attended` reported it as only the first.
         Freed::Nothing { still_held } => format!(
-            "dl: {workspace_id} is still held by {}, which dl signalled and could not stop — \
-             almost certainly another user's. This launch is still waiting.",
-            named(still_held.iter().copied().map(standing_named))
+            "dl: {workspace_id} {}. This launch is still waiting.",
+            what_is_left(&still_held)
         ),
         // The sweep looked and found no holder. A finding rather than a failure,
         // and the one that says the wait is not an orphan and not dl's to clear.
         Freed::NothingHeldIt => format!(
             "dl: nothing on this host is holding {workspace_id}, so whatever devpod is waiting \
              on is out of dl's reach. This launch is still waiting."
+        ),
+    }
+}
+
+/// What a release left holding the workspace, as one clause.
+///
+/// Total over [`StillHeld`], so the mixed case has a sentence of its own instead
+/// of borrowing the attended one and burying the orphan inside it.
+fn what_is_left(still_held: &StillHeld<'_>) -> String {
+    let waiting_on = |attended: &NonEmpty<&HostProcess>| {
+        format!(
+            "is held by work somebody is still waiting on, which dl will not interrupt — {}",
+            named(attended.iter().copied().map(process_named))
+        )
+    };
+    let could_not_stop = |unstoppable: &NonEmpty<&HostProcess>| {
+        format!(
+            "is still held by {}, which dl signalled and could not stop — almost certainly \
+             another user's",
+            named(unstoppable.iter().copied().map(process_named))
+        )
+    };
+    match still_held {
+        StillHeld::Attended(attended) => waiting_on(attended),
+        StillHeld::Unstoppable(unstoppable) => could_not_stop(unstoppable),
+        StillHeld::Both {
+            attended,
+            unstoppable,
+        } => format!(
+            "{}, and {}",
+            waiting_on(attended),
+            could_not_stop(unstoppable)
         ),
     }
 }
@@ -1891,8 +1914,7 @@ fn cleared_line(cleared: Cleared<'_>) -> String {
 }
 
 /// One holder left standing, named as [`killed`] names it.
-fn standing_named(standing: &Standing) -> String {
-    let process = standing.process();
+fn process_named(process: &HostProcess) -> String {
     format!("{} ({})", process.pid, process.command)
 }
 
@@ -3768,7 +3790,7 @@ mod tests {
     use std::path::PathBuf;
 
     use devlaunch_core::flows::agent_worktrees::WorktreeReport;
-    use devlaunch_core::flows::kill::{HostProcess, Release, Signalled};
+    use devlaunch_core::flows::kill::{Release, Signalled};
     use devlaunch_core::flows::launch::{HerdrTabRename, TerminalTitle};
     use devlaunch_core::flows::lifecycle::LockKept;
     use devlaunch_core::flows::listing::{SourceDescription, SourceKind};
@@ -4897,6 +4919,44 @@ mod tests {
             "a survivor is not a clearance: {line}"
         );
         assert!(line.contains("still waiting"), "{line}");
+    }
+
+    /// A live build and an orphan that sat through SIGKILL, holding the same
+    /// workspace. The two ask opposite things of the reader -- wait for the
+    /// first, go and deal with the second -- and a report that names them in one
+    /// breath as "work somebody is still waiting on" loses the only one they can
+    /// act on.
+    #[test]
+    fn a_sweep_that_left_a_build_and_an_unstoppable_orphan_does_not_call_the_orphan_somebodys_work()
+    {
+        let line = swept(Release {
+            signalled: vec![Signalled {
+                process: an_orphan(2_315_160),
+                ending: Ending::Survived,
+            }],
+            holding: Holding::StillHeld {
+                holders: vec![
+                    Standing::ABuild(HostProcess {
+                        pid: 5001,
+                        parent: 5000,
+                        command: "devpod up my-ws".to_owned(),
+                    }),
+                    Standing::AnOrphan(an_orphan(2_315_160)),
+                ],
+            },
+        });
+
+        assert!(line.contains("5001"), "the build is named: {line}");
+        assert!(line.contains("2315160"), "the orphan is named: {line}");
+        assert!(
+            line.contains("will not interrupt"),
+            "the build is said to be somebody's: {line}"
+        );
+        assert!(
+            line.contains("could not stop"),
+            "the orphan is reported as one dl signalled and failed to stop, not as \
+             somebody's work: {line}"
+        );
     }
 
     /// The sweep looked and found no holder. A finding rather than a failure, and

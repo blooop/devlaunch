@@ -611,7 +611,10 @@ pub struct Release {
 /// **The collections are [`NonEmpty`], so the arms cannot overlap.** A `Nothing`
 /// holding an empty `still_held` would be [`Freed::NothingHeldIt`] written a
 /// second way, and the two are opposite findings: one is a holder this host
-/// cannot take, the other is nothing on this host holding it at all.
+/// cannot take, the other is nothing on this host holding it at all. What is
+/// still holding it is a [`StillHeld`] rather than a flat list for the same
+/// reason one level down: a reader that folded that list to a `bool` reported a
+/// mixed set as whichever kind it asked about first.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Freed<'a> {
     /// Something let go and nothing is left holding the workspace. The blocked
@@ -621,13 +624,65 @@ pub enum Freed<'a> {
     /// and both have to be said: the launch is still waiting.
     Partly {
         cleared: NonEmpty<Cleared<'a>>,
-        still_held: NonEmpty<&'a Standing>,
+        still_held: StillHeld<'a>,
     },
     /// Nothing let go, and this is what is still there.
-    Nothing { still_held: NonEmpty<&'a Standing> },
+    Nothing { still_held: StillHeld<'a> },
     /// Nothing let go because nothing on this host holds the workspace. A finding
     /// rather than a failure: it says the wait is out of this verb's reach.
     NothingHeldIt,
+}
+
+/// The holders a release left standing, split by what the reader can do about them.
+///
+/// **Two kinds, and they are opposite instructions.** A holder somebody is behind
+/// is one to wait for; an orphan that sat through SIGKILL is one to go and deal
+/// with, and it is almost always another user's, because devlaunch has no
+/// privilege to add. A reader given the wrong one of those waits out a process
+/// that will never let go, or goes hunting for somebody else's live build.
+///
+/// **It is a sum because the two can be true at once**, which is the shape that
+/// caught the previous reader out. `Freed::Nothing` carried one flat list and the
+/// renderer chose its sentence with `Holding::any_attended` -- a fold to `bool`
+/// over a set that can hold both kinds. A spared build beside an unstoppable
+/// orphan read as "held by work somebody is still waiting on", naming the orphan
+/// among it, and the finding the reader could act on was gone. Partitioning here
+/// means the renderer matches instead of asking, so a mixed set has a sentence of
+/// its own rather than borrowing one.
+///
+/// The payload is [`HostProcess`] rather than [`Standing`] on both sides because
+/// the arm has already said which kind it is: a `Standing` inside `Unstoppable`
+/// could be an `ABuild`, which is the same contradiction one level down.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StillHeld<'a> {
+    /// Every holder left is somebody's -- a build or a session. Wait for them.
+    Attended(NonEmpty<&'a HostProcess>),
+    /// Every holder left is an orphan dl signalled and could not stop.
+    Unstoppable(NonEmpty<&'a HostProcess>),
+    /// Both at once: something to wait for and something to go and deal with.
+    Both {
+        attended: NonEmpty<&'a HostProcess>,
+        unstoppable: NonEmpty<&'a HostProcess>,
+    },
+}
+
+impl<'a> StillHeld<'a> {
+    /// Partition what the sweep left standing, or `None` if it left nothing.
+    fn of(holders: &'a [Standing]) -> Option<Self> {
+        let (attended, orphaned): (Vec<&Standing>, Vec<&Standing>) =
+            holders.iter().partition(|standing| standing.attended());
+        let attended = NonEmpty::of(attended.into_iter().map(Standing::process));
+        let unstoppable = NonEmpty::of(orphaned.into_iter().map(Standing::process));
+        match (attended, unstoppable) {
+            (Some(attended), Some(unstoppable)) => Some(Self::Both {
+                attended,
+                unstoppable,
+            }),
+            (Some(attended), None) => Some(Self::Attended(attended)),
+            (None, Some(unstoppable)) => Some(Self::Unstoppable(unstoppable)),
+            (None, None) => None,
+        }
+    }
 }
 
 impl Release {
@@ -647,7 +702,7 @@ impl Release {
                 how,
             })
         }));
-        let still_held = NonEmpty::of(self.holding.holders().iter());
+        let still_held = StillHeld::of(self.holding.holders());
         match (cleared, still_held) {
             (Some(cleared), None) => Freed::Entirely { cleared },
             (Some(cleared), Some(still_held)) => Freed::Partly {
@@ -1148,6 +1203,13 @@ mod tests {
     /// The issue's row, as `ps` prints it.
     const WEDGED: &str = "732721       1 devpod up my-ws --ide none\n";
     const NOTHING: &str = "    1       0 /sbin/init\n";
+    /// Somebody's build and another user's orphan on one workspace: the sweep
+    /// spares 5001 because 5000 is still there to be waiting on it, and 732721
+    /// sits through both signals because this fake never takes it off the table.
+    const MIXED: &str = "    1       0 /sbin/init\n\
+                         5000       1 dl my-ws\n\
+                         5001    5000 devpod up my-ws\n\
+                       732721       1 devpod up my-ws --ide none\n";
 
     /// A fake whose process table can be swapped between passes, which is what
     /// the injected wait is for: the grace period is where the process actually
@@ -1247,6 +1309,42 @@ mod tests {
         assert!(
             matches!(release.freed(), Freed::Nothing { .. }),
             "a survivor is not a clearance: {release:?}"
+        );
+    }
+
+    /// A spared build and an orphan that sat through SIGKILL, holding the same
+    /// workspace at once. The two are opposite instructions to whoever reads the
+    /// report, so the pair has to survive as a pair: a reader that asks "is any
+    /// of this attended" gets `true` and reports the orphan as somebody's work.
+    #[test]
+    fn a_release_that_left_a_build_and_an_unstoppable_orphan_keeps_the_two_apart() {
+        let fake = host_showing(MIXED);
+
+        let release = released(release_the_lock(&fake, "my-ws", NOBODYS_CHILD, &mut |_| {}));
+
+        let Freed::Nothing { still_held } = release.freed() else {
+            panic!("nothing let go: {release:?}");
+        };
+        let StillHeld::Both {
+            attended,
+            unstoppable,
+        } = still_held
+        else {
+            panic!("the two kinds were folded into one: {still_held:?}");
+        };
+        assert_eq!(
+            attended
+                .iter()
+                .map(|process| process.pid)
+                .collect::<Vec<u32>>(),
+            [5001],
+        );
+        assert_eq!(
+            unstoppable
+                .iter()
+                .map(|process| process.pid)
+                .collect::<Vec<u32>>(),
+            [732_721],
         );
     }
 
