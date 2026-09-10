@@ -474,6 +474,16 @@ impl Runner for Machine {
         }
     }
 
+    fn watched(&self, spec: &SpawnSpec, on_line: &mut dyn FnMut(&str)) -> Outcome {
+        self.record(spec);
+        if faked(&spec.invocation.program) {
+            self.devpod_forgets_what_it_deleted(spec);
+            self.fake.watched(spec, on_line)
+        } else {
+            self.processes.watched(spec, on_line)
+        }
+    }
+
     /// Recorded and never started: the refresh a removal re-arms is a whole second
     /// `dl` run, and a test that really forked one would be running an unrelated
     /// program against the developer's own cache.

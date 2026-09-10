@@ -166,6 +166,7 @@ pub fn devlaunch_runner::ProcessRunner::capture(&self, &devlaunch_runner::SpawnS
 pub fn devlaunch_runner::ProcessRunner::detach(&self, &devlaunch_runner::Invocation) -> devlaunch_runner::DetachOutcome
 pub fn devlaunch_runner::ProcessRunner::passthrough(&self, &devlaunch_runner::SpawnSpec) -> devlaunch_runner::Outcome
 pub fn devlaunch_runner::ProcessRunner::session(&self, &devlaunch_runner::SpawnSpec, &mut dyn core::ops::function::FnMut(&str)) -> devlaunch_runner::Outcome
+pub fn devlaunch_runner::ProcessRunner::watched(&self, &devlaunch_runner::SpawnSpec, &mut dyn core::ops::function::FnMut(&str)) -> devlaunch_runner::Outcome
 pub struct devlaunch_runner::SpawnSpec
 pub devlaunch_runner::SpawnSpec::invocation: devlaunch_runner::Invocation
 pub devlaunch_runner::SpawnSpec::own_group: bool
@@ -196,8 +197,10 @@ pub fn devlaunch_runner::Runner::capture(&self, &devlaunch_runner::SpawnSpec) ->
 pub fn devlaunch_runner::Runner::detach(&self, &devlaunch_runner::Invocation) -> devlaunch_runner::DetachOutcome
 pub fn devlaunch_runner::Runner::passthrough(&self, &devlaunch_runner::SpawnSpec) -> devlaunch_runner::Outcome
 pub fn devlaunch_runner::Runner::session(&self, &devlaunch_runner::SpawnSpec, &mut dyn core::ops::function::FnMut(&str)) -> devlaunch_runner::Outcome
+pub fn devlaunch_runner::Runner::watched(&self, &devlaunch_runner::SpawnSpec, &mut dyn core::ops::function::FnMut(&str)) -> devlaunch_runner::Outcome
 impl devlaunch_runner::Runner for devlaunch_runner::ProcessRunner
 pub fn devlaunch_runner::ProcessRunner::capture(&self, &devlaunch_runner::SpawnSpec) -> devlaunch_runner::Outcome<devlaunch_runner::CapturedText>
 pub fn devlaunch_runner::ProcessRunner::detach(&self, &devlaunch_runner::Invocation) -> devlaunch_runner::DetachOutcome
 pub fn devlaunch_runner::ProcessRunner::passthrough(&self, &devlaunch_runner::SpawnSpec) -> devlaunch_runner::Outcome
 pub fn devlaunch_runner::ProcessRunner::session(&self, &devlaunch_runner::SpawnSpec, &mut dyn core::ops::function::FnMut(&str)) -> devlaunch_runner::Outcome
+pub fn devlaunch_runner::ProcessRunner::watched(&self, &devlaunch_runner::SpawnSpec, &mut dyn core::ops::function::FnMut(&str)) -> devlaunch_runner::Outcome

@@ -4176,6 +4176,10 @@ mod tests {
             self.passthrough(spec)
         }
 
+        fn watched(&self, spec: &SpawnSpec, _on_line: &mut dyn FnMut(&str)) -> Outcome {
+            self.passthrough(spec)
+        }
+
         fn detach(&self, what: &Invocation) -> DetachOutcome {
             self.calls
                 .lock()

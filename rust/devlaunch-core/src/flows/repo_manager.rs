@@ -1942,6 +1942,11 @@ pub(crate) mod tests {
             self.fake.session(spec, on_stderr_line)
         }
 
+        fn watched(&self, spec: &SpawnSpec, on_line: &mut dyn FnMut(&str)) -> Outcome {
+            self.effects(&spec.invocation.argv());
+            self.fake.watched(spec, on_line)
+        }
+
         fn detach(&self, what: &Invocation) -> DetachOutcome {
             self.effects(&what.argv());
             self.fake.detach(what)

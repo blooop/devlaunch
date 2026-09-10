@@ -7,30 +7,38 @@
 //! issues is visible to a test), and it is what makes "devpod is not installed"
 //! a fact this layer can state once rather than a guess each caller makes.
 //!
-//! # The four exotics
+//! # The five exotics
 //!
-//! Python's `dl.py` spawns processes four ways, and the differences are
-//! load-bearing rather than incidental. They are the four methods of [`Runner`]:
+//! Python's `dl.py` spawned processes four ways, and the differences are
+//! load-bearing rather than incidental. They are four of the five methods of
+//! [`Runner`]; the fifth arrived with devlaunch#600:
 //!
 //! - [`Runner::capture`] — both streams read as text. `git`'s answers,
 //!   `gh auth token`, `devpod list --output json`: the output *is* the answer
 //!   the caller branches on. Carries a per-call timeout, because a `git fetch`
 //!   against a hung remote must cost one pass rather than the session.
-//! - [`Runner::passthrough`] — both streams inherited. `devpod up` builds an
-//!   image for minutes and its progress belongs on the user's terminal as it
-//!   happens. Nothing is captured, and the outcome says so by carrying no text
-//!   at all rather than a pair of empty strings.
+//! - [`Runner::passthrough`] — both streams inherited. Nothing is captured, and
+//!   the outcome says so by carrying no text at all rather than a pair of empty
+//!   strings. `git clone`'s progress, and `devpod up` until it moved to
+//!   `watched`.
 //! - [`Runner::session`] — stdin and stdout inherited, stderr read line by line
 //!   as it arrives. The terminal-session case: devpod puts the real terminal
 //!   into raw mode through stdin/stdout and asks for a pty on that basis, so a
 //!   pipe on either changes what devpod does; only stderr is read, so devpod's
 //!   report of how the session ended can be interpreted instead of dumped on
 //!   the user. Lines reach the caller while the session is still running.
+//! - [`Runner::watched`] — stdin inherited, both output streams read line by
+//!   line and written straight back to the stream each came from. `devpod up`
+//!   builds an image for minutes and its progress belongs on the user's terminal
+//!   as it happens, but one line of it means the build is never going to finish
+//!   (devpod parked on a workspace lock), and that line is an `info`, which
+//!   devpod's logger writes to *stdout*. So both streams are read, and the
+//!   caller sees every line without owning any of them.
 //! - [`Runner::detach`] — a new session (`setsid`) with null stdio, never waited
 //!   for. The background completion refresh: it outlives the `dl` that started
 //!   it, and a Ctrl-C in the shell that started `dl` must not reach it.
 //!
-//! The fifth exotic is a field rather than a method: [`StdinPlan::File`] hands
+//! The sixth exotic is a field rather than a method: [`StdinPlan::File`] hands
 //! an open descriptor to the child, because the payload `tools.py` streams into
 //! a container runs to hundreds of megabytes that have no business in this
 //! process's memory.
@@ -49,7 +57,8 @@
 //! stdout, which is to say they hand it the *terminal*, and a terminal carries
 //! modes as well as bytes. A child that is killed rather than exited leaves its
 //! modes switched on with nobody left to switch them off, so both methods write a
-//! restore as soon as they reap the child. The `terminal` module is that string
+//! restore as soon as they reap the child, and so does [`Runner::watched`], which
+//! hands over stdin alone but took `devpod up` over from `passthrough`. The `terminal` module is that string
 //! and the argument for why writing it after a clean session costs nothing.
 //!
 //! # No English
@@ -240,7 +249,8 @@ pub struct SpawnSpec {
     /// default) keeps the child in this process's group, so it stays the
     /// controlling terminal's foreground group and can read the PTY without
     /// taking SIGTTIN — required for an interactive `ssh -t`, and what the Python
-    /// original did. Only `passthrough` reads this field.
+    /// original did. `passthrough`, `session` and `watched` read this field;
+    /// `capture`'s children never lead a group, and `detach`'s lead a session.
     pub own_group: bool,
 }
 
@@ -276,9 +286,10 @@ impl SpawnSpec {
         self
     }
 
-    /// The [`Runner::passthrough`] child should lead a process group of its own,
-    /// so this process's SIGINT handler can tear it down independently. For
-    /// `devpod up`; see [`SpawnSpec::own_group`].
+    /// The [`Runner::passthrough`], [`Runner::session`] or [`Runner::watched`]
+    /// child should lead a process group of its own, so this process's SIGINT
+    /// handler can tear it down independently. For `devpod up`; see
+    /// [`SpawnSpec::own_group`].
     #[must_use]
     pub fn leading_its_own_group(mut self) -> Self {
         self.own_group = true;
@@ -458,6 +469,24 @@ pub trait Runner: Sync {
     /// of a remote exit status) is held back rather than shown.
     fn session(&self, spec: &SpawnSpec, on_stderr_line: &mut dyn FnMut(&str)) -> Outcome;
 
+    /// Run a passthrough whose output is read on the way past: stdin inherited,
+    /// stdout and stderr each read a line at a time and written straight back to
+    /// the stream they arrived on, and every line handed to `on_line` as well.
+    ///
+    /// For a child whose output is a log the caller wants to *act* on while it
+    /// is still running -- `devpod up` sitting on a workspace lock -- and which
+    /// does not need the terminal on stdout. `on_line` reads and does not own:
+    /// the bytes are already on their way back out when it is called, so it
+    /// cannot hold a line back the way [`Runner::session`]'s sink can. It also
+    /// cannot tell which stream a line came from, on purpose: devpod's logger
+    /// splits by *level* (`info` to stdout, `fatal` to stderr), so a watch that
+    /// read one stream would be a watch on a guess about severity.
+    ///
+    /// Lines arrive without their newline. Order is kept within a stream and
+    /// only approximately across the two, which is one pipe read after another
+    /// and no worse than the terminal would have shown.
+    fn watched(&self, spec: &SpawnSpec, on_line: &mut dyn FnMut(&str)) -> Outcome;
+
     /// Start a child in a session of its own with null stdio, and do not wait.
     ///
     /// Takes an [`Invocation`] rather than a [`SpawnSpec`]: a child nothing
@@ -540,34 +569,28 @@ impl Runner for ProcessRunner {
         // Whether this child leads a process group of its own is the caller's
         // decision, carried on the spec (see [`SpawnSpec::own_group`]).
         //
-        // `devpod up` sets it: it is the one long-running foreground child, and
-        // the one a Ctrl-C used to orphan — `dl`'s `_exit(130)` released the
-        // launch lock while the build carried on holding it (concurrency review
-        // F3). Leading its own group lets `dl`'s interrupt handler `killpg` the
-        // build before it exits, so the build comes down with `dl` rather than
-        // outliving it, even when the interrupt arrived as `kill -INT <pid>`.
+        // `devpod up` set it here until devlaunch#600 moved that call to
+        // `watched`, and the arm stays because the decision is the spec's and
+        // not this method's. The reason is unchanged: the build is the one
+        // long-running foreground child, and the one a Ctrl-C used to orphan —
+        // `dl`'s `_exit(130)` released the launch lock while the build carried
+        // on holding it (concurrency review F3). Leading its own group lets
+        // `dl`'s interrupt handler `killpg` the build before it exits, so the
+        // build comes down with `dl` rather than outliving it, even when the
+        // interrupt arrived as `kill -INT <pid>`.
         //
-        // An interactive `ssh -t` (the other passthrough caller) must NOT: a
+        // An interactive `ssh -t` (the passthrough caller today) must NOT: a
         // child in a group of its own is no longer the controlling terminal's
         // foreground group, so its first read of the PTY earns a SIGTTIN and the
         // session hangs. It stays in this process's group, which is also what
-        // the Python original did — as do `session`'s and `capture`'s children,
-        // for the same reason.
+        // the Python original did — as do `capture`'s children, and `session`'s
+        // and `watched`'s unless their spec says otherwise, for the same reason.
         let ending = if spec.own_group {
             let mut child = match start(spec, Stdio::inherit(), Stdio::inherit(), OwnGroup::Yes) {
                 Ok(child) => child,
                 Err(outcome) => return outcome.retyped(),
             };
-            // The child led its own group from its `pre_exec`, so its pgid is its
-            // pid; set it from the parent too to close the fork-to-exec window.
-            let pgid = child.id() as i32;
-            // SAFETY: `setpgid` on our own just-spawned child; EACCES (already
-            // exec'd) or ESRCH (already gone) are both fine — the child's own
-            // `pre_exec` establishes the group regardless.
-            unsafe {
-                libc::setpgid(pgid, pgid);
-            }
-            interrupt::note_foreground_child(pgid);
+            note_own_group(&child);
             let ending = wait(&mut child, spec.timeout);
             // Reaped now, so the handler must not signal a possibly-recycled pgid.
             interrupt::clear_foreground_child();
@@ -598,92 +621,33 @@ impl Runner for ProcessRunner {
     }
 
     fn session(&self, spec: &SpawnSpec, on_stderr_line: &mut dyn FnMut(&str)) -> Outcome {
-        let mut child = match start(spec, Stdio::inherit(), Stdio::piped(), OwnGroup::No) {
-            Ok(child) => child,
-            Err(outcome) => return outcome.retyped(),
-        };
-        // The lines are read on a thread and handed over here as they arrive,
-        // so a session that runs for an hour reports devpod's warnings when
-        // devpod writes them — and so a timeout can still elapse while the
-        // child is quiet.
-        let (lines, reader) = match child.stderr.take() {
-            Some(pipe) => {
-                let (tx, rx) = mpsc::channel();
-                let reader = thread::spawn(move || {
-                    let mut reader = BufReader::new(pipe);
-                    let mut buffer = Vec::new();
-                    loop {
-                        buffer.clear();
-                        match reader.read_until(b'\n', &mut buffer) {
-                            Ok(0) | Err(_) => break,
-                            Ok(_) => {
-                                let mut line = String::from_utf8_lossy(&buffer).into_owned();
-                                while line.ends_with('\n') || line.ends_with('\r') {
-                                    line.pop();
-                                }
-                                if tx.send(line).is_err() {
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                });
-                (Some(rx), Some(reader))
-            }
-            None => (None, None),
-        };
+        // stdout stays the terminal's: devpod puts it into raw mode through
+        // stdin/stdout and asks for a pty on that basis, so a pipe there changes
+        // what devpod does. Only stderr is read, and the sink owns each line.
+        streamed(spec, Stdio::inherit(), &mut |_, line| on_stderr_line(line))
+    }
 
-        let deadline = spec.timeout.map(|limit| Instant::now() + limit);
-        let mut timed_out = false;
-        if let Some(lines) = lines {
-            loop {
-                let received = match deadline {
-                    None => lines.recv().map_err(|_| Waited::Closed),
-                    Some(deadline) => {
-                        let left = deadline.saturating_duration_since(Instant::now());
-                        lines.recv_timeout(left).map_err(|error| match error {
-                            mpsc::RecvTimeoutError::Timeout => Waited::Elapsed,
-                            mpsc::RecvTimeoutError::Disconnected => Waited::Closed,
-                        })
-                    }
-                };
-                match received {
-                    Ok(line) => on_stderr_line(&line),
-                    Err(Waited::Closed) => break,
-                    Err(Waited::Elapsed) => {
-                        timed_out = true;
-                        break;
-                    }
+    fn watched(&self, spec: &SpawnSpec, on_line: &mut dyn FnMut(&str)) -> Outcome {
+        // Both streams read, and each line put straight back where it came from
+        // before the caller sees it, so from the outside this is a passthrough
+        // that happened to be read. `writeln!` on the locked handle rather than
+        // `println!`, which panics on a closed stdout -- `dl ... | head` is an
+        // ordinary thing to type -- where a build that goes on printing into a
+        // pipe nobody reads should lose the line and not the launch.
+        streamed(spec, Stdio::piped(), &mut |stream, line| {
+            use std::io::Write as _;
+            match stream {
+                Stream::Stdout => {
+                    let mut out = std::io::stdout().lock();
+                    let _ = writeln!(out, "{line}");
+                }
+                Stream::Stderr => {
+                    let mut err = std::io::stderr().lock();
+                    let _ = writeln!(err, "{line}");
                 }
             }
-        }
-        let ending = if timed_out {
-            kill(&mut child)
-        } else {
-            // The pipe is closed, so the child is on its way out; whatever is
-            // left of its timeout is what it has to finish in.
-            wait(
-                &mut child,
-                deadline.map(|d| d.saturating_duration_since(Instant::now())),
-            )
-        };
-        // The reader is joined only when the pipe closed of its own accord (the
-        // loop broke on Closed, so the thread is already on its way out). On a
-        // timeout it is abandoned: a descendant in a session of its own can hold
-        // the stderr pipe past the kill, and `read_until` would block the join
-        // forever (#301). A bound of zero, where `capture`'s success path takes
-        // [`DRAIN_GRACE`], and for the same reason its own timeout path does:
-        // the lines have already been handed over as they arrived, so there is
-        // nothing left here that waiting could collect.
-        if !timed_out && let Some(reader) = reader {
-            let _ = reader.join();
-        }
-        // As in `passthrough`, and for the same reason: this child had stdin and
-        // stdout, which is to say it had the terminal. `devpod ssh` is the other
-        // way into a workspace, so the agent that gets killed in there strands
-        // exactly the same modes as the one reached over `ssh -t`.
-        terminal::restore();
-        ending.into()
+            on_line(line);
+        })
     }
 
     fn detach(&self, what: &Invocation) -> DetachOutcome {
@@ -789,6 +753,161 @@ fn command(what: &Invocation) -> Command {
         command.env(name, value);
     }
     command
+}
+
+/// Which of a child's output streams a line came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Stream {
+    Stdout,
+    Stderr,
+}
+
+/// Read `pipe` to its end on a thread of its own, handing over each line as it
+/// arrives, tagged with the stream it is.
+///
+/// A thread per pipe rather than a `poll` over both, because the lines are wanted
+/// as they happen -- a session that runs for an hour reports devpod's warnings
+/// when devpod writes them -- and because a timeout has to be able to elapse
+/// while the child is quiet, which a blocking read on the calling thread could
+/// not notice.
+fn pump(
+    pipe: impl Read + Send + 'static,
+    stream: Stream,
+    lines: mpsc::Sender<(Stream, String)>,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        let mut reader = BufReader::new(pipe);
+        let mut buffer = Vec::new();
+        loop {
+            buffer.clear();
+            match reader.read_until(b'\n', &mut buffer) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    let mut line = String::from_utf8_lossy(&buffer).into_owned();
+                    while line.ends_with('\n') || line.ends_with('\r') {
+                        line.pop();
+                    }
+                    if lines.send((stream, line)).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    })
+}
+
+/// The body [`Runner::session`] and [`Runner::watched`] share: stdin inherited,
+/// stderr piped, stdout as `stdout` says, and every line from a piped stream
+/// handed to `on_line` as it arrives, until every pipe has closed.
+///
+/// Whether the child leads a group of its own is the spec's decision here as in
+/// `passthrough`, and about the same child: `devpod up` runs through `watched` so
+/// its output can be read for devpod's lock line (devlaunch#600), and it has to
+/// keep the group the interrupt drain `killpg`s or it is the very orphan that
+/// drain exists to kill (devlaunch#304). The interactive `ssh -t` sets nothing
+/// and stays in ours, for the SIGTTIN reason `passthrough` gives.
+fn streamed(spec: &SpawnSpec, stdout: Stdio, on_line: &mut dyn FnMut(Stream, &str)) -> Outcome {
+    let own_group = if spec.own_group {
+        OwnGroup::Yes
+    } else {
+        OwnGroup::No
+    };
+    let mut child = match start(spec, stdout, Stdio::piped(), own_group) {
+        Ok(child) => child,
+        Err(outcome) => return outcome.retyped(),
+    };
+    if spec.own_group {
+        note_own_group(&child);
+    }
+    // One channel for however many pipes there are: `recv` reports closed only
+    // when every sender is gone, which is every pipe at EOF. The spare sender
+    // is dropped at once so this thread's own copy is not the one keeping it open.
+    let (tx, lines) = mpsc::channel();
+    let mut readers = Vec::new();
+    if let Some(pipe) = child.stdout.take() {
+        readers.push(pump(pipe, Stream::Stdout, tx.clone()));
+    }
+    if let Some(pipe) = child.stderr.take() {
+        readers.push(pump(pipe, Stream::Stderr, tx.clone()));
+    }
+    drop(tx);
+
+    let deadline = spec.timeout.map(|limit| Instant::now() + limit);
+    let mut timed_out = false;
+    loop {
+        let received = match deadline {
+            None => lines.recv().map_err(|_| Waited::Closed),
+            Some(deadline) => {
+                let left = deadline.saturating_duration_since(Instant::now());
+                lines.recv_timeout(left).map_err(|error| match error {
+                    mpsc::RecvTimeoutError::Timeout => Waited::Elapsed,
+                    mpsc::RecvTimeoutError::Disconnected => Waited::Closed,
+                })
+            }
+        };
+        match received {
+            Ok((stream, line)) => on_line(stream, &line),
+            Err(Waited::Closed) => break,
+            Err(Waited::Elapsed) => {
+                timed_out = true;
+                break;
+            }
+        }
+    }
+    let ending = if timed_out {
+        kill(&mut child)
+    } else {
+        // Every pipe is closed, so the child is on its way out; whatever is
+        // left of its timeout is what it has to finish in.
+        wait(
+            &mut child,
+            deadline.map(|d| d.saturating_duration_since(Instant::now())),
+        )
+    };
+    // The readers are joined only when the pipes closed of their own accord (the
+    // loop broke on Closed, so the threads are already on their way out). On a
+    // timeout they are abandoned: a descendant in a session of its own can hold
+    // a pipe past the kill, and `read_until` would block the join forever
+    // (#301). A bound of zero, where `capture`'s success path takes
+    // [`DRAIN_GRACE`], and for the same reason its own timeout path does: the
+    // lines have already been handed over as they arrived, so there is nothing
+    // left here that waiting could collect.
+    if !timed_out {
+        for reader in readers {
+            let _ = reader.join();
+        }
+    }
+    // Reaped now, so the handler must not signal a possibly-recycled pgid.
+    if spec.own_group {
+        interrupt::clear_foreground_child();
+    }
+    // As in `passthrough`, and for the same reason: a `session` child had stdin
+    // and stdout, which is to say it had the terminal, and `devpod ssh` is the
+    // other way into a workspace, so the agent that gets killed in there strands
+    // exactly the same modes as the one reached over `ssh -t`. A `watched` child
+    // had only stdin, and the restore is what `passthrough` did after `devpod up`
+    // before it moved here; see [`terminal`] for why it costs nothing.
+    terminal::restore();
+    ending.into()
+}
+
+/// Put a child spawned with [`OwnGroup::Yes`] on the interrupt handler's books.
+///
+/// The child led its own group from its `pre_exec`, so its pgid is its pid; set
+/// it from the parent too to close the fork-to-exec window. The caller undoes this
+/// with [`interrupt::clear_foreground_child`] once the child is reaped, so the
+/// handler never signals a possibly-recycled pgid. Shared by `passthrough` and
+/// [`streamed`], because the child it describes is the same `devpod up` on either
+/// route and the two must not drift.
+fn note_own_group(child: &Child) {
+    let pgid = child.id() as i32;
+    // SAFETY: `setpgid` on our own just-spawned child; EACCES (already exec'd) or
+    // ESRCH (already gone) are both fine — the child's own `pre_exec` establishes
+    // the group regardless.
+    unsafe {
+        libc::setpgid(pgid, pgid);
+    }
+    interrupt::note_foreground_child(pgid);
 }
 
 /// Whether a child leads a process group of its own.

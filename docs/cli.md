@@ -709,6 +709,16 @@ waits for as long as whatever holds the lock lives. The usual holder is a `devpo
 up` that outlived the `dl` that started it: reparented to init, sleeping, no
 children, and nothing on the machine is ever going to reap it.
 
+dl watches for that line and says what it means. An `rm` behind the lock says so
+while it waits and names the `kill` that clears it. A launch behind it says the same
+thing, once, however many times devpod repeats itself, and adds that `kill` deletes
+the workspace, so the launch is typed again once it has: somebody who typed a launch
+did not ask for a delete, though for a workspace an interrupted create left half
+made it is what they want anyway. Every verb that brings a workspace up is covered,
+`dl <ws>` itself, `up`, `restart`, `recreate`, `reset`, `code` and `dotfiles`, because
+they all run the same `devpod up`. The notice names another terminal on purpose: the
+one it is printed in is busy holding the command the advice is about.
+
 `dl <ws> kill` is the way out. The sweep asks devpod nothing, which is the point:
 it reads the host's own process table and acts on what is there. It does four
 things, and then deletes the workspace:

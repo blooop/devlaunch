@@ -33,13 +33,17 @@ pub enum Call {
     Capture(SpawnSpec),
     Passthrough(SpawnSpec),
     Session(SpawnSpec),
+    Watched(SpawnSpec),
     Detach(Invocation),
 }
 
 impl Call {
     pub fn invocation(&self) -> &Invocation {
         match self {
-            Self::Capture(spec) | Self::Passthrough(spec) | Self::Session(spec) => &spec.invocation,
+            Self::Capture(spec)
+            | Self::Passthrough(spec)
+            | Self::Session(spec)
+            | Self::Watched(spec) => &spec.invocation,
             Self::Detach(invocation) => invocation,
         }
     }
@@ -64,7 +68,10 @@ impl Call {
     /// no bound for this to answer with.
     pub fn spec(&self) -> Option<&SpawnSpec> {
         match self {
-            Self::Capture(spec) | Self::Passthrough(spec) | Self::Session(spec) => Some(spec),
+            Self::Capture(spec)
+            | Self::Passthrough(spec)
+            | Self::Session(spec)
+            | Self::Watched(spec) => Some(spec),
             Self::Detach(_) => None,
         }
     }
@@ -380,6 +387,21 @@ impl Runner for FakeRunner {
         let response = self.answer(Call::Session(spec.clone()));
         for line in response.stderr_lines() {
             on_stderr_line(&line);
+        }
+        response.quiet()
+    }
+
+    /// Both streams, stdout first: a scripted response is two texts and not an
+    /// interleaving, so the fake has no order between them to keep, and stdout
+    /// first is the order devpod's own lines mostly arrive in (its `info` goes
+    /// there and its `fatal` comes last).
+    fn watched(&self, spec: &SpawnSpec, on_line: &mut dyn FnMut(&str)) -> Outcome {
+        let response = self.answer(Call::Watched(spec.clone()));
+        for line in response.stdout_lines() {
+            on_line(&line);
+        }
+        for line in response.stderr_lines() {
+            on_line(&line);
         }
         response.quiet()
     }

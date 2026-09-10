@@ -38,6 +38,7 @@ fn the_mode_of_each_call_is_recorded_too() {
     fake.capture(&devpod(&["version"]));
     fake.passthrough(&devpod(&["up", "/clones/ws"]));
     fake.session(&devpod(&["ssh", "ws"]), &mut |_| {});
+    fake.watched(&devpod(&["up", "/clones/ws"]), &mut |_| {});
     fake.detach(&Invocation::new("dl"));
 
     let modes: Vec<&str> = fake
@@ -47,10 +48,14 @@ fn the_mode_of_each_call_is_recorded_too() {
             Call::Capture(_) => "capture",
             Call::Passthrough(_) => "passthrough",
             Call::Session(_) => "session",
+            Call::Watched(_) => "watched",
             Call::Detach(_) => "detach",
         })
         .collect();
-    assert_eq!(modes, ["capture", "passthrough", "session", "detach"]);
+    assert_eq!(
+        modes,
+        ["capture", "passthrough", "session", "watched", "detach"]
+    );
 }
 
 #[test]

@@ -98,6 +98,10 @@ impl Runner for ScriptedRunner {
         self.fake.session(spec, on_stderr_line)
     }
 
+    fn watched(&self, spec: &SpawnSpec, on_line: &mut dyn FnMut(&str)) -> Outcome {
+        self.fake.watched(spec, on_line)
+    }
+
     fn detach(&self, what: &Invocation) -> DetachOutcome {
         self.fake.detach(what)
     }

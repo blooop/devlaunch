@@ -573,6 +573,17 @@ pub enum LaunchNotice {
     /// running, and switching config means recreating it.
     DevcontainerIgnoredRunning { workspace_id: String, spec: String },
 
+    // --- devpod's own lock (devlaunch#600)
+    /// This launch's `devpod up` is waiting on devpod's workspace lock, which
+    /// something else holds, and devpod's acquire has no deadline behind it: the
+    /// `up` returns when the holder dies and not before. Said once per launch
+    /// however many times devpod repeats its five-second line, and said *while*
+    /// the `up` is blocked, because there is no outcome to carry it afterwards.
+    ///
+    /// `workspace_id` is the id the workspace answers to, or the `up`'s source
+    /// where nothing named it: the argument `dl <ws> kill` wants, either way.
+    UpBlockedOnTheLock { workspace_id: String },
+
     // --- passed through from the layers below
     /// Something one of the storage flows reported on the way through.
     Cache(CacheNotice),
@@ -1639,7 +1650,35 @@ fn up_under_stage(
     // The build runs for minutes in the foreground; it leads a process group of
     // its own so a Ctrl-C (or `kill -INT <pid>`) tears the whole build down with
     // `dl` rather than orphaning it holding the launch lock.
-    let exit = devpod::run(context.runner(), &Call::new(args).leading_its_own_group())?;
+    //
+    // Watched rather than run blind, for one line. devpod's lock acquire is a
+    // blocking `flock` with no deadline, so an `up` behind another process's hold
+    // on this workspace -- the usual holder being a `devpod up` that outlived its
+    // `dl` -- returns when that holder dies and not before, and nothing downstream
+    // of this call can report what the call never returns from. `rm` has watched
+    // for the same line since devlaunch#484; the launch was the verb that did not
+    // (devlaunch#600). Both of devpod's streams are read, because the line is an
+    // `info` and devpod logs those to stdout. Said once: devpod repeats itself
+    // every five seconds, and advice on that timer buries itself. The id is the
+    // one `kill` wants, which for a workspace nothing named is whatever devpod
+    // was handed as the source.
+    let mut said = false;
+    let exit = devpod::run_watching(
+        context.runner(),
+        &Call::new(args).leading_its_own_group(),
+        &mut |line| {
+            if !said && devpod::says_it_is_blocked(line) {
+                said = true;
+                notices.say(LaunchNotice::UpBlockedOnTheLock {
+                    workspace_id: request
+                        .naming
+                        .identity()
+                        .unwrap_or(request.source)
+                        .to_owned(),
+                });
+            }
+        },
+    )?;
     // `up` creates and starts workspaces, so any snapshot of `devpod list` taken
     // before it is now out of date.
     context.forget_workspaces();
@@ -5560,6 +5599,117 @@ mod tests {
 
         assert_eq!(outcome, Ok(UpOutcome::Started));
         assert_eq!(provision.provisioned(), vec!["myws".to_owned()]);
+    }
+
+    /// devpod's lock line as it reaches stderr: the stable half `says_it_is_blocked`
+    /// matches, and the source location that moves between devpod releases.
+    const BLOCKED_ON_THE_LOCK: &str = "info Trying to lock workspace, seems like another process \
+                                       is running that blocks this workspace \
+                                       machine_client.go:311\n";
+
+    /// One `up` of `myws`, with devpod answering `response` to it, and every
+    /// notice the launch said on the way.
+    fn up_answered(response: Response) -> (Result<UpOutcome, NotRun>, Vec<LaunchNotice>) {
+        let scene = Scene::new();
+        scene.runner.script(["devpod", "up"], response);
+        let mut context = CommandContext::new(&scene.runner);
+        let token = HostToken::new();
+        let request = UpRequest::new(
+            "owner/repo",
+            Naming::Create {
+                workspace_id: "myws",
+            },
+        );
+        let mut notices = Vec::new();
+
+        let outcome = workspace_up(
+            &mut context,
+            &scene.host,
+            &token,
+            &ClaudeSeen::new(),
+            &NoProvisioning,
+            &request,
+            None,
+            &mut notices,
+        );
+        (outcome, notices)
+    }
+
+    fn blocked_notices(notices: &[LaunchNotice]) -> usize {
+        notices
+            .iter()
+            .filter(|notice| matches!(notice, LaunchNotice::UpBlockedOnTheLock { .. }))
+            .count()
+    }
+
+    /// An `up` that devpod parks on its workspace lock says so while it is parked
+    /// (devlaunch#600). `rm` has said this since devlaunch#484, through the same
+    /// stderr watch; the launch spawned its `up` as a plain passthrough and read
+    /// nothing, so a launch behind an orphaned `devpod up` sat silent on every
+    /// verb that brings a workspace up. The notice carries the id `kill` wants.
+    #[test]
+    fn an_up_blocked_on_the_workspace_lock_says_so_while_it_is_blocked() {
+        let (outcome, notices) = up_answered(Response::exited(0).and_stderr(BLOCKED_ON_THE_LOCK));
+
+        assert_eq!(outcome, Ok(UpOutcome::Started));
+        assert!(
+            notices.contains(&LaunchNotice::UpBlockedOnTheLock {
+                workspace_id: "myws".to_owned(),
+            }),
+            "{notices:?}"
+        );
+    }
+
+    /// And once, however long devpod goes on saying it: the line repeats every
+    /// five seconds for as long as the holder lives, and advice repeated on that
+    /// timer buries itself under the log it is advice about.
+    #[test]
+    fn an_up_that_stays_blocked_says_it_once() {
+        let repeated = format!("{BLOCKED_ON_THE_LOCK}{BLOCKED_ON_THE_LOCK}{BLOCKED_ON_THE_LOCK}");
+
+        let (outcome, notices) = up_answered(Response::exited(0).and_stderr(repeated));
+
+        assert_eq!(outcome, Ok(UpOutcome::Started));
+        assert_eq!(blocked_notices(&notices), 1, "{notices:?}");
+    }
+
+    /// The watch changes what dl *says* and nothing about how the launch ends: an
+    /// `up` that was blocked and then refused is still devpod's refusal, with
+    /// devpod's exit, exactly as it was through the passthrough.
+    #[test]
+    fn an_up_that_was_blocked_and_then_refused_still_ends_as_devpod_did() {
+        let (outcome, notices) = up_answered(Response::exited(1).and_stderr(BLOCKED_ON_THE_LOCK));
+
+        assert_eq!(
+            outcome,
+            Ok(UpOutcome::Refused {
+                exit: Exit::Code(1)
+            })
+        );
+        assert_eq!(blocked_notices(&notices), 1, "{notices:?}");
+    }
+
+    /// devpod's logger splits by level: `info` goes to **stdout**, only `error`
+    /// and `fatal` to stderr, and the lock line is an `info`. A watch on stderr
+    /// alone never fires against a real devpod, which is how this fix's first cut
+    /// behaved when run against the very orphan devlaunch#600 reports.
+    #[test]
+    fn an_up_blocked_on_the_workspace_lock_says_so_when_devpod_logs_it_on_stdout() {
+        let (outcome, notices) = up_answered(Response::exited(0).and_stdout(BLOCKED_ON_THE_LOCK));
+
+        assert_eq!(outcome, Ok(UpOutcome::Started));
+        assert_eq!(blocked_notices(&notices), 1, "{notices:?}");
+    }
+
+    /// Every other line devpod writes during an `up` is the build's, and is not
+    /// this notice.
+    #[test]
+    fn an_up_that_is_not_blocked_says_nothing_about_the_lock() {
+        let (outcome, notices) =
+            up_answered(Response::exited(0).and_stderr("info creating devcontainer up.go:581\n"));
+
+        assert_eq!(outcome, Ok(UpOutcome::Started));
+        assert_eq!(blocked_notices(&notices), 0, "{notices:?}");
     }
 
     #[test]

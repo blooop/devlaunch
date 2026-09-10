@@ -254,7 +254,7 @@ pub(crate) fn workspace_delete(
     // like a working cleanup.
     let named = devcontainer_volumes(devpod_home, workspace_id);
     let mut said = false;
-    let exit = match devpod::run_watching_stderr(
+    let exit = match devpod::run_watching(
         context.runner(),
         &delete_call(workspace_id, insistence, persistence),
         &mut |line| {

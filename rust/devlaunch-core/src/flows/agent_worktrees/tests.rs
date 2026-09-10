@@ -251,6 +251,10 @@ impl Runner for Recording<'_> {
         self.real.session(spec, on_stderr_line)
     }
 
+    fn watched(&self, spec: &SpawnSpec, on_line: &mut dyn FnMut(&str)) -> Outcome {
+        self.real.watched(spec, on_line)
+    }
+
     fn detach(&self, what: &Invocation) -> DetachOutcome {
         self.real.detach(what)
     }
