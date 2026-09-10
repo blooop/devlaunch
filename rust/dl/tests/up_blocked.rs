@@ -378,10 +378,13 @@ fn a_launch_blocked_on_the_workspace_lock_says_so_once_while_it_is_blocked() {
         notice.contains("no deadline"),
         "the notice says devpod's wait is unbounded, which is why the next line matters: {notice}"
     );
-    // devlaunch#602 took the instruction out. dl sweeps the lock itself now, so a
-    // line telling the reader to go and run `dl <ws> kill` in another terminal is
-    // telling them to go and do the thing happening in front of them — and `kill`
-    // deletes the workspace they just asked to launch.
+    // devlaunch#602 took the instruction out of the notice, which is said before
+    // dl knows whether it can clear the lock: advising a command dl is about to
+    // run unasked sends the reader to do the thing happening in front of them,
+    // and `kill` deletes the workspace they just asked to launch. The sweep's own
+    // report does name it again, but only in the arms where dl looked and chose
+    // not to act, and this run is not one of those: nothing here holds the
+    // workspace, so no line in this stderr may name the verb.
     assert!(
         !stderr.contains(" kill'") && !stderr.contains("another terminal"),
         "dl still tells the reader to run kill by hand:\n{stderr}"

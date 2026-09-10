@@ -1844,17 +1844,19 @@ fn swept_the_lock(workspace_id: &str, released: &Released) -> String {
             cleared,
             still_held,
         } => format!(
-            "dl: cleared {} from {workspace_id}, and {}, so this launch is still waiting.",
+            "dl: cleared {} from {workspace_id}, and {}, so this launch is still waiting.{}",
             named(cleared.iter().copied().map(cleared_line)),
             what_is_left(&still_held),
+            what_is_left_to_do(workspace_id, &still_held),
         ),
         // Nothing was dl's to take. Which of the three sentences is a match on
         // `StillHeld` rather than a fold to `bool` over the holders: a spared
         // build beside an unstoppable orphan is both findings, and asking
         // `any_attended` reported it as only the first.
         Freed::Nothing { still_held } => format!(
-            "dl: {workspace_id} {}. This launch is still waiting.",
-            what_is_left(&still_held)
+            "dl: {workspace_id} {}. This launch is still waiting.{}",
+            what_is_left(&still_held),
+            what_is_left_to_do(workspace_id, &still_held),
         ),
         // The sweep looked and found no holder. A finding rather than a failure,
         // and the one that says the wait is not an orphan and not dl's to clear.
@@ -1894,6 +1896,36 @@ fn what_is_left(still_held: &StillHeld<'_>) -> String {
             waiting_on(attended),
             could_not_stop(unstoppable)
         ),
+    }
+}
+
+/// What the reader can do about what dl would not or could not clear.
+///
+/// devlaunch#602 item 2: "If every holder is `Attended`, there is nothing to
+/// heal: keep today's notice and today's wait, which are right for that case."
+/// The wait is kept upstream of here. This is the notice half, and it is the
+/// half that went missing: devlaunch#601's line named `dl <ws> kill` as the way
+/// out, this branch took that out of the *blocked* notice because dl now does it
+/// unasked, and in these arms it explicitly does not -- so the reader was left
+/// waiting with no command at all.
+///
+/// The two arms need different answers, which is why it is not one sentence.
+/// Against a spared build, `kill` works and the sentence has to say what it
+/// costs, because the build is somebody else's and `kill` deletes the workspace
+/// under it. Against an orphan that sat through SIGKILL, `kill` would fail
+/// exactly as this sweep just did, for the same reason -- it is another user's
+/// and dl has no privilege to add -- so naming it would send the reader round
+/// the same loop.
+fn what_is_left_to_do(workspace_id: &str, still_held: &StillHeld<'_>) -> String {
+    let end_the_build = format!(
+        " If that build is not wanted, 'dl {workspace_id} kill' ends it and deletes the \
+                 workspace."
+    );
+    let not_ours = " Only whoever owns that process, or root, can end it.";
+    match still_held {
+        StillHeld::Attended(_) => end_the_build,
+        StillHeld::Unstoppable(_) => not_ours.to_owned(),
+        StillHeld::Both { .. } => format!("{end_the_build}{not_ours}"),
     }
 }
 
@@ -4977,6 +5009,61 @@ mod tests {
             line.contains("could not stop"),
             "the orphan is reported as one dl signalled and failed to stop, not as \
              somebody's work: {line}"
+        );
+    }
+
+    /// devlaunch#602 item 2: "If every holder is `Attended`, there is nothing to
+    /// heal: keep today's notice and today's wait, which are right for that
+    /// case." The wait was kept and the notice was not -- devlaunch#601's line
+    /// named a way out, this branch took it out of the blocked notice because dl
+    /// now does it itself, and in this arm dl explicitly does not. A reader left
+    /// behind a build they know is abandoned had a command and now has none.
+    #[test]
+    fn a_sweep_that_spared_a_build_still_names_the_way_out_it_did_not_take() {
+        let line = swept(Release {
+            signalled: Vec::new(),
+            holding: Holding::StillHeld {
+                holders: vec![Standing::ABuild(HostProcess {
+                    pid: 5001,
+                    parent: 5000,
+                    command: "devpod up my-ws".to_owned(),
+                })],
+            },
+        });
+
+        assert!(
+            line.contains("'dl my-ws kill'"),
+            "the one command that ends it is named, with the workspace in it: {line}"
+        );
+        assert!(
+            line.contains("deletes the workspace"),
+            "and what it costs, because this arm is somebody else's build: {line}"
+        );
+    }
+
+    /// An orphan dl signalled and could not stop is almost always another user's,
+    /// so `dl <ws> kill` is not the way out -- it would fail the same way, for the
+    /// same reason. Saying who *can* end it is what stops the reader retrying the
+    /// verb that already failed.
+    #[test]
+    fn a_sweep_that_could_not_stop_an_orphan_says_who_can() {
+        let line = swept(Release {
+            signalled: vec![Signalled {
+                process: an_orphan(2_315_160),
+                ending: Ending::Survived,
+            }],
+            holding: Holding::StillHeld {
+                holders: vec![Standing::AnOrphan(an_orphan(2_315_160))],
+            },
+        });
+
+        assert!(
+            line.contains("root"),
+            "the reader is told whose problem it now is: {line}"
+        );
+        assert!(
+            !line.contains("'dl my-ws kill'"),
+            "kill would fail exactly as this sweep did: {line}"
         );
     }
 

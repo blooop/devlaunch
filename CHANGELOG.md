@@ -51,6 +51,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it at all. The third and fourth are findings rather than failures — one names a
   holder to go and deal with, the other says the wait is out of dl's reach.
 
+  Wherever the sweep leaves a holder standing, the line also says what is left to
+  do, because those are the cases where dl looked and chose not to act. Behind
+  somebody's build that is `dl <ws> kill`, named with what it costs, since it
+  deletes the workspace under the build. Behind an orphan that sat through
+  SIGKILL it is nobody's command to type: `kill` would fail there for the reason
+  the sweep did, that the process is almost certainly another user's, so the line
+  says only that user or root can end it. The two kinds are kept apart rather
+  than folded together, so a workspace held by one of each is not reported as
+  though both were somebody's live work.
+
   The launch's own `devpod up` is not counted among the holders. It names the
   workspace in its own argv and has a live `dl` behind it, so the sweep's reading
   finds it; it is the process *waiting* for the lock rather than one holding it,

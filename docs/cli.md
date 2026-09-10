@@ -734,6 +734,16 @@ both of which belong to the build the launch is itself running. A sweep that fin
 nothing holding the workspace says so too, which is the answer that tells you the
 wait is coming from somewhere dl cannot reach.
 
+Whenever the sweep leaves something standing, the line says what is left to do,
+because those are exactly the cases where dl has decided not to do it for you.
+Behind somebody's build, `dl <ws> kill` ends it and deletes the workspace, and the
+line says both halves of that rather than leaving you to remember the second one.
+Behind an orphan that sat through SIGKILL it names no command, because `kill`
+would fail there for the reason the sweep just did, that the process is almost
+certainly another user's; it tells you instead that only that user or root can end
+it. A workspace held by one of each gets both sentences, and neither holder is
+described as the other kind.
+
 `dl <ws> kill` is the way out. The sweep asks devpod nothing, which is the point:
 it reads the host's own process table and acts on what is there. It does four
 things, and then deletes the workspace:
