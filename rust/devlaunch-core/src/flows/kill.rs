@@ -109,8 +109,14 @@ struct Holder {
 /// Excluded rather than given an arm of its own: [`Holding`] answers "what holds
 /// this workspace", and the caller's blocked `up` is not an answer to it. An arm
 /// would put it in front of every reader of that type to be filtered out again.
+///
+/// Private, and it is worth saying why the alternative is worse rather than
+/// merely wider: made public it would be an argument an outside caller could
+/// get wrong, and `Ours::Nothing` passed to a launch's release is precisely the
+/// bug devlaunch#602 opened with. Neither verb takes it, so nothing outside this
+/// module can name it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Ours {
+enum Ours {
     /// Nothing on the table is the caller's. `dl <ws> kill`'s answer.
     Nothing,
     /// Every devpod process whose parent is this pid was started by the caller.
