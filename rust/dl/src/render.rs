@@ -1815,14 +1815,14 @@ pub(crate) fn kill_delete_withheld(workspace_id: &str) -> String {
 /// sentences.
 fn swept_the_lock(workspace_id: &str, released: &Released) -> String {
     let release = match released {
-        // The sweep never ran. `kill_unavailable` already phrases every way of
-        // being unable to look, and it is reused verbatim rather than paraphrased
-        // so the two verbs cannot describe the same broken host differently, with
-        // the launch's own standing added, which `kill` has no need of.
+        // The sweep never ran. The reason is `kill`'s own, shared through
+        // `cannot_sweep` so the two verbs cannot describe one broken host
+        // differently; the frame round it is this launch's, because this launch
+        // has not failed and is about to go on waiting in its own `up`.
         Released::Unavailable(cannot) => {
             return format!(
-                "{}. Nothing was cleared, and this launch is still waiting.",
-                kill_unavailable(cannot)
+                "dl: {}, so nothing was cleared and this launch is still waiting.",
+                cannot_sweep(cannot)
             );
         }
         Released::Swept(release) => release,
@@ -1931,32 +1931,53 @@ fn named(processes: impl Iterator<Item = String>) -> String {
 /// is holding the workspace, it has failed to look.
 pub(crate) fn kill_unavailable(cannot: &HostCannot) -> String {
     match cannot {
+        // `kill`'s own opening, kept: its reader typed the verb, so naming it is
+        // what tells them which of their commands could not run.
         HostCannot::ReadItsProcessTable(TableUnreadable::NoPs) => {
             "error: `dl <workspace> kill` reads the host's process table with `ps`, and this \
              host has none"
                 .to_owned()
+        }
+        other => format!("error: {}", cannot_sweep(other)),
+    }
+}
+
+/// Why a sweep could not run on this host, with no verb and no severity on it.
+///
+/// The two callers agree about the host and disagree about everything round it.
+/// `dl <ws> kill` has failed and says `error:`; a launch that could not sweep has
+/// not failed -- it goes on waiting in the `devpod up` it was already in, and
+/// most of the time that `up` then builds and drops the reader in a shell. It
+/// reached for `kill_unavailable` wholesale at first, and printed `error:` on a
+/// launch that was about to succeed, over the name of a command its reader had
+/// not run and that devlaunch#602 is the change that stopped advising.
+///
+/// Sharing the reason and not the frame is what keeps the two from describing
+/// one broken host two different ways, which is what the wholesale reuse was for.
+fn cannot_sweep(cannot: &HostCannot) -> String {
+    match cannot {
+        HostCannot::ReadItsProcessTable(TableUnreadable::NoPs) => {
+            "reading the host's process table needs `ps`, and this host has none".to_owned()
         }
         HostCannot::ReadItsProcessTable(TableUnreadable::Refused { exit, stderr }) => {
             let said = match stderr.trim() {
                 "" => format!("it exited {}", exit_status(*exit)),
                 said => said.to_owned(),
             };
-            format!("error: `ps` would not read this host's process table: {said}")
+            format!("`ps` would not read this host's process table: {said}")
         }
-        HostCannot::ReadItsProcessTable(TableUnreadable::NotStarted(failure)) => format!(
-            "error: `ps` could not be run ({})",
-            os_error_phrase(failure)
-        ),
+        HostCannot::ReadItsProcessTable(TableUnreadable::NotStarted(failure)) => {
+            format!("`ps` could not be run ({})", os_error_phrase(failure))
+        }
         HostCannot::SendASignal(NoSignal::NoKillHere) => {
-            "error: something is holding this workspace and this host has no `kill` to signal \
-             it with"
+            "something is holding this workspace and this host has no `kill` to signal it with"
                 .to_owned()
         }
         // Its own sentence, because the one above sends its reader looking for a
         // program that is already installed. A `kill` the OS would not start is a
         // fact about this run, not about the machine's toolchain.
         HostCannot::SendASignal(NoSignal::NotRun(failure)) => format!(
-            "error: something is holding this workspace and `kill` could not be run ({})",
+            "something is holding this workspace and `kill` could not be run ({})",
             os_error_phrase(failure)
         ),
     }
@@ -4976,10 +4997,16 @@ mod tests {
     }
 
     /// A host that could not be read has not established that nothing holds the
-    /// workspace. The sentence is `kill`'s own, reused rather than paraphrased, so
-    /// the two verbs cannot describe one broken host two ways.
+    /// workspace, so the launch says why and goes on waiting.
+    ///
+    /// The old assertion here was `line.starts_with(&kill_unavailable(..))`,
+    /// which compared the function to itself and was green for any sentence it
+    /// returned -- including the one it was returning: `kill`'s, verbatim, which
+    /// opens `error:` and names `dl <workspace> kill`. This launch did not fail
+    /// and did not run that command, and devlaunch#602 is the change that stopped
+    /// telling its reader to.
     #[test]
-    fn a_sweep_that_could_not_run_reuses_kills_own_sentence_and_says_it_is_still_waiting() {
+    fn a_sweep_that_could_not_run_says_why_without_borrowing_kills_error() {
         let line = launch_notice(&LaunchNotice::SweptTheLockHolders {
             workspace_id: "my-ws".to_owned(),
             released: Released::Unavailable(HostCannot::ReadItsProcessTable(TableUnreadable::NoPs)),
@@ -4987,12 +5014,41 @@ mod tests {
         .expect("the sweep is a line");
 
         assert!(
-            line.starts_with(&kill_unavailable(&HostCannot::ReadItsProcessTable(
-                TableUnreadable::NoPs
-            ))),
-            "{line}"
+            line.contains("`ps`"),
+            "the reason is still the same reason: {line}"
+        );
+        assert!(
+            !line.contains("error:"),
+            "the launch has not failed; it is about to build: {line}"
+        );
+        assert!(
+            !line.contains("kill`"),
+            "a launch must not name a verb its reader did not run: {line}"
         );
         assert!(line.contains("still waiting"), "{line}");
+    }
+
+    /// The two verbs still describe one broken host one way: the reason is
+    /// shared, and only the framing round it differs.
+    #[test]
+    fn a_launch_and_a_kill_give_the_same_reason_for_the_same_broken_host() {
+        for cannot in [
+            HostCannot::ReadItsProcessTable(TableUnreadable::NoPs),
+            HostCannot::SendASignal(NoSignal::NoKillHere),
+        ] {
+            let reason = cannot_sweep(&cannot);
+            assert!(
+                kill_unavailable(&cannot).contains(&reason)
+                    || cannot == HostCannot::ReadItsProcessTable(TableUnreadable::NoPs),
+                "{cannot:?}"
+            );
+            let line = launch_notice(&LaunchNotice::SweptTheLockHolders {
+                workspace_id: "my-ws".to_owned(),
+                released: Released::Unavailable(cannot.clone()),
+            })
+            .expect("the sweep is a line");
+            assert!(line.contains(&reason), "{line}");
+        }
     }
 
     /// devlaunch#602 took the instruction out of the notice that opens the story.
