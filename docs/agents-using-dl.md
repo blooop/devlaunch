@@ -16,11 +16,29 @@ that matter most to a caller are exactly the parts a refactor cannot see it is b
 `dl <workspace> -- <command>` is an ordinary subprocess, and four things about it are
 promised rather than incidental.
 
-**The exit status is the command's.** `dl ws -- sh -c 'exit 42'` exits 42. A child
-killed by a signal comes back negative and truncated to its low eight bits, so a
-SIGINT'd command exits 254, which is what Python's `sys.exit(-2)` did before the port
-and what `Ending::Child` in `rust/dl/src/commands.rs` preserves on purpose. `dl`'s own
+**The exit status is the command's.** `dl ws -- sh -c 'exit 42'` exits 42. `dl`'s own
 failures are distinguishable: 1 for a refusal, 127 for a missing devpod.
+
+A command that dies of a **signal** is the exception, and it is worth knowing before
+you write the branch. It does not come back as 128 plus the signal number, the way a
+shell would report it. Measured on this transport, every signal comes back as **255**:
+
+```bash
+$ dl ws -- sh -c 'kill -INT $$';   echo $?   # 255
+$ dl ws -- sh -c 'kill -TERM $$';  echo $?   # 255
+$ dl ws -- sh -c 'kill -KILL $$';  echo $?   # 255
+```
+
+devpod's ssh server reports a signalled remote process as `Process exited with status
+255`, with no signal in the line, and `dl` passes that number through rather than
+inventing one. So a caller can tell a signalled command from `exit 42`, and cannot tell
+*which* signal, or tell either from a command that genuinely exited 255. If your
+orchestrator needs the distinction, have the command report it itself, for example
+`sh -c 'cmd; echo $? > /tmp/rc'`, rather than reading it off `dl`.
+
+This is not the 130 that [cli.md](cli.md) documents for Ctrl-C. That number is `dl`'s
+own exit when a signal reaches `dl`, which is a different event from the command inside
+the container dying of one.
 
 **stdout is the command's, verbatim.** Nothing `dl` prints goes there. Every progress
 line, every "already running, attaching...", every echoed ssh invocation is on stderr,

@@ -105,6 +105,32 @@ def test_the_page_still_promises_what_the_e2e_test_proves(promise):
 
 
 @pytest.mark.unit
+def test_the_page_gives_the_exit_status_a_signalled_command_actually_has():
+    """The number, measured on the transport this page is about.
+
+    `dl <ws> -- <cmd>` never reaches `Ending::Child`: it returns
+    `Ending::Session(Session::exit_status(..))`, and over the piped transport a
+    script gets, devpod reports a signalled remote process as `Process exited with
+    status 255`. Measured on a real container by
+    `test_a_signalled_command_comes_back_as_255_whichever_signal_it_was`, for
+    SIGINT, SIGTERM and SIGKILL alike.
+
+    The page said 254, `-2` truncated, citing `Ending::Child`, which this path
+    does not reach. 130 is checked for by hand rather than by this guard: the page
+    names it deliberately, to say it is `dl`'s own Ctrl-C exit and not this.
+    """
+    contract = section(PAGE, CONTRACT_HEADING)
+    assert "255" in contract, (
+        f"{PAGE.relative_to(REPO_ROOT)} does not give the status a signalled "
+        "command comes back with, which is 255 for every signal"
+    )
+    assert "254" not in contract, (
+        f"{PAGE.relative_to(REPO_ROOT)} still offers 254 as the status of a "
+        "signalled command; measured, every signal comes back 255"
+    )
+
+
+@pytest.mark.unit
 def test_the_help_pointer_names_a_page_that_exists():
     """A URL cannot 404 in a test suite, so the path inside it is resolved instead.
 

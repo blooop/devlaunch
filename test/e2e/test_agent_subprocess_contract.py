@@ -149,6 +149,29 @@ def test_the_exit_status_is_the_commands(piped, status):
 
 
 @pytest.mark.e2e
+@pytest.mark.parametrize("signal", ["INT", "TERM", "KILL"])
+def test_a_signalled_command_comes_back_as_255_whichever_signal_it_was(piped, signal):
+    """Clause one's exception, and the one a caller writes the wrong branch for.
+
+    Not 128 + n, which is what a shell would report, and not the negative status
+    Python's `subprocess` surfaces. devpod's ssh server reports a signalled remote
+    process as `Process exited with status 255`, with no signal named in the line,
+    and `dl` passes that number through rather than inventing one.
+
+    Three signals rather than one, because the value of the finding is that they
+    are *indistinguishable*: a caller cannot recover which signal ended the
+    command, and this is the test that would go red if that ever changed. Asked of
+    a real container because the number is made by three programs in a row and a
+    fake for any of them would be asserting our own arithmetic.
+    """
+    result = piped.run("sh", "-c", f"kill -{signal} $$")
+    assert result.returncode == 255, (
+        f"a SIG{signal}'d command came back as {result.returncode}, not 255"
+        + _shows(result)
+    )
+
+
+@pytest.mark.e2e
 def test_stdout_carries_the_commands_output_and_nothing_of_dls(piped):
     """Clause two, and the one a parsing caller depends on completely.
 
