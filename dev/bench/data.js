@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789039831240,
+  "lastUpdate": 1789040187099,
   "repoUrl": "https://github.com/blooop/devlaunch",
   "entries": {
     "devlaunch launch stages": [
@@ -13997,6 +13997,93 @@ window.BENCHMARK_DATA = {
             "range": "± 0.632276",
             "unit": "s",
             "extra": "runs=5/5 wall=8.883838s v0.26.1, Linux-X64"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "blooop@gmail.com",
+            "name": "Austin Gregg-Smith",
+            "username": "blooop"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "91a5a05cc07876fab2519bc6f3c1344e759cae67",
+          "message": "Merge pull request #607 from blooop/fix/604-agent-contract-page\n\nfix: the agent contract page stated three shapes the code does not produce",
+          "timestamp": "2026-09-10T12:33:41+01:00",
+          "tree_id": "8ae7703de6a882c215a7201af20708293a9cca94",
+          "url": "https://github.com/blooop/devlaunch/commit/91a5a05cc07876fab2519bc6f3c1344e759cae67"
+        },
+        "date": 1789040186484,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "warm / attach",
+            "value": 1.04859,
+            "range": "± 0.07188",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / devpod-up",
+            "value": 0.267738,
+            "range": "± 0.009897",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / host-prep",
+            "value": 0.000044,
+            "range": "± 0.000001",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / total",
+            "value": 1.338782,
+            "range": "± 0.066836",
+            "unit": "s",
+            "extra": "runs=5/5 wall=1.340881s v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / attach",
+            "value": 1.021089,
+            "range": "± 0.058579",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / devpod-up",
+            "value": 2.943984,
+            "range": "± 0.550928",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / host-prep",
+            "value": 0.174494,
+            "range": "± 0.025237",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / tools",
+            "value": 3.329632,
+            "range": "± 0.047956",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / total",
+            "value": 7.51444,
+            "range": "± 0.554301",
+            "unit": "s",
+            "extra": "runs=5/5 wall=7.516429s v0.26.1, Linux-X64"
           }
         ]
       }
