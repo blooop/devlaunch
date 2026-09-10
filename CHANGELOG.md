@@ -7,29 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.42.0] - 2026-09-10
+## [0.43.0] - 2026-09-10
 
 ### Added
-
-- **A page for the other kind of agent, and a line in `--help` that finds it.**
-  `AGENTS.md` is for an agent working *on* devlaunch. Nothing was written for a
-  script or an agent harness driving `dl` as a tool, so the contract it depends on
-  was real but unstated: `dl <ws> -- <cmd>` returns the command's exit status,
-  gives it stdout and stdin, and needs no terminal. A contract nothing states is
-  one a refactor cannot see it is breaking. `docs/agents-using-dl.md` states it,
-  along with the one thing an orchestrator most needs to know (a workspace is one
-  branch, so two agents on one branch share one clone and collide inside it),
-  what `--ls --json` guarantees (an array, and the five shapes `unsaved` can
-  arrive in, two of which mean "do not delete this"), and which of the three
-  deletions to reach for.
-  `dl --help` now ends with a four-line pointer to it, spelled as a URL because
-  an agent handed the binary out of a pixi environment has no repository to
-  resolve a relative path against.
-- **The subprocess contract is now pinned by tests.**
-  `test/e2e/test_agent_subprocess_contract.py` asks each clause of it of a real
-  workspace over pipes, which is a different transport from the pty that
-  `test_interactive_session.py` already covers, and `test_agent_contract_doc.py`
-  holds the page and the `--help` pointer to still saying what those tests prove.
 
 - **`aid --codex` works in a workspace that has never seen codex.** `aid` has
   offered `--codex` since it offered `--claude`, but the provisioner only knew
@@ -72,6 +52,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   `aid --gemini` is untouched and still gets neither half: `gemini-cli` is not on
   conda-forge, so there is nothing for the pixi rung to install.
+
+## [0.42.0] - 2026-09-10
+
+### Added
+
+- **A page for the other kind of agent, and a line in `--help` that finds it.**
+  `AGENTS.md` is for an agent working *on* devlaunch. Nothing was written for a
+  script or an agent harness driving `dl` as a tool, so the contract it depends on
+  was real but unstated: `dl <ws> -- <cmd>` returns the command's exit status,
+  gives it stdout and stdin, and needs no terminal. A contract nothing states is
+  one a refactor cannot see it is breaking. `docs/agents-using-dl.md` states it,
+  along with the one thing an orchestrator most needs to know (a workspace is one
+  branch, so two agents on one branch share one clone and collide inside it),
+  what `--ls --json` guarantees (an array, and the five shapes `unsaved` can
+  arrive in, two of which mean "do not delete this"), and which of the three
+  deletions to reach for.
+  `dl --help` now ends with a four-line pointer to it, spelled as a URL because
+  an agent handed the binary out of a pixi environment has no repository to
+  resolve a relative path against.
+- **The subprocess contract is now pinned by tests.**
+  `test/e2e/test_agent_subprocess_contract.py` asks each clause of it of a real
+  workspace over pipes, which is a different transport from the pty that
+  `test_interactive_session.py` already covers, and `test_agent_contract_doc.py`
+  holds the page and the `--help` pointer to still saying what those tests prove.
 
 ### Fixed
 
@@ -138,8 +142,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   workspace right now" and "it is stopped" still reach a launch as the same
   answer. Acting on it would let a launch heal a round trip earlier, before the
   `up` is attempted. It is its own change and is not in this one.
-||||||| parent of 5bbf2ba (feat: give a codex launch a codex, and a login to run it with)
-
 
 ### Known issues
 
@@ -158,7 +160,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `test_stderr_is_the_commands_output_verbatim` is a strict `xfail` of the
   behaviour we want, so fixing the transport turns the suite red and the
   workaround section gets removed in the same change.
-||||||| parent of 0949c74 (feat: give a codex launch a codex, and a login to run it with)
 
 ## [0.41.0] - 2026-09-10
 
