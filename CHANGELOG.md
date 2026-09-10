@@ -31,6 +31,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `test_interactive_session.py` already covers, and `test_agent_contract_doc.py`
   holds the page and the `--help` pointer to still saying what those tests prove.
 
+- **`aid --codex` works in a workspace that has never seen codex.** `aid` has
+  offered `--codex` since it offered `--claude`, but the provisioner only knew
+  about one of them: a fresh workspace had no `codex` binary, nothing forwarded a
+  Codex credential, and the launch died on `bash: line 1: codex: command not
+  found`. It exited 127, with the cause rendered as a devpod `info` line in the
+  middle of its own log. `aid --codex` worked only in a workspace where codex had
+  been installed by some other means (#605).
+
+  A launch that runs codex now provisions it. The binary arrives through the same
+  `pixi global install` rung that delivers `gh` and `claude`, as a stage of the
+  setup pass, and only on a launch that asked for codex. It is deliberately not
+  lent from the host, because the host's `claude` is a 21KB shim and `codex` is
+  244MB, which is not a thing to stream over the ssh channel on every cold
+  provision. Workspaces that never run codex are unchanged and pay nothing. A
+  workspace provisioned before, without codex, pays one pass on its first codex
+  launch and says so.
+
+  The login arrives separately, on the session rather than the `up`. Codex has no
+  environment variable to authenticate from and `codex login --with-access-token`
+  refuses an OAuth access token, so `dl` writes `$CODEX_HOME/auth.json` itself: the
+  host's `id_token`, `access_token`, `account_id` and `last_refresh`, with
+  `refresh_token` blanked. The host's file is never copied. The refresh token stays
+  on the host because a container that refreshed it could rotate the host's own
+  ChatGPT login away, which is the same trade the Claude token already makes.
+  Nothing is persisted in devpod's workspace environment, so a repo's
+  `postCreateCommand` still never sees either login.
+
+  That blank refresh token is also the mark of who wrote the file, so a `codex
+  login` made inside a workspace is never overwritten. The cost of not shipping a
+  refreshable credential is that a workspace outliving its access token reports a
+  refresh failure rather than prompting; another launch replaces it.
+
+  `DEVLAUNCH_NO_CODEX_TOKEN=1` opts out. `$CODEX_HOME` is honoured on both sides the
+  way `$CLAUDE_CONFIG_DIR` is, and replaces the default rather than preceding it, so
+  a host with two logins cannot silently forward the wrong one. A host that never
+  ran `codex login` forwards nothing and the workspace opens anyway; a host signed
+  in with an API key has no OAuth tokens to forward and is told so once, naming the
+  file and never its contents.
+
+  `aid --gemini` is untouched and still gets neither half: `gemini-cli` is not on
+  conda-forge, so there is nothing for the pixi rung to install.
+
 ### Fixed
 
 - **A launch blocked on devpod's workspace lock now clears the orphan holding it
@@ -96,6 +138,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   workspace right now" and "it is stopped" still reach a launch as the same
   answer. Acting on it would let a launch heal a round trip earlier, before the
   `up` is attempted. It is its own change and is not in this one.
+||||||| parent of 5bbf2ba (feat: give a codex launch a codex, and a login to run it with)
+
 
 ### Known issues
 
@@ -114,6 +158,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `test_stderr_is_the_commands_output_verbatim` is a strict `xfail` of the
   behaviour we want, so fixing the transport turns the suite red and the
   workaround section gets removed in the same change.
+||||||| parent of 0949c74 (feat: give a codex launch a codex, and a login to run it with)
 
 ## [0.41.0] - 2026-09-10
 

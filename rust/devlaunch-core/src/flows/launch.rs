@@ -64,6 +64,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use crate::clients::claude;
+use crate::clients::codex;
 use crate::clients::devpod::{self, Call, ContainerState, ListingUnreadable, NotRun, Patience};
 use crate::clients::devpod_home::{CreateRecord, DevpodHome, create_record};
 use crate::clients::gh::{self, GhEvent, StagedToken, Token, TokenLookup};
@@ -194,6 +195,9 @@ pub struct Host {
     /// `DEVLAUNCH_NO_CLAUDE_TOKEN`, and any `CLAUDE_CODE_OAUTH_TOKEN` the host
     /// already exported. A host value like [`Host::gh`], read the same way.
     pub(crate) claude: claude::HostEnv,
+    /// `DEVLAUNCH_NO_CODEX_TOKEN`, `CODEX_HOME`, and any `CODEX_ACCESS_TOKEN` the
+    /// host already exported. A host value like [`Host::claude`], read the same way.
+    pub(crate) codex: codex::HostEnv,
     /// `DEVLAUNCH_DOTFILES_ON_ATTACH`.
     pub(crate) dotfiles_on_attach: Option<String>,
     /// `DEVLAUNCH_ZELLIJ`.
@@ -291,6 +295,7 @@ impl Host {
             devpod_ssh_config: crate::osext::env_str(ssh::CONFIG_VAR),
             ssh_auth_sock: crate::osext::env_str(SSH_AUTH_SOCK_VAR),
             home: crate::osext::home_dir(),
+            codex: codex::HostEnv::from_process(),
             claude_profiles_root: crate::domain::xdg::claude_profiles_root().ok(),
             cache_dir: cache_dir.into(),
             devpod_home: DevpodHome::locate(),
@@ -471,6 +476,27 @@ pub enum LaunchNotice {
     /// inside the session. `dl <ws> stop` already prints the same courtesy for the
     /// same flag.
     ClaudeProfileNotForwarded { name: String },
+
+    /// This workspace was provisioned before, but without the codex stage, and this
+    /// launch wants codex.
+    ///
+    /// Said on the fast-attach arm, where a warm launch otherwise provisions
+    /// nothing. It costs one round trip, once per workspace: the pass that follows
+    /// records codex in the workspace's marker, so the next `aid --codex` on it is
+    /// warm again. Distinct from [`Self::SetupPassNeverFinished`] because nothing
+    /// went wrong here. The earlier pass did everything it was asked to.
+    CodexStageMissing { workspace_id: String },
+
+    /// A Codex credential file is there and yielded no token, on a launch that asked
+    /// for codex.
+    ///
+    /// The one Codex lookup worth saying anything about, which is
+    /// [`crate::clients::codex::NoToken`]'s own reasoning: opting out is a choice and
+    /// a host that never ran `codex login` is a fact about the host, but an
+    /// `auth.json` that cannot be read is a problem the user can fix. Said once, and
+    /// the launch continues — the container gets a codex that is not logged in, which
+    /// is better than no container. Carries the path and never the contents.
+    CodexCredentialUnreadable { path: String },
 
     // --- the session (dl.py `workspace_ssh`)
     /// dl read the ssh config devpod publishes into and found no alias for this
@@ -1372,6 +1398,28 @@ pub trait Provision {
     fn pass_never_finished(&self, _workspace_id: &str) -> bool {
         false
     }
+
+    /// Whether this workspace was provisioned without a stage *this* launch needs.
+    ///
+    /// The other half of [`Self::pass_never_finished`], asked on the same
+    /// fast-attach arm and answered from the same records. A pass that ran to
+    /// completion can still have skipped a stage, because which stages a pass
+    /// carries depends on what the launch that paid for it was doing: a workspace
+    /// opened by `dl <ws>` was never given codex, and `aid --codex <ws>` on it is
+    /// asking for something no pass has installed.
+    ///
+    /// **Only ever true for a launch that wants codex**, which is what keeps the
+    /// warm path warm. The note on [`Launch::attach`] is the reason that matters:
+    /// paying a pass on every fast attach was tried and rejected, because it put
+    /// two setup-stage warnings on the hottest path dl has. This asks a question
+    /// that is `false` by construction for every launch that is not a codex launch,
+    /// so nothing else changes shape.
+    ///
+    /// `false` by default and for every doubt, exactly as its sibling is: a
+    /// workspace with no marker to read is one the pass will visit anyway.
+    fn stage_missing_for_this_launch(&self, _workspace_id: &str) -> bool {
+        false
+    }
 }
 
 /// A launch that lends nothing — `DEVLAUNCH_NO_TOOLS`, and every test that is not
@@ -1441,6 +1489,25 @@ impl<'e> ToolProvisioning<'e> {
             events: RefCell::new(events),
         }
     }
+
+    /// The same provisioning, with the codex stage decided by what `verb` runs.
+    ///
+    /// Takes the verb rather than an agent name so that
+    /// [`RemoteCommand::agent`] stays crate-private: which programs devlaunch knows
+    /// as agents is core's fact (`clients::herdr::AGENT_NAMES`), and a binary that
+    /// had to name "codex" itself would be a second copy of that list. A verb with no
+    /// command — `up`, `code`, a bare attach — asks for nothing and leaves the switch
+    /// at [`provision::CodexSwitch::Skip`].
+    pub fn for_verb(self, verb: &LaunchVerb) -> Self {
+        let agent = match verb {
+            LaunchVerb::Attach { command } => command.as_ref().and_then(RemoteCommand::agent),
+            _ => None,
+        };
+        Self {
+            switches: self.switches.for_agent(agent),
+            ..self
+        }
+    }
 }
 
 impl Provision for ToolProvisioning<'_> {
@@ -1488,6 +1555,16 @@ impl Provision for ToolProvisioning<'_> {
 
     fn pass_never_finished(&self, workspace_id: &str) -> bool {
         self.verdicts.pass_never_finished(workspace_id)
+    }
+
+    fn stage_missing_for_this_launch(&self, workspace_id: &str) -> bool {
+        // Gated on the codex switch before the cache is read at all, so a launch
+        // that is not a codex launch cannot be told to pay a pass by a marker that
+        // disagrees for some other reason. `trusted` is the whole question once we
+        // are here: it compares the switches a marker was written under against the
+        // ones this launch wants, and its own note names this exact case.
+        matches!(self.switches.codex, provision::CodexSwitch::Install)
+            && !self.verdicts.trusted(workspace_id, self.switches)
     }
 }
 
@@ -1866,6 +1943,37 @@ fn posix_quote(word: &str) -> Option<String> {
 /// Built once and shared by both transports: two copies of this expression would
 /// be two chances for the transports to drift, which is the whole failure the
 /// single payload exists to have fixed.
+/// Whether the payload establishes a Codex login before the command it wraps.
+///
+/// A function of the agent alone, deliberately, and **not** of whether a token was
+/// found: the payload is built before either transport resolves a credential, and
+/// making it wait on one would mean threading a secret into the one value that gets
+/// quoted into an argv. It does not need to. A launch with no token forwards no
+/// variable, `printenv` writes nothing, the login fails, and the `|| true` below
+/// leaves codex to report its own unauthenticated state — which is the honest
+/// outcome and the same one a container with no login has today.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CodexLogin {
+    Off,
+    Before,
+}
+
+impl CodexLogin {
+    /// What a launch of `agent` needs in front of it.
+    ///
+    /// Keyed on [`provision::CODEX_TOOL`]'s spelling, which is the same constant
+    /// [`provision::CodexSwitch::for_agent`] reads, so the stage that installs codex
+    /// and the payload that logs it in cannot come to disagree about which launches
+    /// are codex launches.
+    pub(crate) fn from_agent(agent: Option<&str>) -> Self {
+        if agent == Some(provision::CODEX_TOOL.command) {
+            Self::Before
+        } else {
+            Self::Off
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct RemotePayload(String);
 
@@ -1874,11 +1982,16 @@ impl RemotePayload {
     pub(crate) fn wrap(
         command: &RemoteCommand,
         zellij: ZellijWrap,
+        codex: CodexLogin,
     ) -> Result<Self, UnquotableCommand> {
         // `line()` is where argv becomes one command line, and the only place it
         // does. A `Script` is already one and is passed through untouched.
         let line = command.line();
-        let inner = with_zellij_session(&line, zellij);
+        // Innermost first: the zellij session has to exist before the command that
+        // opens a pane beside it, and the login has to happen before the command
+        // that needs it. Both are prefixes, so the order they are applied in is the
+        // order they run in, and codex going on last puts it first.
+        let inner = with_codex_login(&with_zellij_session(&line, zellij), codex);
         let quoted = posix_quote(&inner).ok_or_else(|| UnquotableCommand {
             command: line.into_owned(),
         })?;
@@ -1922,6 +2035,56 @@ fn with_zellij_session(command: &str, zellij: ZellijWrap) -> String {
             // Python spells.
             let name = posix_quote(ZELLIJ_SESSION).unwrap_or_default();
             format!("zellij attach -b {name} >/dev/null 2>&1 || true; {command}")
+        }
+    }
+}
+
+/// `command`, preceded by giving codex the login this session forwarded.
+///
+/// The file is written here rather than by a `codex login`, because codex has no
+/// subcommand that will take an OAuth access token: see
+/// [`crate::clients::codex`] for what `--with-access-token` actually wants and why
+/// the file dl writes is safe to write. `$CODEX_HOME` is honoured in shell exactly
+/// as the host side honours it in Rust.
+///
+/// **A login made inside the workspace is never overwritten.** The file dl writes
+/// carries an empty `tokens.refresh_token` and a real `codex login` writes a
+/// populated one, so that string is the test for whose file this is: absent, or
+/// dl's, and it is replaced; anyone else's, and it is left exactly as it is. This is
+/// the rule [`crate::flows::provision`] already keeps for a mounted Claude config,
+/// and the reason it matters is the same. A person who signed a workspace in to a
+/// second account meant it.
+///
+/// Four details carried straight from [`with_zellij_session`], for its reasons:
+///
+/// - **`;` and not `&&`**, so what the payload exits with is the command's status
+///   and never the write's. A codex that runs and asks for a login is a better
+///   answer than a dl that exits non-zero having run nothing.
+/// - **the whole block redirected**, because `dl <ws> -- codex ... > file` has to
+///   put codex's output in the file and nothing else.
+/// - **`printenv`, never the value**, so the credential reaches the container in the
+///   environment and not in an argv another user on the host could read.
+/// - **guarded on the variable being set**, because [`CodexLogin`] is derived from
+///   the agent and not from whether a credential was found. A launch with nothing to
+///   forward must not write an empty file over a working login.
+///
+/// `umask 077` in a subshell rather than a `chmod` after the fact: the file holds a
+/// credential, and there is no window in which it is world-readable.
+fn with_codex_login(command: &str, codex: CodexLogin) -> String {
+    match codex {
+        CodexLogin::Off => command.to_owned(),
+        CodexLogin::Before => {
+            let var = codex::AUTH_VAR;
+            let home = codex::CONFIG_DIR_VAR;
+            let file = codex::AUTH_FILENAME;
+            let mark = codex::REDACTED_REFRESH;
+            format!(
+                "{{ d=\"${{{home}:-$HOME/.codex}}\"; f=\"$d/{file}\"; \
+                 if [ -n \"${{{var}:-}}\" ] && {{ [ ! -e \"$f\" ] || \
+                 grep -qF '{mark}' \"$f\"; }}; then mkdir -p \"$d\" && \
+                 (umask 077; printf %s \"${var}\" > \"$f\"); fi; }} \
+                 >/dev/null 2>&1; {command}"
+            )
         }
     }
 }
@@ -2271,6 +2434,37 @@ impl<'a> SessionContext<'a> {
             claude::TokenLookup::Missing(_) => Ok(None),
         }
     }
+
+    /// The Codex token this session should forward, if any.
+    ///
+    /// Gated on `agent`, and that is the difference from [`Self::forwarded_claude`]
+    /// worth reading. The Claude token goes to every session dl opens, because
+    /// `claude` is what a bare `dl <ws>` most often ends up running and the shell it
+    /// attaches to may start one at any point. A Codex token is forwarded only to a
+    /// session that was *asked* to run codex, because nothing in a plain shell will
+    /// use it and a credential with no reader is a credential that should not have
+    /// travelled.
+    ///
+    /// No `Result`, unlike its sibling: codex has no profile flag, so there is no
+    /// explicit instruction this could fail to carry out and nothing to refuse a
+    /// launch over.
+    fn forwarded_codex(
+        &self,
+        agent: Option<&str>,
+        notices: &mut dyn Notices<LaunchNotice>,
+    ) -> Option<codex::Credential> {
+        if agent != Some(provision::CODEX_TOOL.command) {
+            return None;
+        }
+        match codex::resolve_credential(self.host.home.as_deref(), &self.host.codex) {
+            codex::CredentialLookup::Found(credential) => Some(credential),
+            codex::CredentialLookup::Missing(codex::NoCredential::Unreadable(path)) => {
+                notices.say(LaunchNotice::CodexCredentialUnreadable { path });
+                None
+            }
+            codex::CredentialLookup::Missing(_) => None,
+        }
+    }
 }
 
 /// SSH into a workspace, optionally running a command.
@@ -2296,17 +2490,23 @@ pub(crate) fn workspace_ssh(
     forward: &mut dyn FnMut(&str),
     notices: &mut dyn Notices<LaunchNotice>,
 ) -> Result<Session, SessionRefused> {
+    // Read off the command dl was handed, not the payload: the payload is already
+    // wrapped in a `cd` and possibly in zellij, and the question is what program
+    // the person asked for. Resolved before the payload rather than after it, which
+    // it used to be, because the payload now needs it too — `CodexLogin` is derived
+    // from the same answer the session manager is told.
+    let agent = command.and_then(RemoteCommand::agent);
     let payload = match command {
         None => None,
         Some(command) => Some(
-            RemotePayload::wrap(command, ZellijWrap::from_host(session.host))
-                .map_err(SessionRefused::Unquotable)?,
+            RemotePayload::wrap(
+                command,
+                ZellijWrap::from_host(session.host),
+                CodexLogin::from_agent(agent),
+            )
+            .map_err(SessionRefused::Unquotable)?,
         ),
     };
-    // Read off the command dl was handed, not the payload: the payload is already
-    // wrapped in a `cd` and possibly in zellij, and the question is what program
-    // the person asked for.
-    let agent = command.and_then(RemoteCommand::agent);
     // The already-cached options, never a fresh `devpod context options`: this is
     // on the warm path, where that round trip costs more than the pty it decides.
     let options = already_cached_options(session.host, SystemTime::now());
@@ -2485,9 +2685,13 @@ fn devpod_session(
     // leaves devpod unrun rather than spawning a session that would forward the wrong
     // account.
     let claude_token = session.forwarded_claude(notices)?;
-    let forwarding = claude::extend_ssh_forwarding(
-        gh::ssh_forwarding(session.forwarded_token(notices)),
-        claude_token.as_ref(),
+    let codex_token = session.forwarded_codex(visibility.agent, notices);
+    let forwarding = codex::extend_ssh_forwarding(
+        claude::extend_ssh_forwarding(
+            gh::ssh_forwarding(session.forwarded_token(notices)),
+            claude_token.as_ref(),
+        ),
+        codex_token.as_ref(),
     );
     args.extend(forwarding.args.iter().cloned());
     // `--set-env` and not `--send-env`: these are the container's own paths for a
@@ -2542,10 +2746,14 @@ fn ssh_with_terminal(
     // two credentials built (`clients::herdr`). The manager's coordinates, unlike
     // the name, do cross the transport and so do join that list.
     let claude_token = session.forwarded_claude(notices)?;
+    let codex_token = session.forwarded_codex(visible.agent, notices);
     let forwarding = herdr::extend_openssh_forwarding(
-        claude::extend_openssh_forwarding(
-            gh::openssh_forwarding(session.forwarded_token(notices)),
-            claude_token.as_ref(),
+        codex::extend_openssh_forwarding(
+            claude::extend_openssh_forwarding(
+                gh::openssh_forwarding(session.forwarded_token(notices)),
+                claude_token.as_ref(),
+            ),
+            codex_token.as_ref(),
         ),
         visible.agent,
     );
@@ -4545,11 +4753,25 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
     /// verdict here -- the pass that would have written one is the pass that was
     /// interrupted.
     fn finish_the_interrupted_pass(&mut self, placement: &Placement) -> Result<(), LaunchAborted> {
-        if !self.provision.pass_never_finished(placement.workspace_id()) {
+        // Two reasons a warm attach pays a pass, and they are worth telling apart on
+        // the terminal: one is a `dl` that died mid-pass, the other is a workspace
+        // that was provisioned perfectly well for a launch that wanted less than
+        // this one does.
+        let interrupted = self.provision.pass_never_finished(placement.workspace_id());
+        let incomplete = self
+            .provision
+            .stage_missing_for_this_launch(placement.workspace_id());
+        if !interrupted && !incomplete {
             return Ok(());
         }
-        self.notices.say(LaunchNotice::SetupPassNeverFinished {
-            workspace_id: placement.workspace_id().to_owned(),
+        self.notices.say(if interrupted {
+            LaunchNotice::SetupPassNeverFinished {
+                workspace_id: placement.workspace_id().to_owned(),
+            }
+        } else {
+            LaunchNotice::CodexStageMissing {
+                workspace_id: placement.workspace_id().to_owned(),
+            }
         });
         let seen = self
             .provision
@@ -6784,8 +7006,12 @@ mod tests {
     fn a_command_is_wrapped_for_a_login_shell() {
         // devpod runs `--command` under a non-login, non-interactive `bash -c`,
         // which sources neither ~/.profile nor ~/.bashrc.
-        let payload = RemotePayload::wrap(&RemoteCommand::argv(&["echo", "hi"]), ZellijWrap::Off)
-            .expect("quotable");
+        let payload = RemotePayload::wrap(
+            &RemoteCommand::argv(&["echo", "hi"]),
+            ZellijWrap::Off,
+            CodexLogin::Off,
+        )
+        .expect("quotable");
 
         assert_eq!(payload.as_str(), "bash -lc 'echo hi'");
     }
@@ -6796,6 +7022,7 @@ mod tests {
         let payload = RemotePayload::wrap(
             &RemoteCommand::argv(&["claude", "fix the bug"]),
             ZellijWrap::Off,
+            CodexLogin::Off,
         )
         .expect("quotable");
 
@@ -6807,14 +7034,133 @@ mod tests {
 
     #[test]
     fn the_zellij_wrap_ensures_a_session_beside_the_command() {
-        let payload =
-            RemotePayload::wrap(&RemoteCommand::argv(&["echo", "hi"]), ZellijWrap::Beside)
-                .expect("quotable");
+        let payload = RemotePayload::wrap(
+            &RemoteCommand::argv(&["echo", "hi"]),
+            ZellijWrap::Beside,
+            CodexLogin::Off,
+        )
+        .expect("quotable");
 
         assert_eq!(
             payload.as_str(),
             "bash -lc 'zellij attach -b devlaunch >/dev/null 2>&1 || true; echo hi'"
         );
+    }
+
+    /// The login is a prefix on the one agent that needs it, and on nothing else.
+    #[test]
+    fn only_a_codex_payload_carries_a_login() {
+        let codex = RemotePayload::wrap(
+            &RemoteCommand::argv(&["codex", "--yolo"]),
+            ZellijWrap::Off,
+            CodexLogin::from_agent(Some("codex")),
+        )
+        .expect("quotable");
+        // The write, the guard that keeps it off somebody else's login, and the
+        // command it precedes. Asserted by part rather than as one string: the
+        // payload is a shell block, and a test that pinned it whole would fail on
+        // every reformatting without saying anything about behaviour.
+        for part in [
+            crate::clients::codex::AUTH_VAR,
+            crate::clients::codex::AUTH_FILENAME,
+            crate::clients::codex::REDACTED_REFRESH,
+            "umask 077",
+            "; codex --yolo",
+        ] {
+            assert!(codex.as_str().contains(part), "{part}: {codex:?}");
+        }
+
+        for other in [None, Some("claude"), Some("gemini")] {
+            let payload = RemotePayload::wrap(
+                &RemoteCommand::argv(&["claude"]),
+                ZellijWrap::Off,
+                CodexLogin::from_agent(other),
+            )
+            .expect("quotable");
+            assert_eq!(payload.as_str(), "bash -lc claude", "{other:?}");
+        }
+    }
+
+    /// What the payload exits with must be the command's status and never the
+    /// write's, which is why the two are joined by `;` and not `&&`. The same rule
+    /// `with_zellij_session` keeps, and the reason `dl <ws> -- codex` can be trusted
+    /// in a script.
+    #[test]
+    fn a_failed_write_does_not_become_the_commands_status() {
+        let payload = with_codex_login("codex --yolo", CodexLogin::Before);
+        assert!(payload.ends_with("; codex --yolo"), "{payload}");
+        assert!(
+            payload.contains(">/dev/null 2>&1; codex --yolo"),
+            "{payload}"
+        );
+    }
+
+    /// The credential reaches the container in the environment and must not be
+    /// interpolated into a command line, where another user on the host could read
+    /// it out of the argv. `printenv` on the variable is what keeps that true.
+    #[test]
+    fn the_write_names_the_variable_and_never_a_value() {
+        let payload = with_codex_login("codex", CodexLogin::Before);
+        let var = crate::clients::codex::AUTH_VAR;
+        assert!(
+            payload.contains(&format!("printf %s \"${var}\"")),
+            "{payload}"
+        );
+    }
+
+    /// A launch with nothing to forward must not write an empty file over a login
+    /// somebody made inside the workspace, so the write is guarded on the variable
+    /// being set as well as on whose file is there.
+    #[test]
+    fn a_launch_with_no_credential_writes_nothing() {
+        let payload = with_codex_login("codex", CodexLogin::Before);
+        let var = crate::clients::codex::AUTH_VAR;
+        assert!(
+            payload.contains(&format!("[ -n \"${{{var}:-}}\" ]")),
+            "{payload}"
+        );
+    }
+
+    /// A login made in the workspace by hand is left alone: the file dl writes is
+    /// marked by its empty refresh token, and only that file or no file is replaced.
+    #[test]
+    fn a_login_made_inside_the_workspace_is_not_overwritten() {
+        let payload = with_codex_login("codex", CodexLogin::Before);
+        let mark = crate::clients::codex::REDACTED_REFRESH;
+        assert!(payload.contains(&format!("grep -qF '{mark}'")), "{payload}");
+        assert!(payload.contains("[ ! -e "), "{payload}");
+    }
+
+    /// A codex launch in a zellij-wrapped session gets both, in the order they have
+    /// to run in: the login is in place, then the session exists, then the command.
+    #[test]
+    fn a_codex_launch_beside_zellij_gets_both_prefixes_in_order() {
+        let payload = RemotePayload::wrap(
+            &RemoteCommand::argv(&["codex"]),
+            ZellijWrap::Beside,
+            CodexLogin::Before,
+        )
+        .expect("quotable");
+        let line = payload.as_str();
+        let login = line
+            .find(crate::clients::codex::AUTH_FILENAME)
+            .expect("a login");
+        let zellij = line.find("zellij attach").expect("a session");
+        assert!(login < zellij, "{line}");
+    }
+
+    #[test]
+    fn the_stage_and_the_login_agree_on_which_launches_are_codex() {
+        // Two derivations of one fact, so a launch cannot be given a codex that is
+        // never logged in, or a login with no codex to receive it.
+        for agent in [None, Some("claude"), Some("codex"), Some("gemini")] {
+            let installs = matches!(
+                crate::flows::provision::CodexSwitch::for_agent(agent),
+                crate::flows::provision::CodexSwitch::Install
+            );
+            let logs_in = matches!(CodexLogin::from_agent(agent), CodexLogin::Before);
+            assert_eq!(installs, logs_in, "{agent:?}");
+        }
     }
 
     #[test]
@@ -7195,7 +7541,11 @@ mod tests {
         // argv is the quoted form -- there is no single string the caller gave, and
         // the line is the thing that actually could not be made a word.
         assert_eq!(
-            RemotePayload::wrap(&RemoteCommand::argv(&["echo", "\0hi"]), ZellijWrap::Off),
+            RemotePayload::wrap(
+                &RemoteCommand::argv(&["echo", "\0hi"]),
+                ZellijWrap::Off,
+                CodexLogin::Off
+            ),
             Err(UnquotableCommand {
                 command: "echo '\0hi'".to_owned()
             })
@@ -7371,8 +7721,12 @@ mod tests {
                 config: published.clone()
             }
         );
-        let payload = RemotePayload::wrap(&RemoteCommand::argv(&["claude"]), ZellijWrap::Off)
-            .expect("quotable");
+        let payload = RemotePayload::wrap(
+            &RemoteCommand::argv(&["claude"]),
+            ZellijWrap::Off,
+            CodexLogin::Off,
+        )
+        .expect("quotable");
         assert_eq!(
             route(Some(&payload), &terminal, "myws", &mut no_notices()),
             Route::Terminal {
@@ -7421,8 +7775,12 @@ mod tests {
                 config: config.clone()
             }
         );
-        let payload = RemotePayload::wrap(&RemoteCommand::argv(&["claude"]), ZellijWrap::Off)
-            .expect("quotable");
+        let payload = RemotePayload::wrap(
+            &RemoteCommand::argv(&["claude"]),
+            ZellijWrap::Off,
+            CodexLogin::Off,
+        )
+        .expect("quotable");
         assert_eq!(
             route(Some(&payload), &terminal, "myws", &mut notices),
             Route::DevpodCommand(&payload)
@@ -7457,8 +7815,12 @@ mod tests {
                 looked_in: never_written.clone()
             }
         );
-        let payload = RemotePayload::wrap(&RemoteCommand::argv(&["claude"]), ZellijWrap::Off)
-            .expect("quotable");
+        let payload = RemotePayload::wrap(
+            &RemoteCommand::argv(&["claude"]),
+            ZellijWrap::Off,
+            CodexLogin::Off,
+        )
+        .expect("quotable");
         assert_eq!(
             route(Some(&payload), &terminal, "myws", &mut notices),
             Route::DevpodCommand(&payload)
@@ -7486,8 +7848,12 @@ mod tests {
 
         let terminal = terminal_here(&host, "myws");
         assert_eq!(terminal, Terminal::ConfigUnlocatable);
-        let payload = RemotePayload::wrap(&RemoteCommand::argv(&["claude"]), ZellijWrap::Off)
-            .expect("quotable");
+        let payload = RemotePayload::wrap(
+            &RemoteCommand::argv(&["claude"]),
+            ZellijWrap::Off,
+            CodexLogin::Off,
+        )
+        .expect("quotable");
         assert_eq!(
             route(Some(&payload), &terminal, "myws", &mut notices),
             Route::DevpodCommand(&payload)

@@ -2918,6 +2918,20 @@ pub(crate) fn launch_notice(notice: &LaunchNotice) -> Option<String> {
             python_repr(name)
         ),
 
+        LaunchNotice::CodexStageMissing { workspace_id } => format!(
+            "Workspace {workspace_id} was set up without codex, so this launch installs it \
+             before starting the agent. This costs one round trip once; later codex launches \
+             of this workspace are warm."
+        ),
+
+        LaunchNotice::CodexCredentialUnreadable { path } => format!(
+            "Found no Codex access token in {}, so `codex` starts in this workspace without the \
+             host's login and will ask for one. `codex login` on the host rewrites the file; a \
+             host signed in with an API key rather than a ChatGPT account has nothing here to \
+             forward.",
+            python_repr(path)
+        ),
+
         // --- the session (warning at 3845, info at 3864/3891, debug at 3875)
         LaunchNotice::NoTerminalAlias {
             workspace_id,

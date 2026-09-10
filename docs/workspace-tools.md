@@ -404,6 +404,89 @@ setup-stage warnings on the terminal of every first attach, on the hottest path
 would override a mounted credential that can refresh itself, on every warm attach,
 for as long as no pass had run.
 
+## Codex authentication
+
+`aid --codex` needs two things a fresh container has neither of: a `codex` binary
+and a login. `dl` arranges both, by two different routes, because they belong on
+different trips.
+
+The binary comes from the network rung, as one more `pixi global install`. That is
+the same mechanism behind `gh` and `claude`, and it runs as a stage of the setup
+pass. It is **not** lent from the host the way `claude` is, and the size is the
+reason: the host's `claude` is a ~21KB shim, while `codex` is a 244MB binary that
+would be streamed over the ssh channel on every cold provision. It is installed
+**only on a launch that runs codex**, so a `dl <ws>` that wants a shell never pays
+for it.
+
+One consequence worth knowing: a workspace first opened with `dl <ws>` and later
+used with `aid --codex <ws>` spends one extra pass, because the provisioning record
+remembers which stages a workspace was given and this launch wants one more. `dl`
+says so when it happens. The second `aid --codex` on the same workspace is warm.
+
+### The login is a file, and a smaller one than the host's
+
+Codex has no environment variable to authenticate from. Measured against codex-cli
+0.154.0 it reads `$CODEX_HOME/auth.json` and nothing else, and
+`codex login --with-access-token` is not a way in either: it wants an agent identity
+JWT and refuses an OAuth access token outright.
+
+So `dl` writes the file. It does not copy the host's. It reads the host's
+`~/.codex/auth.json`, keeps `tokens.id_token`, `tokens.access_token`,
+`tokens.account_id` and `last_refresh`, blanks `tokens.refresh_token`, and forwards
+that as one variable on the session. The container-side write happens before codex
+starts, under `umask 077`.
+
+The refresh token is the point of the omission. It is what a container could use to
+rotate your own ChatGPT login out from under you, and it is why
+[the Claude token](#a-variable-not-the-credential-file) is a variable rather than a
+copy of `~/.claude/.credentials.json`. Claude Code's variable let `dl` avoid a file
+entirely. Codex leaves no such option, so the next best thing is a file that cannot
+mint another credential. What lands on the container's disk expires in hours.
+
+The credential rides `--send-env` on the sessions `dl` itself opens, and does not go
+into devpod's workspace environment at `up`. So a repo's `postCreateCommand` never
+runs with your Codex login in reach, and `dl <ws> up` warms a workspace with no
+credential anywhere near it.
+
+### A login you made in the workspace is left alone
+
+The file `dl` writes is marked by its empty `tokens.refresh_token`. A `codex login`
+run inside a workspace writes a populated one, so `dl` replaces only a file that is
+absent or one of its own. If you signed a workspace in to a second account by hand,
+that is what stays.
+
+### When the token expires
+
+The access token is good for hours, and the file `dl` wrote cannot renew itself. A
+long-lived workspace that outlives it does not prompt: codex tries to refresh, fails
+against the blank refresh token, and reports a 400. The fix is another launch, which
+writes a fresh token. This is the cost of not shipping the credential that can
+refresh, and it is deliberate.
+
+### Turning it off, and when there is nothing to forward
+
+`DEVLAUNCH_NO_CODEX_TOKEN=1` opts a machine out entirely. `$CODEX_HOME` is honoured
+as Codex honours it, on both sides, so a host that has moved its configuration has
+moved the credential too. It *replaces* `~/.codex` rather than being tried ahead of
+it, so a host with two logins cannot silently forward the wrong one.
+
+A host that has never run `codex login` forwards nothing and says nothing: codex
+starts in the workspace and asks for a login itself. A host signed in with an API key
+rather than a ChatGPT account has no OAuth tokens in `auth.json` at all, and `dl`
+warns once, naming the file. Either way the workspace opens. A codex that has to be
+logged in by hand is a better outcome than no container.
+
+```bash
+aid --codex <workspace>            # installs codex if absent, writes the login
+dl <workspace> -- codex exec "..." # the same two things, non-interactively
+```
+
+### Gemini
+
+`aid --gemini` gets neither half of this. `gemini-cli` is not on conda-forge, so the
+pixi rung has nothing to install, and nothing forwards a Google credential. A
+workspace that needs it has to bring its own.
+
 ## Tools in every workspace
 
 `gh` and `claude` are available in every workspace `dl` opens, in every kind of

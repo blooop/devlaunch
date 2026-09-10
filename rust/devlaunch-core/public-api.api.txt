@@ -48,6 +48,10 @@ pub devlaunch_core::api::LaunchNotice::CheckoutBehind::branch: alloc::string::St
 pub devlaunch_core::api::LaunchNotice::CheckoutBehind::workspace_id: alloc::string::String
 pub devlaunch_core::api::LaunchNotice::ClaudeProfileNotForwarded
 pub devlaunch_core::api::LaunchNotice::ClaudeProfileNotForwarded::name: alloc::string::String
+pub devlaunch_core::api::LaunchNotice::CodexCredentialUnreadable
+pub devlaunch_core::api::LaunchNotice::CodexCredentialUnreadable::path: alloc::string::String
+pub devlaunch_core::api::LaunchNotice::CodexStageMissing
+pub devlaunch_core::api::LaunchNotice::CodexStageMissing::workspace_id: alloc::string::String
 pub devlaunch_core::api::LaunchNotice::CreateNeverFinished
 pub devlaunch_core::api::LaunchNotice::CreateNeverFinished::workspace_id: alloc::string::String
 pub devlaunch_core::api::LaunchNotice::DevcontainerIgnoredRunning
@@ -402,11 +406,13 @@ pub fn devlaunch_core::flows::lifecycle::SelfInvocation::fmt(&self, &mut core::f
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::lifecycle::SelfInvocation
 pub struct devlaunch_core::api::ToolProvisioning<'e>
 impl<'e> devlaunch_core::flows::launch::ToolProvisioning<'e>
+pub fn devlaunch_core::flows::launch::ToolProvisioning<'e>::for_verb(self, &devlaunch_core::flows::launch::LaunchVerb) -> Self
 pub fn devlaunch_core::flows::launch::ToolProvisioning<'e>::from_env(&std::path::Path, &'e mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::provision::ProvisionEvent>) -> Self
 impl devlaunch_core::flows::launch::Provision for devlaunch_core::flows::launch::ToolProvisioning<'_>
 pub fn devlaunch_core::flows::launch::ToolProvisioning<'_>::pass_never_finished(&self, &str) -> bool
 pub fn devlaunch_core::flows::launch::ToolProvisioning<'_>::provision_tools(&self, &dyn devlaunch_runner::Runner, &str, devlaunch_core::flows::provision::PassOccasion, core::option::Option<&str>) -> core::result::Result<core::option::Option<devlaunch_core::flows::provision::ClaudeConfig>, devlaunch_core::flows::provision::DevpodMissing>
 pub fn devlaunch_core::flows::launch::ToolProvisioning<'_>::remembered_claude(&self, &str) -> core::option::Option<devlaunch_core::flows::provision::ClaudeConfig>
+pub fn devlaunch_core::flows::launch::ToolProvisioning<'_>::stage_missing_for_this_launch(&self, &str) -> bool
 pub struct devlaunch_core::api::WorkspaceCloneManager<'r>
 impl<'r> devlaunch_core::flows::workspace_clone::WorkspaceCloneManager<'r>
 pub fn devlaunch_core::flows::workspace_clone::WorkspaceCloneManager<'r>::in_cache(&std::path::Path, &devlaunch_core::domain::config::WorktreeConfig, devlaunch_core::clients::git::Git<'r>) -> Self
@@ -429,10 +435,12 @@ pub trait devlaunch_core::api::Provision
 pub fn devlaunch_core::api::Provision::pass_never_finished(&self, &str) -> bool
 pub fn devlaunch_core::api::Provision::provision_tools(&self, &dyn devlaunch_runner::Runner, &str, devlaunch_core::flows::provision::PassOccasion, core::option::Option<&str>) -> core::result::Result<core::option::Option<devlaunch_core::flows::provision::ClaudeConfig>, devlaunch_core::flows::provision::DevpodMissing>
 pub fn devlaunch_core::api::Provision::remembered_claude(&self, &str) -> core::option::Option<devlaunch_core::flows::provision::ClaudeConfig>
+pub fn devlaunch_core::api::Provision::stage_missing_for_this_launch(&self, &str) -> bool
 impl devlaunch_core::flows::launch::Provision for devlaunch_core::flows::launch::ToolProvisioning<'_>
 pub fn devlaunch_core::flows::launch::ToolProvisioning<'_>::pass_never_finished(&self, &str) -> bool
 pub fn devlaunch_core::flows::launch::ToolProvisioning<'_>::provision_tools(&self, &dyn devlaunch_runner::Runner, &str, devlaunch_core::flows::provision::PassOccasion, core::option::Option<&str>) -> core::result::Result<core::option::Option<devlaunch_core::flows::provision::ClaudeConfig>, devlaunch_core::flows::provision::DevpodMissing>
 pub fn devlaunch_core::flows::launch::ToolProvisioning<'_>::remembered_claude(&self, &str) -> core::option::Option<devlaunch_core::flows::provision::ClaudeConfig>
+pub fn devlaunch_core::flows::launch::ToolProvisioning<'_>::stage_missing_for_this_launch(&self, &str) -> bool
 pub fn devlaunch_core::api::enriched_listing(&mut devlaunch_core::flows::listing::CommandContext<'_>, &devlaunch_core::flows::listing::DlView<'_>, devlaunch_core::flows::listing::Sizes) -> core::result::Result<alloc::vec::Vec<devlaunch_core::flows::listing::ListedWorkspace>, devlaunch_core::clients::devpod::ListingUnreadable>
 pub fn devlaunch_core::api::identity(&str) -> core::result::Result<devlaunch_core::domain::spec::SpecIdentity<'_>, devlaunch_core::domain::workspace_id::UnsafeName>
 pub fn devlaunch_core::api::json_document(&[devlaunch_core::flows::listing::ListedWorkspace]) -> serde_json::value::Value
@@ -550,6 +558,10 @@ pub devlaunch_core::flows::launch::LaunchNotice::CheckoutBehind::branch: alloc::
 pub devlaunch_core::flows::launch::LaunchNotice::CheckoutBehind::workspace_id: alloc::string::String
 pub devlaunch_core::flows::launch::LaunchNotice::ClaudeProfileNotForwarded
 pub devlaunch_core::flows::launch::LaunchNotice::ClaudeProfileNotForwarded::name: alloc::string::String
+pub devlaunch_core::flows::launch::LaunchNotice::CodexCredentialUnreadable
+pub devlaunch_core::flows::launch::LaunchNotice::CodexCredentialUnreadable::path: alloc::string::String
+pub devlaunch_core::flows::launch::LaunchNotice::CodexStageMissing
+pub devlaunch_core::flows::launch::LaunchNotice::CodexStageMissing::workspace_id: alloc::string::String
 pub devlaunch_core::flows::launch::LaunchNotice::CreateNeverFinished
 pub devlaunch_core::flows::launch::LaunchNotice::CreateNeverFinished::workspace_id: alloc::string::String
 pub devlaunch_core::flows::launch::LaunchNotice::DevcontainerIgnoredRunning
@@ -656,11 +668,13 @@ pub fn devlaunch_core::flows::launch::Launch<'a, 'r, 'l>::recognised_as(self, co
 pub fn devlaunch_core::flows::launch::Launch<'a, 'r, 'l>::run(&mut self, &str, &devlaunch_core::flows::launch::LaunchVerb, core::option::Option<&devlaunch_core::domain::spec::DevcontainerPath>) -> core::result::Result<devlaunch_core::flows::launch::Launched, devlaunch_core::flows::launch::LaunchAborted>
 pub struct devlaunch_core::flows::launch::ToolProvisioning<'e>
 impl<'e> devlaunch_core::flows::launch::ToolProvisioning<'e>
+pub fn devlaunch_core::flows::launch::ToolProvisioning<'e>::for_verb(self, &devlaunch_core::flows::launch::LaunchVerb) -> Self
 pub fn devlaunch_core::flows::launch::ToolProvisioning<'e>::from_env(&std::path::Path, &'e mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::provision::ProvisionEvent>) -> Self
 impl devlaunch_core::flows::launch::Provision for devlaunch_core::flows::launch::ToolProvisioning<'_>
 pub fn devlaunch_core::flows::launch::ToolProvisioning<'_>::pass_never_finished(&self, &str) -> bool
 pub fn devlaunch_core::flows::launch::ToolProvisioning<'_>::provision_tools(&self, &dyn devlaunch_runner::Runner, &str, devlaunch_core::flows::provision::PassOccasion, core::option::Option<&str>) -> core::result::Result<core::option::Option<devlaunch_core::flows::provision::ClaudeConfig>, devlaunch_core::flows::provision::DevpodMissing>
 pub fn devlaunch_core::flows::launch::ToolProvisioning<'_>::remembered_claude(&self, &str) -> core::option::Option<devlaunch_core::flows::provision::ClaudeConfig>
+pub fn devlaunch_core::flows::launch::ToolProvisioning<'_>::stage_missing_for_this_launch(&self, &str) -> bool
 pub trait devlaunch_core::flows::launch::ColdMachinery<'r>
 pub fn devlaunch_core::flows::launch::ColdMachinery::open(&mut self) -> core::result::Result<devlaunch_core::flows::launch::Cold<'_, 'r>, devlaunch_core::flows::launch::ColdRefused>
 pub fn devlaunch_core::flows::launch::ColdMachinery::recorded(&mut self) -> core::option::Option<&devlaunch_core::domain::metadata::MetadataStorage>
@@ -671,10 +685,12 @@ pub trait devlaunch_core::flows::launch::Provision
 pub fn devlaunch_core::flows::launch::Provision::pass_never_finished(&self, &str) -> bool
 pub fn devlaunch_core::flows::launch::Provision::provision_tools(&self, &dyn devlaunch_runner::Runner, &str, devlaunch_core::flows::provision::PassOccasion, core::option::Option<&str>) -> core::result::Result<core::option::Option<devlaunch_core::flows::provision::ClaudeConfig>, devlaunch_core::flows::provision::DevpodMissing>
 pub fn devlaunch_core::flows::launch::Provision::remembered_claude(&self, &str) -> core::option::Option<devlaunch_core::flows::provision::ClaudeConfig>
+pub fn devlaunch_core::flows::launch::Provision::stage_missing_for_this_launch(&self, &str) -> bool
 impl devlaunch_core::flows::launch::Provision for devlaunch_core::flows::launch::ToolProvisioning<'_>
 pub fn devlaunch_core::flows::launch::ToolProvisioning<'_>::pass_never_finished(&self, &str) -> bool
 pub fn devlaunch_core::flows::launch::ToolProvisioning<'_>::provision_tools(&self, &dyn devlaunch_runner::Runner, &str, devlaunch_core::flows::provision::PassOccasion, core::option::Option<&str>) -> core::result::Result<core::option::Option<devlaunch_core::flows::provision::ClaudeConfig>, devlaunch_core::flows::provision::DevpodMissing>
 pub fn devlaunch_core::flows::launch::ToolProvisioning<'_>::remembered_claude(&self, &str) -> core::option::Option<devlaunch_core::flows::provision::ClaudeConfig>
+pub fn devlaunch_core::flows::launch::ToolProvisioning<'_>::stage_missing_for_this_launch(&self, &str) -> bool
 pub enum devlaunch_core::flows::lifecycle::DeleteStalled
 pub devlaunch_core::flows::lifecycle::DeleteStalled::OnTheLock
 impl core::clone::Clone for devlaunch_core::flows::lifecycle::DeleteStalled

@@ -63,7 +63,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use super::{ClaudeConfig, Switches, ToolsSwitch, ZellijSwitch};
+use super::{ClaudeConfig, CodexSwitch, Switches, ToolsSwitch, ZellijSwitch};
 
 use crate::clients::devpod_home::{DevpodHome, sole_workspace_result};
 
@@ -412,6 +412,7 @@ struct Marker {
 struct MarkerSwitches {
     tools: bool,
     zellij: bool,
+    codex: bool,
 }
 
 impl MarkerSwitches {
@@ -419,6 +420,12 @@ impl MarkerSwitches {
         Self {
             tools: matches!(switches.tools, ToolsSwitch::Install),
             zellij: matches!(switches.zellij, ZellijSwitch::Install),
+            // Part of the key, which is what makes a workspace provisioned by
+            // `dl <ws>` re-provision under `aid --codex <ws>`: the marker written
+            // without codex disagrees with the switches this launch wants, so the
+            // pass travels again and the codex stage lands. See
+            // `provision::CodexSwitch`.
+            codex: matches!(switches.codex, CodexSwitch::Install),
         }
     }
 }
@@ -730,6 +737,7 @@ mod tests {
         let verdicts = VerdictCache::under(cache.path(), Some(DevpodHome::at(home.path())));
 
         let unasked = Switches {
+            codex: CodexSwitch::Skip,
             tools: ToolsSwitch::Install,
             zellij: ZellijSwitch::Skip,
         };
