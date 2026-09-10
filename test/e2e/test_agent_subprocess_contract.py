@@ -166,8 +166,7 @@ def test_a_signalled_command_comes_back_as_255_whichever_signal_it_was(piped, si
     """
     result = piped.run("sh", "-c", f"kill -{signal} $$")
     assert result.returncode == 255, (
-        f"a SIG{signal}'d command came back as {result.returncode}, not 255"
-        + _shows(result)
+        f"a SIG{signal}'d command came back as {result.returncode}, not 255" + _shows(result)
     )
 
 
