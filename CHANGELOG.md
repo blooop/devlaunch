@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A page for the other kind of agent, and a line in `--help` that finds it.**
+  `AGENTS.md` is for an agent working *on* devlaunch. Nothing was written for a
+  script or an agent harness driving `dl` as a tool, so the contract it depends on
+  was real but unstated: `dl <ws> -- <cmd>` returns the command's exit status,
+  gives it stdout and stdin, and needs no terminal. A contract nothing states is
+  one a refactor cannot see it is breaking. `docs/agents-using-dl.md` states it,
+  along with the one thing an orchestrator most needs to know (a workspace is one
+  branch, so two agents on one branch share one clone and collide inside it),
+  what `--ls --json` guarantees, and which of the three deletions to reach for.
+  `dl --help` now ends with a four-line pointer to it, spelled as a URL because
+  an agent handed the binary out of a pixi environment has no repository to
+  resolve a relative path against.
+- **The subprocess contract is now pinned by tests.**
+  `test/e2e/test_agent_subprocess_contract.py` asks each clause of it of a real
+  workspace over pipes, which is a different transport from the pty that
+  `test_interactive_session.py` already covers, and `test_agent_contract_doc.py`
+  holds the page and the `--help` pointer to still saying what those tests prove.
+
 ### Fixed
 
 - **A launch blocked on devpod's workspace lock now clears the orphan holding it
@@ -73,6 +93,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   answer. Acting on it would let a launch heal a round trip earlier, before the
   `up` is attempted. It is its own change and is not in this one.
 
+### Known issues
+
+- **A command's stderr still comes back reformatted by devpod's stream logger**,
+  timestamped and ANSI-coloured with a Go source location appended, which is
+  what a caller reading a compiler or a test runner cannot parse. The documented
+  workaround is to merge inside the container (`dl <ws> -- sh -c 'cmd 2>&1'`).
+  `test_stderr_is_the_commands_output_verbatim` is a strict `xfail` of the
+  behaviour we want, so fixing the transport turns the suite red and the
+  workaround section gets removed in the same change.
 
 ## [0.41.0] - 2026-09-10
 
