@@ -1471,6 +1471,18 @@ pub fn devlaunch_core::flows::kill::NoSignal::eq(&self, &devlaunch_core::flows::
 impl core::fmt::Debug for devlaunch_core::flows::kill::NoSignal
 pub fn devlaunch_core::flows::kill::NoSignal::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::kill::NoSignal
+pub enum devlaunch_core::flows::kill::Ours
+pub devlaunch_core::flows::kill::Ours::ChildrenOf(u32)
+pub devlaunch_core::flows::kill::Ours::Nothing
+impl core::clone::Clone for devlaunch_core::flows::kill::Ours
+pub fn devlaunch_core::flows::kill::Ours::clone(&self) -> devlaunch_core::flows::kill::Ours
+impl core::cmp::Eq for devlaunch_core::flows::kill::Ours
+impl core::cmp::PartialEq for devlaunch_core::flows::kill::Ours
+pub fn devlaunch_core::flows::kill::Ours::eq(&self, &devlaunch_core::flows::kill::Ours) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::kill::Ours
+pub fn devlaunch_core::flows::kill::Ours::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for devlaunch_core::flows::kill::Ours
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::kill::Ours
 pub enum devlaunch_core::flows::kill::Released
 pub devlaunch_core::flows::kill::Released::Swept(devlaunch_core::flows::kill::Release)
 pub devlaunch_core::flows::kill::Released::Unavailable(devlaunch_core::flows::kill::HostCannot)
@@ -1561,7 +1573,7 @@ pub fn devlaunch_core::flows::kill::Sweep::eq(&self, &devlaunch_core::flows::kil
 impl core::fmt::Debug for devlaunch_core::flows::kill::Sweep
 pub fn devlaunch_core::flows::kill::Sweep::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::kill::Sweep
-pub fn devlaunch_core::flows::kill::release_the_lock(&dyn devlaunch_runner::Runner, &str, &mut dyn core::ops::function::FnMut(core::time::Duration)) -> devlaunch_core::flows::kill::Released
+pub fn devlaunch_core::flows::kill::release_the_lock(&dyn devlaunch_runner::Runner, &str, u32, &mut dyn core::ops::function::FnMut(core::time::Duration)) -> devlaunch_core::flows::kill::Released
 pub fn devlaunch_core::flows::kill::workspace_kill(&dyn devlaunch_runner::Runner, core::option::Option<&devlaunch_core::clients::devpod_home::DevpodHome>, &str, &mut dyn core::ops::function::FnMut(core::time::Duration)) -> devlaunch_core::flows::kill::Killed
 pub mod devlaunch_core::flows::launch
 pub enum devlaunch_core::flows::launch::BranchNotNamed

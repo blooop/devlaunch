@@ -1723,7 +1723,15 @@ fn up_under_stage(
             // this call site is core's own, and there is no launch-side clock to
             // thread through eight parameters for the sake of two seconds that
             // only elapse when an orphan actually has to be signalled.
-            let released = kill::release_the_lock(runner, &blocked_on, &mut std::thread::sleep);
+            // This process's own pid, so the sweep can tell the `up` it is
+            // watching from the one wedging it: the launch's own devpod is a
+            // direct child of this `dl` (devlaunch#602).
+            let released = kill::release_the_lock(
+                runner,
+                &blocked_on,
+                std::process::id(),
+                &mut std::thread::sleep,
+            );
             notices.say(LaunchNotice::SweptTheLockHolders {
                 workspace_id: blocked_on.clone(),
                 released,
@@ -5774,7 +5782,9 @@ mod tests {
             ["devpod", "up"],
             Response::exited(0).and_stdout(BLOCKED_ON_THE_LOCK),
         );
-        scene.runner.script(["ps"], Response::stdout(table.to_owned()));
+        scene
+            .runner
+            .script(["ps"], Response::stdout(table.to_owned()));
         let mut context = CommandContext::new(&scene.runner);
         let token = HostToken::new();
         let request = UpRequest::new(
@@ -5905,6 +5915,49 @@ mod tests {
         assert!(
             release.holding.any_attended(),
             "the build is reported as the live holder it is: {release:?}",
+        );
+    }
+
+    /// The launch's own `devpod up` is not something holding the workspace: it is
+    /// the process *waiting* for it. It names the workspace in its own argv and
+    /// its parent is this live `dl`, so the sweep's own reading finds it, calls it
+    /// attended and — before devlaunch#602's second pass — reported it as a live
+    /// holder to wait for. Measured on a host: a launch behind a lock nothing
+    /// could clear told the reader
+    ///
+    /// > bencher-nb1-8vqa is held by work somebody is still waiting on, which dl
+    /// > will not interrupt -- 667824 (devpod up bencher-nb1-8vqa ...)
+    ///
+    /// naming the reader's own launch. It also made two of the report's arms dead:
+    /// with an attended holder always present, `any_attended` never went false, so
+    /// "nothing on this host is holding it" and "signalled and could not stop
+    /// them" were unreachable in production while passing their own tests.
+    ///
+    /// The table here is the shape of that host: `ps` showing a `devpod up` whose
+    /// parent is this process, which is what the launch passes as its own.
+    #[test]
+    fn a_launch_does_not_count_its_own_blocked_up_among_the_holders() {
+        let table = format!(
+            "    1       0 /sbin/init\n{:>7} {:>7} devpod up myws --ide none\n",
+            4711,
+            std::process::id(),
+        );
+
+        let blocked = up_blocked_against(&table);
+
+        assert!(
+            blocked.signals.is_empty(),
+            "a launch must never signal its own up: {:?}",
+            blocked.signals,
+        );
+        let reported = releases(&blocked.notices);
+        let [kill::Released::Swept(release)] = reported.as_slice() else {
+            panic!("one sweep was reported: {:?}", blocked.notices);
+        };
+        assert_eq!(
+            release.holding,
+            kill::Holding::Free,
+            "the launch's own up was reported as holding the workspace it waits for",
         );
     }
 
