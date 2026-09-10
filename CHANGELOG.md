@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.41.0] - 2026-09-10
+
 ### Fixed
 
 - **A launch parked on devpod's workspace lock now says so while it waits, and
