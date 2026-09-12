@@ -99,7 +99,7 @@ use crate::flows::repo_manager::EnsureRepoError;
 use crate::flows::session_manager;
 use crate::flows::workspace_clone::{self, PrepareColdError, WorkspaceCloneManager};
 use crate::notices::{Notices, Wrapped};
-use crate::runner::{Exit, Runner};
+use crate::runner::{EnvSpec, Exit, Runner};
 use crate::shell;
 use crate::timing;
 
@@ -348,6 +348,15 @@ impl Host {
     /// deletion costs is the next container's downloads.
     pub(crate) fn pixi_cache_source(&self) -> PathBuf {
         self.cache_dir.join("pixi")
+    }
+
+    /// The socket `dl` names to devpod when the host has no agent to forward.
+    ///
+    /// Under the cache dir like the control sockets, so `XDG_CACHE_HOME` scopes it
+    /// and `--purge` clears it. One per host rather than one per workspace: it
+    /// carries no state and every launch that needs it needs the same thing.
+    pub(crate) fn absent_agent_socket(&self) -> PathBuf {
+        self.cache_dir.join("no-agent.sock")
     }
 
     /// Where the answer to `devpod context options` is remembered between runs.
@@ -1778,9 +1787,20 @@ fn up_under_stage(
     // into flags, and it is on the far side of every arm that returns without
     // running an `up` at all.
     notices.say(options.dotfiles_notice());
-    if let Some(notice) = agent_notice(host) {
-        notices.say(notice);
-    }
+    let agent = HostAgent::of(host);
+    notices.say_all(agent.notice());
+    // Only on the `up`, and only when there is no agent: this is what
+    // `${localEnv:SSH_AUTH_SOCK}` in any devcontainer.json resolves to, and `up` is
+    // the one call that resolves a manifest's mounts. It does not touch
+    // `host.ssh_auth_sock`, which is the ssh control socket's identity
+    // (devlaunch#389) and has to go on naming what the *host* has.
+    let env = match &agent {
+        HostAgent::Live => EnvSpec::inherited(),
+        HostAgent::Absent { .. } => match absent_agent_socket(host) {
+            Some(path) => EnvSpec::inherited().and(SSH_AUTH_SOCK_VAR, path.display().to_string()),
+            None => EnvSpec::inherited(),
+        },
+    };
 
     // This launch is the one paying for the `up`, so no prewarm saved it from
     // anything — whether or not one was fired.
@@ -1829,7 +1849,7 @@ fn up_under_stage(
     let mut said = false;
     let exit = devpod::run_watching(
         runner,
-        &Call::new(args).leading_its_own_group(),
+        &Call::new(args).leading_its_own_group().with_env(env),
         &mut |line| {
             if said || !devpod::says_it_is_blocked(line) {
                 return;
@@ -1884,30 +1904,115 @@ fn up_under_stage(
     Ok(UpOutcome::Started)
 }
 
-/// The notice that no ssh-agent reaches this `up`, or `None` when one does.
+/// Whether an ssh-agent reaches this `up`, and what the host said if not.
 ///
 /// Answered from the value `Host` already carries for the control-socket identity
 /// (devlaunch#389) plus one `stat`: a variable that names a path no agent listens
 /// on forwards exactly as much as an unset one, and is the state a shell is left
 /// in when the agent that set it has died. Not probed with `ssh-add -l`: that is
 /// a subprocess with a timeout on the critical path of every `up`, to tell apart
-/// "no agent" from "an agent with no keys", and the terminal line is the same
-/// for both.
-fn agent_notice(host: &Host) -> Option<LaunchNotice> {
+/// "no agent" from "an agent with no keys", which nothing below distinguishes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum HostAgent {
+    /// `SSH_AUTH_SOCK` names a socket, so devpod is left to forward it.
+    Live,
+    /// It names nothing (`named: None`) or nothing that is a socket.
+    Absent { named: Option<String> },
+}
+
+impl HostAgent {
+    fn of(host: &Host) -> Self {
+        use std::os::unix::fs::FileTypeExt;
+        let Some(named) = host
+            .ssh_auth_sock
+            .as_deref()
+            .filter(|path| !path.is_empty())
+        else {
+            return Self::Absent { named: None };
+        };
+        let is_socket = std::fs::metadata(named)
+            .map(|meta| meta.file_type().is_socket())
+            .unwrap_or(false);
+        if is_socket {
+            Self::Live
+        } else {
+            Self::Absent {
+                named: Some(named.to_owned()),
+            }
+        }
+    }
+
+    fn notice(&self) -> Option<LaunchNotice> {
+        match self {
+            Self::Live => None,
+            Self::Absent { named } => Some(LaunchNotice::NoSshAgent {
+                named: named.clone(),
+            }),
+        }
+    }
+}
+
+/// A path `${localEnv:SSH_AUTH_SOCK}` can resolve to on a host with no agent.
+///
+/// The mount, not the agent. A devcontainer.json that binds that variable -- this
+/// repo's own does, and it is not unusual -- gets an empty source string on a host
+/// with nothing exported, and docker refuses the whole run with `field Source must
+/// not be empty`: no container, rather than a container with no key. devcontainer
+/// manifests have no conditional mounts, so the only place that can be fixed for
+/// *every* repo is here, in the environment `dl` hands devpod.
+///
+/// A real socket, bound and then immediately dropped, rather than an empty file.
+/// Both satisfy the bind mount; a socket is what the variable claims to name, so
+/// ssh inside the container is refused by `connect()` the way it is by any dead
+/// agent, instead of failing on the file type. Dropped rather than held, because a
+/// listener nothing accepts on would hang a client that a closed one refuses in a
+/// syscall. Rust does not unlink a `UnixListener`'s path on drop, which is what
+/// leaves the file behind for the mount to find.
+///
+/// Reused when it is already there: the file carries no state, and re-binding over
+/// a live workspace's mount source is worth avoiding.
+///
+/// Two places are tried, and the second is not tidiness. A unix address holds 104
+/// bytes at the smaller of the two platforms dl builds for
+/// ([`crate::clients::ssh`] measures this, and pays it the same respect), so a
+/// long `XDG_CACHE_HOME` -- a CI scratch directory, a test harness's temp tree --
+/// makes the cache path unbindable. The ssh control sockets meet the same limit
+/// and answer it by giving up multiplexing, which still opens the session; giving
+/// up *here* hands devpod an empty variable again, which is the bug this exists to
+/// remove. So the fallback is a short path under the temp directory, keyed by uid
+/// so two users on one host cannot collide on it.
+///
+/// The cache is still tried first, and that ordering is the whole of what keeps
+/// `XDG_CACHE_HOME` scoping dl's storage in the ordinary case. The fallback holds
+/// no bytes and no secret -- it is a socket nothing listens on -- so a file left in
+/// the temp directory is the cheapest thing dl can leave anywhere.
+///
+/// `None` only when neither can be bound, and then the launch proceeds exactly as
+/// it did before this existed.
+fn absent_agent_socket(host: &Host) -> Option<PathBuf> {
+    if let Some(path) = bind_placeholder(&host.absent_agent_socket()) {
+        return Some(path);
+    }
+    // SAFETY: `getuid` reads the calling process's real uid. It cannot fail, takes
+    // no pointer and touches no memory this process owns.
+    let uid = unsafe { libc::getuid() };
+    bind_placeholder(&crate::osext::temp_dir().join(format!("devlaunch-{uid}-no-agent.sock")))
+}
+
+/// One candidate: the socket that is already there, or a newly bound one.
+fn bind_placeholder(path: &Path) -> Option<PathBuf> {
     use std::os::unix::fs::FileTypeExt;
-    let Some(named) = host
-        .ssh_auth_sock
-        .as_deref()
-        .filter(|path| !path.is_empty())
-    else {
-        return Some(LaunchNotice::NoSshAgent { named: None });
-    };
-    let is_socket = std::fs::metadata(named)
+    if std::fs::metadata(path)
         .map(|meta| meta.file_type().is_socket())
-        .unwrap_or(false);
-    (!is_socket).then(|| LaunchNotice::NoSshAgent {
-        named: Some(named.to_owned()),
-    })
+        .unwrap_or(false)
+    {
+        return Some(path.to_owned());
+    }
+    std::fs::create_dir_all(path.parent()?).ok()?;
+    let _ = std::fs::remove_file(path);
+    let listener = std::os::unix::net::UnixListener::bind(path).ok()?;
+    drop(listener);
+    Some(path.to_owned())
 }
 
 /// The provider devpod is given when it has none.
@@ -6536,6 +6641,196 @@ mod tests {
                 .iter()
                 .any(|notice| matches!(notice, LaunchNotice::ProviderRegistered { .. })),
             "{said:?}"
+        );
+    }
+
+    /// What the `up` call's environment says `SSH_AUTH_SOCK` is, or `None` when it
+    /// leaves the host's alone.
+    fn agent_named_to_devpod(scene: &Scene) -> Option<String> {
+        scene
+            .runner
+            .calls()
+            .iter()
+            .find(|call| call.args().first().map(String::as_str) == Some("up"))
+            .expect("an up")
+            .invocation()
+            .env
+            .entries
+            .get("SSH_AUTH_SOCK")
+            .cloned()
+    }
+
+    /// The general half of the fix, and the reason it is here rather than in one
+    /// repo's devcontainer.json: a manifest that binds `${localEnv:SSH_AUTH_SOCK}`
+    /// gets an empty source on a host with nothing exported, and docker refuses
+    /// the whole run with `field Source must not be empty`. Manifests have no
+    /// conditional mounts, so the environment dl hands devpod is the only place
+    /// this can be answered for every repo at once.
+    #[test]
+    fn an_up_with_no_agent_names_a_socket_devpod_can_bind() {
+        let scene = Scene::new();
+        assert_eq!(
+            scene.host.ssh_auth_sock, None,
+            "the scene is a host with no agent"
+        );
+        let mut context = CommandContext::new(&scene.runner);
+        let request = UpRequest::new(
+            "owner/repo",
+            Naming::Create {
+                workspace_id: "myws",
+            },
+        );
+
+        let outcome = workspace_up(
+            &mut context,
+            &scene.host,
+            &HostToken::new(),
+            &ClaudeSeen::new(),
+            &NoProvisioning,
+            &request,
+            None,
+            &mut no_notices(),
+        );
+        assert_eq!(outcome, Ok(UpOutcome::Started));
+
+        let named = agent_named_to_devpod(&scene).expect("SSH_AUTH_SOCK was set for devpod");
+        let path = PathBuf::from(&named);
+        assert!(
+            path.starts_with(scene.cache_dir()),
+            "{named} is outside the cache"
+        );
+        // A source docker can bind, which is the whole point, and a socket rather
+        // than a file so ssh inside is refused rather than confused.
+        use std::os::unix::fs::FileTypeExt;
+        assert!(
+            std::fs::metadata(&path)
+                .expect("the placeholder exists")
+                .file_type()
+                .is_socket(),
+            "{named} is not a socket"
+        );
+        // Nothing is listening: a connect is refused in a syscall, where a held
+        // listener would have hung the client instead.
+        assert!(
+            std::os::unix::net::UnixStream::connect(&path).is_err(),
+            "something is accepting on the placeholder"
+        );
+    }
+
+    /// A host that has an agent is left exactly as it is: devpod inherits the
+    /// variable and forwards the real thing.
+    #[test]
+    fn an_up_with_an_agent_leaves_the_environment_alone() {
+        let mut scene = Scene::new();
+        let live = scene.dir.path().join("agent");
+        let _listener = std::os::unix::net::UnixListener::bind(&live).expect("a socket");
+        scene.host.ssh_auth_sock = Some(live.display().to_string());
+        let mut context = CommandContext::new(&scene.runner);
+        let request = UpRequest::new(
+            "owner/repo",
+            Naming::Create {
+                workspace_id: "myws",
+            },
+        );
+
+        let _ = workspace_up(
+            &mut context,
+            &scene.host,
+            &HostToken::new(),
+            &ClaudeSeen::new(),
+            &NoProvisioning,
+            &request,
+            None,
+            &mut no_notices(),
+        );
+
+        assert_eq!(agent_named_to_devpod(&scene), None);
+        assert!(
+            !scene.host.absent_agent_socket().exists(),
+            "a placeholder was made for a host that has an agent"
+        );
+    }
+
+    /// A variable left pointing at a dead agent is the same case as none at all,
+    /// and it is the one a shell is left in when the agent it started has gone.
+    #[test]
+    fn an_up_whose_agent_variable_is_stale_is_given_the_placeholder() {
+        let mut scene = Scene::new();
+        scene.host.ssh_auth_sock = Some(scene.dir.path().join("gone").display().to_string());
+        let mut context = CommandContext::new(&scene.runner);
+        let request = UpRequest::new(
+            "owner/repo",
+            Naming::Create {
+                workspace_id: "myws",
+            },
+        );
+
+        let _ = workspace_up(
+            &mut context,
+            &scene.host,
+            &HostToken::new(),
+            &ClaudeSeen::new(),
+            &NoProvisioning,
+            &request,
+            None,
+            &mut no_notices(),
+        );
+
+        assert_eq!(
+            agent_named_to_devpod(&scene).map(PathBuf::from),
+            Some(scene.host.absent_agent_socket())
+        );
+    }
+
+    /// A cache too deep to bind a socket in still gets one. Found the hard way: a
+    /// scratch `XDG_CACHE_HOME` 126 bytes deep made the bind fail with
+    /// `AF_UNIX path too long`, the guard returned `None`, and the launch failed
+    /// exactly as it had before the guard existed -- a fix that degrades back into
+    /// the bug it fixes, and silently. A unix address holds 104 bytes at the
+    /// smaller of dl's two platforms, which a CI scratch directory clears easily.
+    #[test]
+    fn a_cache_too_deep_for_a_socket_falls_back_to_a_short_path() {
+        let mut scene = Scene::new();
+        // Deep enough that the cache path alone overruns `sun_path`.
+        let deep = scene.dir.path().join("d".repeat(60)).join("e".repeat(60));
+        std::fs::create_dir_all(&deep).expect("a deep cache");
+        scene.host.cache_dir = deep;
+        assert!(
+            std::os::unix::net::UnixListener::bind(scene.host.absent_agent_socket()).is_err(),
+            "the fixture is not deep enough to exercise the fallback"
+        );
+
+        let path = absent_agent_socket(&scene.host).expect("a placeholder all the same");
+
+        use std::os::unix::fs::FileTypeExt;
+        assert!(
+            std::fs::metadata(&path)
+                .expect("it exists")
+                .file_type()
+                .is_socket(),
+            "{} is not a socket",
+            path.display()
+        );
+        assert!(
+            !path.starts_with(&scene.host.cache_dir),
+            "the fallback is still inside the cache it could not bind in"
+        );
+    }
+
+    /// The placeholder carries no state, so a second launch reuses the one that is
+    /// there rather than re-binding over a source a live workspace is mounted from.
+    #[test]
+    fn the_placeholder_survives_a_second_launch_unrebound() {
+        let scene = Scene::new();
+        use std::os::unix::fs::MetadataExt;
+        let first = absent_agent_socket(&scene.host).expect("a placeholder");
+        let inode = std::fs::metadata(&first).expect("it exists").ino();
+        let second = absent_agent_socket(&scene.host).expect("a placeholder");
+        assert_eq!(first, second);
+        assert_eq!(
+            std::fs::metadata(&second).expect("it exists").ino(),
+            inode,
+            "the placeholder was re-bound"
         );
     }
 
