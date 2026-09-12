@@ -1167,11 +1167,22 @@ pub(crate) fn onboarding_script() -> String {
 ///   makes running this on every pass free.
 ///
 /// `realpath` first, so a `.claude.json` that is a symlink into a mount is written
-/// *through* rather than replaced by a regular file. The rename is what keeps a
-/// concurrent reader from seeing half a document; where the rename cannot happen —
-/// the file itself bind-mounted, which is the shape this repo's own feature used to
-/// have — the write goes in place, because a trust entry is not worth failing a
-/// launch over and the alternative is no write at all.
+/// *through* rather than replaced by a regular file.
+///
+/// **Write to a scratch file and rename, or do not write.** There is no in-place
+/// fallback, and refusing one is the point rather than an omission: writing in place
+/// means truncating first, and the file being truncated is the host's whole Claude
+/// configuration wherever the container shares it. A directory this container may
+/// not create a file in is the shape that reaches it — a read-only mount of the
+/// shared config directory, or a uid mismatch on it — and there the *file* is often
+/// still writable by its owner, so the fallback does not merely fail, it succeeds at
+/// exactly the write that has nowhere to land if it stops halfway.
+///
+/// What it costs is a container whose `.claude.json` is bind-mounted as a *file*
+/// rather than reached through its directory: the rename cannot replace a mount
+/// point, so that container gets the prompt. It is the shape this repo's own feature
+/// moved off for the same reason, and it is a stated limit like the missing
+/// `python3` rather than a case worth the host's config to cover.
 const TRUST_MERGE_PY: &str = r#"import json, os, sys, tempfile
 path, key = os.path.realpath(sys.argv[1]), sys.argv[2]
 try:
@@ -1206,8 +1217,7 @@ except OSError:
             os.unlink(scratch)
         except OSError:
             pass
-    with open(path, "w", encoding="utf-8") as opened:
-        opened.write(body)
+    sys.exit(0)
 "#;
 
 /// The [`TRUST_STAGE`]'s script: record that this workspace's own directory is one
@@ -3399,8 +3409,7 @@ except OSError:
             os.unlink(scratch)
         except OSError:
             pass
-    with open(path, "w", encoding="utf-8") as opened:
-        opened.write(body)
+    sys.exit(0)
 '"'"'
 python3 -c "$prog" "$file" "$ws"'; then
   echo "devlaunch-probe stage trust ok"
@@ -5838,6 +5847,67 @@ fi
             "",
             "an image without python3 is not a failure to report"
         );
+    }
+
+    #[test]
+    fn a_config_the_merge_cannot_replace_is_left_exactly_as_it_was() {
+        // The file this stage writes is the host's real configuration wherever the
+        // container shares it, so the promise is the atomic one: the entry is in, or
+        // every byte is where it was. A read-only mount of that directory, or a uid
+        // mismatch on it, is the shape that reaches this -- and it is the same shape
+        // the stage exists for, a container sharing the host's config.
+        //
+        // Written against a version that fell back to `open(path, "w")` when the
+        // rename would not go: that truncates before it writes, so a failure during
+        // the write left the host's config empty, and the EACCES that stopped the
+        // rename stopped the fallback too -- a traceback and a warning on every cold
+        // launch of a container that is working correctly.
+        let world = TrustWorld::new(Some(r#"{"hasCompletedOnboarding":true}"#));
+        let mut locked = std::fs::metadata(&world.home)
+            .expect("a home")
+            .permissions();
+        locked.set_mode(0o500);
+        std::fs::set_permissions(&world.home, locked).expect("a read-only config dir");
+        // Root ignores the mode, so the state this asserts about cannot be reached as
+        // root and the assertion below would pass for the wrong reason. Probing is
+        // how that is told, rather than asking who we are.
+        let reachable = std::fs::write(world.home.join("probe"), "x").is_err();
+        if !reachable {
+            std::fs::remove_file(world.home.join("probe")).expect("the probe");
+            return;
+        }
+
+        let answered = std::process::Command::new("bash")
+            .arg("-c")
+            .arg(trust_script())
+            .current_dir(&world.workspace)
+            .env("HOME", &world.home)
+            .env_remove("CLAUDE_CONFIG_DIR")
+            .output()
+            .expect("bash ran");
+
+        assert_eq!(
+            world.read(),
+            r#"{"hasCompletedOnboarding":true}"#,
+            "a merge that could not go in is not a merge that half went in"
+        );
+        assert!(
+            answered.status.success(),
+            "a directory this container may not write is permanent and nothing the \
+             user can act on, so it declines rather than warning on every launch: {}",
+            String::from_utf8_lossy(&answered.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&answered.stderr),
+            "",
+            "and it declines quietly, like the other declines"
+        );
+
+        let mut unlocked = std::fs::metadata(&world.home)
+            .expect("a home")
+            .permissions();
+        unlocked.set_mode(0o700);
+        std::fs::set_permissions(&world.home, unlocked).expect("a writable dir again");
     }
 
     #[test]
