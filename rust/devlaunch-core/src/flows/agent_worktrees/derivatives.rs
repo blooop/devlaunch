@@ -709,18 +709,36 @@ pub struct WithheldDerivative {
 
 /// What the re-read said instead of *derivable*, or that it was never taken.
 ///
-/// Three arms rather than an `Option<Tagged>`: *the tag is gone*, *the tag is
-/// there and something changed about it*, and *the clone would not answer a
-/// second time* are different facts, and the whole discipline of this module is
-/// that they do not share a value.
+/// Four arms rather than an `Option<Tagged>`, and the extra two are not
+/// symmetry. *The tag is gone*, *the tag is there and something changed about
+/// it*, *the tag is there and this pass produced no verdict for it* and *the
+/// clone would not answer a second time* are four different facts about the
+/// world, and a report that says the first when it means the third tells
+/// somebody a file was deleted that is sitting on their disk.
+///
+/// [`NotWeighedHere`](Self::NotWeighedHere) arrived from review, and what it
+/// fixed was reading the **absence of a classification** as evidence about a
+/// file. Absence of a verdict is not a measurement of anything, which is the
+/// discipline [`Proof`](super::Proof) exists for one type over.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NotDerivableNow {
-    /// The re-read found no tag at that place at all — it was removed, or its
-    /// whole site was.
+    /// The tag is gone from that place.
+    ///
+    /// **Read again rather than inferred.** This arm is chosen only after
+    /// [`declared_regenerable`] has been put to the path a second time and said
+    /// no, because inferring it from an empty classification is how its own
+    /// sentence became false about a tag that was still there.
     NoTagThere,
     /// The re-read answered, and the answer was not derivable: a claim appeared,
     /// or the lockfile stopped naming it.
     Answered(Box<Tagged>),
+    /// The tag is still there and this pass weighed no derivative at that place,
+    /// because the subtree holding it is no longer one this pass weighs on its
+    /// own account: the site went collectable between the plan and the answer,
+    /// or an outer tag now covers it. Either way the bytes are not this unit's
+    /// any more, and whatever is now responsible for them will offer them next
+    /// run.
+    NotWeighedHere,
     /// The re-read was never taken, because git would not list the clone a
     /// second time — the same refusal that withholds every going worktree in it.
     /// The plan's line is then the only account of this directory anybody has,
@@ -749,7 +767,28 @@ impl NotDerivableNow {
                 // words. Total rather than reachable.
                 "it could not be shown to be derivable a second time".to_owned()
             }),
+            Self::NotWeighedHere => {
+                "its cache tag is still there and the worktree holding it is no longer one \
+                 this run weighs on its own, so these bytes are not this run's to reclaim"
+                    .to_owned()
+            }
         }
+    }
+}
+
+/// Why the acting pass will not reclaim a derivative the plan named, or nothing
+/// when the re-read hands it back derivable.
+///
+/// **The gate is put to the path a second time here, and that is deliberate.**
+/// It is the same function the plan and the walk call, not a second copy of the
+/// rule, and calling it is the only way this arm can say *the tag is gone* as a
+/// measurement rather than as an inference from an empty list.
+pub(super) fn refused_now(at: &Path, confirmed: Option<&Tagged>) -> Option<NotDerivableNow> {
+    match confirmed {
+        Some(tagged) if tagged.derivable().is_some() => None,
+        Some(tagged) => Some(NotDerivableNow::Answered(Box::new(tagged.clone()))),
+        None if declared_regenerable(at) => Some(NotDerivableNow::NotWeighedHere),
+        None => Some(NotDerivableNow::NoTagThere),
     }
 }
 

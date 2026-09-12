@@ -149,7 +149,7 @@ mod derivatives;
 pub use derivatives::{
     Derivative, NoRecipe, NotDerivableNow, Recipe, ReclaimedDerivative, Tagged, WithheldDerivative,
 };
-use derivatives::{Derivatives, claims_over, tagged_in};
+use derivatives::{Derivatives, claims_over, refused_now, tagged_in};
 
 /// The directory an agent harness puts its worktrees in, relative to a clone.
 const WORKTREES_DIR: [&str; 2] = [".claude", "worktrees"];
@@ -2262,16 +2262,12 @@ fn reclaim_derivatives(
     for derivative in planned.iter().filter_map(Tagged::derivable) {
         let path = clone.join(derivative.at().as_str());
         let confirmed = fresh.iter().find(|it| it.at() == derivative.at());
-        let Some(_) = confirmed.and_then(Tagged::derivable) else {
-            report.withheld_derivatives.push(WithheldDerivative {
-                path,
-                because: match confirmed {
-                    Some(tagged) => NotDerivableNow::Answered(Box::new(tagged.clone())),
-                    None => NotDerivableNow::NoTagThere,
-                },
-            });
+        if let Some(because) = refused_now(&path, confirmed) {
+            report
+                .withheld_derivatives
+                .push(WithheldDerivative { path, because });
             continue;
-        };
+        }
         match remove_tree_as_far_as_it_goes(&path) {
             TreeSweep::Everything => report.reclaimed.push(ReclaimedDerivative {
                 path,

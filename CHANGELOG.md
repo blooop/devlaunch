@@ -27,6 +27,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   read, so a stale manifest changes nothing: derivability is still the lock's
   answer.
 
+### Fixed
+
+- **A withheld derivative no longer reports a cache tag as gone when it is
+  sitting on disk.** The acting pass decided *the tag is gone* from the absence of
+  a classification, and a site that goes collectable between the plan and the `y`
+  produces exactly that absence without anything having been removed: the weighing
+  hands its subtree back as one removable unit and weighs no derivative inside it.
+  The report then told somebody a directory had been deleted that was still there.
+  The gate is put to the path a second time now, so *the tag is gone* is a
+  measurement, and *this run no longer weighs these bytes on their own account* is
+  an arm of its own.
+
 ## [0.45.0] - 2026-09-12
 
 ### Added

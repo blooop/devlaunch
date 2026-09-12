@@ -1943,3 +1943,64 @@ fn a_subtree_that_would_not_come_away_is_not_reported_as_a_worktree() {
     );
     assert!(!report.nothing_to_say());
 }
+
+#[test]
+fn a_site_that_went_collectable_is_not_reported_as_a_tag_that_vanished() {
+    // Absence of a classification is not evidence about a file. The site here
+    // goes *collectable* between the plan and the act, so the weighing hands
+    // its subtree back as one removable unit and weighs no derivative inside
+    // it -- and reading that empty list as "the tag is gone" told somebody a
+    // directory had been deleted while it sat on their disk. The tag is put to
+    // `declared_regenerable` a second time before either arm is chosen.
+    let world = Clone::new();
+    let worktree = world.worktree("agent-one");
+    let env = installed_env(&worktree, "default");
+    commit_the_project(&world, &worktree, "agent-one");
+    std::fs::write(worktree.join("NOTES.md"), "unsaved\n").expect("the human's own file");
+    world.containerise();
+
+    let plan = world.plan();
+    assert_eq!(reclaiming(&plan).len(), 1);
+
+    // The one thing standing the site is saved elsewhere and deleted.
+    std::fs::remove_file(worktree.join("NOTES.md")).expect("the note going away");
+    let (report, _) = world.act(&plan);
+
+    let [withheld] = &report.withheld_derivatives[..] else {
+        panic!("one withheld: {report:?}");
+    };
+    assert_eq!(withheld.because, NotDerivableNow::NotWeighedHere);
+    assert!(
+        env.join("CACHEDIR.TAG").is_file(),
+        "and the tag the report would have called gone is right there"
+    );
+    assert!(
+        !withheld
+            .because
+            .describe()
+            .contains("no longer a cache tag"),
+        "{}",
+        withheld.because.describe()
+    );
+}
+
+#[test]
+fn a_tag_whose_own_directory_is_gone_says_so_on_its_own_evidence() {
+    // The other side of the row above, so `NoTagThere` is a measurement rather
+    // than the fallthrough of a filter.
+    let world = Clone::new();
+    let worktree = world.worktree("agent-one");
+    let env = installed_env(&worktree, "default");
+    commit_the_project(&world, &worktree, "agent-one");
+    std::fs::write(worktree.join("NOTES.md"), "unsaved\n").expect("the human's own file");
+    world.containerise();
+
+    let plan = world.plan();
+    std::fs::remove_dir_all(&env).expect("somebody else got there first");
+    let (report, _) = world.act(&plan);
+
+    let [withheld] = &report.withheld_derivatives[..] else {
+        panic!("one withheld: {report:?}");
+    };
+    assert_eq!(withheld.because, NotDerivableNow::NoTagThere);
+}
