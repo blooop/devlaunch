@@ -263,6 +263,50 @@ pub(crate) fn says_it_is_blocked(line: &str) -> bool {
     line.contains("Trying to lock workspace")
 }
 
+/// The host path a devcontainer asked for and this machine does not have, if that
+/// is what this line is about.
+///
+/// Two failures, one cause, and dl watches for them because devpod's own words
+/// arrive in the middle of its build log and name no remedy. A manifest that
+/// mounts `${localEnv:HOME}/.config/gh` on a host that has never run
+/// `gh auth login` refuses the whole create before any container exists, and the
+/// reader is left with a line about a bind mount in a tool they asked to open a
+/// repo.
+///
+/// dl does not create the path. A repo's devcontainer.json is the repo's to
+/// satisfy, and `$HOME` is not dl's to write into on its behalf -- so what is
+/// added here is the sentence that turns devpod's line into something actionable,
+/// and nothing else.
+///
+/// Matched on the stable half of each message. devpod names the path it could not
+/// find, which is the whole value of this arm; docker's own refusal for an empty
+/// source names nothing, so that one is [`says_a_mount_source_was_empty`].
+pub(crate) fn names_a_missing_mount_source(line: &str) -> Option<&str> {
+    let at = line.find(MISSING_MOUNT_SOURCE)? + MISSING_MOUNT_SOURCE.len();
+    let named = line[at..].trim();
+    // The log line carries devpod's own trailing `source.go:NN` marker, and a path
+    // with a space in it is a path devpod printed with a space in it. Everything up
+    // to the marker, or all of it when there is none.
+    let path = named
+        .rsplit_once(" \u{1b}[")
+        .map_or(named, |(path, _)| path)
+        .trim();
+    (!path.is_empty()).then_some(path)
+}
+
+const MISSING_MOUNT_SOURCE: &str = "bind mount source path does not exist";
+
+/// Whether this line is docker refusing a mount whose source expanded to nothing.
+///
+/// `${localEnv:NOT_SET}` in a manifest's `mounts` becomes an empty string rather
+/// than being skipped -- devcontainer.json has no conditional mounts -- and docker
+/// refuses the run. dl already keeps `SSH_AUTH_SOCK` from being that variable
+/// (devlaunch#612); every other variable a manifest names is still the manifest's
+/// business, and this is how the reader finds out which kind of failure they have.
+pub(crate) fn says_a_mount_source_was_empty(line: &str) -> bool {
+    line.contains("field Source must not be empty")
+}
+
 /// An outcome, split into "it ran, this is what came back" and "it did not".
 ///
 /// One function over all four arms rather than a `_ =>` at each call site: the
@@ -2091,6 +2135,56 @@ mod tests {
                 kind: JsonKind::Array
             })
         );
+    }
+
+    /// devpod's own words, from a real refused create: a manifest mounting
+    /// `${localEnv:HOME}/.config/gh` on a host that has never run `gh auth login`.
+    #[test]
+    fn the_missing_mount_source_is_the_path_devpod_names() {
+        let line = "devcontainer up: runner run container: bind mount source path does not \
+                    exist /home/dev/.config/gh";
+
+        assert_eq!(
+            names_a_missing_mount_source(line),
+            Some("/home/dev/.config/gh")
+        );
+    }
+
+    /// devpod appends its own `file.go:NN` marker, colourised, to every log line.
+    /// It is not part of the path and must not be reported as one.
+    #[test]
+    fn devpods_source_marker_is_not_part_of_the_path() {
+        let line = "\u{1b}[0;1;37m12:31:40\u{1b}[0m fatal bind mount source path does not exist \
+                    /home/dev/.config/gh \u{1b}[0;90mroot.go:113\u{1b}[0m";
+
+        assert_eq!(
+            names_a_missing_mount_source(line),
+            Some("/home/dev/.config/gh")
+        );
+    }
+
+    /// An ordinary build line is not a refusal, and neither is a message that
+    /// happens to name the failure without a path after it.
+    #[test]
+    fn a_line_that_names_no_missing_path_is_not_one() {
+        assert_eq!(
+            names_a_missing_mount_source("pulling image ubuntu:24.04"),
+            None
+        );
+        assert_eq!(
+            names_a_missing_mount_source("bind mount source path does not exist"),
+            None
+        );
+    }
+
+    /// docker's refusal for a `${localEnv:X}` that expanded to nothing, verbatim.
+    #[test]
+    fn an_empty_mount_source_is_recognised_from_dockers_own_words() {
+        assert!(says_a_mount_source_was_empty(
+            "docker: Error response from daemon: invalid mount config for type \"bind\": \
+             field Source must not be empty"
+        ));
+        assert!(!says_a_mount_source_was_empty("creating devcontainer"));
     }
 
     #[test]

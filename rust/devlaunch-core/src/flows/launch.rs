@@ -479,6 +479,21 @@ pub enum LaunchNotice {
     /// in one arm because the advice is the same and the second is rarer.
     NoSshAgent { named: Option<String> },
 
+    // --- what a devcontainer.json asked of this machine and did not get
+    //
+    // Said from inside the `up`'s own output, as the lock line is, because that is
+    // where devpod says it: the refusal arrives in the middle of a build log,
+    // names no remedy, and is the last thing the reader sees before the launch
+    // ends. dl adds the sentence and creates nothing -- a repo's manifest is the
+    // repo's to satisfy, and `$HOME` is not dl's to write into on its behalf.
+    /// A host path the repo's devcontainer mounts, which this machine does not
+    /// have. devpod names it, so this carries it.
+    MountSourceMissing { path: String },
+    /// A mount whose source expanded to nothing: a `${localEnv:X}` the manifest
+    /// binds and this host does not set. docker names no variable, so neither does
+    /// this -- it says where to look instead.
+    MountSourceEmpty,
+
     // --- the dotfiles this `up` asked devpod for (devlaunch#560)
     //
     // Neither arm is a Python line: dl read devpod's context, silently forwarded
@@ -1851,6 +1866,18 @@ fn up_under_stage(
         runner,
         &Call::new(args).leading_its_own_group().with_env(env),
         &mut |line| {
+            // Before the lock arm, and not behind `said`: these are the failure
+            // being watched for, where the lock line is a wait that may resolve.
+            if let Some(path) = devpod::names_a_missing_mount_source(line) {
+                notices.say(LaunchNotice::MountSourceMissing {
+                    path: path.to_owned(),
+                });
+                return;
+            }
+            if devpod::says_a_mount_source_was_empty(line) {
+                notices.say(LaunchNotice::MountSourceEmpty);
+                return;
+            }
             if said || !devpod::says_it_is_blocked(line) {
                 return;
             }
@@ -6976,6 +7003,52 @@ mod tests {
             std::fs::metadata(&second).expect("it exists").ino(),
             inode,
             "the placeholder was re-bound"
+        );
+    }
+
+    /// devpod's refusal arrives in the middle of its build log and names no
+    /// remedy, so dl says what it means while the reader is still looking at it.
+    /// Watched from the `up`'s own output, which is why this drives a scripted
+    /// devpod rather than asserting on the matcher alone.
+    #[test]
+    fn a_devcontainer_asking_for_a_path_this_host_lacks_is_named() {
+        let scene = Scene::new();
+        scene.runner.script(
+            ["devpod", "up"],
+            Response::failed(1, "").and_stdout(
+                "devcontainer up: runner run container: bind mount source path does not exist \
+                 /home/dev/.config/gh\n",
+            ),
+        );
+        let mut context = CommandContext::new(&scene.runner);
+        let request = UpRequest::new(
+            "owner/repo",
+            Naming::Create {
+                workspace_id: "myws",
+            },
+        );
+        let mut said = Vec::new();
+
+        let outcome = workspace_up(
+            &mut context,
+            &scene.host,
+            &HostToken::new(),
+            &ClaudeSeen::new(),
+            &NoProvisioning,
+            &request,
+            None,
+            &mut said,
+        );
+
+        assert!(
+            matches!(outcome, Ok(UpOutcome::Refused { .. })),
+            "{outcome:?}"
+        );
+        assert!(
+            said.contains(&LaunchNotice::MountSourceMissing {
+                path: "/home/dev/.config/gh".to_owned()
+            }),
+            "{said:?}"
         );
     }
 
