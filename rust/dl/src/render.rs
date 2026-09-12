@@ -3025,7 +3025,7 @@ pub(crate) fn launch_notice(notice: &LaunchNotice) -> Option<String> {
         }
         LaunchNotice::DotfilesNotConfigured => "dotfiles: none set in devpod context options, so \
                                                 this up asked for none. 'devpod context \
-                                                set-options DOTFILES_URL=<repo>' is the only \
+                                                set-options -o DOTFILES_URL=<repo>' is the only \
                                                 place dl reads it from."
             .to_owned(),
 

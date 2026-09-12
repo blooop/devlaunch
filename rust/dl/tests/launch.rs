@@ -802,7 +802,7 @@ fn a_cold_triple_prepares_a_clone_creates_the_workspace_and_attaches() {
                 "Creating workspace clone at {{ROOT}}/cache/devlaunch/repos/blooop/devlaunch/{COLD}"
             ),
             "dotfiles: none set in devpod context options, so this up asked for none. 'devpod \
-             context set-options DOTFILES_URL=<repo>' is the only place dl reads it from.",
+             context set-options -o DOTFILES_URL=<repo>' is the only place dl reads it from.",
             // `env_clear()` above is a host with no agent, and the up says so.
             "ssh-agent: none on this host (SSH_AUTH_SOCK is unset), so this workspace has no \
              SSH key to push with. GitHub still works over HTTPS with the forwarded gh token. \
@@ -1653,7 +1653,7 @@ fn a_devpod_up_that_refuses_hands_its_own_status_back_and_adds_nothing() {
         run.stderr_lines(),
         [
             "dotfiles: none set in devpod context options, so this up asked for none. 'devpod \
-             context set-options DOTFILES_URL=<repo>' is the only place dl reads it from.",
+             context set-options -o DOTFILES_URL=<repo>' is the only place dl reads it from.",
             // `env_clear()` above is a host with no agent, and the up says so.
             "ssh-agent: none on this host (SSH_AUTH_SOCK is unset), so this workspace has no \
              SSH key to push with. GitHub still works over HTTPS with the forwarded gh token. \
