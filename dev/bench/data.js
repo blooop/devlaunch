@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789219668310,
+  "lastUpdate": 1789223574467,
   "repoUrl": "https://github.com/blooop/devlaunch",
   "entries": {
     "devlaunch launch stages": [
@@ -14432,6 +14432,93 @@ window.BENCHMARK_DATA = {
             "range": "± 0.645432",
             "unit": "s",
             "extra": "runs=5/5 wall=9.057183s v0.26.1, Linux-X64"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "blooop@gmail.com",
+            "name": "Austin Gregg-Smith",
+            "username": "blooop"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "88156dfff829ebefd654570e87ddb887e3273dd7",
+          "message": "Merge pull request #612 from blooop/fix/dl-guarantees-a-usable-ssh-auth-sock\n\nfix: give devpod an SSH_AUTH_SOCK it can resolve on a host with no agent",
+          "timestamp": "2026-09-12T15:29:55+01:00",
+          "tree_id": "283c38f2b05c5691cfc7d3a8bb4c887d341976eb",
+          "url": "https://github.com/blooop/devlaunch/commit/88156dfff829ebefd654570e87ddb887e3273dd7"
+        },
+        "date": 1789223573298,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "warm / attach",
+            "value": 1.344144,
+            "range": "± 0.046854",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / devpod-up",
+            "value": 0.333467,
+            "range": "± 0.005271",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / host-prep",
+            "value": 0.000048,
+            "range": "± 0.000006",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / total",
+            "value": 1.684509,
+            "range": "± 0.047841",
+            "unit": "s",
+            "extra": "runs=5/5 wall=1.68675s v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / attach",
+            "value": 1.262545,
+            "range": "± 0.109841",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / devpod-up",
+            "value": 3.447323,
+            "range": "± 0.617906",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / host-prep",
+            "value": 0.350551,
+            "range": "± 0.010484",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / tools",
+            "value": 3.815097,
+            "range": "± 0.107638",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / total",
+            "value": 8.927183,
+            "range": "± 0.650625",
+            "unit": "s",
+            "extra": "runs=5/5 wall=8.929338s v0.26.1, Linux-X64"
           }
         ]
       }
