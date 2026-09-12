@@ -68,6 +68,9 @@ pub devlaunch_core::api::LaunchNotice::LaunchLockUnavailable
 pub devlaunch_core::api::LaunchNotice::LaunchLockUnavailable::reason: alloc::string::String
 pub devlaunch_core::api::LaunchNotice::LaunchLockUnavailable::workspace_id: alloc::string::String
 pub devlaunch_core::api::LaunchNotice::Lifecycle(devlaunch_core::flows::lifecycle::LifecycleNotice)
+pub devlaunch_core::api::LaunchNotice::MountSourceEmpty
+pub devlaunch_core::api::LaunchNotice::MountSourceMissing
+pub devlaunch_core::api::LaunchNotice::MountSourceMissing::path: alloc::string::String
 pub devlaunch_core::api::LaunchNotice::NoDevpodSshConfig
 pub devlaunch_core::api::LaunchNotice::NoDevpodSshConfig::looked_in: std::path::PathBuf
 pub devlaunch_core::api::LaunchNotice::NoDevpodSshConfig::workspace_id: alloc::string::String
@@ -583,6 +586,9 @@ pub devlaunch_core::flows::launch::LaunchNotice::LaunchLockUnavailable
 pub devlaunch_core::flows::launch::LaunchNotice::LaunchLockUnavailable::reason: alloc::string::String
 pub devlaunch_core::flows::launch::LaunchNotice::LaunchLockUnavailable::workspace_id: alloc::string::String
 pub devlaunch_core::flows::launch::LaunchNotice::Lifecycle(devlaunch_core::flows::lifecycle::LifecycleNotice)
+pub devlaunch_core::flows::launch::LaunchNotice::MountSourceEmpty
+pub devlaunch_core::flows::launch::LaunchNotice::MountSourceMissing
+pub devlaunch_core::flows::launch::LaunchNotice::MountSourceMissing::path: alloc::string::String
 pub devlaunch_core::flows::launch::LaunchNotice::NoDevpodSshConfig
 pub devlaunch_core::flows::launch::LaunchNotice::NoDevpodSshConfig::looked_in: std::path::PathBuf
 pub devlaunch_core::flows::launch::LaunchNotice::NoDevpodSshConfig::workspace_id: alloc::string::String
