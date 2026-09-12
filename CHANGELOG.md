@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A new workspace no longer asks whether you trust it.** Claude Code keys "Do
+  you trust the files in this folder?" on an absolute path, in `projects{}` in
+  `.claude.json`, and dl mints one clone per workspace: every workspace is a path
+  it has never been told about, so every first launch asked again. Trusting
+  `/workspaces` once does not help, because the walk up the tree is floored at the
+  git root and a workspace *is* a clone, so the walk starts and ends in the
+  workspace directory. The setup pass now records the entry itself (#617).
+
+  Two writes, because the config file has two shapes. Where there is no
+  `.claude.json` at all the existing onboarding seed writes both keys at once,
+  which needs no JSON parser because there is nothing to merge with. Where one is
+  already there, which is what a container sharing the host's config directory
+  has, a new `trust` stage merges the single key with `python3` and leaves every
+  other byte alone. A textual insert has no sound spelling: after the opening
+  brace it loses to the original on last-key-wins, before the closing brace it
+  wins and takes every project the user had with it.
+
+  The path recorded is the pass's own working directory, resolved, never one
+  composed from the workspace id: `devpod ssh` given no `--workdir` lands in the
+  `workspaceFolder` from devcontainer.json, which is where a session starts, and a
+  repo that sets `workspaceFolder` puts that somewhere `/workspaces/<id>` does not
+  name. A path holding a quote or a backslash is left unrecorded rather than
+  escaped.
+
+  A container with no `python3` gets nothing and says nothing about it: the prompt
+  appears as it did before. Installing an interpreter on every cold launch to
+  spare one keypress is the wrong trade, and a stage that failed would warn on
+  every launch of an image that is working correctly.
+
+  This records a decision rather than only fixing a nuisance: **the container is
+  the trust boundary.** A fresh clone of somebody else's repo is trusted because
+  dl put it in a container, not because anyone read it, which is the boundary the
+  rest of dl already draws when a stranger's `postCreateCommand` runs unread on
+  every cold launch. `CLAUDE_CODE_SANDBOXED=1` would close the same prompt and is
+  blunter: it also opens project-scoped permission grants, so a repo's checked-in
+  `.claude/settings.json` could grant itself `allow` rules and
+  `additionalDirectories` merely because you opened it. Seeding the path keeps the
+  grant to workspaces dl created and leaves that gate shut.
+
 ## [0.45.0] - 2026-09-12
 
 ### Added

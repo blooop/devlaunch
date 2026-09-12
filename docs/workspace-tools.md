@@ -308,9 +308,10 @@ question. So "the token is not arriving" and "the token is arriving and the wiza
 is in front of it" look identical from the outside and are fixed by opposite
 things.
 
-The setup pass therefore seeds that one key, where there is no `.claude.json` at
-all. It records a fact and carries no secret. There is no environment variable that
-turns the gate off; the flag in that file is the only thing it reads.
+The setup pass therefore seeds that key, where there is no `.claude.json` at all.
+It records a fact and carries no secret. There is no environment variable that
+turns the gate off; the flag in that file is the only thing it reads. The same
+write carries a second key, for the second gate the next section is about.
 
 **Where that file is is not where the config directory is,** and getting this wrong
 is a fix that reports success and changes nothing. Claude Code resolves the two
@@ -328,12 +329,12 @@ inside it. The first version of this seeded the config directory either way and 
 measured doing nothing at all in a container with the variable unset.
 
 **Only where the file is absent,** which is the whole of the condition and is what
-keeps it from needing the ownership question the next section answers. Claude Code
-merges its own keys over a file it finds, so seeding ahead of its first run costs
-that run nothing.
+keeps it from needing the ownership question "The repo that arranged its own"
+answers below. Claude Code merges its own keys over a file it finds, so seeding
+ahead of its first run costs that run nothing.
 
-Nothing is ever overwritten, and that is the promise rather than the stronger one
-it would be nice to make. A config directory bind-mounted from your host that
+Nothing is ever overwritten by that write, and that is the promise rather than the
+stronger one it would be nice to make. A config directory bind-mounted from your host that
 already holds a `.claude.json` is left untouched, which covers every host that
 points `CLAUDE_CONFIG_DIR` at `~/.claude`. A host that does not, and so keeps its
 own config at `~/.claude.json`, has a `~/.claude/` with no `.claude.json` in it: a
@@ -353,6 +354,69 @@ Which repos this was actually visible in: the ones with no `.devcontainer/` of
 their own. They get devpod's fallback image and a virgin config directory, where a
 repo whose devcontainer mounts `~/.claude` was reading a `.claude.json` that had
 answered the question on the host months ago.
+
+### The trust prompt, which is keyed on a path
+
+The wizard is not the last gate. Claude Code also asks "Do you trust the files in
+this folder?", and it keys the answer on an absolute path, in `projects{}` in that
+same `.claude.json`:
+
+```text
+projects["/workspaces/devlaunch-nb99-hicj"].hasTrustDialogAccepted = true
+```
+
+`dl` mints one clone per workspace, so every workspace is a path Claude Code has
+never been told about and every first launch in one asks again. On a machine that
+opens a workspace per branch that reads as "every time".
+
+Trusting the parent once does not close it. The check walks up from the directory
+it was given, but the walk is floored at the git root, and a devlaunch workspace
+*is* a clone: its git root is the workspace directory itself, so the walk starts
+and ends in one place and never reaches `/workspaces`. Inheritance from a trusted
+parent only helps outside a repository. Measured against Claude Code 2.1.270.
+
+So the setup pass records the entry itself, and it takes two shapes because the
+config file does:
+
+- **No `.claude.json` at all.** The seed above writes both keys at once, which
+  needs no JSON parser because there is nothing to merge with.
+- **A `.claude.json` already there,** which is what a container sharing your
+  host's config directory has, devlaunch's own devcontainer included. A second
+  stage merges the one key with `python3` and leaves every other byte alone. A
+  textual insert has no sound spelling: after the opening brace it loses to the
+  original on last-key-wins, and before the closing brace it wins and takes every
+  project you had with it.
+
+A container with no `python3` gets nothing and says nothing about it. The prompt
+appears, exactly as it did before, because installing an interpreter on every cold
+launch to spare one keypress is the wrong trade, and a stage that failed would warn
+on every launch of an image that is working correctly.
+
+The path it records is the pass's own working directory, resolved, and never one
+composed from the workspace id. A `devpod ssh` given no `--workdir` lands in the
+`workspaceFolder` from devcontainer.json, so the pass is standing in the directory
+a session will start in, and a repo that sets `workspaceFolder` puts that somewhere
+`/workspaces/<id>` does not name. A path holding a quote or a backslash is left
+unrecorded rather than escaped: the prompt appears there, and the config file stays
+readable.
+
+**This says the container is the trust boundary,** which is a policy choice rather
+than only a convenience. A fresh clone of somebody else's repository is trusted
+because `dl` put it in a container, not because anyone read it. That is the same
+boundary the rest of `dl` already draws, since a stranger's `postCreateCommand`
+runs unread on every cold launch, but it is worth saying rather than leaving to be
+inferred from a stage name.
+
+`CLAUDE_CODE_SANDBOXED=1` turns the same prompt off and is a blunter instrument. It
+opens a second gate with it, project-scoped permission grants, so a repository's
+checked-in `.claude/settings.json` can grant itself `allow` rules and
+`additionalDirectories` merely because you opened it. `dl` opens arbitrary
+third-party repos, so that is a live consideration rather than a theoretical one.
+Seeding the path keeps the grant to workspaces `dl` created and leaves that gate
+shut.
+
+A session rooted at `$HOME` is a separate case no seeded entry reaches: home trust
+is per session and never reaches the config file.
 
 ### Who gets the Claude token
 
