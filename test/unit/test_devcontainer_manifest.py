@@ -1004,9 +1004,7 @@ def _real_ssh_agent(path: Path):
     agent = shutil.which("ssh-agent")
     if agent is None:
         pytest.skip("ssh-agent is not installed, so the live-agent arm cannot be staged")
-    started = subprocess.run(
-        [agent, "-a", str(path)], capture_output=True, text=True, check=False
-    )
+    started = subprocess.run([agent, "-a", str(path)], capture_output=True, text=True, check=False)
     assert started.returncode == 0, started.stderr
     try:
         yield
