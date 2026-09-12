@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.45.0] - 2026-09-12
+
+### Added
+
+- **When a devcontainer asks this machine for something it does not have, dl says
+  so.** Two failures stop a create before any container exists, and devpod's own
+  words for them arrive in the middle of a build log naming no remedy: `bind mount
+  source path does not exist /home/dev/.config/gh`, and docker's `invalid mount
+  config for type "bind": field Source must not be empty`. Both read as dl having
+  broken. What has happened is that the repo's `devcontainer.json` asked for a
+  host path that is not there, or for a `${localEnv:X}` this host does not set,
+  which becomes an empty source because devcontainer manifests have no
+  conditional mounts. dl now names the path where devpod named one, and says
+  where to look where docker named nothing (#614).
+
+  It creates nothing, and that is the decision rather than an omission. A repo's
+  devcontainer.json is the repo's to satisfy, and `$HOME` is not dl's to write
+  into on behalf of a third-party repo somebody happened to open. There is also
+  no way to tell from a manifest whether a mount source should be a file or a
+  directory, and guessing wrong is worse than failing. What was missing was never
+  the `mkdir`; it was the sentence saying which `mkdir`.
+
+  Worth knowing how ordinary this is. devlaunch's own devcontainer had exactly
+  this bug until 0.44.0, and a survey of other repos found the same shape solved
+  inconsistently or not at all: one inlines a `mkdir` in its manifest, one
+  delegates to a copied `init-host.sh` with a hole in it and is still broken on a
+  fresh machine, one has nothing to go wrong. Every repo answers this separately.
+  dl is the one place that sees all of them, which is why the message belongs
+  here even though the fix does not.
+
 ## [0.44.0] - 2026-09-12
 
 ### Fixed
