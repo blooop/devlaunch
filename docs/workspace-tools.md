@@ -400,6 +400,14 @@ a session will start in, and a repo that sets `workspaceFolder` puts that somewh
 unrecorded rather than escaped: the prompt appears there, and the config file stays
 readable.
 
+Two directories are never recorded, whatever the pass is standing in: `$HOME` and
+`/`. The pass runs under `bash -lc`, so a container's login profile is sourced
+before either stage is given a working directory, and a profile that `cd`s leaves
+it standing somewhere that is not the workspace. An entry on either of those claims
+far more than a workspace: the walk is floored at the git root, so outside a
+repository there is no floor, and trusting `$HOME` trusts every directory under it
+that is not itself a clone.
+
 **This says the container is the trust boundary,** which is a policy choice rather
 than only a convenience. A fresh clone of somebody else's repository is trusted
 because `dl` put it in a container, not because anyone read it. That is the same

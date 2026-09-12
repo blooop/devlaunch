@@ -1097,6 +1097,18 @@ fn workspace_path_lines() -> Vec<String> {
         "ws=$(pwd -P 2>/dev/null || true)".to_owned(),
         "case \"$ws\" in /*) ;; *) ws= ;; esac".to_owned(),
         "case \"$ws\" in *[!-a-zA-Z0-9_/.@+]*) ws= ;; esac".to_owned(),
+        // Neither of the two directories whose entry would claim far more than this
+        // stage is entitled to. The walk up the tree is floored at the git root, so
+        // *outside* a repository there is no floor: an entry on `$HOME` trusts every
+        // directory under it that is not itself a clone, and `/` trusts the machine.
+        //
+        // Reachable because the pass runs under `bash -lc` and a container's login
+        // profile is sourced before either stage is given a working directory. A
+        // profile that `cd`s leaves the pass standing somewhere that is not the
+        // workspace, and `$HOME` is where it lands.
+        "home=$(readlink -f \"${HOME:-}\" 2>/dev/null || true)".to_owned(),
+        "if [ \"$ws\" = / ] || { [ -n \"$home\" ] && [ \"$ws\" = \"$home\" ]; }; then ws=; fi"
+            .to_owned(),
     ]
 }
 
@@ -3346,6 +3358,8 @@ mkdir -p "$dir" || exit 1
 ws=$(pwd -P 2>/dev/null || true)
 case "$ws" in /*) ;; *) ws= ;; esac
 case "$ws" in *[!-a-zA-Z0-9_/.@+]*) ws= ;; esac
+home=$(readlink -f "${HOME:-}" 2>/dev/null || true)
+if [ "$ws" = / ] || { [ -n "$home" ] && [ "$ws" = "$home" ]; }; then ws=; fi
 set -C
 if [ -n "$ws" ]; then
   printf '"'"'{"hasCompletedOnboarding":true,"projects":{"%s":{"hasTrustDialogAccepted":true}}}\n'"'"' "$ws" > "$dir/.claude.json"
@@ -3374,6 +3388,8 @@ if ! command -v python3 >/dev/null 2>&1; then exit 0; fi
 ws=$(pwd -P 2>/dev/null || true)
 case "$ws" in /*) ;; *) ws= ;; esac
 case "$ws" in *[!-a-zA-Z0-9_/.@+]*) ws= ;; esac
+home=$(readlink -f "${HOME:-}" 2>/dev/null || true)
+if [ "$ws" = / ] || { [ -n "$home" ] && [ "$ws" = "$home" ]; }; then ws=; fi
 if [ -z "$ws" ]; then exit 0; fi
 prog='"'"'import json, os, sys, tempfile
 path, key = os.path.realpath(sys.argv[1]), sys.argv[2]
@@ -5847,6 +5863,73 @@ fi
             "",
             "an image without python3 is not a failure to report"
         );
+    }
+
+    #[test]
+    fn standing_in_the_home_directory_records_no_trust_at_all() {
+        // The pass runs under `bash -lc`, so the container's login profile is sourced
+        // before either stage sees a working directory -- and a profile that `cd`s
+        // leaves the pass standing somewhere that is not the workspace. `$HOME` is
+        // the one it lands in, and it is the one that must never be recorded: the
+        // walk up the tree is floored at the git root, so *outside* a repository
+        // there is no floor at all and an entry on `$HOME` trusts the whole tree
+        // under it. `/` is the same claim, larger.
+        //
+        // Not the same thing as a session rooted at `$HOME`, which Claude Code
+        // answers per session and never writes to this file. This would be a written
+        // one, and silent.
+        for stage in ["/", "home"] {
+            let world = TrustWorld::new(Some(r#"{"hasCompletedOnboarding":true}"#));
+            let standing = match stage {
+                "/" => PathBuf::from("/"),
+                _ => world.home.clone(),
+            };
+
+            let seeded = TrustWorld::new(None);
+            let onboarding = std::process::Command::new("bash")
+                .arg("-c")
+                .arg(onboarding_script())
+                .current_dir(&standing)
+                .env(
+                    "HOME",
+                    if stage == "/" {
+                        &seeded.home
+                    } else {
+                        &standing
+                    },
+                )
+                .env_remove("CLAUDE_CONFIG_DIR")
+                .output()
+                .expect("bash ran");
+            assert!(onboarding.status.success());
+            let home = if stage == "/" {
+                seeded.home.clone()
+            } else {
+                standing.clone()
+            };
+            assert_eq!(
+                std::fs::read_to_string(home.join(".claude.json"))
+                    .expect("a seeded config")
+                    .trim(),
+                ONBOARDED_JSON,
+                "the onboarding flag, and no `projects` entry: {stage}"
+            );
+
+            let merge = std::process::Command::new("bash")
+                .arg("-c")
+                .arg(trust_script())
+                .current_dir(&standing)
+                .env("HOME", &world.home)
+                .env_remove("CLAUDE_CONFIG_DIR")
+                .output()
+                .expect("bash ran");
+            assert!(merge.status.success());
+            assert_eq!(
+                world.read(),
+                r#"{"hasCompletedOnboarding":true}"#,
+                "and the merge records nothing either: {stage}"
+            );
+        }
     }
 
     #[test]
