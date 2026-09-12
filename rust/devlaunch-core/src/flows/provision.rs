@@ -999,8 +999,14 @@ const TRUST_FLAG_KEY: &str = "hasTrustDialogAccepted";
 /// repo's own claude-code feature does — therefore has no answer to find, gets one
 /// seeded, and the file appears on the host as well. That is the onboarding flag, it
 /// is what makes `claude` in that container start at all, and the host's own
-/// `claude` does not read it. The trust entry beside it names a `/workspaces/...`
-/// path, which is a directory the host has not got.
+/// `claude` does not read it. The trust entry beside it is usually inert on the
+/// host for a plainer reason — it names the directory the pass was standing in,
+/// which is a `/workspaces/...` path the host has not got — but "usually" is the
+/// honest word and not "never": a repo is free to set `workspaceFolder` inside the
+/// container's home, and then the entry the host gains names a path the host could
+/// in principle have too. [`workspace_path_lines`] refuses the two directories where
+/// that would actually claim something; the rest is an entry the host did not ask
+/// for and does not read.
 ///
 /// Seeding ahead of Claude Code's own first run costs that run nothing: it merges
 /// its keys over the file it finds and leaves this one standing.
@@ -5878,56 +5884,53 @@ fi
         // Not the same thing as a session rooted at `$HOME`, which Claude Code
         // answers per session and never writes to this file. This would be a written
         // one, and silent.
-        for stage in ["/", "home"] {
-            let world = TrustWorld::new(Some(r#"{"hasCompletedOnboarding":true}"#));
-            let standing = match stage {
-                "/" => PathBuf::from("/"),
-                _ => world.home.clone(),
+        //
+        // Both stages, and each in the state where it actually writes: the seed only
+        // reaches the path at all when there is no `.claude.json`, so a world holding
+        // one would exit at the guard in front of it and assert nothing.
+        for standing_in_home in [false, true] {
+            let seed = TrustWorld::new(None);
+            let standing = if standing_in_home {
+                seed.home.clone()
+            } else {
+                PathBuf::from("/")
             };
-
-            let seeded = TrustWorld::new(None);
             let onboarding = std::process::Command::new("bash")
                 .arg("-c")
                 .arg(onboarding_script())
                 .current_dir(&standing)
-                .env(
-                    "HOME",
-                    if stage == "/" {
-                        &seeded.home
-                    } else {
-                        &standing
-                    },
-                )
+                .env("HOME", &seed.home)
                 .env_remove("CLAUDE_CONFIG_DIR")
                 .output()
                 .expect("bash ran");
             assert!(onboarding.status.success());
-            let home = if stage == "/" {
-                seeded.home.clone()
-            } else {
-                standing.clone()
-            };
             assert_eq!(
-                std::fs::read_to_string(home.join(".claude.json"))
-                    .expect("a seeded config")
-                    .trim(),
+                seed.read().trim(),
                 ONBOARDED_JSON,
-                "the onboarding flag, and no `projects` entry: {stage}"
+                "the onboarding flag, and no `projects` entry, standing in {}",
+                standing.display()
             );
 
-            let merge = std::process::Command::new("bash")
+            let merge = TrustWorld::new(Some(r#"{"hasCompletedOnboarding":true}"#));
+            let standing = if standing_in_home {
+                merge.home.clone()
+            } else {
+                PathBuf::from("/")
+            };
+            let answered = std::process::Command::new("bash")
                 .arg("-c")
                 .arg(trust_script())
                 .current_dir(&standing)
-                .env("HOME", &world.home)
+                .env("HOME", &merge.home)
                 .env_remove("CLAUDE_CONFIG_DIR")
                 .output()
                 .expect("bash ran");
-            assert!(merge.status.success());
+            assert!(answered.status.success());
             assert_eq!(
-                world.read(),
+                merge.read(),
                 r#"{"hasCompletedOnboarding":true}"#,
-                "and the merge records nothing either: {stage}"
+                "and the merge records nothing either, standing in {}",
+                standing.display()
             );
         }
     }
