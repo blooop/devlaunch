@@ -108,6 +108,9 @@ const CACHEDIR_TAG: &str = "CACHEDIR.TAG";
 /// it. See the module header for why `manifest_path` is not the other one.
 const PIXI_RECORD: [&str; 2] = ["conda-meta", "pixi"];
 const PIXI_LOCK: &str = "pixi.lock";
+/// The manifests pixi accepts beside a lockfile. Their **presence** is read and
+/// never their contents: see [`project_above`].
+const PIXI_MANIFESTS: [&str; 2] = ["pixi.toml", "pyproject.toml"];
 
 /// Whether the program that created `directory` declared it regenerable.
 ///
@@ -141,10 +144,25 @@ pub enum Recipe {
 
 impl Recipe {
     /// What a plan line says re-derives it.
+    ///
+    /// **`--frozen`, because that is the flag every measurement behind this
+    /// module was taken with**, and because without it the one case this
+    /// module explicitly reclaims goes wrong: against a *stale* lock, plain
+    /// `pixi install` compares the lock's hash to the manifest and re-solves,
+    /// which is network, and the plan's own footer promises no network beyond
+    /// the shared package cache. `--frozen` is documented as installing the
+    /// environment as the lock file defines it and not updating the lock, which
+    /// is exactly the measured behaviour: 5507 of 5507 files in 0.52 s with
+    /// every proxy variable pointed at a dead port.
+    ///
+    /// A pointer somebody reads *after* the bytes are gone has to be a command
+    /// that runs, which is also why the recipe is not claimed at all unless a
+    /// manifest is beside the lock. See [`project_above`].
     pub fn describe(&self) -> String {
         match self {
             Self::PixiEnvironment { environment, lock } => format!(
-                "a pixi environment, re-derived by `pixi install -e {environment}` from {}",
+                "a pixi environment, re-derived by `pixi install --frozen -e {environment}` \
+                 from {}",
                 lock.as_str()
             ),
         }
@@ -165,6 +183,12 @@ pub enum NoRecipe {
     /// A reader recognised it and its lockfile is not there. Measured: with the
     /// lock absent, `pixi install --frozen --offline` restores 0 files.
     LockfileAbsent,
+    /// A lockfile is there and the manifest that goes with it is not, so the
+    /// command that would re-derive the directory cannot run at all. Measured:
+    /// `pixi install -e default` in a directory holding a `pixi.lock` and
+    /// nothing else exits with `could not find pixi.toml or pyproject.toml with
+    /// tool.pixi`. A recipe nobody can carry out is not a recipe.
+    ManifestAbsent,
     /// The nearest lockfile is one an *ancestor* owns, and the environment it
     /// would install is a different directory from this one.
     ///
@@ -199,6 +223,11 @@ impl NoRecipe {
             }
             Self::LockfileAbsent => {
                 "there is no lockfile inside this worktree to re-derive it from".to_owned()
+            }
+            Self::ManifestAbsent => {
+                "the lockfile inside this worktree has no pixi.toml or pyproject.toml beside \
+                 it, so nothing here can carry out the install that would put it back"
+                    .to_owned()
             }
             Self::LockfileRebuildsAnotherDirectory { environment } => format!(
                 "the nearest lockfile belongs to a directory above it, and its \
@@ -533,17 +562,16 @@ fn pixi_recipe(clone: &Path, tag: &Path, site: &Path) -> Result<Recipe, NoRecipe
     let Some(environment) = environment_name(&parsed) else {
         return Err(NoRecipe::RecordNamesNoEnvironment);
     };
-    let Some(lock) = lockfile_above(tag, site) else {
-        return Err(NoRecipe::LockfileAbsent);
-    };
+    let lock = project_above(tag, site)?;
     // **The lock has to be the one that rebuilds *this* directory.** The walk
-    // up takes the nearest `pixi.lock`, which for a vendored project with no
-    // lock of its own is an ancestor's — and `pixi install -e <name>` beside
-    // that lock writes its own `.pixi/envs/<name>`, never this path. The plan
-    // line would offer a command that rebuilds a different directory while this
-    // one goes, which is devlaunch#472's *an absent lock re-derives nothing, so
-    // it stands* defeated one directory in. A copied or renamed environment
-    // whose record still names the original reaches it the same way.
+    // up takes the nearest `pixi.lock` a project owns, which for a vendored
+    // project with no lock of its own is an ancestor's — and `pixi install -e
+    // <name>` beside that lock writes its own `.pixi/envs/<name>`, never this
+    // path. The plan line would offer a command that rebuilds a different
+    // directory while this one goes, which is devlaunch#472's *an absent lock
+    // re-derives nothing, so it stands* defeated one directory in. A copied or
+    // renamed environment whose record still names the original reaches it the
+    // same way.
     //
     // One comparison against values already in hand, and it reads no directory
     // name as a predicate: it asks where pixi would put this environment and
@@ -582,19 +610,50 @@ fn environment_name(record: &serde_json::Value) -> Option<String> {
     (!name.is_empty()).then(|| name.to_owned())
 }
 
-/// The nearest `pixi.lock` at or above `tag`, never above `site`.
-fn lockfile_above(tag: &Path, site: &Path) -> Option<PathBuf> {
+/// The nearest `pixi.lock` **with a manifest beside it**, at or above `tag` and
+/// never above `site`.
+///
+/// The manifest is required because the pointer the plan prints has to be a
+/// command that runs, and it is read for **existence only**: `pixi install`
+/// needs a `pixi.toml` or a `pyproject.toml` to know what project it is in, and
+/// a directory holding a lockfile alone fails with `could not find pixi.toml or
+/// pyproject.toml with tool.pixi`. Nothing is parsed out of it, which is what
+/// keeps the deliberate rule intact — derivability is decided by the lock, so a
+/// *stale* manifest still re-derives what is on disk.
+///
+/// A bare lockfile with no manifest does not stop the walk, because the real
+/// project may be a level up. It is remembered, so the refusal can say which of
+/// the two things is missing rather than reporting the wrong one. Finding a
+/// project above is not the same as that project re-deriving the tag, and this
+/// function does not decide that: [`pixi_recipe`] asks separately whether the
+/// lock it got back is the one that rebuilds *this* directory.
+fn project_above(tag: &Path, site: &Path) -> Result<PathBuf, NoRecipe> {
     let mut at = tag;
+    let mut saw_a_lock = false;
     loop {
         let candidate = at.join(PIXI_LOCK);
         if candidate.is_file() {
-            return Some(candidate);
+            saw_a_lock = true;
+            if PIXI_MANIFESTS
+                .iter()
+                .any(|manifest| at.join(manifest).is_file())
+            {
+                return Ok(candidate);
+            }
         }
         if at == site {
-            return None;
+            break;
         }
-        at = at.parent()?;
+        match at.parent() {
+            Some(parent) => at = parent,
+            None => break,
+        }
     }
+    Err(if saw_a_lock {
+        NoRecipe::ManifestAbsent
+    } else {
+        NoRecipe::LockfileAbsent
+    })
 }
 
 /// The environment names a lockfile's top-level `environments:` map holds.
@@ -650,18 +709,36 @@ pub struct WithheldDerivative {
 
 /// What the re-read said instead of *derivable*, or that it was never taken.
 ///
-/// Three arms rather than an `Option<Tagged>`: *the tag is gone*, *the tag is
-/// there and something changed about it*, and *the clone would not answer a
-/// second time* are different facts, and the whole discipline of this module is
-/// that they do not share a value.
+/// Four arms rather than an `Option<Tagged>`, and the extra two are not
+/// symmetry. *The tag is gone*, *the tag is there and something changed about
+/// it*, *the tag is there and this pass produced no verdict for it* and *the
+/// clone would not answer a second time* are four different facts about the
+/// world, and a report that says the first when it means the third tells
+/// somebody a file was deleted that is sitting on their disk.
+///
+/// [`NotWeighedHere`](Self::NotWeighedHere) arrived from review, and what it
+/// fixed was reading the **absence of a classification** as evidence about a
+/// file. Absence of a verdict is not a measurement of anything, which is the
+/// discipline [`Proof`](super::Proof) exists for one type over.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NotDerivableNow {
-    /// The re-read found no tag at that place at all — it was removed, or its
-    /// whole site was.
+    /// The tag is gone from that place.
+    ///
+    /// **Read again rather than inferred.** This arm is chosen only after
+    /// [`declared_regenerable`] has been put to the path a second time and said
+    /// no, because inferring it from an empty classification is how its own
+    /// sentence became false about a tag that was still there.
     NoTagThere,
     /// The re-read answered, and the answer was not derivable: a claim appeared,
     /// or the lockfile stopped naming it.
     Answered(Box<Tagged>),
+    /// The tag is still there and this pass weighed no derivative at that place,
+    /// because the subtree holding it is no longer one this pass weighs on its
+    /// own account: the site went collectable between the plan and the answer,
+    /// or an outer tag now covers it. Either way the bytes are not this unit's
+    /// any more, and whatever is now responsible for them will offer them next
+    /// run.
+    NotWeighedHere,
     /// The re-read was never taken, because git would not list the clone a
     /// second time — the same refusal that withholds every going worktree in it.
     /// The plan's line is then the only account of this directory anybody has,
@@ -690,7 +767,28 @@ impl NotDerivableNow {
                 // words. Total rather than reachable.
                 "it could not be shown to be derivable a second time".to_owned()
             }),
+            Self::NotWeighedHere => {
+                "its cache tag is still there and the worktree holding it is no longer one \
+                 this run weighs on its own, so these bytes are not this run's to reclaim"
+                    .to_owned()
+            }
         }
+    }
+}
+
+/// Why the acting pass will not reclaim a derivative the plan named, or nothing
+/// when the re-read hands it back derivable.
+///
+/// **The gate is put to the path a second time here, and that is deliberate.**
+/// It is the same function the plan and the walk call, not a second copy of the
+/// rule, and calling it is the only way this arm can say *the tag is gone* as a
+/// measurement rather than as an inference from an empty list.
+pub(super) fn refused_now(at: &Path, confirmed: Option<&Tagged>) -> Option<NotDerivableNow> {
+    match confirmed {
+        Some(tagged) if tagged.derivable().is_some() => None,
+        Some(tagged) => Some(NotDerivableNow::Answered(Box::new(tagged.clone()))),
+        None if declared_regenerable(at) => Some(NotDerivableNow::NotWeighedHere),
+        None => Some(NotDerivableNow::NoTagThere),
     }
 }
 

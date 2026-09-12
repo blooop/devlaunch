@@ -501,9 +501,18 @@ one unforceable refusal fires on a recorded path handed to `git worktree remove`
 an invocation `dl` never makes for a foreign worktree, and it says nothing at all
 about a directory removal.
 
-`dl` will never reclaim those, and says so with the owning repository named.
-`--force-worktrees` is what removes one, and the honest thing to do first is
-usually to take it back from the repository that owns it.
+`dl` will not reclaim the worktree itself, and says so with the owning
+repository named. `--force-worktrees` is what removes one, and the honest thing
+to do first is usually to take it back from the repository that owns it.
+
+**A regenerable subtree inside one is a separate question and gets a separate
+line.** Whose repository an installed environment belongs to was never part of
+the argument for reclaiming it: the tag and the lockfile beside it say the same
+thing either way, and being another repository's is an answer about git's
+account of the content rather than a claim by somebody over the directory. So
+the worktree stands and is named, and a tagged environment inside it can still
+be reclaimed on the same plan. The two lines are about two different units, which
+is why neither sentence claims the other's scope.
 
 ##### In a container
 
@@ -529,10 +538,10 @@ Agent git worktrees inside the clones above -- 6.0 GiB in worktrees that go, and
     - removing .../.claude/worktrees/agent-a8da (204.0 MiB), and dropping its 2 registration(s)
     - leaving .../.claude/worktrees/agent-b120: git is holding it locked (claude session) -- add --force-worktrees to remove it anyway
     - leaving .../.claude/worktrees/agent-c771: holds 3 uncommitted change(s) -- add --force-worktrees to remove it anyway
-    - reclaiming .../.claude/worktrees/agent-c771/.pixi/envs/default (2.3 GiB): a pixi environment, re-derived by `pixi install -e default` from .claude/worktrees/agent-c771/pixi.lock
+    - reclaiming .../.claude/worktrees/agent-c771/.pixi/envs/default (2.3 GiB): a pixi environment, re-derived by `pixi install --frozen -e default` from .claude/worktrees/agent-c771/pixi.lock
 
 Whether a worktree's commits are anywhere else is as of the last fetch into the repository cache; --prune does not fetch.
-A regenerable subtree is one whose creator wrote a CACHEDIR.TAG into it and whose lockfile is still beside it; putting one back is one command and no network beyond the shared package cache.
+A regenerable subtree is one whose creator wrote a CACHEDIR.TAG into it and whose lockfile and manifest are still beside it; putting one back is one command and no network beyond the shared package cache.
 
 Are you sure? [y/N]
 ```
@@ -597,15 +606,26 @@ never a second line for the same bytes.
 **A tag says regenerable; it does not say by what.** So a tagged directory is
 reclaimed only when a reader on this side answers with the thing that re-derives
 it, and one reader is implemented. It reads pixi's own `conda-meta/pixi` for the
-environment name, then walks up inside the worktree for a `pixi.lock` whose
-`environments:` map names it. Measured: a lock that names the environment
-restores 5507 of 5507 files in 0.52 s with no network, and does it with every
-proxy variable pointed at a dead port; a *stale* lock still restores what was
-there, because the environment on disk came from that lock; a lock that is
-**absent** restores nothing; and an environment the lock **no longer names** is
-reproducible from nothing on disk. The last two stand, are named with their
-bytes, and the second gets `pixi clean -e <name>` as the pointer. A tag no reader
-recognises stands the same way.
+environment name, then walks up inside the worktree for a `pixi.lock` with a
+manifest beside it whose `environments:` map names it. Measured: a lock that
+names the environment restores 5507 of 5507 files in 0.52 s with no network, and
+does it with every proxy variable pointed at a dead port; a *stale* lock still
+restores what was there, because the environment on disk came from that lock; a
+lock that is **absent** restores nothing; and an environment the lock **no longer
+names** is reproducible from nothing on disk. The last two stand, are named with
+their bytes, and the second gets `pixi clean -e <name>` as the pointer. A tag no
+reader recognises stands the same way.
+
+**The command the plan prints is the command every measurement was taken with**,
+`pixi install --frozen -e <name>`. Without `--frozen`, plain `pixi install`
+compares the lock's hash to the manifest and re-solves, which is network, and the
+stale-lock case above is exactly the one this reclaims. And a lockfile with no
+manifest beside it is not treated as a recipe at all, because the command would
+not run: `pixi install` in a directory holding a lockfile alone exits with `could
+not find pixi.toml or pyproject.toml with tool.pixi`. A pointer somebody reads
+*after* the bytes are gone has to be a command that works. The manifest's
+**presence** is the whole of what is read, so a stale manifest changes nothing:
+derivability is the lock's answer.
 
 **A claim reaches the subtree; an account of content does not.** A
 `git worktree lock`, or a repository lock `dl` could not take, is somebody
@@ -623,8 +643,16 @@ flag carry two consents. It rides `--prune`'s own question: the plan names each
 directory and its size before the `y/N`, and the acting pass reads the tag, the
 record and the lockfile again under the lock before anything goes.
 
-What goes is the tagged directory alone. Never `.pixi`, which carries no tag and
-holds `config.toml`, the one file `.pixi/.gitignore` un-ignores.
+What goes is the tagged directory alone. Never `.pixi`, which carries no tag of
+its own and holds `config.toml`, the one file `.pixi/.gitignore` un-ignores, and
+that is structural rather than lucky: nothing in `dl` spells `.pixi` to achieve
+it. A lockfile re-derives the one directory `pixi install -e <name>` beside it
+would write, which is `<the lockfile's own directory>/.pixi/envs/<name>`, so the
+reader claims a tagged directory only when that path and this one are the same.
+A tag planted at the top of a `.pixi` with an environment's record under it fails
+that comparison, because `.pixi` is not `.pixi/envs/default`, and stands. No
+directory name is matched anywhere: what is compared is where pixi would put the
+environment the record names against where this directory actually is.
 
 **One thing the tag does not promise, said out loud.** pixi does not defend its
 own declaration: a file planted by hand inside an environment survives
@@ -632,6 +660,19 @@ own declaration: a file planted by hand inside an environment survives
 directory is *for* and not a proof about what is in it now. The case rests on the
 disjoint sets above, and anything somebody put inside an environment goes with
 it.
+
+**That includes anything written into it after the plan was printed, and the
+asymmetry with the worktrees above is deliberate.** A worktree that gains a
+nested site between the plan and the `y` is withheld whole, because the thing it
+gained is a *unit of its own* that nobody consented to. A tagged environment that
+gains a file gains nothing of the kind: by the paragraph above, the plan already
+said out loud that everything under the tag was going. So the re-read asks again
+what makes the removal legitimate, which is the tag, the record, the lockfile and
+the claimant fold, and it does not ask whether the contents moved. Asking that
+would mean a full walk of a 12000 file environment on both sides of one question,
+to protect bytes the plan already named. The window is the one `--prune` holds
+the repository lock across, so the only writer that can reach it is one that is
+not a participant in that lock, which is a container.
 
 `dl --ls` does not cost these. Weighing one is a full walk of a worktree plus a
 walk of a 12000-file environment, and the listing is a read-only command people
