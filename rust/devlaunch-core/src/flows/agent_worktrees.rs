@@ -1036,8 +1036,8 @@ impl Unaccountable {
     pub fn describe(&self) -> &'static str {
         match self {
             Self::RegisteredElsewhere => {
-                "a git worktree this clone's listing does not account for; devlaunch will \
-                 never reclaim it, and only the repository that registered it can"
+                "a git worktree this clone's listing does not account for, so devlaunch will \
+                 not reclaim the worktree, and only the repository that registered it can"
             }
             Self::GitfileUnreadable => {
                 "its .git could not be read as a worktree gitfile, so it is not devlaunch's \

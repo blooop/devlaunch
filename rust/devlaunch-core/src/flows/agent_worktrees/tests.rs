@@ -2004,3 +2004,47 @@ fn a_tag_whose_own_directory_is_gone_says_so_on_its_own_evidence() {
     };
     assert_eq!(withheld.because, NotDerivableNow::NoTagThere);
 }
+
+#[test]
+fn content_written_into_a_tag_after_the_plan_goes_with_it_and_that_is_the_decision() {
+    // **A recorded decision, not a gap.** `plan.going` has `grew_past`, which
+    // withholds a whole worktree that gained a site the plan did not name. The
+    // derivative path has no analogue: the re-read establishes *derivable*, not
+    // *unchanged*, so anything written under the tag between the plan and the
+    // `y` goes without having been named.
+    //
+    // It is deliberate, and the reason is the one this module states about the
+    // tag everywhere else: the tag is a claim about what the directory is
+    // *for*, never a proof about what is in it now. pixi does not defend it
+    // either -- a planted file survives `pixi install --frozen` unmentioned --
+    // so a blast-radius check here would have to be a full walk of a 12000-file
+    // environment on both sides of one `y/N`, to protect bytes the plan already
+    // said out loud it was going to remove. What is asked again is the part
+    // that decides whether the removal is *legitimate*: the tag, the record,
+    // the lockfile and the claimant fold.
+    //
+    // `--prune` holds the repository lock across the re-read and the removal,
+    // so the window is microseconds wide and belongs to a writer that is not a
+    // participant in that lock -- a container. `docs/cleanup.md` says this in
+    // the same words.
+    let world = Clone::new();
+    let worktree = world.worktree("agent-one");
+    let env = installed_env(&worktree, "default");
+    commit_the_project(&world, &worktree, "agent-one");
+    std::fs::write(worktree.join("NOTES.md"), "unsaved\n").expect("the human's own file");
+    world.containerise();
+
+    let plan = world.plan();
+
+    // Somebody writes into the environment while the question is on screen.
+    std::fs::write(env.join("written-after-the-plan.txt"), "arrived late\n")
+        .expect("a late arrival");
+    let (report, _) = world.act(&plan);
+
+    assert_eq!(report.reclaimed.len(), 1, "the unit is still the unit");
+    assert!(
+        report.withheld_derivatives.is_empty(),
+        "and nothing withheld it: {report:?}"
+    );
+    assert!(!env.exists(), "everything under the tag went, named or not");
+}

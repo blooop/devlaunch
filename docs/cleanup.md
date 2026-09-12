@@ -501,9 +501,18 @@ one unforceable refusal fires on a recorded path handed to `git worktree remove`
 an invocation `dl` never makes for a foreign worktree, and it says nothing at all
 about a directory removal.
 
-`dl` will never reclaim those, and says so with the owning repository named.
-`--force-worktrees` is what removes one, and the honest thing to do first is
-usually to take it back from the repository that owns it.
+`dl` will not reclaim the worktree itself, and says so with the owning
+repository named. `--force-worktrees` is what removes one, and the honest thing
+to do first is usually to take it back from the repository that owns it.
+
+**A regenerable subtree inside one is a separate question and gets a separate
+line.** Whose repository an installed environment belongs to was never part of
+the argument for reclaiming it: the tag and the lockfile beside it say the same
+thing either way, and being another repository's is an answer about git's
+account of the content rather than a claim by somebody over the directory. So
+the worktree stands and is named, and a tagged environment inside it can still
+be reclaimed on the same plan. The two lines are about two different units, which
+is why neither sentence claims the other's scope.
 
 ##### In a container
 
@@ -651,6 +660,19 @@ own declaration: a file planted by hand inside an environment survives
 directory is *for* and not a proof about what is in it now. The case rests on the
 disjoint sets above, and anything somebody put inside an environment goes with
 it.
+
+**That includes anything written into it after the plan was printed, and the
+asymmetry with the worktrees above is deliberate.** A worktree that gains a
+nested site between the plan and the `y` is withheld whole, because the thing it
+gained is a *unit of its own* that nobody consented to. A tagged environment that
+gains a file gains nothing of the kind: by the paragraph above, the plan already
+said out loud that everything under the tag was going. So the re-read asks again
+what makes the removal legitimate, which is the tag, the record, the lockfile and
+the claimant fold, and it does not ask whether the contents moved. Asking that
+would mean a full walk of a 12000 file environment on both sides of one question,
+to protect bytes the plan already named. The window is the one `--prune` holds
+the repository lock across, so the only writer that can reach it is one that is
+not a participant in that lock, which is a container.
 
 `dl --ls` does not cost these. Weighing one is a full walk of a worktree plus a
 walk of a 12000-file environment, and the listing is a read-only command people
