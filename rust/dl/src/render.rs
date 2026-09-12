@@ -2986,6 +2986,25 @@ pub(crate) fn launch_notice(notice: &LaunchNotice) -> Option<String> {
              that."
         ),
 
+        // --- a devcontainer's demands on this machine (warning; no Python line)
+        //
+        // Both name the repo rather than dl as the thing making the demand, which
+        // is the fact the reader is missing: devpod's own line reads as dl having
+        // broken, and what has actually happened is that a manifest asked this
+        // machine for something it does not have. Both say what to do, and neither
+        // offers to do it: creating paths in someone's home directory because a
+        // third-party repo listed them is not dl's to decide.
+        LaunchNotice::MountSourceMissing { path } => format!(
+            "This repo's devcontainer.json mounts {path} from your machine, and it is not \
+             there, so the container cannot be created. Create it and launch again. dl does \
+             not create host paths a repo asks for."
+        ),
+        LaunchNotice::MountSourceEmpty => "This repo's devcontainer.json mounts a host path \
+             named by an environment variable that is not set here, so the mount had no \
+             source and the container cannot be created. Look for `${localEnv:` in its \
+             .devcontainer/devcontainer.json and set the variable it names."
+            .to_owned(),
+
         // --- the dotfiles (info; devlaunch#560, no Python line)
         //
         // Both arms name where the setting comes from, because that is the half
@@ -5436,6 +5455,33 @@ mod tests {
             ),
             "{dead}"
         );
+    }
+
+    /// Both lines put the repo, not dl, at the front: devpod's own refusal reads
+    /// as dl having broken, where what happened is a manifest asking this machine
+    /// for something it does not have. And both stop at saying so.
+    #[test]
+    fn a_manifests_demand_on_this_machine_names_the_repo_and_offers_nothing() {
+        let missing = launch_notice(&LaunchNotice::MountSourceMissing {
+            path: "/home/dev/.config/gh".to_owned(),
+        })
+        .expect("a line");
+        assert!(
+            missing.starts_with("This repo's devcontainer.json mounts"),
+            "{missing}"
+        );
+        assert!(missing.contains("/home/dev/.config/gh"), "{missing}");
+        assert!(
+            missing.contains("dl does not create host paths a repo asks for"),
+            "{missing}"
+        );
+
+        let empty = launch_notice(&LaunchNotice::MountSourceEmpty).expect("a line");
+        assert!(
+            empty.starts_with("This repo's devcontainer.json mounts"),
+            "{empty}"
+        );
+        assert!(empty.contains("${localEnv:"), "{empty}");
     }
 
     #[test]
