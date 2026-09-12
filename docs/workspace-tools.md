@@ -1593,7 +1593,7 @@ sets nothing and reports nothing: the read fails silently and `dl` asks devpod,
 which is the only answer that ever counted.
 
 ```bash
-devpod context set-options DOTFILES_URL=https://github.com/you/dotfiles
+devpod context set-options -o DOTFILES_URL=https://github.com/you/dotfiles
 devpod context options --output json      # the one question dl asks
 ```
 
@@ -1602,7 +1602,7 @@ line cannot disagree:
 
 ```
 dotfiles: https://github.com/you/dotfiles (devpod context options), passed to devpod up; devpod installs them when it creates the container.
-dotfiles: none set in devpod context options, so this up asked for none. 'devpod context set-options DOTFILES_URL=<repo>' is the only place dl reads it from.
+dotfiles: none set in devpod context options, so this up asked for none. 'devpod context set-options -o DOTFILES_URL=<repo>' is the only place dl reads it from.
 ```
 
 An attach that runs no `up` prints neither, because it asked devpod for nothing

@@ -1131,6 +1131,45 @@ def test_the_no_agent_line_in_the_docs_is_the_line_dl_prints():
     )
 
 
+def test_the_dotfiles_line_in_the_docs_is_the_line_dl_prints():
+    """The same diff as above, for `DotfilesNotConfigured`.
+
+    This one had already drifted. The notice used to name `devpod context
+    set-options DOTFILES_URL=<repo>`, which devpod parses as a stray argument and
+    ignores, so the one line whose job is to say where the setting comes from
+    handed over a command that left it unset. Fixing `render.rs` left the docs page
+    still publishing the broken form in two places: the quoted notice, and the
+    `bash` block above it that a reader is likelier to copy from.
+
+    So both are pinned here. The quote is diffed against `render.rs` the way the
+    no-agent line is, and the runnable example is held to the same `-o` the notice
+    tells people to type. A page that says one thing in prose and another in the
+    block you paste is worse than either alone.
+    """
+    docs = (REPO_ROOT / "docs" / "workspace-tools.md").read_text()
+    render = (REPO_ROOT / "rust" / "dl" / "src" / "render.rs").read_text()
+
+    quoted = re.search(r"^(dotfiles: none set in devpod context options.*)$", docs, re.M)
+    assert quoted, "docs/workspace-tools.md no longer quotes the dotfiles notice"
+    words = " ".join(quoted.group(1).split())
+
+    source = " ".join(render.replace("\\\n", "").split())
+    assert words in source, (
+        "the dotfiles line in docs/workspace-tools.md is not the line render.rs "
+        f"prints any more:\n  docs: {words}"
+    )
+
+    # `set-options` takes its KEY=VALUE through `-o`/`--option` and through nothing
+    # else (devpod v0.26.1); the bare form exits 0 having written no option.
+    commands = re.findall(r"^devpod context set-options .*$", docs, re.M)
+    assert commands, "docs/workspace-tools.md no longer shows how to set the option"
+    for command in commands:
+        assert re.match(r"^devpod context set-options (-o|--option) \S+=", command), (
+            f"docs/workspace-tools.md tells the reader to run {command!r}, which devpod "
+            "parses as a stray argument and ignores"
+        )
+
+
 def test_the_dockerfile_copies_nothing_out_of_the_build_context():
     """The premise every exclusion below rests on.
 
