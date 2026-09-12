@@ -126,33 +126,40 @@
         // known_hosts is read-only because nothing in here has any business
         // adding hosts to the developer's list.
         //
-        // The source is $SSH_AUTH_SOCK, because the agent's path is not
-        // something this file can know. It used to be
-        // ${localEnv:HOME}/.ssh/agent.sock, described here as "an assumption
-        // -- stock OpenSSH puts its agent socket in /tmp -- but a
-        // pre-existing one, since containerEnv already hardcodes the same
-        // path". The assumption is false for every agent that is not a
-        // hand-rolled symlink: gpg-agent (a YubiKey OpenPGP setup) answers on
-        // $XDG_RUNTIME_DIR/gnupg/S.gpg-agent.ssh, ssh-agent(1) on a
-        // /tmp/ssh-XXXX mktemp path, and 1Password and gnome-keyring on paths
-        // of their own. None of them is under ~/.ssh, so `devpod up` failed
-        // before the container existed with "bind mount source path does not
-        // exist", which reads as a broken workspace rather than a
-        // configuration this repository declared.
+        // The source is a path the host-side hook maintains, and that is the
+        // third design here, because the first two each refused the create
+        // outright on some host. `${localEnv:HOME}/.ssh/agent.sock` as "an
+        // assumption ... but a pre-existing one" was false for every agent that
+        // is not a hand-rolled symlink -- gpg-agent answers under
+        // $XDG_RUNTIME_DIR, ssh-agent(1) under /tmp -- so a gpg-agent host got
+        // `bind mount source path does not exist`. `${localEnv:SSH_AUTH_SOCK}`
+        // fixed that host and broke the opposite one: devcontainer.json has no
+        // conditional mounts, an unset variable expands to nothing, and docker
+        // refuses the whole run with `field Source must not be empty`. That is
+        // a fresh desktop before any dotfiles have run, which is the first
+        // machine every new user has, opening the repo the README tells them
+        // to open first.
         //
-        // The reverse argument, which is what the old comment was reaching
-        // for: containerEnv hardcodes the *target*, and that stays hardcoded.
-        // Inside the container SSH_AUTH_SOCK is /home/vscode/.ssh/agent.sock
-        // whatever the host called it, so the source is the only half that has
-        // to vary and the container end of the contract is unchanged.
+        // Both designs made "no agent" mean "no container". What the mount
+        // needs is only that its source exist; whether an agent answers there
+        // is a separate question with a separate answer (dl says so on the
+        // terminal). So the source is the same stable path as before, and
+        // `claude-code/init-host.sh` -- the initializeCommand, run on the host
+        // before every create -- is what makes it true rather than assumed:
+        // a symlink to $SSH_AUTH_SOCK when that names a live socket, untouched
+        // when something has bound a real socket here already, an empty
+        // placeholder when the host has no agent at all. The hook's own comment
+        // has the three arms and what each protects.
         //
-        // Costs, both real. An unset SSH_AUTH_SOCK expands to nothing and the
-        // mount is malformed rather than skipped, since devcontainer.json has
-        // no conditional mounts -- a host with no agent at all was already
-        // broken here and is now broken differently. And this is a change
-        // under .devcontainer/, so the prebuild tag moves and every launch
-        // builds locally until devcontainer-prebuild.yml republishes on main.
-        "source=${localEnv:SSH_AUTH_SOCK},target=/home/vscode/.ssh/agent.sock,type=bind",
+        // containerEnv hardcodes the *target*, and that stays hardcoded. Inside
+        // the container SSH_AUTH_SOCK is /home/vscode/.ssh/agent.sock whatever
+        // the host called it, so the container end of the contract is
+        // unchanged by any of this.
+        //
+        // Still fixed at create: docker resolves the source on the host when it
+        // makes the container, so an agent that appears afterwards is not seen
+        // until `recreate`. The direct binding had the same limit.
+        "source=${localEnv:HOME}/.ssh/agent.sock,target=/home/vscode/.ssh/agent.sock,type=bind",
         "source=${localEnv:HOME}/.ssh/known_hosts,target=/home/vscode/.ssh/known_hosts,type=bind,readonly",
         "source=${localEnv:HOME}/.config/gh,target=/home/vscode/.config/gh,type=bind"
     ],

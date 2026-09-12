@@ -37,7 +37,7 @@
 # The limit that is left, and it is not one type. A type `api` never re-exports
 # but a promised signature names is reachable from outside and is classified as
 # binary surface, so a break in it diffs public-api.rest.txt alone. Measured on
-# the checked-in files rather than guessed at: 39 such types own close to six
+# the checked-in files rather than guessed at: 40 such types own close to six
 # hundred rows over there. `--print-residual` lists them, needs no toolchain,
 # and prints the exact row count; the type count above is the figure
 # `test/test_public_api_snapshots_doc.py` diffs against it, because that is the
@@ -55,7 +55,7 @@
 #
 # What that means for reading a rest-file diff: it is routine for a row whose
 # subject is nothing a promised signature names, and a contract change for a row
-# whose subject is one of the 38. `--print-residual` is how you tell.
+# whose subject is one of the 40. `--print-residual` is how you tell.
 #
 # Whether the tool does this already, since the obvious first question is why
 # any of it is hand-rolled (#352 asked it explicitly). It does not, in the pin

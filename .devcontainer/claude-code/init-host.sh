@@ -156,6 +156,24 @@ mkdir -p "$HOME/.claude" "$HOME/.claude/agents" "$HOME/.claude/commands" \
     "$HOME/.claude/hooks" "$HOME/.claude/skills" "$HOME/.claude/wf-skills" \
     "$HOME/.claude/shared-skills" "$HOME/.agents/skills"
 
+# The consuming manifest mounts the developer's `gh` configuration, and a host
+# that has never run `gh auth login` has no such directory -- which on a fresh
+# machine is every host, since nothing creates it at install time. Docker
+# creates nothing for a bind source, so the create is refused outright with
+# `bind mount source path does not exist` and the workspace does not start.
+#
+# This is the same failure as `known_hosts` below and was missed for the same
+# reason the guard over it was: the test that reads the mount list filtered it
+# to `~/.ssh/`, so a mounted host path anywhere else was never asked about.
+# `test_initialize_command_creates_every_host_path_this_manifest_mounts` is that
+# guard widened to the whole list, which is what makes this line hold.
+#
+# A directory and not a file, so `mkdir -p` is the whole of it: an empty
+# `~/.config/gh` is a `gh` with no login, which is exactly what a host that has
+# never authenticated has, and `dl` forwards the host's token as `GH_TOKEN`
+# independently of this mount anyway.
+mkdir -p "$HOME/.config/gh"
+
 # known_hosts is mounted as a *file*, and Docker creates nothing for a file
 # source: if it is missing the container does not start degraded, it does not
 # start at all ("bind source path does not exist"). A developer who has only
@@ -174,4 +192,70 @@ mkdir -p "$HOME/.claude" "$HOME/.claude/agents" "$HOME/.claude/commands" \
 #   fatal run agent command failed: exit status 1
 #   devcontainer up: exit status 1
 mkdir -m 700 -p "$HOME/.ssh"
+
+# The agent socket mount, and the one host path here that nothing can simply
+# create: an agent is a running process, not a file. What the mount needs is
+# narrower than an agent, though, and conflating the two is what broke a fresh
+# machine twice over. The consuming manifest bound `${localEnv:SSH_AUTH_SOCK}`
+# directly, so a host with no agent exported -- a fresh desktop before any
+# dotfiles have run, which is every host once -- expanded it to nothing and
+# docker refused the whole run with `field Source must not be empty`. Before
+# that it bound `$HOME/.ssh/agent.sock` and called it an assumption, and a
+# gpg-agent host had no such file. Both designs made "no agent" mean "no
+# container", and this is what stops the create from ever being refused over
+# the agent socket again: the manifest binds this one stable path, and this
+# hook keeps it pointing at whatever agent the host has, or at a placeholder
+# when it has none.
+#
+# Three arms, and the order is the safety of it:
+#
+#   1. A real socket here -- not a symlink -- was put here by something that is
+#      not this hook: a local agent bound to this path (`ssh-agent -a`, which is
+#      what a dotfiles `_ssh_agent_setup` does), or, run *inside* a container
+#      this repo built, the mount itself. Never touched. Unlinking a live
+#      agent's socket orphans the agent; writing over the mount is EROFS or
+#      worse. A socket that has gone dead is left too: it is not ours to judge,
+#      and a container bound to a dead socket starts, which is the promise.
+#   2. $SSH_AUTH_SOCK names a live socket somewhere else -- gpg-agent under
+#      $XDG_RUNTIME_DIR, ssh-agent(1) under /tmp, a forwarded `ssh -A` --
+#      so the path becomes a symlink to it. Docker resolves a bind source on
+#      the host at create, so the container binds the agent itself. Replaces a
+#      placeholder or an earlier symlink to a different agent and nothing
+#      else, by arm 1; a link already pointing at this agent is left as it is.
+#   3. Nothing answers anywhere. An empty regular file, so the source exists
+#      and the container starts. Inside it, SSH_AUTH_SOCK names a file no agent
+#      listens on, ssh finds no agent, and the workspace has no SSH key -- the
+#      same workspace `dl` opens today when the host has no agent, minus the
+#      refusal. dl says so on the terminal; GitHub over HTTPS still has the
+#      forwarded token. `rm -f` first, because `-e` is false for a dangling
+#      symlink and a redirect through one would create the *target*.
+#
+# What this does not do is start an agent. That is the session's job, or the
+# dotfiles', and a container launcher's pre-create hook is the wrong owner for
+# a daemon that outlives it and holds the user's keys: nothing would stop it
+# but a reboot, and `ps` would show it with no one remembering why. The hook
+# guarantees the mount; the agent is whoever's it was.
+#
+# Fixed at create, as the direct binding was too: an agent that appears after
+# the container exists is not seen until `recreate`. Following it live would
+# take a directory mount with the socket bound inside it, which is a design of
+# its own and not this line.
+#
+# `test_the_agent_socket_is_bound_from_the_path_the_host_hook_maintains` diffs
+# the manifest's source against this path, and
+# `test_the_host_hook_gives_the_agent_socket_mount_a_source_on_every_host`
+# holds the three arms.
+agent_sock="$HOME/.ssh/agent.sock"
+if [ -S "$agent_sock" ] && [ ! -L "$agent_sock" ]; then
+    :
+elif [ -n "${SSH_AUTH_SOCK:-}" ] && [ -S "$SSH_AUTH_SOCK" ] && [ "$SSH_AUTH_SOCK" != "$agent_sock" ]; then
+    if [ "$(readlink "$agent_sock" 2>/dev/null)" != "$SSH_AUTH_SOCK" ]; then
+        rm -f "$agent_sock"
+        ln -s "$SSH_AUTH_SOCK" "$agent_sock"
+    fi
+elif [ ! -e "$agent_sock" ]; then
+    rm -f "$agent_sock"
+    : > "$agent_sock"
+fi
+
 [ -e "$HOME/.ssh/known_hosts" ] || touch "$HOME/.ssh/known_hosts"

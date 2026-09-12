@@ -152,6 +152,27 @@ def ssh_file_mounts(mounts: list, agent_socket: str) -> list:
     ]
 
 
+def host_path_mounts(mounts: list, agent_socket: str) -> list:
+    """Every mount whose source is a path under the developer's home.
+
+    The whole list and not one directory's worth of it, which is the repair for
+    a guard that read `~/.ssh/` alone: `~/.config/gh` was mounted for a year
+    with nothing creating it, and the first host that had never run
+    `gh auth login` -- a fresh machine, so every host eventually -- could not
+    start a container at all.
+
+    The agent socket is *included*, unlike in `ssh_file_mounts`, and the
+    difference is the point of its third design: nothing can create an agent,
+    but the hook can always give the mount a source -- a symlink to the agent
+    the host has, or a placeholder when it has none -- and this is the test
+    that holds it to that on a host with neither. `agent_socket` is accepted so
+    the two helpers read alike at their call sites and so a reader who expects
+    the exclusion finds where it went rather than wondering.
+    """
+    del agent_socket
+    return [mount for mount in mounts if mount.get("source", "").startswith(f"{LOCAL_HOME}/")]
+
+
 def run_initialize_command(devcontainer: dict, home: Path) -> subprocess.CompletedProcess:
     """Run the manifest's own `initializeCommand` against a scratch HOME.
 
@@ -350,24 +371,30 @@ def test_the_ssh_files_the_container_reads_are_mounted_read_only(devcontainer, m
         assert "readonly" in mount, f"{mount['source']} is mounted writable"
 
 
-def test_initialize_command_creates_the_ssh_files_this_manifest_mounts(
+def test_initialize_command_creates_every_host_path_this_manifest_mounts(
     devcontainer, mounts, tmp_path
 ):
-    """Every mounted ssh file exists before the container is asked to start.
+    """Every mounted host path exists before the container is asked to start.
 
-    Docker creates nothing for a *file* bind source: a missing one aborts the
-    start outright with `bind source path does not exist`, so a `known_hosts`
+    Docker creates nothing for a bind source: a missing one aborts the start
+    outright with `bind mount source path does not exist`, so a `known_hosts`
     the host happens not to have is not a degraded container but no container.
     The `initializeCommand` runs on the host first and is where that is fixed.
 
-    Stated as a rule over the mount list rather than as one filename, so adding
-    a fourth ssh file cannot quietly reintroduce the abort.
+    Stated over the *whole* mount list, which is the point and is what this test
+    did not used to do. It read `~/.ssh/` only, so it proved nothing about
+    `~/.config/gh` -- mounted just below the files it was checking, created by
+    nobody, and fatal on any host that had never run `gh auth login`. A fresh
+    machine could not open this repo's own devcontainer, and the guard written
+    to prevent exactly that passed.
     """
     agent_socket = devcontainer["containerEnv"]["SSH_AUTH_SOCK"]
     result = run_initialize_command(devcontainer, tmp_path)
     assert result.returncode == 0, result.stderr
 
-    for mount in ssh_file_mounts(mounts, agent_socket):
+    checked = host_path_mounts(mounts, agent_socket)
+    assert checked, "no host paths are mounted, so this asserts nothing"
+    for mount in checked:
         source = mount["source"]
         created = tmp_path / source[len(f"{LOCAL_HOME}/") :]
         assert created.exists(), f"{source} is mounted but the initializeCommand does not create it"
@@ -901,26 +928,33 @@ def test_the_installer_may_not_create_the_file_that_marks_claude_onboarded(devco
         )
 
 
-def test_the_agent_socket_is_bound_from_the_variable_that_names_it(devcontainer, mounts):
-    """The agent socket mount reads $SSH_AUTH_SOCK, not a guess at where it is.
+def test_the_agent_socket_is_bound_from_the_path_the_host_hook_maintains(devcontainer, mounts):
+    """The agent socket mount reads a path `init-host.sh` keeps valid, not the host's variable.
 
-    This was ``${localEnv:HOME}/.ssh/agent.sock``, and the manifest said so with
-    a comment calling it "an assumption ... but a pre-existing one". It is not a
-    path any agent picks by itself: gpg-agent (a YubiKey OpenPGP setup) listens
-    on ``$XDG_RUNTIME_DIR/gnupg/S.gpg-agent.ssh`` and ``ssh-agent(1)`` on a
-    ``/tmp/ssh-XXXX`` mktemp path, so on such a host ``devpod up`` refused the
-    create outright with ``bind mount source path does not exist`` -- before the
-    container existed, which reads as a broken tool rather than as this file
-    naming a path the host never had.
+    Third design, and the test that pinned the second one is what this replaces.
+    That test held the source to ``${localEnv:SSH_AUTH_SOCK}`` on the argument
+    that ``init-host.sh`` "cannot paper over it the way it does for
+    ``known_hosts``: there is no touching a socket into being an agent". True of
+    an agent, and beside the point for a mount: docker needs the *source to
+    exist*, and whether an agent answers there is a separate question. Bound
+    from the variable, a host with none exported -- a fresh desktop before any
+    dotfiles run, the first machine every new user has -- expanded it to
+    nothing, and docker refused the whole create with ``field Source must not
+    be empty``. The first design, this same path as a bare assumption, refused
+    a gpg-agent host with ``bind mount source path does not exist``. Both made
+    "no agent" mean "no container".
 
-    ``init-host.sh`` cannot paper over it the way it does for ``known_hosts``:
-    that one is ``touch``ed into existence, and there is no touching a socket
-    into being an agent.
+    So the source is the stable path again, and the hook is what makes it true:
+    a symlink to ``$SSH_AUTH_SOCK`` when that is a live socket, a placeholder
+    when nothing is. ``test_the_host_hook_gives_the_agent_socket_mount_a_source_on_every_host``
+    holds the hook to that; this holds the manifest to binding the path the
+    hook maintains and nothing else.
     """
     agent_socket = devcontainer["containerEnv"]["SSH_AUTH_SOCK"]
     sources = {mount.get("source") for mount in mounts if mount.get("target") == agent_socket}
-    assert sources == {"${localEnv:SSH_AUTH_SOCK}"}, (
-        f"the agent socket must be bound from ${{localEnv:SSH_AUTH_SOCK}}; found {sources}"
+    assert sources == {f"{LOCAL_HOME}/.ssh/agent.sock"}, (
+        f"the agent socket must be bound from {LOCAL_HOME}/.ssh/agent.sock, the path "
+        f"init-host.sh maintains; found {sources}"
     )
 
 
@@ -935,12 +969,90 @@ def test_the_host_hook_heals_the_socket_it_is_mounted_from(devcontainer, mounts)
     hook = (REPO_ROOT / ".devcontainer" / "claude-code" / "init-host.sh").read_text()
     agent_socket = devcontainer["containerEnv"]["SSH_AUTH_SOCK"]
     source = next(mount["source"] for mount in mounts if mount.get("target") == agent_socket)
-    # "${localEnv:SSH_AUTH_SOCK}" in the manifest is "$SSH_AUTH_SOCK" in the shell.
-    variable = source.removeprefix("${localEnv:").removesuffix("}")
-    assert f"${{{variable}:-" in hook or f"${variable}" in hook, (
-        f"init-host.sh does not heal a stale mount at ${variable}, which is what "
+    # "${localEnv:HOME}/x" in the manifest is "$HOME/x" in the shell.
+    shell_path = source.replace(LOCAL_HOME, "$HOME")
+    assert f'"{shell_path}"' in hook, (
+        f"init-host.sh does not heal a stale mount at {shell_path}, which is what "
         "the manifest binds the agent socket from"
     )
+
+
+def _live_unix_socket(path: Path):
+    """A real bound socket at `path`, held open for the caller's `with` block."""
+    import socket
+
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.bind(str(path))
+    return sock
+
+
+def test_the_host_hook_gives_the_agent_socket_mount_a_source_on_every_host(
+    devcontainer, mounts, tmp_path
+):
+    """The three hosts the hook meets, and the source each one ends up with.
+
+    Run against a scratch HOME so the developer's real ``~/.ssh`` is not the
+    fixture, with ``SSH_AUTH_SOCK`` set explicitly for each case rather than
+    inherited: what the test runner's own session exports is the one thing this
+    must not depend on, since a host with no agent is the case under test.
+
+    1. No agent anywhere: a placeholder regular file, so the create is not
+       refused. This is the fresh-machine case and the reason the test exists.
+    2. ``SSH_AUTH_SOCK`` names a live socket elsewhere (gpg-agent, ssh-agent(1),
+       ``ssh -A``): the path becomes a symlink to it, replacing the placeholder,
+       so docker binds the agent itself.
+    3. A real socket already at the path that is not a symlink -- an agent bound
+       there by ``ssh-agent -a``, or the mount seen from inside a container --
+       is never touched, even when the variable names a different agent.
+       Unlinking it would orphan the agent; writing over the mount is EROFS.
+    """
+    agent_socket = devcontainer["containerEnv"]["SSH_AUTH_SOCK"]
+    source = next(mount["source"] for mount in mounts if mount.get("target") == agent_socket)
+    maintained = tmp_path / source[len(f"{LOCAL_HOME}/") :]
+    env = dict(os.environ, HOME=str(tmp_path))
+    env.pop("SSH_AUTH_SOCK", None)
+
+    def run_hook(**extra):
+        result = subprocess.run(
+            ["sh", "-c", devcontainer["initializeCommand"]],
+            cwd=REPO_ROOT,
+            env=dict(env, **extra),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+
+    # 1. No agent.
+    run_hook()
+    assert maintained.is_file() and not maintained.is_symlink(), (
+        f"with no agent, {source} should be a placeholder file; got "
+        f"{'a symlink' if maintained.is_symlink() else 'nothing' if not maintained.exists() else maintained.stat().st_mode}"
+    )
+
+    # 2. An agent elsewhere.
+    elsewhere = tmp_path / "S.gpg-agent.ssh"
+    with _live_unix_socket(elsewhere):
+        run_hook(SSH_AUTH_SOCK=str(elsewhere))
+        assert maintained.is_symlink(), f"{source} should now be a symlink to the agent"
+        assert maintained.resolve() == elsewhere.resolve()
+        assert maintained.is_socket(), "and resolve to a socket docker can bind"
+
+        # 2b. Idempotent: a second run with the same agent leaves the link as it is.
+        before = maintained.lstat().st_mtime_ns
+        run_hook(SSH_AUTH_SOCK=str(elsewhere))
+        assert maintained.lstat().st_mtime_ns == before, "the symlink was rewritten needlessly"
+
+    # 3. A real socket bound at the path is never touched, whatever the variable says.
+    maintained.unlink()
+    with _live_unix_socket(maintained), _live_unix_socket(tmp_path / "other.sock"):
+        inode = maintained.lstat().st_ino
+        run_hook(SSH_AUTH_SOCK=str(tmp_path / "other.sock"))
+        assert not maintained.is_symlink(), "a bound socket at the path was replaced by a symlink"
+        assert maintained.lstat().st_ino == inode, "a bound socket at the path was recreated"
+        # And with no variable at all, the same.
+        run_hook()
+        assert maintained.lstat().st_ino == inode
 
 
 def test_the_dockerfile_copies_nothing_out_of_the_build_context():
