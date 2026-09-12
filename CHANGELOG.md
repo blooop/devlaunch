@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The command `dl --prune` prints beside a reclaimable environment is now one
+  that runs.** It said `pixi install -e <name>`, and that is not what any of the
+  measurements behind the feature were taken with. Plain `pixi install` compares
+  the lockfile's hash to the manifest and re-solves when they disagree, which is
+  network, and a *stale* lock is precisely the case this reclaims: the pointer
+  somebody reads after the bytes are gone would have gone to the network the
+  plan's own footer promises it will not need. It now prints
+  `pixi install --frozen -e <name>`, which restores 5507 of 5507 files in 0.52 s
+  with every proxy variable pointed at a dead port.
+
+  A lockfile with no `pixi.toml` or `pyproject.toml` beside it is no longer read
+  as a recipe at all, for the same reason. `pixi install` in a directory holding a
+  lockfile alone exits with `could not find pixi.toml or pyproject.toml with
+  tool.pixi`, so the environment stands and is named with its bytes instead of
+  being offered a command nobody can carry out. Only the manifest's *presence* is
+  read, so a stale manifest changes nothing: derivability is still the lock's
+  answer.
+
 ## [0.45.0] - 2026-09-12
 
 ### Added

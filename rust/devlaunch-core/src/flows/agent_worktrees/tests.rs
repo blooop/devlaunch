@@ -322,6 +322,11 @@ fn installed_env(site: &Path, environment: &str) -> PathBuf {
         format!("version: 7\nenvironments:\n  {environment}:\n    channels: []\npackages: []\n"),
     )
     .expect("the lockfile that re-derives it");
+    // The manifest, because `pixi install` needs one to know what project it is
+    // in and the plan's pointer has to be a command that runs. Its *presence*
+    // is the whole of what is ever read.
+    std::fs::write(site.join("pyproject.toml"), "[tool.pixi.workspace]\n")
+        .expect("the manifest beside the lockfile");
     env
 }
 

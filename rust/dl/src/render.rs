@@ -2572,8 +2572,8 @@ fn worktree_plan_lines(sweep: &WorktreeSweep) -> Vec<String> {
         // anything dl inferred from a directory name.
         lines.push(
             "A regenerable subtree is one whose creator wrote a CACHEDIR.TAG into it and \
-             whose lockfile is still beside it; putting one back is one command and no \
-             network beyond the shared package cache."
+             whose lockfile and manifest are still beside it; putting one back is one \
+             command and no network beyond the shared package cache."
                 .to_owned(),
         );
     }

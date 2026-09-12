@@ -46,8 +46,17 @@ fn pixi_record(env: &Path, environment: &str) {
     .expect("pixi's own record");
 }
 
-/// A lockfile naming `environments`, in the shape pixi writes.
+/// A lockfile naming `environments`, with the manifest pixi needs beside it in
+/// order to be installed from. Both, because a lockfile alone is a recipe
+/// nobody can carry out.
 fn lock(at: &Path, environments: &[&str]) {
+    std::fs::write(at.join("pixi.toml"), "[workspace]\nname = \"a-project\"\n")
+        .expect("the manifest beside the lockfile");
+    lock_alone(at, environments);
+}
+
+/// The lockfile on its own, for the rows that are about what is missing.
+fn lock_alone(at: &Path, environments: &[&str]) {
     let mut text = String::from("version: 7\nplatforms:\n- name: linux-64\nenvironments:\n");
     for environment in environments {
         text.push_str(&format!(
@@ -280,6 +289,14 @@ fn a_lock_that_names_the_environment_re_derives_it() {
     let [Tagged::Derivable(derivative)] = &found[..] else {
         panic!("a tag with its recipe on disk is derivable: {found:?}");
     };
+    assert!(
+        derivative
+            .recipe()
+            .describe()
+            .contains("pixi install --frozen -e default"),
+        "the pointer is the command every measurement was taken with: {}",
+        derivative.recipe().describe()
+    );
     assert_eq!(
         derivative.recipe(),
         &Recipe::PixiEnvironment {
@@ -473,6 +490,92 @@ fn the_environments_block_is_read_the_way_pixi_writes_it() {
 fn a_lockfile_with_no_environments_block_names_nothing() {
     assert!(environments_in("version: 7\npackages: []\n").is_empty());
     assert!(environments_in("").is_empty());
+}
+
+#[test]
+fn a_lockfile_with_no_manifest_beside_it_is_a_recipe_nobody_can_carry_out() {
+    // The pointer a plan prints is read *after* the bytes are gone, so it has
+    // to be a command that runs. Measured: `pixi install -e default` in a
+    // directory holding a `pixi.lock` and nothing else exits with `could not
+    // find pixi.toml or pyproject.toml with tool.pixi`. Claiming the recipe on
+    // the strength of the lock alone would have named an action that cannot put
+    // the directory back.
+    let world = World::new();
+    let site = world.site("agent-one");
+    let env = tagged(&site.join(".pixi").join("envs").join("default"));
+    pixi_record(&env, "default");
+    lock_alone(&site, &["default"]);
+
+    let found = world.walk(&site);
+
+    let [Tagged::CouldNotCost { why, .. }] = &found[..] else {
+        panic!("a lock with no manifest re-derives nothing: {found:?}");
+    };
+    assert_eq!(why, &NoRecipe::ManifestAbsent);
+    assert!(
+        why.describe().contains("pyproject.toml"),
+        "the refusal names what is missing: {}",
+        why.describe()
+    );
+}
+
+#[test]
+fn a_bare_lockfile_below_the_project_does_not_stop_the_walk() {
+    // A `pixi.lock` somebody copied into a subdirectory has no manifest beside
+    // it, and the walk does not take it and give up: it keeps going up and
+    // finds the project that really owns a lock. What that project's lock then
+    // rebuilds is a separate question, answered a line later -- and here the
+    // answer is *not this directory*, which is the refusal that proves the walk
+    // went past the bare one rather than stopping on it.
+    let world = World::new();
+    let site = world.site("agent-one");
+    let inner = dir(&site.join("vendor"));
+    let env = tagged(&inner.join(".pixi").join("envs").join("default"));
+    pixi_record(&env, "default");
+    lock_alone(&inner, &["default"]);
+    lock(&site, &["default"]);
+
+    let found = world.walk(&site);
+
+    let [Tagged::CouldNotCost { why, .. }] = &found[..] else {
+        panic!("one tagged directory, and nothing re-derives it: {found:?}");
+    };
+    assert_eq!(
+        why,
+        &NoRecipe::LockfileRebuildsAnotherDirectory {
+            environment: "default".to_owned()
+        },
+        "a walk that had stopped at the bare lock would have said the manifest was missing"
+    );
+}
+
+#[test]
+fn a_tag_at_the_top_of_a_pixi_directory_does_not_take_config_toml_with_it() {
+    // "Never `.pixi`" is structural, and nothing here spells `.pixi`. A tag
+    // planted at the top of a `.pixi` with an environment's record under it
+    // would otherwise make `.pixi` the unit and take `config.toml` with it, and
+    // `config.toml` is the one path `.pixi/.gitignore` un-ignores. What refuses
+    // it is that the site's lockfile would put environment `default` at
+    // `.pixi/envs/default`, which is not where this tag is.
+    let world = World::new();
+    let site = world.site("agent-one");
+    let pixi = tagged(&site.join(".pixi"));
+    std::fs::write(pixi.join("config.toml"), "[repodata-config]\n").expect("pixi's own config");
+    pixi_record(&pixi, "default");
+    lock(&site, &["default"]);
+
+    let found = world.walk(&site);
+
+    let [Tagged::CouldNotCost { why, at, .. }] = &found[..] else {
+        panic!("`.pixi` is not where `pixi install -e default` writes: {found:?}");
+    };
+    assert_eq!(at.as_str(), ".claude/worktrees/agent-one/.pixi");
+    assert_eq!(
+        why,
+        &NoRecipe::LockfileRebuildsAnotherDirectory {
+            environment: "default".to_owned()
+        }
+    );
 }
 
 // ---------------------------------------------------------------------------
