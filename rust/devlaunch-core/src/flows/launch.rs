@@ -65,7 +65,10 @@ use std::time::{Duration, SystemTime};
 
 use crate::clients::claude;
 use crate::clients::codex;
-use crate::clients::devpod::{self, Call, ContainerState, ListingUnreadable, NotRun, Patience};
+use crate::clients::devpod::{
+    self, Call, ContainerState, EnsureProviderFailed, ListingUnreadable, NotRun, Patience,
+    ProviderRegistration,
+};
 use crate::clients::devpod_home::{CreateRecord, DevpodHome, create_record};
 use crate::clients::gh::{self, GhEvent, StagedToken, Token, TokenLookup};
 use crate::clients::herdr;
@@ -437,6 +440,35 @@ pub enum LaunchNotice {
     /// The sibling this launch waited on had already brought the workspace up, so
     /// `devpod up` was not re-run.
     BroughtUpBySibling { workspace_id: String },
+
+    // --- the devpod provider this `up` needs to exist
+    //
+    // Neither arm is a Python line. devpod ships with no provider registered and
+    // devlaunch's install adds none, so the first `dl` on a fresh machine used to
+    // die in `devpod up` with "no default provider found" -- devpod's words, naming
+    // a concept the reader has not met and no command to fix it.
+    /// devpod had no provider at all, so this `up` gave it one. Said rather than
+    /// done in silence: it is a change to devpod's own configuration, made on the
+    /// user's behalf, and it decides what every later `up` builds on.
+    ProviderRegistered { name: String },
+    /// The provider guard could not read devpod's provider list, or could not
+    /// register one. A warning and not a refusal: the `up` below runs anyway and
+    /// devpod's own diagnostics land on the user's terminal, which is exactly where
+    /// this launch stood before the guard existed.
+    ProviderGuardFailed(EnsureProviderFailed),
+
+    // --- the ssh-agent this `up` forwards, when there is none to forward
+    //
+    // Not a Python line. A host with no agent exported -- a fresh desktop before
+    // any dotfiles have run -- gives every workspace a container with no SSH key,
+    // and nothing said so: the first sign was `git push` inside failing with
+    // `Permission denied (publickey)` in a workspace that came up looking fine.
+    // Said on the `up` and only on the `up`, beside the dotfiles line and for the
+    // same reason: it is a claim about what this create was given.
+    /// `SSH_AUTH_SOCK` is unset (`named: None`), or names a path that is not a
+    /// socket (`named: Some(path)`), so no agent reaches this workspace. Two facts
+    /// in one arm because the advice is the same and the second is rarer.
+    NoSshAgent { named: Option<String> },
 
     // --- the dotfiles this `up` asked devpod for (devlaunch#560)
     //
@@ -1724,6 +1756,13 @@ fn up_under_stage(
         return Ok(UpOutcome::SkippedSiblingWon);
     }
 
+    // Here rather than at the top of the launch: this is the first line on the path
+    // that is about to need a provider, and every arm above it returns without
+    // running an `up`. It costs a `devpod provider list` -- about half a second --
+    // on the path that is already spending seconds to minutes in `devpod up`, and
+    // nothing at all on the fast-attach arm, which never reaches this function.
+    ensure_a_provider(context.runner(), notices);
+
     // Give every workspace the host's gh login, whatever its devcontainer.json
     // does or does not set up for itself. The file is removed when `staged` drops,
     // which is the whole of Python's context manager — including on the path where
@@ -1739,6 +1778,9 @@ fn up_under_stage(
     // into flags, and it is on the far side of every arm that returns without
     // running an `up` at all.
     notices.say(options.dotfiles_notice());
+    if let Some(notice) = agent_notice(host) {
+        notices.say(notice);
+    }
 
     // This launch is the one paying for the `up`, so no prewarm saved it from
     // anything — whether or not one was fired.
@@ -1840,6 +1882,56 @@ fn up_under_stage(
     }
     drop(serialization);
     Ok(UpOutcome::Started)
+}
+
+/// The notice that no ssh-agent reaches this `up`, or `None` when one does.
+///
+/// Answered from the value `Host` already carries for the control-socket identity
+/// (devlaunch#389) plus one `stat`: a variable that names a path no agent listens
+/// on forwards exactly as much as an unset one, and is the state a shell is left
+/// in when the agent that set it has died. Not probed with `ssh-add -l`: that is
+/// a subprocess with a timeout on the critical path of every `up`, to tell apart
+/// "no agent" from "an agent with no keys", and the terminal line is the same
+/// for both.
+fn agent_notice(host: &Host) -> Option<LaunchNotice> {
+    use std::os::unix::fs::FileTypeExt;
+    let Some(named) = host
+        .ssh_auth_sock
+        .as_deref()
+        .filter(|path| !path.is_empty())
+    else {
+        return Some(LaunchNotice::NoSshAgent { named: None });
+    };
+    let is_socket = std::fs::metadata(named)
+        .map(|meta| meta.file_type().is_socket())
+        .unwrap_or(false);
+    (!is_socket).then(|| LaunchNotice::NoSshAgent {
+        named: Some(named.to_owned()),
+    })
+}
+
+/// The provider devpod is given when it has none.
+///
+/// docker and not a choice: it is the provider devlaunch's own install implies
+/// (the container work all happens on the host's daemon), the one every document
+/// here assumes, and the one `devpod provider add` needs no arguments for.
+const FALLBACK_PROVIDER: &str = "docker";
+
+/// Make sure devpod has a provider before asking it to bring a workspace up.
+///
+/// Nothing here can fail the launch. The guard exists to turn a first run on a
+/// fresh machine from a refusal into a launch; a guard that could itself refuse
+/// would have added a way to fail where there was none. So every outcome but
+/// "devpod already had one" is a line on the terminal, and the `up` goes ahead to
+/// succeed or to produce devpod's own diagnosis of why it cannot.
+fn ensure_a_provider(runner: &dyn Runner, notices: &mut dyn Notices<LaunchNotice>) {
+    match devpod::ensure_a_provider(runner, FALLBACK_PROVIDER) {
+        Ok(ProviderRegistration::AlreadyRegistered) => {}
+        Ok(ProviderRegistration::Added) => notices.say(LaunchNotice::ProviderRegistered {
+            name: FALLBACK_PROVIDER.to_owned(),
+        }),
+        Err(failure) => notices.say(LaunchNotice::ProviderGuardFailed(failure)),
+    }
 }
 
 /// Whether devpod reports this workspace as running.
@@ -6340,6 +6432,244 @@ mod tests {
 
         assert_eq!(outcome, Ok(UpOutcome::Started));
         assert_eq!(provision.occasions(), vec![PassOccasion::AfterUp]);
+    }
+
+    /// The first `dl` on a fresh machine. devpod ships with no provider and
+    /// devlaunch's install adds none, so without this guard the `up` below dies in
+    /// devpod with "no default provider found", which is the onboarding report this
+    /// guard was written for.
+    #[test]
+    fn an_up_on_a_devpod_with_no_provider_registers_one_first() {
+        let scene = Scene::new();
+        scene
+            .runner
+            .script(["devpod", "provider", "list"], Response::stdout("{}"));
+        let mut context = CommandContext::new(&scene.runner);
+        let token = HostToken::new();
+        let request = UpRequest::new(
+            "owner/repo",
+            Naming::Create {
+                workspace_id: "myws",
+            },
+        );
+        let mut said = Vec::new();
+
+        let outcome = workspace_up(
+            &mut context,
+            &scene.host,
+            &token,
+            &ClaudeSeen::new(),
+            &NoProvisioning,
+            &request,
+            None,
+            &mut said,
+        );
+
+        assert_eq!(outcome, Ok(UpOutcome::Started));
+        assert!(
+            said.contains(&LaunchNotice::ProviderRegistered {
+                name: "docker".to_owned()
+            }),
+            "{said:?}"
+        );
+        // And in that order: a provider registered after the `up` it was for is a
+        // provider registered too late.
+        let verbs: Vec<String> = scene
+            .devpod_commands()
+            .into_iter()
+            .filter_map(|argv| argv.into_iter().next())
+            .filter(|verb| verb == "provider" || verb == "up")
+            .collect();
+        assert_eq!(
+            verbs,
+            // The list, the add it decided on, and then the `up` they were for.
+            vec![
+                "provider".to_owned(),
+                "provider".to_owned(),
+                "up".to_owned()
+            ]
+        );
+    }
+
+    /// A machine somebody has configured is left as they configured it. `devpod
+    /// provider add` makes what it adds the default, so a guard that fired here
+    /// would move every future launch onto docker without being asked.
+    #[test]
+    fn an_up_on_a_devpod_that_has_a_provider_adds_none() {
+        let scene = Scene::new();
+        scene.runner.script(
+            ["devpod", "provider", "list"],
+            Response::stdout(r#"{"kubernetes":{"config":{"name":"kubernetes"}}}"#),
+        );
+        let mut context = CommandContext::new(&scene.runner);
+        let token = HostToken::new();
+        let request = UpRequest::new(
+            "owner/repo",
+            Naming::Create {
+                workspace_id: "myws",
+            },
+        );
+        let mut said = Vec::new();
+
+        let outcome = workspace_up(
+            &mut context,
+            &scene.host,
+            &token,
+            &ClaudeSeen::new(),
+            &NoProvisioning,
+            &request,
+            None,
+            &mut said,
+        );
+
+        assert_eq!(outcome, Ok(UpOutcome::Started));
+        assert!(
+            !scene
+                .devpod_commands()
+                .iter()
+                .any(|argv| argv.first().map(String::as_str) == Some("provider")
+                    && argv.get(1).map(String::as_str) == Some("add")),
+            "a provider was added over a configured devpod"
+        );
+        assert!(
+            !said
+                .iter()
+                .any(|notice| matches!(notice, LaunchNotice::ProviderRegistered { .. })),
+            "{said:?}"
+        );
+    }
+
+    /// The fresh-machine host: nothing exported, so the workspace gets no key and
+    /// the `up` says so, beside the dotfiles line.
+    #[test]
+    fn an_up_with_no_agent_exported_says_so() {
+        let scene = Scene::new();
+        assert_eq!(
+            scene.host.ssh_auth_sock, None,
+            "the scene is a host with no agent"
+        );
+        let mut context = CommandContext::new(&scene.runner);
+        let token = HostToken::new();
+        let request = UpRequest::new(
+            "owner/repo",
+            Naming::Create {
+                workspace_id: "myws",
+            },
+        );
+        let mut said = Vec::new();
+
+        let outcome = workspace_up(
+            &mut context,
+            &scene.host,
+            &token,
+            &ClaudeSeen::new(),
+            &NoProvisioning,
+            &request,
+            None,
+            &mut said,
+        );
+
+        assert_eq!(outcome, Ok(UpOutcome::Started));
+        assert!(
+            said.contains(&LaunchNotice::NoSshAgent { named: None }),
+            "{said:?}"
+        );
+    }
+
+    /// A variable that names a live socket is an agent, and there is nothing to
+    /// say. A variable that names anything else is not, and the line names the
+    /// path so the reader can see what their shell is pointing at.
+    #[test]
+    fn an_up_with_an_agent_says_nothing_and_a_dead_path_names_it() {
+        let mut scene = Scene::new();
+        let live = scene.dir.path().join("agent");
+        let _listener = std::os::unix::net::UnixListener::bind(&live).expect("a socket");
+        scene.host.ssh_auth_sock = Some(live.display().to_string());
+        let mut context = CommandContext::new(&scene.runner);
+        let token = HostToken::new();
+        let request = UpRequest::new(
+            "owner/repo",
+            Naming::Create {
+                workspace_id: "myws",
+            },
+        );
+        let mut said = Vec::new();
+        let _ = workspace_up(
+            &mut context,
+            &scene.host,
+            &token,
+            &ClaudeSeen::new(),
+            &NoProvisioning,
+            &request,
+            None,
+            &mut said,
+        );
+        assert!(
+            !said
+                .iter()
+                .any(|n| matches!(n, LaunchNotice::NoSshAgent { .. })),
+            "{said:?}"
+        );
+
+        let dead = scene.dir.path().join("gone");
+        scene.host.ssh_auth_sock = Some(dead.display().to_string());
+        let mut context = CommandContext::new(&scene.runner);
+        let mut said = Vec::new();
+        let _ = workspace_up(
+            &mut context,
+            &scene.host,
+            &token,
+            &ClaudeSeen::new(),
+            &NoProvisioning,
+            &request,
+            None,
+            &mut said,
+        );
+        assert!(
+            said.contains(&LaunchNotice::NoSshAgent {
+                named: Some(dead.display().to_string())
+            }),
+            "{said:?}"
+        );
+    }
+
+    /// The guard cannot fail a launch. A devpod whose provider list is unreadable
+    /// leaves the `up` exactly where it stood before the guard existed: it runs,
+    /// and devpod says for itself whether it can.
+    #[test]
+    fn a_provider_guard_that_failed_still_lets_the_up_run() {
+        let scene = Scene::new();
+        scene.runner.script(
+            ["devpod", "provider", "list"],
+            Response::failed(1, "boom\n"),
+        );
+        let mut context = CommandContext::new(&scene.runner);
+        let token = HostToken::new();
+        let request = UpRequest::new(
+            "owner/repo",
+            Naming::Create {
+                workspace_id: "myws",
+            },
+        );
+        let mut said = Vec::new();
+
+        let outcome = workspace_up(
+            &mut context,
+            &scene.host,
+            &token,
+            &ClaudeSeen::new(),
+            &NoProvisioning,
+            &request,
+            None,
+            &mut said,
+        );
+
+        assert_eq!(outcome, Ok(UpOutcome::Started));
+        assert!(
+            said.iter()
+                .any(|notice| matches!(notice, LaunchNotice::ProviderGuardFailed(_))),
+            "{said:?}"
+        );
     }
 
     #[test]
@@ -11375,6 +11705,8 @@ mod tests {
             vec![
                 "status".to_owned(),
                 "stop".to_owned(),
+                // The provider guard, which every `up` asks ahead of itself.
+                "provider".to_owned(),
                 "up".to_owned(),
                 "ssh".to_owned()
             ]
@@ -11774,9 +12106,11 @@ mod tests {
 
         assert_eq!(outcome, Ok(UpOutcome::Started));
         assert_eq!(stage_names(&document), ["devpod-up"]);
+        // `devpod provider` among them, and charged to this stage rather than to
+        // one of its own: the provider guard is part of what an `up` costs.
         assert_eq!(
             span_labels(&document, "devpod-up"),
-            ["devpod context", "devpod up"]
+            ["devpod context", "devpod provider", "devpod up"]
         );
     }
 

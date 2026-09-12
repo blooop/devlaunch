@@ -66,7 +66,7 @@
 //! **What it still does not reach, and it is not one type.** A type [`api`]
 //! never re-exports but a promised signature names is reachable from outside
 //! and classified as binary surface, so a break in it diffs
-//! `public-api.rest.txt` alone. Counted rather than guessed at: **39 such types
+//! `public-api.rest.txt` alone. Counted rather than guessed at: **40 such types
 //! own close to six hundred rows over there**, and `scripts/public-api-snapshots.sh
 //! --print-residual` lists them.
 //!
@@ -82,7 +82,7 @@
 //!
 //! So a `public-api.rest.txt` diff is routine for a row whose subject nothing
 //! promised names, and a contract change for a row whose subject is one of the
-//! 39. `--print-residual` is how you tell which you are looking at.
+//! 40. `--print-residual` is how you tell which you are looking at.
 //!
 //! `scripts/public-api-snapshots.sh` regenerates both; see "The public-API
 //! snapshots" in docs/development.md.

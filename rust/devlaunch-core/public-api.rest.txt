@@ -2,6 +2,19 @@ pub mod devlaunch_core
 pub fn alloc::vec::Vec<T>::say(&mut self, T)
 pub mod devlaunch_core::clients
 pub mod devlaunch_core::clients::devpod
+pub enum devlaunch_core::clients::devpod::AddFailed
+pub devlaunch_core::clients::devpod::AddFailed::NotRun(devlaunch_core::clients::devpod::NotRun)
+pub devlaunch_core::clients::devpod::AddFailed::Refused
+pub devlaunch_core::clients::devpod::AddFailed::Refused::exit: devlaunch_runner::Exit
+pub devlaunch_core::clients::devpod::AddFailed::Refused::stderr: alloc::string::String
+impl core::clone::Clone for devlaunch_core::clients::devpod::AddFailed
+pub fn devlaunch_core::clients::devpod::AddFailed::clone(&self) -> devlaunch_core::clients::devpod::AddFailed
+impl core::cmp::Eq for devlaunch_core::clients::devpod::AddFailed
+impl core::cmp::PartialEq for devlaunch_core::clients::devpod::AddFailed
+pub fn devlaunch_core::clients::devpod::AddFailed::eq(&self, &devlaunch_core::clients::devpod::AddFailed) -> bool
+impl core::fmt::Debug for devlaunch_core::clients::devpod::AddFailed
+pub fn devlaunch_core::clients::devpod::AddFailed::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::clients::devpod::AddFailed
 pub enum devlaunch_core::clients::devpod::ContainerState
 pub devlaunch_core::clients::devpod::ContainerState::Busy
 pub devlaunch_core::clients::devpod::ContainerState::NotFound
@@ -16,6 +29,17 @@ pub fn devlaunch_core::clients::devpod::ContainerState::eq(&self, &devlaunch_cor
 impl core::fmt::Debug for devlaunch_core::clients::devpod::ContainerState
 pub fn devlaunch_core::clients::devpod::ContainerState::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::clients::devpod::ContainerState
+pub enum devlaunch_core::clients::devpod::EnsureProviderFailed
+pub devlaunch_core::clients::devpod::EnsureProviderFailed::AddFailed(devlaunch_core::clients::devpod::AddFailed)
+pub devlaunch_core::clients::devpod::EnsureProviderFailed::ListUnreadable(devlaunch_core::clients::devpod::ProviderListUnreadable)
+impl core::clone::Clone for devlaunch_core::clients::devpod::EnsureProviderFailed
+pub fn devlaunch_core::clients::devpod::EnsureProviderFailed::clone(&self) -> devlaunch_core::clients::devpod::EnsureProviderFailed
+impl core::cmp::Eq for devlaunch_core::clients::devpod::EnsureProviderFailed
+impl core::cmp::PartialEq for devlaunch_core::clients::devpod::EnsureProviderFailed
+pub fn devlaunch_core::clients::devpod::EnsureProviderFailed::eq(&self, &devlaunch_core::clients::devpod::EnsureProviderFailed) -> bool
+impl core::fmt::Debug for devlaunch_core::clients::devpod::EnsureProviderFailed
+pub fn devlaunch_core::clients::devpod::EnsureProviderFailed::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::clients::devpod::EnsureProviderFailed
 pub enum devlaunch_core::clients::devpod::ListingUnreadable
 pub devlaunch_core::clients::devpod::ListingUnreadable::Failed
 pub devlaunch_core::clients::devpod::ListingUnreadable::Failed::exit: devlaunch_runner::Exit
@@ -50,6 +74,20 @@ pub fn devlaunch_core::clients::devpod::NotAListing::eq(&self, &devlaunch_core::
 impl core::fmt::Debug for devlaunch_core::clients::devpod::NotAListing
 pub fn devlaunch_core::clients::devpod::NotAListing::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::clients::devpod::NotAListing
+pub enum devlaunch_core::clients::devpod::NotAProviderListing
+pub devlaunch_core::clients::devpod::NotAProviderListing::NotJson
+pub devlaunch_core::clients::devpod::NotAProviderListing::NotJson::output: alloc::string::String
+pub devlaunch_core::clients::devpod::NotAProviderListing::NotJson::reason: alloc::string::String
+pub devlaunch_core::clients::devpod::NotAProviderListing::NotKeyedByName
+pub devlaunch_core::clients::devpod::NotAProviderListing::NotKeyedByName::kind: devlaunch_core::json::JsonKind
+impl core::clone::Clone for devlaunch_core::clients::devpod::NotAProviderListing
+pub fn devlaunch_core::clients::devpod::NotAProviderListing::clone(&self) -> devlaunch_core::clients::devpod::NotAProviderListing
+impl core::cmp::Eq for devlaunch_core::clients::devpod::NotAProviderListing
+impl core::cmp::PartialEq for devlaunch_core::clients::devpod::NotAProviderListing
+pub fn devlaunch_core::clients::devpod::NotAProviderListing::eq(&self, &devlaunch_core::clients::devpod::NotAProviderListing) -> bool
+impl core::fmt::Debug for devlaunch_core::clients::devpod::NotAProviderListing
+pub fn devlaunch_core::clients::devpod::NotAProviderListing::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::clients::devpod::NotAProviderListing
 pub enum devlaunch_core::clients::devpod::NotRun
 pub devlaunch_core::clients::devpod::NotRun::Blocked(devlaunch_runner::OsFailure)
 pub devlaunch_core::clients::devpod::NotRun::NotInstalled
@@ -75,6 +113,32 @@ impl core::fmt::Debug for devlaunch_core::clients::devpod::Patience
 pub fn devlaunch_core::clients::devpod::Patience::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Copy for devlaunch_core::clients::devpod::Patience
 impl core::marker::StructuralPartialEq for devlaunch_core::clients::devpod::Patience
+pub enum devlaunch_core::clients::devpod::ProviderListUnreadable
+pub devlaunch_core::clients::devpod::ProviderListUnreadable::Failed
+pub devlaunch_core::clients::devpod::ProviderListUnreadable::Failed::exit: devlaunch_runner::Exit
+pub devlaunch_core::clients::devpod::ProviderListUnreadable::Failed::stderr: alloc::string::String
+pub devlaunch_core::clients::devpod::ProviderListUnreadable::NotRun(devlaunch_core::clients::devpod::NotRun)
+pub devlaunch_core::clients::devpod::ProviderListUnreadable::Unreadable(devlaunch_core::clients::devpod::NotAProviderListing)
+impl core::clone::Clone for devlaunch_core::clients::devpod::ProviderListUnreadable
+pub fn devlaunch_core::clients::devpod::ProviderListUnreadable::clone(&self) -> devlaunch_core::clients::devpod::ProviderListUnreadable
+impl core::cmp::Eq for devlaunch_core::clients::devpod::ProviderListUnreadable
+impl core::cmp::PartialEq for devlaunch_core::clients::devpod::ProviderListUnreadable
+pub fn devlaunch_core::clients::devpod::ProviderListUnreadable::eq(&self, &devlaunch_core::clients::devpod::ProviderListUnreadable) -> bool
+impl core::fmt::Debug for devlaunch_core::clients::devpod::ProviderListUnreadable
+pub fn devlaunch_core::clients::devpod::ProviderListUnreadable::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::clients::devpod::ProviderListUnreadable
+pub enum devlaunch_core::clients::devpod::ProviderRegistration
+pub devlaunch_core::clients::devpod::ProviderRegistration::Added
+pub devlaunch_core::clients::devpod::ProviderRegistration::AlreadyRegistered
+impl core::clone::Clone for devlaunch_core::clients::devpod::ProviderRegistration
+pub fn devlaunch_core::clients::devpod::ProviderRegistration::clone(&self) -> devlaunch_core::clients::devpod::ProviderRegistration
+impl core::cmp::Eq for devlaunch_core::clients::devpod::ProviderRegistration
+impl core::cmp::PartialEq for devlaunch_core::clients::devpod::ProviderRegistration
+pub fn devlaunch_core::clients::devpod::ProviderRegistration::eq(&self, &devlaunch_core::clients::devpod::ProviderRegistration) -> bool
+impl core::fmt::Debug for devlaunch_core::clients::devpod::ProviderRegistration
+pub fn devlaunch_core::clients::devpod::ProviderRegistration::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for devlaunch_core::clients::devpod::ProviderRegistration
+impl core::marker::StructuralPartialEq for devlaunch_core::clients::devpod::ProviderRegistration
 pub enum devlaunch_core::clients::devpod::StatusUnreadable
 pub devlaunch_core::clients::devpod::StatusUnreadable::Failed
 pub devlaunch_core::clients::devpod::StatusUnreadable::Failed::exit: devlaunch_runner::Exit

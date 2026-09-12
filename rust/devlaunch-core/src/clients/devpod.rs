@@ -860,21 +860,15 @@ fn named(value: Option<&serde_json::Value>) -> String {
 /// devpod's colourised table, and output it could not read came back as an empty
 /// set of providers — and an empty set means "go add one", so an unreadable
 /// answer turned into an action.
-// The provider guard is complete and tested here; the flow that registers a
-// provider is not wired yet.
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum NotAProviderListing {
+pub enum NotAProviderListing {
     NotJson { output: String, reason: String },
     NotKeyedByName { kind: JsonKind },
 }
 
 /// Why asking devpod which providers are registered produced no answer.
-// The provider guard is complete and tested here; the flow that registers a
-// provider is not wired yet.
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum ProviderListUnreadable {
+pub enum ProviderListUnreadable {
     NotRun(NotRun),
     Failed { exit: Exit, stderr: String },
     Unreadable(NotAProviderListing),
@@ -884,39 +878,27 @@ pub(crate) enum ProviderListUnreadable {
 ///
 /// Kept apart from a listing that could not be read: devpod answered the
 /// question it was asked, and then refused to do the thing.
-// The provider guard is complete and tested here; the flow that registers a
-// provider is not wired yet.
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum AddFailed {
+pub enum AddFailed {
     NotRun(NotRun),
     Refused { exit: Exit, stderr: String },
 }
 
 /// Why the provider guard could not finish.
-// The provider guard is complete and tested here; the flow that registers a
-// provider is not wired yet.
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum EnsureProviderFailed {
+pub enum EnsureProviderFailed {
     ListUnreadable(ProviderListUnreadable),
     AddFailed(AddFailed),
 }
 
-/// Whether the guard had to register the provider, or found it already there.
-// The provider guard is complete and tested here; the flow that registers a
-// provider is not wired yet.
-#[cfg_attr(not(test), allow(dead_code))]
+/// Whether the guard had to register a provider, or found devpod already had one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ProviderRegistration {
+pub enum ProviderRegistration {
     AlreadyRegistered,
     Added,
 }
 
 /// The names of the providers devpod has registered.
-// The provider guard is complete and tested here; the flow that registers a
-// provider is not wired yet.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn provider_names(
     runner: &dyn Runner,
 ) -> Result<BTreeSet<String>, ProviderListUnreadable> {
@@ -934,9 +916,6 @@ pub(crate) fn provider_names(
 /// Every registered provider in a `--output json` listing: an object keyed by
 /// provider name, which is the same information as devpod's table in a form that
 /// has no rendering to change.
-// The provider guard is complete and tested here; the flow that registers a
-// provider is not wired yet.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn parse_provider_names(listing: &str) -> Result<BTreeSet<String>, NotAProviderListing> {
     let parsed: serde_json::Value =
         serde_json::from_str(listing).map_err(|error| NotAProviderListing::NotJson {
@@ -953,21 +932,32 @@ pub(crate) fn parse_provider_names(listing: &str) -> Result<BTreeSet<String>, No
     }
 }
 
-/// Register `name` with devpod unless it is already registered.
+/// Give devpod `fallback` as a provider if, and only if, it has no provider at all.
+///
+/// A devpod with an empty `~/.devpod` refuses every `up` with "no default
+/// provider found" before it does anything, which is the whole of what a fresh
+/// machine hits after installing devlaunch and nothing else: devpod ships with no
+/// provider registered and devlaunch's install never added one. That refusal names
+/// a concept the user has not met yet and no command to fix it, so the guard fixes
+/// it instead.
+///
+/// **Only on empty, which is the point of the emptiness test.** `devpod provider
+/// add` does not only register a provider, it makes it the default -- so a guard
+/// keyed on "is `docker` registered" would answer "no" on a machine deliberately
+/// driving kubernetes and silently move every future `up` onto docker. A devpod
+/// with any provider at all has been configured by somebody, and this stands down.
 ///
 /// Refuses rather than guessing when devpod's answer cannot be read: acting on an
 /// unreadable listing is the defect this guard exists to have fixed.
-// The provider guard is complete and tested here; the flow that registers a
-// provider is not wired yet.
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn ensure_provider(
+pub(crate) fn ensure_a_provider(
     runner: &dyn Runner,
-    name: &str,
+    fallback: &str,
 ) -> Result<ProviderRegistration, EnsureProviderFailed> {
     let registered = provider_names(runner).map_err(EnsureProviderFailed::ListUnreadable)?;
-    if registered.contains(name) {
+    if !registered.is_empty() {
         return Ok(ProviderRegistration::AlreadyRegistered);
     }
+    let name = fallback;
     // Captured, so devpod's own explanation of a refused add survives into the
     // report: without capture there is nothing to quote.
     let answer = capture(runner, &Call::new(["provider", "add", name]))
@@ -2127,28 +2117,50 @@ mod tests {
     }
 
     #[test]
-    fn an_existing_provider_is_not_added_again() {
+    fn a_devpod_that_already_has_a_provider_is_left_alone() {
         let fake = ScriptedRunner::new().with_script(
             ["devpod", "provider", "list"],
             Response::stdout(PROVIDER_LIST),
         );
 
         assert_eq!(
-            ensure_provider(&fake, "docker"),
+            ensure_a_provider(&fake, "docker"),
             Ok(ProviderRegistration::AlreadyRegistered)
         );
         assert_eq!(fake.call_count(), 1, "nothing was added");
     }
 
+    /// The case the emptiness test exists for: somebody has configured devpod for
+    /// something that is not docker, and `devpod provider add docker` would make
+    /// docker the default underneath them. A machine with a provider is a machine
+    /// that has been set up, whichever provider it is.
     #[test]
-    fn a_missing_provider_is_added() {
+    fn a_provider_that_is_not_the_fallback_still_stands_the_guard_down() {
+        let fake = ScriptedRunner::new().with_script(
+            ["devpod", "provider", "list"],
+            Response::stdout(r#"{"kubernetes":{"config":{"name":"kubernetes"}}}"#),
+        );
+
+        assert_eq!(
+            ensure_a_provider(&fake, "docker"),
+            Ok(ProviderRegistration::AlreadyRegistered)
+        );
+        assert_eq!(
+            fake.call_count(),
+            1,
+            "docker was added over a configured kubernetes"
+        );
+    }
+
+    #[test]
+    fn a_devpod_with_no_provider_at_all_is_given_the_fallback() {
         let fake = ScriptedRunner::new().with_script(
             ["devpod", "provider", "list"],
             Response::stdout(NO_PROVIDERS),
         );
 
         assert_eq!(
-            ensure_provider(&fake, "docker"),
+            ensure_a_provider(&fake, "docker"),
             Ok(ProviderRegistration::Added)
         );
         assert_eq!(
@@ -2173,7 +2185,7 @@ mod tests {
         );
 
         assert!(matches!(
-            ensure_provider(&fake, "docker"),
+            ensure_a_provider(&fake, "docker"),
             Err(EnsureProviderFailed::ListUnreadable(_))
         ));
         assert_eq!(fake.call_count(), 1, "nothing was added");
@@ -2186,7 +2198,7 @@ mod tests {
             Response::failed(1, "boom\n"),
         );
 
-        match ensure_provider(&fake, "docker").expect_err("not readable") {
+        match ensure_a_provider(&fake, "docker").expect_err("not readable") {
             EnsureProviderFailed::ListUnreadable(ProviderListUnreadable::Failed {
                 exit,
                 stderr,
@@ -2213,7 +2225,7 @@ mod tests {
                 Response::failed(1, "provider docker already exists\n"),
             );
 
-        match ensure_provider(&fake, "docker").expect_err("the add failed") {
+        match ensure_a_provider(&fake, "docker").expect_err("the add failed") {
             EnsureProviderFailed::AddFailed(AddFailed::Refused { exit, stderr }) => {
                 assert_eq!(exit, Exit::Code(1));
                 assert_eq!(stderr, "provider docker already exists\n");
@@ -2231,7 +2243,7 @@ mod tests {
             Response::stdout(NO_PROVIDERS),
         );
 
-        let _ = ensure_provider(&fake, "docker");
+        let _ = ensure_a_provider(&fake, "docker");
 
         for call in fake.calls() {
             assert!(
@@ -2246,7 +2258,7 @@ mod tests {
         let fake = ScriptedRunner::new().with_missing("devpod");
 
         assert_eq!(
-            ensure_provider(&fake, "docker"),
+            ensure_a_provider(&fake, "docker"),
             Err(EnsureProviderFailed::ListUnreadable(
                 ProviderListUnreadable::NotRun(NotRun::NotInstalled)
             ))

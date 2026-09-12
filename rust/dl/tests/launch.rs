@@ -803,6 +803,10 @@ fn a_cold_triple_prepares_a_clone_creates_the_workspace_and_attaches() {
             ),
             "dotfiles: none set in devpod context options, so this up asked for none. 'devpod \
              context set-options DOTFILES_URL=<repo>' is the only place dl reads it from.",
+            // `env_clear()` above is a host with no agent, and the up says so.
+            "ssh-agent: none on this host (SSH_AUTH_SOCK is unset), so this workspace has no \
+             SSH key to push with. GitHub still works over HTTPS with the forwarded gh token. \
+             Start an agent and export SSH_AUTH_SOCK to change that.",
             &format!("{COLD}: the hostname setup stage did not report; it may not have run."),
             &format!("{COLD}: the title setup stage did not report; it may not have run."),
             &format!("{COLD}: the onboarding setup stage did not report; it may not have run."),
@@ -815,6 +819,8 @@ fn a_cold_triple_prepares_a_clone_creates_the_workspace_and_attaches() {
             // The derived id first: cold is what devpod *denying* it means.
             format!("devpod status {COLD} --output json"),
             "devpod context options --output json".to_owned(),
+            // The provider guard, which every `up` asks ahead of itself.
+            "devpod provider list --output json".to_owned(),
             "devpod up {ROOT}/cache/devlaunch/r… --id devlaunch-cold-8iyb --ide none \
              --init-env DEVLAUNCH_WORKSPACE_ID=d… --mount type=bind,source={ROOT}/… \
              --workspace-env PIXI_CACHE_DIR=/var/tmp/… --dotfiles-script-env \
@@ -1292,6 +1298,8 @@ fn a_path_spec_attach_asks_nothing_and_ups() {
         calls,
         [
             "devpod context options --output json".to_owned(),
+            // The provider guard, which every `up` asks ahead of itself.
+            "devpod provider list --output json".to_owned(),
             "devpod up {ROOT}/cache/devlaunch/r… --id devlaunch-main-3j1t --ide none \
              --init-env DEVLAUNCH_WORKSPACE_ID=d… --mount type=bind,source={ROOT}/… \
              --workspace-env PIXI_CACHE_DIR=/var/tmp/… --dotfiles-script-env \
@@ -1328,6 +1336,8 @@ fn a_cold_triple_dotfiles_denies_the_same_id_twice() {
             format!("devpod status {COLD} --output json"),
             format!("devpod status {COLD} --output json"),
             "devpod context options --output json".to_owned(),
+            // The provider guard, which every `up` asks ahead of itself.
+            "devpod provider list --output json".to_owned(),
             "devpod up {ROOT}/cache/devlaunch/r… --id devlaunch-cold-8iyb --ide none \
              --init-env DEVLAUNCH_WORKSPACE_ID=d… --mount type=bind,source={ROOT}/… \
              --workspace-env PIXI_CACHE_DIR=/var/tmp/… --dotfiles-script-env \
@@ -1368,6 +1378,8 @@ fn a_path_spec_dotfiles_on_a_stopped_workspace_ups_it_by_id() {
         [
             format!("devpod status {MAIN} --output json"),
             "devpod context options --output json".to_owned(),
+            // The provider guard, which every `up` asks ahead of itself.
+            "devpod provider list --output json".to_owned(),
             "devpod up {ROOT}/cache/devlaunch/r… --id devlaunch-main-3j1t --ide none \
              --init-env DEVLAUNCH_WORKSPACE_ID=d… --mount type=bind,source={ROOT}/… \
              --workspace-env PIXI_CACHE_DIR=/var/tmp/… --dotfiles-script-env \
@@ -1642,6 +1654,10 @@ fn a_devpod_up_that_refuses_hands_its_own_status_back_and_adds_nothing() {
         [
             "dotfiles: none set in devpod context options, so this up asked for none. 'devpod \
              context set-options DOTFILES_URL=<repo>' is the only place dl reads it from.",
+            // `env_clear()` above is a host with no agent, and the up says so.
+            "ssh-agent: none on this host (SSH_AUTH_SOCK is unset), so this workspace has no \
+             SSH key to push with. GitHub still works over HTTPS with the forwarded gh token. \
+             Start an agent and export SSH_AUTH_SOCK to change that.",
             "devpod: image pull failed",
         ]
     );

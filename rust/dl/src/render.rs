@@ -10,7 +10,10 @@ use std::io;
 use std::path::Path;
 use std::process;
 
-use devlaunch_core::clients::devpod::{ListingUnreadable, NotAListing, NotRun, Workspace};
+use devlaunch_core::clients::devpod::{
+    AddFailed, EnsureProviderFailed, ListingUnreadable, NotAListing, NotAProviderListing, NotRun,
+    ProviderListUnreadable, Workspace,
+};
 use devlaunch_core::clients::devpod_home::RepointFailure;
 use devlaunch_core::clients::gh::{
     GhEvent, GhUnavailable, PullRequestHead, PullRequestState, PullRequestUnavailable,
@@ -458,6 +461,73 @@ pub(crate) const DEVPOD_MISSING: &str = concat!(
     "Install devpod from https://devpod.sh/docs/getting-started/install ",
     "(pixi/conda installs of devlaunch include it; pip installs do not)."
 );
+
+/// Why the provider guard stood down, in one line.
+///
+/// A warning and never an error, whatever devpod did: the `up` that follows runs
+/// regardless and speaks for itself. The truncations are `listing_refusal`'s, for
+/// the same reason -- a subprocess's stderr is not this process's promise about
+/// how long a line is.
+pub(crate) fn provider_guard_refusal(failure: &EnsureProviderFailed) -> String {
+    let (doing, detail) = match failure {
+        EnsureProviderFailed::ListUnreadable(unreadable) => (
+            "read devpod's provider list",
+            provider_list_detail(unreadable),
+        ),
+        EnsureProviderFailed::AddFailed(AddFailed::NotRun(not_run)) => (
+            "register a devpod provider",
+            not_run_detail("provider add", *not_run),
+        ),
+        EnsureProviderFailed::AddFailed(AddFailed::Refused { exit, stderr }) => (
+            "register a devpod provider",
+            format!(
+                "`devpod provider add docker` exited {}: {}",
+                exit_status(*exit),
+                python_repr(&clipped(stderr.trim(), 200))
+            ),
+        ),
+    };
+    format!(
+        "Could not {doing} ({detail}), so dl left devpod's providers alone. A devpod with \
+         no provider refuses every launch: `devpod provider add docker` registers one."
+    )
+}
+
+/// What went wrong with `devpod provider list`, without the sentence around it.
+fn provider_list_detail(unreadable: &ProviderListUnreadable) -> String {
+    match unreadable {
+        ProviderListUnreadable::NotRun(not_run) => not_run_detail("provider list", *not_run),
+        ProviderListUnreadable::Failed { exit, stderr } => format!(
+            "`devpod provider list` exited {}: {}",
+            exit_status(*exit),
+            python_repr(&clipped(stderr.trim(), 200))
+        ),
+        ProviderListUnreadable::Unreadable(NotAProviderListing::NotJson { output, .. }) => {
+            format!(
+                "devpod's provider listing is not JSON: {}",
+                python_repr(&clipped(output, 120))
+            )
+        }
+        ProviderListUnreadable::Unreadable(NotAProviderListing::NotKeyedByName { kind }) => {
+            format!(
+                "expected devpod to list providers by name, got {}",
+                json_type_name(*kind)
+            )
+        }
+    }
+}
+
+/// The half of a provider-guard line that describes a devpod that never ran.
+fn not_run_detail(call: &str, not_run: NotRun) -> String {
+    match not_run {
+        NotRun::NotInstalled => "devpod is not installed".to_owned(),
+        NotRun::TimedOut => format!("`devpod {call}` did not answer in time"),
+        NotRun::Blocked(failure) => format!(
+            "`devpod {call}` could not be run ({})",
+            os_error_phrase(&failure)
+        ),
+    }
+}
 
 /// Why the workspace list could not be read, in one line.
 ///
@@ -2881,6 +2951,41 @@ pub(crate) fn launch_notice(notice: &LaunchNotice) -> Option<String> {
             format!("Workspace {workspace_id} was brought up by another dl run.")
         }
 
+        // --- the devpod provider (no Python line)
+        //
+        // info for the registration and warning for the failure, and both name the
+        // command by hand, because the whole point of the pair is that the reader
+        // now knows a provider is a thing devpod has and how to look at it. The
+        // registration line is not an apology: it reports a change made to devpod's
+        // configuration on the user's behalf, which is worth one line however
+        // ordinary it is.
+        LaunchNotice::ProviderRegistered { name } => format!(
+            "devpod had no provider registered, so dl added `{name}` and devpod made it \
+             the default. `devpod provider list` shows it; `devpod provider add <other>` \
+             changes it."
+        ),
+        LaunchNotice::ProviderGuardFailed(failure) => provider_guard_refusal(failure),
+
+        // --- the ssh-agent (info; no Python line)
+        //
+        // Same shape as the dotfiles line below and next to it on the terminal:
+        // which question was asked (the variable), what the answer means for this
+        // workspace, what still works, and the one thing that changes it. No
+        // `recreate` advice, because whether a later agent reaches a running
+        // workspace depends on how its devcontainer forwards it, and this line is
+        // said for every repo.
+        LaunchNotice::NoSshAgent { named: None } => "ssh-agent: none on this host \
+             (SSH_AUTH_SOCK is unset), so this workspace has no SSH key to push with. \
+             GitHub still works over HTTPS with the forwarded gh token. Start an agent \
+             and export SSH_AUTH_SOCK to change that."
+            .to_owned(),
+        LaunchNotice::NoSshAgent { named: Some(path) } => format!(
+            "ssh-agent: SSH_AUTH_SOCK names {path}, which is not a socket, so this \
+             workspace has no SSH key to push with. GitHub still works over HTTPS with \
+             the forwarded gh token. Start an agent and export SSH_AUTH_SOCK to change \
+             that."
+        ),
+
         // --- the dotfiles (info; devlaunch#560, no Python line)
         //
         // Both arms name where the setting comes from, because that is the half
@@ -5254,6 +5359,82 @@ mod tests {
                  device (os error 28)), so this workspace opens without a GitHub login."
                     .to_owned()
             )
+        );
+    }
+
+    /// The line the fresh-machine case produces. It names the command that shows
+    /// what was done and the command that changes it, because a reader meeting
+    /// "provider" for the first time has neither.
+    #[test]
+    fn registering_a_provider_says_what_was_done_and_how_to_change_it() {
+        let line = launch_notice(&LaunchNotice::ProviderRegistered {
+            name: "docker".to_owned(),
+        })
+        .expect("a line");
+
+        assert!(line.contains("devpod had no provider registered"), "{line}");
+        assert!(line.contains("`devpod provider list`"), "{line}");
+        assert!(line.contains("`devpod provider add <other>`"), "{line}");
+    }
+
+    /// The guard failing is a warning and never an error: the `up` it runs ahead of
+    /// still runs. So the line says what dl did *not* do and leaves the verdict to
+    /// devpod, rather than claiming the launch is over.
+    #[test]
+    fn a_provider_guard_that_failed_reports_a_warning_and_not_a_refusal() {
+        let line = launch_notice(&LaunchNotice::ProviderGuardFailed(
+            EnsureProviderFailed::ListUnreadable(ProviderListUnreadable::Failed {
+                exit: Exit::Code(1),
+                stderr: "boom\n".to_owned(),
+            }),
+        ))
+        .expect("a line");
+
+        assert_eq!(
+            line,
+            "Could not read devpod's provider list (`devpod provider list` exited 1: 'boom'), \
+             so dl left devpod's providers alone. A devpod with no provider refuses every \
+             launch: `devpod provider add docker` registers one."
+        );
+        assert!(!line.starts_with("error:"), "{line}");
+    }
+
+    /// A devpod that is not installed is the one failure this guard shares with
+    /// every other devpod call, and it must not be reported as devpod refusing.
+    #[test]
+    fn a_provider_guard_with_no_devpod_to_ask_says_that_and_not_an_exit_code() {
+        let line = launch_notice(&LaunchNotice::ProviderGuardFailed(
+            EnsureProviderFailed::AddFailed(AddFailed::NotRun(NotRun::NotInstalled)),
+        ))
+        .expect("a line");
+
+        assert!(line.contains("devpod is not installed"), "{line}");
+    }
+
+    /// Both arms name the variable, say what still works, and end on the one
+    /// change that fixes it; the second names the path the shell is pointing at.
+    #[test]
+    fn no_agent_says_what_was_asked_what_still_works_and_what_changes_it() {
+        let unset = launch_notice(&LaunchNotice::NoSshAgent { named: None }).expect("a line");
+        assert!(
+            unset.starts_with("ssh-agent: none on this host (SSH_AUTH_SOCK is unset)"),
+            "{unset}"
+        );
+        assert!(unset.contains("GitHub still works over HTTPS"), "{unset}");
+        assert!(
+            unset.ends_with("export SSH_AUTH_SOCK to change that."),
+            "{unset}"
+        );
+
+        let dead = launch_notice(&LaunchNotice::NoSshAgent {
+            named: Some("/run/user/1000/gone".to_owned()),
+        })
+        .expect("a line");
+        assert!(
+            dead.starts_with(
+                "ssh-agent: SSH_AUTH_SOCK names /run/user/1000/gone, which is not a socket"
+            ),
+            "{dead}"
         );
     }
 

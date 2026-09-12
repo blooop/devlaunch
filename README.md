@@ -33,8 +33,11 @@ one argument instead of a clone, a config file and a build command.
 
 ## Quickstart
 
+Needs [Docker](https://docs.docker.com/engine/install/) on the machine, usable without `sudo`.
+
 ```bash
 pixi global install --channel conda-forge --channel https://prefix.dev/blooop devlaunch
+dl --install && source ~/.bashrc
 ```
 
 ### 1. Name a repo, land in a shell inside it
@@ -102,13 +105,56 @@ Workspaces pile up. A verb with no workspace opens the same selector, TAB marks 
 
 ## Install
 
+### Docker, first
+
+`dl` drives [devpod](https://devpod.sh), and devpod builds and runs the containers on a Docker
+daemon on your machine. Nothing devlaunch installs provides one, so a host without Docker gets as
+far as `devpod up` and no further. Install it from
+[Docker's own guide](https://docs.docker.com/engine/install/), and follow their
+[post-install steps](https://docs.docker.com/engine/install/linux-postinstall/) so that `dl` can
+reach the daemon without `sudo`. `docker run hello-world` is the check.
+
+devpod itself starts with no provider registered, which is a second thing a fresh machine is
+missing. `dl` handles that one: the first launch on a devpod that has no provider at all registers
+`docker`, and says on the terminal that it did. A devpod you have already configured is left
+alone, whichever provider you configured it with.
+
+An ssh-agent is optional. With one running and `SSH_AUTH_SOCK` exported, workspaces can push over
+SSH with your key; without one they cannot, and `dl` says so once when it brings a workspace up.
+GitHub still works from inside either way, over HTTPS with the `gh` token `dl` forwards.
+
 ### pixi (recommended)
 
 ```bash
 pixi global install --channel conda-forge --channel https://prefix.dev/blooop devlaunch
 ```
 
-That brings `devpod` and everything else along with it.
+That is the minimal install, and it is deliberately minimal: `dl`, `aid`, and the `devpod` they
+drive. Everything else `dl` touches it resolves from your PATH, so it finds the `git`, `ssh` and
+`gh` you already use rather than a second copy of its own.
+
+`dl` and `aid` go on your PATH; `devpod` stays inside the environment, where `dl` can reach it and
+you cannot. Run `pixi global expose add --environment devlaunch devpod` if you want to type
+`devpod` yourself.
+
+### The full install: add `gh`
+
+```bash
+pixi global add --environment devlaunch gh --expose gh
+gh auth login
+```
+
+`gh` is optional and buys exactly two things. It is how `dl` reads the token it forwards into every
+workspace as `GH_TOKEN`, so without it every workspace opens with no GitHub login and `dl` says so.
+And `dl <user/repo>@<pr-link>` asks `gh` which branch a pull request is on, so without it that one
+form refuses and tells you to name the branch. Nothing else needs it.
+
+Installed into devlaunch's own environment like this, `dl` finds it without it shadowing any `gh`
+you already have; `--expose gh` is only so that you can run `gh auth login` yourself. A `gh` already
+on your PATH does just as well, and the two share `~/.config/gh`, so logging in once covers both.
+
+Workspaces get their own `gh` regardless: `dl` installs one inside every container it opens. This
+is only about the host, and only because the token has to be read here to be forwarded.
 
 ### pip
 
