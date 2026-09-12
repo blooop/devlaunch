@@ -1954,12 +1954,20 @@ impl HostAgent {
 
 /// A path `${localEnv:SSH_AUTH_SOCK}` can resolve to on a host with no agent.
 ///
-/// The mount, not the agent. A devcontainer.json that binds that variable -- this
-/// repo's own does, and it is not unusual -- gets an empty source string on a host
-/// with nothing exported, and docker refuses the whole run with `field Source must
-/// not be empty`: no container, rather than a container with no key. devcontainer
-/// manifests have no conditional mounts, so the only place that can be fixed for
-/// *every* repo is here, in the environment `dl` hands devpod.
+/// The mount, not the agent. A devcontainer.json that binds that variable gets an
+/// empty source string on a host with nothing exported, and docker refuses the
+/// whole run with `field Source must not be empty`: no container, rather than a
+/// container with no key. devcontainer manifests have no conditional mounts, so
+/// the only place that can be fixed for *every* repo is here, in the environment
+/// `dl` hands devpod.
+///
+/// **This repo's own devcontainer is not one of them, and that is the point.** It
+/// binds `${localEnv:HOME}/.ssh/agent.sock`, a path `claude-code/init-host.sh`
+/// maintains, precisely because binding the variable refused the create on a host
+/// with no agent. That fixed one manifest by editing it; this fixes the ones
+/// devlaunch does not own. Neither makes the other redundant, and deleting the
+/// host hook on the strength of this function would put every gpg-agent host back
+/// on `bind mount source path does not exist`.
 ///
 /// A real socket, bound and then immediately dropped, rather than an empty file.
 /// Both satisfy the bind mount; a socket is what the variable claims to name, so
@@ -1996,24 +2004,81 @@ fn absent_agent_socket(host: &Host) -> Option<PathBuf> {
     // SAFETY: `getuid` reads the calling process's real uid. It cannot fail, takes
     // no pointer and touches no memory this process owns.
     let uid = unsafe { libc::getuid() };
-    bind_placeholder(&crate::osext::temp_dir().join(format!("devlaunch-{uid}-no-agent.sock")))
+    let name = format!("devlaunch-{uid}-no-agent.sock");
+    // `/tmp` by name when the resolved temp directory is itself too deep, which
+    // `osext::temp_dir` allows: it honours `TMPDIR` and falls back as far as the
+    // *current directory*. A fallback that exists only because a path was too long
+    // must not inherit another long path -- that is this fix degrading back into
+    // the bug, which is the whole reason there are two candidates.
+    let temp = crate::osext::temp_dir().join(&name);
+    bind_placeholder(&temp).or_else(|| bind_placeholder(&PathBuf::from("/tmp").join(&name)))
 }
 
 /// One candidate: the socket that is already there, or a newly bound one.
+///
+/// Three things this does not do, each of which was a defect before it did not.
+///
+/// **It does not trust a path it did not make.** The reuse check is
+/// `symlink_metadata` and an owner test, not `metadata`: the latter follows
+/// symlinks, so on a shared host another user could leave a symlink to *their*
+/// live agent where the fallback looks, and dl would hand devpod a path that
+/// bind-mounts the attacker's agent into the workspace -- where an `ssh-add` loads
+/// the user's key into it and a `git push` asks it to authenticate. `/tmp` is
+/// world-writable and its sticky bit stops deletion, not creation, so uid-keying
+/// the name prevents an accident and nothing else. Anything at the path that is
+/// not a socket this user owns is replaced.
+///
+/// **It does not accept a path that cannot hold a socket.** A `sockaddr_un` holds
+/// 104 bytes at the smaller of dl's two platforms ([`crate::clients::ssh`] measures
+/// this), and the bind is the cheapest way to find out -- but a length that cannot
+/// work is worth refusing before removing whatever is there for it.
+///
+/// **It does not leave the path absent, even briefly.** Two `dl` processes at once
+/// is ordinary rather than exotic: `aid` spawns a prewarm boot beside its own
+/// launch, and wf fires `dl <ws> up` the moment a launch is staged. Both taking
+/// `remove` then `bind` means the second unlinks the first's socket, and a
+/// `devpod up` that resolves the bind source inside that window is refused with
+/// `bind mount source path does not exist`. So the socket is bound under a
+/// private name and `rename`d over the path, which either happened or did not --
+/// the same move OpenSSH's `muxserver_listen` makes, for the same reason.
 fn bind_placeholder(path: &Path) -> Option<PathBuf> {
-    use std::os::unix::fs::FileTypeExt;
-    if std::fs::metadata(path)
-        .map(|meta| meta.file_type().is_socket())
-        .unwrap_or(false)
-    {
+    if path.as_os_str().len() >= SUN_PATH {
+        return None;
+    }
+    if is_our_socket(path) {
         return Some(path.to_owned());
     }
     std::fs::create_dir_all(path.parent()?).ok()?;
-    let _ = std::fs::remove_file(path);
-    let listener = std::os::unix::net::UnixListener::bind(path).ok()?;
+    // SAFETY: as above.
+    let staging = path.with_extension(format!("{}.tmp", std::process::id()));
+    let _ = std::fs::remove_file(&staging);
+    let listener = std::os::unix::net::UnixListener::bind(&staging).ok()?;
     drop(listener);
+    if std::fs::rename(&staging, path).is_err() {
+        let _ = std::fs::remove_file(&staging);
+        return None;
+    }
     Some(path.to_owned())
 }
+
+/// Whether `path` is a socket this user owns, without following a symlink to
+/// decide it.
+fn is_our_socket(path: &Path) -> bool {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+    // SAFETY: `getuid` reads the calling process's real uid. It cannot fail, takes
+    // no pointer and touches no memory this process owns.
+    let uid = unsafe { libc::getuid() };
+    std::fs::symlink_metadata(path)
+        .map(|meta| meta.file_type().is_socket() && meta.uid() == uid)
+        .unwrap_or(false)
+}
+
+/// The `sockaddr_un::sun_path` a bound socket has to fit in, NUL included.
+///
+/// [`crate::clients::ssh`] names the same number for the same reason: 108 bytes on
+/// Linux, 104 on macOS, and the smaller of the two because being wrong is a failed
+/// bind rather than a warning.
+const SUN_PATH: usize = 104;
 
 /// The provider devpod is given when it has none.
 ///
@@ -6780,6 +6845,86 @@ mod tests {
             agent_named_to_devpod(&scene).map(PathBuf::from),
             Some(scene.host.absent_agent_socket())
         );
+    }
+
+    /// A socket another user left where the fallback looks is not reused. It is
+    /// the fallback that is exposed, because `/tmp` is world-writable and its
+    /// sticky bit stops deletion rather than creation -- so a socket there may
+    /// have been put there by somebody else, and `metadata` following a symlink
+    /// to their live agent is how a workspace ends up bind-mounting it: an
+    /// `ssh-add` inside then loads this user's key into an agent they do not own.
+    #[test]
+    fn a_socket_this_user_does_not_own_is_not_reused() {
+        let dir = tempfile::tempdir().expect("a scratch dir");
+        let theirs = dir.path().join("theirs.sock");
+        let _listener = std::os::unix::net::UnixListener::bind(&theirs).expect("their agent");
+        let path = dir.path().join("ours.sock");
+        std::os::unix::fs::symlink(&theirs, &path).expect("their symlink");
+        // Following the link, this looks like a perfectly good socket.
+        assert!(
+            std::fs::metadata(&path)
+                .map(|m| std::os::unix::fs::FileTypeExt::is_socket(&m.file_type()))
+                .unwrap_or(false)
+        );
+
+        assert!(
+            !is_our_socket(&path),
+            "a symlink to another socket was accepted"
+        );
+
+        // And the placeholder replaces it rather than handing devpod the link.
+        let bound = bind_placeholder(&path).expect("a placeholder");
+        assert_eq!(bound, path);
+        assert!(
+            !std::fs::symlink_metadata(&path)
+                .expect("it exists")
+                .is_symlink(),
+            "the symlink survived"
+        );
+        assert!(theirs.exists(), "the other user's socket was destroyed");
+    }
+
+    /// A path too long to hold a socket is refused before anything at it is
+    /// removed, rather than after the bind fails.
+    #[test]
+    fn a_path_too_long_for_a_socket_is_refused_without_touching_it() {
+        let dir = tempfile::tempdir().expect("a scratch dir");
+        let deep = dir.path().join("f".repeat(60)).join("g".repeat(60));
+        std::fs::create_dir_all(&deep).expect("a deep dir");
+        let path = deep.join("no-agent.sock");
+        assert!(
+            path.as_os_str().len() >= SUN_PATH,
+            "the fixture is not long enough"
+        );
+
+        assert_eq!(bind_placeholder(&path), None);
+        assert!(!path.exists(), "a refused candidate left something behind");
+    }
+
+    /// The path is never absent, even for the instant between removing what was
+    /// there and binding. Two dl processes at once is ordinary -- aid spawns a
+    /// prewarm beside its own launch -- and a `devpod up` that resolves the bind
+    /// source in that window is refused with `bind source path does not exist`.
+    #[test]
+    fn rebinding_over_a_stale_placeholder_never_leaves_the_path_absent() {
+        let dir = tempfile::tempdir().expect("a scratch dir");
+        let path = dir.path().join("no-agent.sock");
+        // Something that is not a socket, so the reuse check declines it and the
+        // rebinding path is the one taken.
+        std::fs::write(&path, b"not a socket").expect("a file in the way");
+
+        let bound = bind_placeholder(&path).expect("a placeholder");
+
+        assert_eq!(bound, path);
+        assert!(is_our_socket(&path), "the path does not hold our socket");
+        // The staging name is gone: a rename moved it, it was not left beside.
+        let strays: Vec<_> = std::fs::read_dir(dir.path())
+            .expect("readable")
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name != "no-agent.sock")
+            .collect();
+        assert!(strays.is_empty(), "staging files left behind: {strays:?}");
     }
 
     /// A cache too deep to bind a socket in still gets one. Found the hard way: a

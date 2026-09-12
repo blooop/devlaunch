@@ -58,8 +58,11 @@ stays in place, including one it was given before you set
 ## The ssh-agent, and what `dl` does when there is none
 
 Forwarding an agent into the container is devpod's job, not `dl`'s: a devcontainer
-that wants one says so in its `devcontainer.json`, usually by binding
+that wants one says so in its `devcontainer.json`, commonly by binding
 `${localEnv:SSH_AUTH_SOCK}` at a path its `containerEnv` points `SSH_AUTH_SOCK` at.
+This repository's own devcontainer deliberately does not: it binds a path
+`init-host.sh` maintains, because binding the variable is what refused the create
+on a host with no agent in the first place.
 `dl` reads the variable for one purpose of its own, which is the identity of the
 ssh control socket: a reused master forwards whichever agent opened it, so two runs
 with different agents must not find one another's master.
