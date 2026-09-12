@@ -129,9 +129,32 @@ GitHub still works from inside either way, over HTTPS with the `gh` token `dl` f
 pixi global install --channel conda-forge --channel https://prefix.dev/blooop devlaunch
 ```
 
-That brings `devpod` and everything else along with it. It puts `dl` and `aid` on your PATH and
-keeps `devpod` inside its own environment, where `dl` can reach it and you cannot: run
-`pixi global expose add --environment devlaunch devpod` if you want to type `devpod` yourself.
+That is the minimal install, and it is deliberately minimal: `dl`, `aid`, and the `devpod` they
+drive. Everything else `dl` touches it resolves from your PATH, so it finds the `git`, `ssh` and
+`gh` you already use rather than a second copy of its own.
+
+`dl` and `aid` go on your PATH; `devpod` stays inside the environment, where `dl` can reach it and
+you cannot. Run `pixi global expose add --environment devlaunch devpod` if you want to type
+`devpod` yourself.
+
+### The full install: add `gh`
+
+```bash
+pixi global add --environment devlaunch gh --expose gh
+gh auth login
+```
+
+`gh` is optional and buys exactly two things. It is how `dl` reads the token it forwards into every
+workspace as `GH_TOKEN`, so without it every workspace opens with no GitHub login and `dl` says so.
+And `dl <user/repo>@<pr-link>` asks `gh` which branch a pull request is on, so without it that one
+form refuses and tells you to name the branch. Nothing else needs it.
+
+Installed into devlaunch's own environment like this, `dl` finds it without it shadowing any `gh`
+you already have; `--expose gh` is only so that you can run `gh auth login` yourself. A `gh` already
+on your PATH does just as well, and the two share `~/.config/gh`, so logging in once covers both.
+
+Workspaces get their own `gh` regardless: `dl` installs one inside every container it opens. This
+is only about the host, and only because the token has to be read here to be forwarded.
 
 ### pip
 
