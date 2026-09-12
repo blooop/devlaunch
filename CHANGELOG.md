@@ -7,6 +7,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.44.0] - 2026-09-12
+
+### Fixed
+
+- **A fresh machine can open a workspace.** Installing devlaunch on a bare
+  Xubuntu 26.04 and following the README and nothing else hit three refusals in a
+  row, each of which stopped the launch outright and the first two before any
+  container existed, which reads as a broken tool rather than as a machine
+  missing a thing (#611).
+
+  devpod ships with no provider registered and devlaunch's install adds none, so
+  `devpod up` exited 1 with `no default provider found` -- devpod's words, naming
+  a concept the reader has not met and no command to fix it. `dl` now registers
+  one on the first launch that finds devpod with **no provider at all**, and says
+  on the terminal that it did. Only on empty, which is the point: `devpod
+  provider add` also makes what it adds the default, so a guard keyed on "is
+  docker registered" would answer no on a machine deliberately driving kubernetes
+  and silently move every future `up` onto docker. A devpod anyone has configured
+  is left exactly as they configured it. The guard runs immediately before
+  `devpod up`, so it costs a `devpod provider list` only on the path already
+  spending seconds to minutes in a build, and nothing on the fast-attach arm. It
+  cannot fail a launch: a list it cannot read is a warning and the `up` runs
+  anyway.
+
+  This repo's own devcontainer mounts `~/.config/gh`, and nothing created it, so
+  a host that had never run `gh auth login` got `bind mount source path does not
+  exist`. `init-host.sh` exists precisely to create the host paths the manifest
+  mounts; the guard over it filtered the mount list to `~/.ssh/` and so proved
+  nothing about a mounted host path anywhere else. It now reads the whole list,
+  and removing the new `mkdir` fails it.
+
+  The agent socket mount had no source on a host with no agent. Binding
+  `${localEnv:SSH_AUTH_SOCK}` expands to nothing when the variable is unset -- a fresh desktop
+  before any dotfiles have run -- and docker refuses the whole run with `field
+  Source must not be empty`; binding `~/.ssh/agent.sock` as a bare assumption
+  refused a gpg-agent host instead. Both made "no agent" mean "no container". The
+  manifest now binds a path `init-host.sh` maintains: a symlink to the agent the
+  host has, an untouched socket something already bound there, or an empty
+  placeholder when there is none. The hook starts no agent, because a container
+  launcher's pre-create hook is the wrong owner for a daemon that outlives it and
+  holds the user's keys.
+
+- **A workspace says when it has no SSH key, instead of letting you find out.**
+  A host with no agent gives every workspace a container that cannot push over
+  SSH, and nothing said so: the first sign was `git push` failing with
+  `Permission denied (publickey)` in a workspace that came up looking fine. An
+  `up` now reports it, names the variable the answer came from, and says that
+  GitHub still works over HTTPS with the forwarded token (#612).
+
+- **Every repo that forwards an ssh-agent can be opened without one.** #611 fixed
+  devlaunch's own manifest by editing it; any other repo binding `${localEnv:SSH_AUTH_SOCK}` --
+  the ordinary way to forward an agent -- still refused the create. devcontainer
+  manifests have no conditional mounts, so the environment `dl` hands `devpod up`
+  is the only place it can be answered for every repo at once. When the variable
+  is unset or names something that is not a socket, the `up` now runs with it
+  pointing at a placeholder socket dl maintains (#612).
+
+  Measured against devpod 0.26.1 rather than assumed, because devpod does not
+  simply pass the variable through: a live agent is replaced by devpod's own
+  relay, a socket nothing listens on is passed through as the source, and an
+  unset variable is the empty source that refuses the create. So the placeholder
+  is a real unix socket, bound and immediately dropped -- ssh inside the
+  container is refused by `connect()` the way it is by any agent that has gone
+  away, rather than failing on the file type. A host that has an agent is left
+  completely alone.
+
 ## [0.43.0] - 2026-09-10
 
 ### Added
