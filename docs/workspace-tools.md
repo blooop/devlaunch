@@ -55,6 +55,49 @@ that is *already running* skips that step, and the token it was given at startup
 stays in place, including one it was given before you set
 `DEVLAUNCH_NO_GH_TOKEN`. Run `dl <workspace> restart` to replace it.
 
+## The ssh-agent, and what `dl` does when there is none
+
+Forwarding an agent into the container is devpod's job, not `dl`'s: a devcontainer
+that wants one says so in its `devcontainer.json`, commonly by binding
+`${localEnv:SSH_AUTH_SOCK}` at a path its `containerEnv` points `SSH_AUTH_SOCK` at.
+This repository's own devcontainer deliberately does not: it binds a path
+`init-host.sh` maintains, because binding the variable is what refused the create
+on a host with no agent in the first place.
+`dl` reads the variable for one purpose of its own, which is the identity of the
+ssh control socket: a reused master forwards whichever agent opened it, so two runs
+with different agents must not find one another's master.
+
+What `dl` does do is make sure the variable names something. A manifest binding
+`${localEnv:SSH_AUTH_SOCK}` on a host with no agent exported gets an empty source
+string, and docker refuses the whole run with `field Source must not be empty`:
+no container at all, rather than a container without a key. That is a fresh
+machine before any dotfiles have run, and it is not something the manifest can
+guard, because `devcontainer.json` has no conditional mounts. So the environment
+`dl` hands `devpod up` is the only place it can be answered once for every repo,
+and that is where it is answered.
+
+When `SSH_AUTH_SOCK` is unset, or names something that is not a socket, the `up`
+runs with it pointing at a placeholder socket under devlaunch's cache directory.
+It is a real unix socket, bound and immediately closed, so nothing is listening on
+it: ssh inside the container is refused by `connect()` the way it is by any agent
+that has gone away, rather than failing on the file type. The workspace opens, and
+it opens without a key. `dl` says so once on the `up`, and says what still works:
+
+```
+ssh-agent: none on this host (SSH_AUTH_SOCK is unset), so this workspace has no SSH
+key to push with. GitHub still works over HTTPS with the forwarded gh token. Start
+an agent and export SSH_AUTH_SOCK to change that.
+```
+
+A host that has an agent is left exactly as it is. The variable is inherited
+untouched, devpod forwards the real socket, and no placeholder is made. The
+placeholder is not a login and holds nothing: it lives in the cache, `dl --purge`
+takes it with the rest, and the next launch that needs one makes it again.
+
+Which agent a running workspace has is fixed when its container is created, because
+that is when docker resolves a bind source. Starting an agent afterwards reaches a
+workspace only once it is recreated.
+
 ## Shared agent skills
 
 The repo's [local container feature](../.devcontainer/claude-code/README.md#shared-skills-for-claude-and-codex)

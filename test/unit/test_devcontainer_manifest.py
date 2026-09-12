@@ -19,6 +19,7 @@ again, months later, with no commit to blame. These are the tests for a
 regression that cannot announce itself.
 """
 
+import contextlib
 import json
 import os
 import re
@@ -978,12 +979,42 @@ def test_the_host_hook_heals_the_socket_it_is_mounted_from(devcontainer, mounts)
 
 
 def _live_unix_socket(path: Path):
-    """A real bound socket at `path`, held open for the caller's `with` block."""
+    """A real bound socket at `path`, held open for the caller's `with` block.
+
+    Bound and listening, and *not* an ssh-agent: nothing speaks the agent protocol
+    on it. That distinction is load-bearing below, because the hook now asks
+    whether an agent answers rather than whether a socket exists.
+    """
     import socket
 
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     sock.bind(str(path))
     return sock
+
+
+@contextlib.contextmanager
+def _real_ssh_agent(path: Path):
+    """An actual `ssh-agent` listening at `path`, killed on the way out.
+
+    A plain bound socket will not do for the arm that follows a live agent:
+    `ssh-add -l` exits 2 against one (it connects and gets no agent protocol) and
+    1 against a real agent holding no keys, and 2 is exactly what the hook reads
+    as "not an agent".
+    """
+    agent = shutil.which("ssh-agent")
+    if agent is None:
+        pytest.skip("ssh-agent is not installed, so the live-agent arm cannot be staged")
+    started = subprocess.run([agent, "-a", str(path)], capture_output=True, text=True, check=False)
+    assert started.returncode == 0, started.stderr
+    try:
+        yield
+    finally:
+        subprocess.run(
+            [agent, "-k"],
+            env=dict(os.environ, SSH_AUTH_SOCK=str(path)),
+            capture_output=True,
+            check=False,
+        )
 
 
 def test_the_host_hook_gives_the_agent_socket_mount_a_source_on_every_host(
@@ -1030,9 +1061,24 @@ def test_the_host_hook_gives_the_agent_socket_mount_a_source_on_every_host(
         f"{'a symlink' if maintained.is_symlink() else 'nothing' if not maintained.exists() else maintained.stat().st_mode}"
     )
 
-    # 2. An agent elsewhere.
+    # 1b. A socket that exists and answers nothing. This is dl's own placeholder,
+    # which it exports as SSH_AUTH_SOCK for the whole `devpod up` so that a
+    # manifest binding ${localEnv:SSH_AUTH_SOCK} gets a bindable source -- and this
+    # hook is that `devpod up`'s child, so it inherits it. Followed, it would
+    # unlink and recreate the bind source every container of this repo is mounted
+    # from, for no gain: a different placeholder to the same effect.
+    hollow = tmp_path / "no-agent.sock"
+    with _live_unix_socket(hollow):
+        run_hook(SSH_AUTH_SOCK=str(hollow))
+        assert not maintained.is_symlink(), (
+            "the hook followed a socket no agent answers on, relinking the bind "
+            "source to a placeholder for nothing"
+        )
+        assert maintained.is_file()
+
+    # 2. A real agent elsewhere.
     elsewhere = tmp_path / "S.gpg-agent.ssh"
-    with _live_unix_socket(elsewhere):
+    with _real_ssh_agent(elsewhere):
         run_hook(SSH_AUTH_SOCK=str(elsewhere))
         assert maintained.is_symlink(), f"{source} should now be a symlink to the agent"
         assert maintained.resolve() == elsewhere.resolve()
@@ -1053,6 +1099,36 @@ def test_the_host_hook_gives_the_agent_socket_mount_a_source_on_every_host(
         # And with no variable at all, the same.
         run_hook()
         assert maintained.lstat().st_ino == inode
+
+
+def test_the_no_agent_line_in_the_docs_is_the_line_dl_prints():
+    """The docs page quotes `NoSshAgent`; this diffs the quote against the source.
+
+    CLAUDE.md allows a second hand-maintained copy of a fact only where a test
+    named beside it diffs it against the first. ``docs/workspace-tools.md``
+    reproduces the terminal line verbatim so a reader recognises what they saw,
+    and ``render.rs`` is where the words live. Without this, rewording the notice
+    leaves the page publishing output ``dl`` no longer prints, with every other
+    guard green.
+
+    Compared on the words rather than byte for byte: the doc wraps the line to fit
+    the page and the source wraps it to fit the column, and neither wrapping is the
+    fact.
+    """
+    docs = (REPO_ROOT / "docs" / "workspace-tools.md").read_text()
+    render = (REPO_ROOT / "rust" / "dl" / "src" / "render.rs").read_text()
+
+    quoted = re.search(r"```\n(ssh-agent: none on this host.*?)\n```", docs, re.S)
+    assert quoted, "docs/workspace-tools.md no longer quotes the no-agent line"
+    words = " ".join(quoted.group(1).split())
+
+    # The source spells it as a `\`-continued literal: join the pieces the way the
+    # compiler does before comparing.
+    source = " ".join(render.replace("\\\n", "").split())
+    assert words in source, (
+        "the no-agent line in docs/workspace-tools.md is not the line render.rs "
+        f"prints any more:\n  docs: {words}"
+    )
 
 
 def test_the_dockerfile_copies_nothing_out_of_the_build_context():

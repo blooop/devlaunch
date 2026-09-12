@@ -216,12 +216,29 @@ mkdir -m 700 -p "$HOME/.ssh"
 #      agent's socket orphans the agent; writing over the mount is EROFS or
 #      worse. A socket that has gone dead is left too: it is not ours to judge,
 #      and a container bound to a dead socket starts, which is the promise.
-#   2. $SSH_AUTH_SOCK names a live socket somewhere else -- gpg-agent under
-#      $XDG_RUNTIME_DIR, ssh-agent(1) under /tmp, a forwarded `ssh -A` --
-#      so the path becomes a symlink to it. Docker resolves a bind source on
-#      the host at create, so the container binds the agent itself. Replaces a
-#      placeholder or an earlier symlink to a different agent and nothing
-#      else, by arm 1; a link already pointing at this agent is left as it is.
+#   2. $SSH_AUTH_SOCK names a socket somewhere else that an agent actually
+#      answers on -- gpg-agent under $XDG_RUNTIME_DIR, ssh-agent(1) under /tmp,
+#      a forwarded `ssh -A` -- so the path becomes a symlink to it. Docker
+#      resolves a bind source on the host at create, so the container binds the
+#      agent itself. Replaces a placeholder or an earlier symlink to a different
+#      agent and nothing else, by arm 1; a link already pointing at this agent is
+#      left as it is.
+#
+#      **Answers, not merely exists**, which `-S` alone does not establish and
+#      which matters because dl now hands this hook a socket deliberately nothing
+#      listens on. `dl` sets $SSH_AUTH_SOCK to a placeholder for the whole
+#      `devpod up` when the host has no agent, so that a devcontainer.json binding
+#      `${localEnv:SSH_AUTH_SOCK}` -- which this repo's does not, and which is the
+#      ordinary way elsewhere -- gets a source docker can bind instead of an empty
+#      string. This hook is a child of that `devpod up` and inherits it. Taken on
+#      `-S` alone, arm 2 fires on that placeholder and relinks the path: a
+#      *different* placeholder, to the same effect, at the cost of unlinking and
+#      recreating the bind source every container built from this repo is mounted
+#      from -- which is the stale-mount failure this file spends sixty lines
+#      above avoiding (devlaunch#326) -- and of leaving a symlink into devlaunch's
+#      cache inside the developer's real ~/.ssh, which `dl --purge` then dangles.
+#      A liveness probe is the distinction that was always meant: arm 2 is "point
+#      at the host's real agent", and a socket no agent answers on is not one.
 #   3. Nothing answers anywhere. An empty regular file, so the source exists
 #      and the container starts. Inside it, SSH_AUTH_SOCK names a file no agent
 #      listens on, ssh finds no agent, and the workspace has no SSH key -- the
@@ -245,10 +262,28 @@ mkdir -m 700 -p "$HOME/.ssh"
 # the manifest's source against this path, and
 # `test_the_host_hook_gives_the_agent_socket_mount_a_source_on_every_host`
 # holds the three arms.
+# Whether an agent answers on $1. `ssh-add -l` exits 0 with keys and 1 with none
+# -- both are an agent -- and 2 when it could not contact one at all, which is
+# the answer being asked for. Timed out because this runs before every create and
+# a wedged agent must not hold a launch open.
+#
+# No ssh-add on the host is treated as "an agent", which is the conservative
+# default rather than the tidy one: it keeps the behaviour every host with a real
+# agent has today, and the only case it gets wrong is dl's placeholder, where the
+# cost is the untidy relink above and not a workspace. A machine driving devpod
+# over ssh without openssh-client installed is not a configuration this repo has
+# to serve well, only one it must not break.
+agent_answers() {
+    command -v ssh-add >/dev/null 2>&1 || return 0
+    SSH_AUTH_SOCK="$1" timeout 2 ssh-add -l >/dev/null 2>&1
+    [ "$?" -ne 2 ]
+}
+
 agent_sock="$HOME/.ssh/agent.sock"
 if [ -S "$agent_sock" ] && [ ! -L "$agent_sock" ]; then
     :
-elif [ -n "${SSH_AUTH_SOCK:-}" ] && [ -S "$SSH_AUTH_SOCK" ] && [ "$SSH_AUTH_SOCK" != "$agent_sock" ]; then
+elif [ -n "${SSH_AUTH_SOCK:-}" ] && [ -S "$SSH_AUTH_SOCK" ] &&
+    [ "$SSH_AUTH_SOCK" != "$agent_sock" ] && agent_answers "$SSH_AUTH_SOCK"; then
     if [ "$(readlink "$agent_sock" 2>/dev/null)" != "$SSH_AUTH_SOCK" ]; then
         rm -f "$agent_sock"
         ln -s "$SSH_AUTH_SOCK" "$agent_sock"
