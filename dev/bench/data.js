@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789292538156,
+  "lastUpdate": 1789301077853,
   "repoUrl": "https://github.com/blooop/devlaunch",
   "entries": {
     "devlaunch launch stages": [
@@ -14954,6 +14954,93 @@ window.BENCHMARK_DATA = {
             "range": "± 0.491635",
             "unit": "s",
             "extra": "runs=5/5 wall=9.440252s v0.26.1, Linux-X64"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "blooop@gmail.com",
+            "name": "Austin Gregg-Smith",
+            "username": "blooop"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ed7b2acd9406c15423968af6ab3eafb52f62be83",
+          "message": "Merge pull request #618 from blooop/wayfinder/devlaunch-472\n\nMake the pixi pointer --prune prints a command that runs, and stop reporting a live cache tag as gone",
+          "timestamp": "2026-09-13T13:01:42+01:00",
+          "tree_id": "f7cfd85d34fd35572f31b1a775fc044052448fc9",
+          "url": "https://github.com/blooop/devlaunch/commit/ed7b2acd9406c15423968af6ab3eafb52f62be83"
+        },
+        "date": 1789301076766,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "warm / attach",
+            "value": 1.127656,
+            "range": "± 0.101298",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / devpod-up",
+            "value": 0.286621,
+            "range": "± 0.00782",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / host-prep",
+            "value": 0.000045,
+            "range": "± 0.000013",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / total",
+            "value": 1.424286,
+            "range": "± 0.10594",
+            "unit": "s",
+            "extra": "runs=5/5 wall=1.426327s v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / attach",
+            "value": 1.198168,
+            "range": "± 0.240803",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / devpod-up",
+            "value": 3.990624,
+            "range": "± 0.821427",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / host-prep",
+            "value": 0.324635,
+            "range": "± 0.013107",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / tools",
+            "value": 3.673617,
+            "range": "± 0.107",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / total",
+            "value": 9.000258,
+            "range": "± 0.793432",
+            "unit": "s",
+            "extra": "runs=5/5 wall=9.002526s v0.26.1, Linux-X64"
           }
         ]
       }
