@@ -211,8 +211,8 @@ pub(crate) fn dispatch(
                 Ok(target) => target,
                 Err(ending) => return ending,
             };
-            if starts_agent(&verb) {
-                crate::herdr_editor::start();
+            if let Some(agent) = started_agent(&verb) {
+                crate::herdr_editor::start(agent);
             }
             let after = verb.after_removal();
             let ending = render_workspace(
@@ -233,37 +233,15 @@ pub(crate) fn dispatch(
     }
 }
 
-fn starts_agent(verb: &Verb) -> bool {
+fn started_agent(verb: &Verb) -> Option<crate::herdr_editor::AgentKind> {
     let Verb::Run(words, _) = verb else {
-        return false;
+        return None;
     };
     words
         .iter()
         .map(String::as_str)
         .find(|word| !devlaunch_core::clients::herdr_is_assignment(word))
-        .and_then(devlaunch_core::clients::herdr_agent_named)
-        .is_some()
-}
-
-#[cfg(test)]
-mod herdr_editor_tests {
-    use super::*;
-    use devlaunch_core::domain::workspace_state::NonEmpty;
-
-    fn run(words: &[&str]) -> Verb {
-        Verb::Run(
-            NonEmpty::of(words.iter().map(|word| (*word).to_owned())).unwrap(),
-            RmOnExit::No,
-        )
-    }
-
-    #[test]
-    fn only_agent_commands_ask_for_the_editor_layout() {
-        assert!(starts_agent(&run(&["claude", "fix it"])));
-        assert!(starts_agent(&run(&["IS_SANDBOX=1", "/usr/bin/codex"])));
-        assert!(!starts_agent(&run(&["make", "test"])));
-        assert!(!starts_agent(&Verb::Attach { rm: RmOnExit::No }));
-    }
+        .and_then(crate::herdr_editor::AgentKind::from_program)
 }
 
 /// The spec a target word stands for, once a pull request reference in it has been
@@ -1845,5 +1823,32 @@ pub(crate) fn report(records: &Records<'_>) {
         for line in render::records_notice(notice) {
             eprintln!("{line}");
         }
+    }
+}
+
+#[cfg(test)]
+mod herdr_editor_tests {
+    use super::*;
+    use devlaunch_core::domain::workspace_state::NonEmpty;
+
+    fn run(words: &[&str]) -> Verb {
+        Verb::Run(
+            NonEmpty::of(words.iter().map(|word| (*word).to_owned())).unwrap(),
+            RmOnExit::No,
+        )
+    }
+
+    #[test]
+    fn only_agent_commands_ask_for_the_editor_layout() {
+        assert_eq!(
+            started_agent(&run(&["claude", "fix it"])).map(|agent| agent.as_str()),
+            Some("claude")
+        );
+        assert_eq!(
+            started_agent(&run(&["IS_SANDBOX=1", "/usr/bin/codex"])).map(|agent| agent.as_str()),
+            Some("codex")
+        );
+        assert_eq!(started_agent(&run(&["make", "test"])), None);
+        assert_eq!(started_agent(&Verb::Attach { rm: RmOnExit::No }), None);
     }
 }

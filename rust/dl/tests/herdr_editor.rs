@@ -10,7 +10,7 @@ fn fake_herdr(dir: &std::path::Path) -> std::path::PathBuf {
         r##"#!/bin/sh
 printf '%s\n' "$*" >> "$HERDR_CALLS"
 case "$*" in
-  "agent get w1:p1") printf '%s\n' '{"result":{"agent":{"pane_id":"w1:p1"}}}' ;;
+  "agent get w1:p1") printf '%s\n' '{"result":{"agent":{"agent":"codex","agent_status":"working","state_change_seq":42}}}' ;;
   "pane layout --pane w1:p1") printf '%s\n' '{"result":{"layout":{"panes":[{"pane_id":"w1:p1"}]}}}' ;;
   "pane split w1:p1 --direction right --no-focus") printf '%s\n' '{"result":{"pane":{"pane_id":"w1:p2"}}}' ;;
   "pane run w1:p2 nvim") printf '%s\n' '{"result":{}}' ;;
@@ -33,6 +33,31 @@ fn fake_waiting_herdr(dir: &std::path::Path) {
     fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
 }
 
+fn fake_replacing_agent(dir: &std::path::Path) {
+    let path = dir.join("herdr");
+    fs::write(
+        &path,
+        r##"#!/bin/sh
+printf '%s\n' "$*" >> "$HERDR_CALLS"
+case "$*" in
+  "agent get w1:p1")
+    if [ ! -e "$HERDR_SECOND_AGENT" ]; then
+      : > "$HERDR_SECOND_AGENT"
+      printf '%s\n' '{"result":{"agent":{"agent":"claude","agent_status":"done","state_change_seq":41}}}'
+    else
+      printf '%s\n' '{"result":{"agent":{"agent":"codex","agent_status":"working","state_change_seq":42}}}'
+    fi ;;
+  "pane layout --pane w1:p1") printf '%s\n' '{"result":{"layout":{"panes":[{"pane_id":"w1:p1"}]}}}' ;;
+  "pane split w1:p1 --direction right --no-focus") printf '%s\n' '{"result":{"pane":{"pane_id":"w1:p2"}}}' ;;
+  "pane run w1:p2 nvim") printf '%s\n' '{"result":{}}' ;;
+  *) exit 1 ;;
+esac
+"##,
+    )
+    .unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
 fn command(dir: &std::path::Path) -> Command {
     let calls = dir.join("calls");
     let mut command = Command::new(env!("CARGO_BIN_EXE_dl"));
@@ -45,6 +70,7 @@ fn command(dir: &std::path::Path) -> Command {
         .env("HERDR_BIN_PATH", dir.join("herdr"))
         .env("HERDR_PANE_ID", "w1:p1")
         .env("HERDR_CALLS", calls)
+        .env("DEVLAUNCH_HERDR_EDITOR_EXPECTED_AGENT", "codex")
         .env("DEVLAUNCH_HERDR_EDITOR", "nvim");
     command
 }
@@ -69,6 +95,34 @@ fn starts_an_editor_to_the_right_without_taking_agent_focus() {
     assert_eq!(
         fs::read_to_string(dir.path().join("calls")).unwrap(),
         "agent get w1:p1\n\
+         pane layout --pane w1:p1\n\
+         pane split w1:p1 --direction right --no-focus\n\
+         pane run w1:p2 nvim\n"
+    );
+}
+
+#[test]
+fn waits_for_a_new_matching_agent_instead_of_accepting_the_old_done_one() {
+    let dir = tempfile::tempdir().unwrap();
+    fake_replacing_agent(dir.path());
+    let mut command = command(dir.path());
+    command
+        .env("HERDR_SECOND_AGENT", dir.path().join("second-agent"))
+        .env(
+            "DEVLAUNCH_HERDR_EDITOR_BASELINE",
+            r#"{"kind":"claude","state_change_seq":41,"activity":"done"}"#,
+        )
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command.spawn().unwrap();
+    let _lease = child.stdin.take().unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        fs::read_to_string(dir.path().join("calls")).unwrap(),
+        "agent get w1:p1\n\
+         agent get w1:p1\n\
          pane layout --pane w1:p1\n\
          pane split w1:p1 --direction right --no-focus\n\
          pane run w1:p2 nvim\n"
