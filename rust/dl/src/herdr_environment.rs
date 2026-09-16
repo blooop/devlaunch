@@ -128,9 +128,14 @@ fn chezmoi_source(config: &Path) -> io::Result<Option<PathBuf>> {
     if fs::symlink_metadata(config).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
         return Ok(None);
     }
+    let config = if config.is_absolute() {
+        config.to_owned()
+    } else {
+        std::env::current_dir()?.join(config)
+    };
     let output = match Command::new("chezmoi")
         .args(["source-path"])
-        .arg(config)
+        .arg(&config)
         .output()
     {
         Ok(output) => output,
