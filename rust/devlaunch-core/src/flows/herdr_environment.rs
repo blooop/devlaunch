@@ -62,11 +62,9 @@ impl Environment {
             if ProfileName::parse(profile).is_none() {
                 return Err(invalid("invalid Claude profile name"));
             }
-            if profile != super::claude_profiles::DEFAULT_PROFILE
-                && !matches!(self.variables.get("CLAUDE_CONFIG_DIR"), Some(Some(_)))
-            {
+            if self.variables.contains_key("CLAUDE_CONFIG_DIR") {
                 return Err(invalid(
-                    "saved profile has no Claude configuration directory",
+                    "saved profile duplicates its Claude configuration directory",
                 ));
             }
         }
@@ -107,11 +105,7 @@ impl Environment {
                 directory.display()
             )));
         }
-        let directory = fs::canonicalize(directory)?;
-        let directory = directory
-            .to_str()
-            .ok_or_else(|| invalid("Claude profile path is not UTF-8"))?;
-        self.set("CLAUDE_CONFIG_DIR", Some(directory.to_owned()))?;
+        self.variables.remove("CLAUDE_CONFIG_DIR");
         for key in [
             "CLAUDE_CODE_OAUTH_TOKEN",
             "ANTHROPIC_API_KEY",
@@ -123,16 +117,28 @@ impl Environment {
         Ok(())
     }
 
-    pub fn check_profile_directory(&self) -> io::Result<()> {
-        if self.profile.is_some()
-            && let Some(Some(directory)) = self.variables.get("CLAUDE_CONFIG_DIR")
-            && !Path::new(directory).is_dir()
-        {
+    pub fn profile_directory(&self, root: &Path) -> io::Result<Option<PathBuf>> {
+        let Some(profile) = self
+            .profile
+            .as_deref()
+            .filter(|profile| *profile != super::claude_profiles::DEFAULT_PROFILE)
+        else {
+            return Ok(None);
+        };
+        let directory = root.join(profile);
+        if !directory.is_dir() {
             return Err(invalid(format!(
-                "saved Claude profile directory disappeared: {directory}"
+                "saved Claude profile directory disappeared: {}",
+                directory.display()
             )));
         }
-        Ok(())
+        Ok(Some(fs::canonicalize(directory)?))
+    }
+
+    fn normalize_legacy_profile(&mut self) {
+        if self.profile.is_some() {
+            self.variables.remove("CLAUDE_CONFIG_DIR");
+        }
     }
 }
 
@@ -167,12 +173,13 @@ impl Store {
     pub fn read(&self) -> io::Result<Environment> {
         match fs::read(&self.path) {
             Ok(bytes) => {
-                let environment: Environment = serde_json::from_slice(&bytes).map_err(|e| {
+                let mut environment: Environment = serde_json::from_slice(&bytes).map_err(|e| {
                     invalid(format!(
                         "invalid workspace environment {}: {e}",
                         self.path.display()
                     ))
                 })?;
+                environment.normalize_legacy_profile();
                 environment.validate()?;
                 Ok(environment)
             }
@@ -362,6 +369,11 @@ mod tests {
         let mut e = Environment::default();
         e.select_profile("work", &profiles).unwrap();
         assert_eq!(e.profile(), Some("work"));
+        assert_eq!(
+            e.profile_directory(&profiles).unwrap().as_deref(),
+            Some(profiles.join("work").as_path())
+        );
+        assert!(!e.variables().contains_key("CLAUDE_CONFIG_DIR"));
         for key in [
             "CLAUDE_CODE_OAUTH_TOKEN",
             "ANTHROPIC_API_KEY",
@@ -377,7 +389,24 @@ mod tests {
         assert!(!e.variables().contains_key("CLAUDE_CODE_OAUTH_TOKEN"));
         e.select_profile("work", &profiles).unwrap();
         fs::remove_dir(profiles.join("work")).unwrap();
-        assert!(e.check_profile_directory().is_err());
+        assert!(e.profile_directory(&profiles).is_err());
+    }
+
+    #[test]
+    fn legacy_profile_state_drops_its_duplicated_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::new(root.path(), Path::new("/tmp/sock"), "w1").unwrap();
+        fs::create_dir_all(store.path.parent().unwrap()).unwrap();
+        fs::write(
+            &store.path,
+            r#"{"variables":{"CLAUDE_CONFIG_DIR":"/old/target","MESSAGE":"kept"},"profile":"work"}"#,
+        )
+        .unwrap();
+
+        let environment = store.read().unwrap();
+        assert_eq!(environment.profile(), Some("work"));
+        assert!(!environment.variables().contains_key("CLAUDE_CONFIG_DIR"));
+        assert_eq!(environment.variables()["MESSAGE"].as_deref(), Some("kept"));
     }
 
     #[test]

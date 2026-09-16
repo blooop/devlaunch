@@ -1436,8 +1436,8 @@ pub fn devlaunch_core::flows::disk_usage::describe_usage(&devlaunch_core::flows:
 pub mod devlaunch_core::flows::herdr_environment
 pub struct devlaunch_core::flows::herdr_environment::Environment
 impl devlaunch_core::flows::herdr_environment::Environment
-pub fn devlaunch_core::flows::herdr_environment::Environment::check_profile_directory(&self) -> core::io::error::Result<()>
 pub fn devlaunch_core::flows::herdr_environment::Environment::profile(&self) -> core::option::Option<&str>
+pub fn devlaunch_core::flows::herdr_environment::Environment::profile_directory(&self, &std::path::Path) -> core::result::Result<core::option::Option<std::path::PathBuf>, std::io::error::Error>
 pub fn devlaunch_core::flows::herdr_environment::Environment::select_profile(&mut self, &str, &std::path::Path) -> core::io::error::Result<()>
 pub fn devlaunch_core::flows::herdr_environment::Environment::set(&mut self, &str, core::option::Option<alloc::string::String>) -> core::io::error::Result<()>
 pub fn devlaunch_core::flows::herdr_environment::Environment::variables(&self) -> &alloc::collections::btree::map::BTreeMap<alloc::string::String, core::option::Option<alloc::string::String>>

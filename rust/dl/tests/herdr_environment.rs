@@ -1,5 +1,6 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::symlink;
 use std::path::Path;
 use std::process::{Command, Output};
 
@@ -128,6 +129,27 @@ fn workspace_profile_beats_inherited_tokens_and_default_restores_server_environm
             .unwrap(),
     );
     assert_eq!(output, "unset\n/custom/default\ndefault-token\nunset\n");
+}
+
+#[test]
+fn named_profile_is_resolved_again_when_a_pane_opens() {
+    let host = Host::new();
+    let profiles = host.0.path().join(".claude-profiles");
+    let first = profiles.join("first");
+    let second = profiles.join("second");
+    fs::create_dir_all(&first).unwrap();
+    fs::create_dir_all(&second).unwrap();
+    symlink("first", profiles.join("team")).unwrap();
+    success(host.run(&["--herdr-env", "profile", "team"]));
+
+    fs::remove_file(profiles.join("team")).unwrap();
+    symlink("second", profiles.join("team")).unwrap();
+
+    let output = success(host.run(&["--herdr-shell"]));
+    assert_eq!(
+        output,
+        format!("unset\n{}\nunset\nunset\n", second.display())
+    );
 }
 
 #[test]
