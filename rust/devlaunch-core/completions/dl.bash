@@ -69,7 +69,7 @@ _dl_completion() {
     # The retired spellings (--stop, --autorm) are absent by rule rather than by
     # hand: the grammar marks them `hide = true`, and the test drops every hidden
     # flag, so a spelling this build only still answers for is never offered.
-    local global_opts="--ls --install --refresh --prune --reconcile --purge --herdr-shell --rm --devcontainer --claude-profile --claude-profiles --help -h --version"
+    local global_opts="--ls --install --refresh --prune --reconcile --purge --herdr-shell --herdr-setup --herdr-env --herdr-workspace --rm --devcontainer --claude-profile --claude-profiles --help -h --version"
     if [[ "$cmd" == aid ]]; then
         global_opts="--claude --codex --gemini --devcontainer --claude-profile --help -h --version"
     fi
@@ -82,7 +82,7 @@ _dl_completion() {
     local ws_cmds="up stop kill rm rme code restart recreate reset dotfiles --rm --"
 
     # Options that take a value; a variant name, a profile name or a path follows.
-    local value_opts="--devcontainer --claude-profile"
+    local value_opts="--devcontainer --claude-profile --herdr-workspace"
 
     # The flags a workspace spec may still follow: they modify a launch instead
     # of being one. Every other flag ends the line, and that direction is the
@@ -118,6 +118,14 @@ _dl_completion() {
         spec_follows="--claude --codex --gemini --remote-control --remote --no-remote-control --no-remote --devcontainer --claude-profile"
     fi
 
+    if [[ "${prev}" == "--herdr-workspace" ]]; then
+        return 0
+    fi
+    if [[ "${prev}" == "--herdr-env" ]]; then
+        COMPREPLY=( $(compgen -W "set unset profile show clear" -- "${cur}") )
+        return 0
+    fi
+
     # After --claude-profile, offer the profile directories that exist. Read off the
     # disk rather than out of the completion cache, deliberately: profiles are
     # created by hand and rarely, the cache is rebuilt by commands that change
@@ -126,7 +134,7 @@ _dl_completion() {
     #
     # A mistyped name is a hard refusal at launch rather than a fallback to the default
     # login, which is what makes completing these worth the readdir.
-    if [[ "${prev}" == "--claude-profile" ]]; then
+    if [[ "${prev}" == "--claude-profile" || ( "${prev}" == "profile" && " ${COMP_WORDS[*]} " == *" --herdr-env "* ) ]]; then
         # The same three sources `domain::xdg::claude_profiles_root` reads, in the same
         # order: devlaunch's own scratch override, then claude-as's own variable, then
         # its default directory. `default` is offered because it is a name the resolver

@@ -26,6 +26,7 @@
 mod cli;
 mod commands;
 mod hangup;
+mod herdr_environment;
 mod launch;
 mod pane_shell;
 mod render;

@@ -2244,3 +2244,73 @@ fn rm_on_exit_refreshes_the_completions_after_the_removal_and_not_only_before_it
         "only {lists} refresh child(ren) ran: the removal never rewrote the completions"
     );
 }
+
+#[test]
+fn new_herdr_container_panes_use_the_workspace_profile_before_the_siblings_profile() {
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+
+    let world = World::with(&["--warm"]);
+    let result = world.path(&format!(
+        "devpod/contexts/default/workspaces/{MAIN}/workspace_result.json"
+    ));
+    fs::create_dir_all(result.parent().unwrap()).unwrap();
+    fs::write(&result, "{}").unwrap();
+    fs::write(result.with_file_name("workspace.json"), "{}").unwrap();
+    let stamp = fs::metadata(&result)
+        .unwrap()
+        .modified()
+        .unwrap()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap();
+    let memo = world.path(&format!("cache/devlaunch/tool-verdicts/{MAIN}.claude"));
+    fs::create_dir_all(memo.parent().unwrap()).unwrap();
+    fs::write(memo, serde_json::json!({"claude": "ours", "result_mtime": {"secs": stamp.as_secs(), "nanos": stamp.subsec_nanos()}}).to_string()).unwrap();
+    let profile = world.path("home/.claude-profiles/work");
+    fs::create_dir_all(&profile).unwrap();
+    fs::write(
+        profile.join(".credentials.json"),
+        r#"{"claudeAiOauth":{"accessToken":"workspace-token"}}"#,
+    )
+    .unwrap();
+    let herdr = world.path("bin/herdr");
+    fs::write(&herdr, format!(r##"#!/bin/sh
+case "$1 $2" in
+'pane list') printf '%s\n' '{{"result":{{"panes":[{{"pane_id":"w1:p1","tab_id":"w1:t1","focused":true}}]}}}}' ;;
+'pane process-info') printf '%s\n' '{{"result":{{"process_info":{{"foreground_processes":[{{"argv":["dl","--claude-profile","missing-sibling-profile","{MAIN}"]}},{{"argv":["devpod","ssh","{MAIN}"]}}]}}}}}}' ;;
+*) printf '%s\n' '{{}}' ;;
+esac
+"##)).unwrap();
+    fs::set_permissions(&herdr, fs::Permissions::from_mode(0o755)).unwrap();
+    let devpod = world.path("bin/devpod");
+    let old = fs::read_to_string(&devpod).unwrap();
+    fs::write(&devpod, old.replacen("#!/bin/sh\n", "#!/bin/sh\nif [ \"$1\" = ssh ]; then printf '%s' \"${CLAUDE_CODE_OAUTH_TOKEN-unset}\" > \"$HOME/session-token\"; fi\n", 1)).unwrap();
+    let context = [
+        ("HERDR_ENV", "1"),
+        ("HERDR_WORKSPACE_ID", "w1"),
+        ("HERDR_SOCKET_PATH", "/tmp/devlaunch-test-herdr.sock"),
+        ("HERDR_TAB_ID", "w1:t1"),
+        ("CLAUDE_CODE_OAUTH_TOKEN", "inherited-token"),
+    ];
+    world
+        .dl_with(&["--herdr-env", "profile", "work"], &context)
+        .exited(0);
+    let run = world.dl_with(&["--herdr-shell"], &context);
+    run.exited(0);
+    assert!(
+        run.err.contains("already running, attaching"),
+        "{}",
+        run.err
+    );
+    assert_eq!(
+        fs::read_to_string(world.path("home/session-token")).unwrap(),
+        "workspace-token"
+    );
+    assert!(
+        world
+            .calls()
+            .exact(&world.root)
+            .iter()
+            .any(|call| call == &format!("devpod ssh {MAIN} --send-env CLAUDE_CODE_OAUTH_TOKEN"))
+    );
+}

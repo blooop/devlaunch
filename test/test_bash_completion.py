@@ -50,6 +50,13 @@ class TestBashCompletion:
                 'DL_BRANCHES="my-org/my-repo@main my-org/my-repo@feature-branch another-org/another-repo@develop"\n'
             )
 
+    def test_herdr_environment_completes_actions_without_workspace_specs(self):
+        assert set(self.run_completion("dl --herdr-env ")) == {
+            "set", "unset", "profile", "show", "clear"
+        }
+        assert self.run_completion("dl --herdr-workspace ") == []
+        assert self.run_completion("dl --herdr-env show ") == []
+
     def teardown_method(self):
         """Clean up test environment."""
         import shutil

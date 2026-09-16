@@ -1410,7 +1410,8 @@ Point herdr's `default_shell` at `dl-herdr-shell` and the new pane asks:
 default_shell = "/home/you/.local/bin/dl-herdr-shell"
 ```
 
-`dl --install` writes the name and prints that line with your own path in it. Run
+`dl --herdr-setup` installs the script and writes that setting while preserving
+other settings and comments. `dl --install` still prints the line for manual setup. Run
 `herdr server reload-config` afterwards and every pane created from then on, by
 key, by mouse, by `herdr pane split`, opens in the container when its tab holds a
 devlaunch session and opens your ordinary shell when it does not.
@@ -1455,12 +1456,80 @@ It falls through to a shell itself when `dl` cannot be found, because a
 `default_shell` that will not start is the one failure that costs a pane its
 existence rather than its container.
 
-`dl --install` makes the link and leaves the config alone. Writing to
-`~/.config/herdr/config.toml` would be devlaunch editing a file it does not own,
-and on this machine that file is chezmoi-managed, so an edit would be undone on
-the next `chezmoi apply` and re-made on the next `dl --install` forever.
+`dl --install` writes the script and leaves the config alone. `dl --herdr-setup`
+uses `$HERDR_CONFIG_PATH` when set, otherwise `$XDG_CONFIG_HOME/herdr/config.toml`, or
+`~/.config/herdr/config.toml` when XDG_CONFIG_HOME is unset. If another tool manages
+that file, record the new setting there too. Re-running setup preserves an already
+current file. A custom `default_shell` is refused with the manual replacement
+instruction, rather than silently replacing the user's launcher.
 
-### Nothing is remembered, and that is the design
+### Workspace environments and Claude logins
+
+Run setup on the host once, then select an existing login in each Herdr workspace:
+
+```bash
+dl --herdr-setup
+herdr server reload-config
+dl --claude-profiles
+dl --herdr-env profile work
+```
+
+New tabs and splits read the saved setting, including panes opened through Herdr's
+keyboard shortcuts. Host Claude processes use that profile's configuration directory.
+Container panes use devlaunch's existing Claude token forwarding. No credentials are
+copied, no browser login is automated, and running shells or agents keep their account.
+A named profile directory must already exist. Sign in with Claude itself if needed.
+
+The command also stores ordinary host environment variables:
+
+```bash
+dl --herdr-env set RUST_LOG=debug
+dl --herdr-env unset ANTHROPIC_API_KEY
+dl --herdr-env show
+dl --herdr-env profile default
+dl --herdr-env clear
+dl --herdr-workspace w2 --herdr-env profile personal
+```
+
+`set` accepts one literal `KEY=VALUE`, and `unset` removes that variable from new
+shells even if the Herdr server exported it. `show` prints saved overrides as JSON.
+`clear` removes all overrides and restores the server's inherited environment.
+`profile default` removes saved Claude configuration and authentication overrides,
+retains other variables, and uses the server's default Claude environment. That
+includes a custom `CLAUDE_CONFIG_DIR`. It never selects a directory named `default`
+under the profiles root. Existing shells keep their old environment until reopened.
+
+A named profile removes inherited `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`,
+and `ANTHROPIC_AUTH_TOKEN` so they cannot silently select a different account.
+For a new container pane, the saved profile takes priority over the profile found
+in a sibling pane. An explicit `dl <workspace> --claude-profile NAME` keeps its
+normal precedence. Generic variables affect the host shell and the `dl` process;
+container forwarding still follows devlaunch's existing rules, so arbitrary
+variables such as `RUST_LOG` are not forwarded into the container.
+
+Run environment management commands in a host Herdr shell. IDs belong to the
+current Herdr server; `--herdr-workspace` targets another workspace on that server.
+Overrides live under `$XDG_STATE_HOME/devlaunch/herdr-environment`, falling back to
+`~/.local/state/devlaunch/herdr-environment`. Each server socket path and workspace
+ID has its own file. Writes are locked and atomic with private file permissions.
+Herdr's IDs and socket path define persistence, so reusing both reuses the saved
+overrides. `clear` removes them when a workspace no longer needs them.
+
+`HOME`, `XDG_*`, `HERDR_*`, `CLAUDE_PROFILES_DIR`, and
+`DEVLAUNCH_CLAUDE_PROFILES_DIR` cannot be overridden. Keeping those selectors stable
+means commands from new shells can still locate and clear their saved settings.
+Malformed state and a disappeared selected profile stop the pane launcher with an
+error rather than silently opening Claude under a different account. `clear` can
+recover malformed state. Values are stored as plain text; do not use this file as
+a credential store.
+
+If you used the earlier `herdr-workspace-env` and `herdr-workspace-shell` scripts,
+setup recognizes `~/.local/bin/herdr-workspace-shell` and replaces its config entry.
+Reapply each workspace's settings with `dl --herdr-env` before reloading Herdr.
+The old scripts and state are left in place, but the new launcher does not read
+them. No particular account or workspace names are built into devlaunch.
+
+### Container destinations follow live panes
 
 The pane shell reads `HERDR_TAB_ID` out of its own environment, asks herdr which
 panes that tab holds, and asks what each of them is running. A tab is devlaunch's

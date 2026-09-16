@@ -315,6 +315,11 @@ instead. [docs/cli.md](docs/cli.md) has the full `--rm` contract, including whic
 | `dl --reconcile` | Re-point workspaces whose recorded source folder went missing. Deletes nothing |
 | `dl --purge` | Remove devlaunch's own workspaces and caches |
 | `dl --install` | Install shell completions, and the `dl-herdr-shell` name a herdr pane opens through |
+| `dl --herdr-setup` | Install and configure the Herdr pane shell |
+| `dl --herdr-env set KEY=VALUE` | Save a variable for new host shells in this Herdr workspace |
+| `dl --herdr-env profile NAME` | Choose an existing Claude login for new panes |
+| `dl --herdr-env show` | Show saved overrides; `unset KEY` removes an inherited variable and `clear` resets overrides |
+| `--herdr-workspace ID` | Target a workspace when using `--herdr-env` |
 | `dl --refresh` | Rebuild the completion cache now |
 | `dl --claude-profiles` | List the Claude logins `--claude-profile` can name, and the account each is signed in as |
 | `dl --version` | Print the version |
@@ -323,7 +328,8 @@ instead. [docs/cli.md](docs/cli.md) has the full `--rm` contract, including whic
 
 `--herdr-shell` is not a command to type. It is what herdr's `[terminal] default_shell` points at,
 so that splitting a pane in an `aid` tab opens a terminal in that workspace's container instead of
-on this host. `dl --install` links the name and prints the config line;
+on this host. `dl --herdr-setup` writes the script and updates Herdr config;
+`dl --install` writes the script and prints the config line for a manual setup.
 [docs/workspace-tools.md](docs/workspace-tools.md) has the rest.
 
 `--prune`, `--reconcile` and `--purge` print their plan and ask first. `-y` skips the question,

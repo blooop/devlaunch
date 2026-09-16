@@ -383,7 +383,10 @@ pub(crate) enum Command {
     /// `dl --version`
     Version,
     /// `dl --ls [--json] [--size]`
-    List { output: ListOutput, sizes: Sizes },
+    List {
+        output: ListOutput,
+        sizes: Sizes,
+    },
     /// `dl --repos` — the known `owner/repo` strings, for completion.
     Repos,
     /// `dl --claude-profiles` — the Claude logins `--claude-profile` can name.
@@ -391,11 +394,15 @@ pub(crate) enum Command {
     /// `dl --completion-data` — the whole completion cache, as one JSON line.
     CompletionData,
     /// `dl --update-cache [--force]` — the silent background refresh.
-    UpdateCache { force: bool },
+    UpdateCache {
+        force: bool,
+    },
     /// `dl --refresh` — the same refresh, with feedback.
     Refresh,
     /// `dl --install [<rc-file>]`
-    Install { rc: Option<PathBuf> },
+    Install {
+        rc: Option<PathBuf>,
+    },
     /// `dl --prune [-y] [--force] [--force-worktrees]`
     Prune {
         yes: bool,
@@ -403,11 +410,23 @@ pub(crate) enum Command {
         force_worktrees: bool,
     },
     /// `dl --reconcile [-y]`
-    Reconcile { yes: bool },
+    Reconcile {
+        yes: bool,
+    },
     /// `dl --purge [-y]`
-    Purge { yes: bool },
+    Purge {
+        yes: bool,
+    },
     /// `dl --herdr-shell`, and the `dl-herdr-shell` name that means the same.
     HerdrShell,
+    HerdrShellReady {
+        profile: Option<String>,
+    },
+    HerdrSetup,
+    HerdrEnv {
+        words: Vec<String>,
+        workspace: Option<String>,
+    },
     /// A verb with no workspace named: the fuzzy selector picks one (M8) — or,
     /// for a verb that applies per workspace ([`Verb::several_at_once`]), several.
     Select {
@@ -573,6 +592,17 @@ pub(crate) struct Cli {
     /// workspace its tab already holds, or on this host when the tab holds none.
     #[arg(long = "herdr-shell", group = "what")]
     herdr_shell: bool,
+    /// Install the Herdr pane shell and configure new tabs and splits.
+    #[arg(long, group = "what")]
+    herdr_setup: bool,
+    /// Manage saved workspace variables: set KEY=VALUE, unset KEY, profile NAME, show, clear.
+    #[arg(long, group = "what")]
+    herdr_env: bool,
+    /// Target a Herdr workspace instead of the calling pane's workspace.
+    #[arg(long, requires = "herdr_env")]
+    herdr_workspace: Option<String>,
+    #[arg(long, group = "what", hide = true)]
+    herdr_shell_ready: bool,
 
     /// Retired: the flag spelling of the `stop` verb. Recognised so it can be
     /// refused with the word to use instead. Deliberately outside the `what` group,
@@ -783,6 +813,9 @@ enum Chosen {
     CompletionData,
     UpdateCache,
     HerdrShell,
+    HerdrShellReady,
+    HerdrSetup,
+    HerdrEnv,
 }
 
 impl Cli {
@@ -802,6 +835,9 @@ impl Cli {
             (self.completion_data, Chosen::CompletionData),
             (self.update_cache, Chosen::UpdateCache),
             (self.herdr_shell, Chosen::HerdrShell),
+            (self.herdr_shell_ready, Chosen::HerdrShellReady),
+            (self.herdr_setup, Chosen::HerdrSetup),
+            (self.herdr_env, Chosen::HerdrEnv),
         ]
         .into_iter()
         .find_map(|(given, chosen)| given.then_some(chosen))
@@ -902,7 +938,7 @@ fn global_command(cli: &Cli, chosen: Chosen) -> Result<Command, GrammarError> {
     if cli.devcontainer.is_some() {
         return Err(GrammarError::DevcontainerNotAllowed { command: name });
     }
-    if cli.claude_profile.is_some() {
+    if cli.claude_profile.is_some() && !matches!(chosen, Chosen::HerdrShellReady) {
         return Err(GrammarError::ClaudeProfileNotAllowed { command: name });
     }
     if cli.rm {
@@ -913,7 +949,7 @@ fn global_command(cli: &Cli, chosen: Chosen) -> Result<Command, GrammarError> {
     }
     // `--install` is the one that takes a word, and it is a path rather than a
     // workspace: Python read it off argv[1] the same way.
-    let takes_word = matches!(chosen, Chosen::Install);
+    let takes_word = matches!(chosen, Chosen::Install | Chosen::HerdrEnv);
     if !takes_word && !cli.words.is_empty() {
         return Err(GrammarError::TargetNotAllowed { command: name });
     }
@@ -972,6 +1008,14 @@ fn global_command(cli: &Cli, chosen: Chosen) -> Result<Command, GrammarError> {
         Chosen::CompletionData => Command::CompletionData,
         Chosen::UpdateCache => Command::UpdateCache { force: cli.force },
         Chosen::HerdrShell => Command::HerdrShell,
+        Chosen::HerdrShellReady => Command::HerdrShellReady {
+            profile: cli.claude_profile.clone(),
+        },
+        Chosen::HerdrSetup => Command::HerdrSetup,
+        Chosen::HerdrEnv => Command::HerdrEnv {
+            words: cli.words.clone(),
+            workspace: cli.herdr_workspace.clone(),
+        },
     })
 }
 
@@ -989,6 +1033,9 @@ fn flag_of(chosen: Chosen) -> &'static str {
         Chosen::CompletionData => "--completion-data",
         Chosen::UpdateCache => "--update-cache",
         Chosen::HerdrShell => "--herdr-shell",
+        Chosen::HerdrShellReady => "--herdr-shell-ready",
+        Chosen::HerdrSetup => "--herdr-setup",
+        Chosen::HerdrEnv => "--herdr-env",
     }
 }
 
@@ -1174,7 +1221,7 @@ fn devcontainer_of(cli: &Cli) -> Result<Option<DevcontainerPath>, GrammarError> 
 /// A second copy of a fact about [`Cli`], and `the_value_flags_are_the_ones_clap_takes_values_for`
 /// is the test that diffs it against clap's own parser rather than leaving it to be
 /// kept true by hand.
-const VALUE_FLAGS: [&str; 2] = ["--devcontainer", "--claude-profile"];
+const VALUE_FLAGS: [&str; 3] = ["--devcontainer", "--claude-profile", "--herdr-workspace"];
 
 /// The argv `wants_startup_cache_refresh` is asked about.
 ///

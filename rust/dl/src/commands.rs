@@ -134,7 +134,12 @@ pub(crate) fn dispatch(
         // workspace is a `dl <ws>`, and the whole point is that it is
         // indistinguishable from one typed by hand -- same launch, same terminal
         // title, same agent reporting, same everything a manager reads.
-        Command::HerdrShell => match session_manager::pane_destination(runner) {
+        Command::HerdrSetup => crate::herdr_environment::setup(),
+        Command::HerdrEnv { words, workspace } => {
+            crate::herdr_environment::manage(&words, workspace.as_deref())
+        }
+        Command::HerdrShell => crate::herdr_environment::open_pane(),
+        Command::HerdrShellReady { profile } => match session_manager::pane_destination(runner) {
             PaneDestination::Workspace {
                 workspace_id,
                 claude_profile,
@@ -153,7 +158,7 @@ pub(crate) fn dispatch(
                         // which account it is. Without this a pane opened beside an
                         // agent authenticated as a different account than the agent,
                         // which is the one way this feature could mislead quietly.
-                        claude_profile,
+                        claude_profile: profile.or(claude_profile),
                     },
                 );
                 if pane_shell::no_session_ran(ending) {
