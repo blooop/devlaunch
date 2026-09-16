@@ -52,7 +52,11 @@ class TestBashCompletion:
 
     def test_herdr_environment_completes_actions_without_workspace_specs(self):
         assert set(self.run_completion("dl --herdr-env ")) == {
-            "set", "unset", "profile", "show", "clear"
+            "set",
+            "unset",
+            "profile",
+            "show",
+            "clear",
         }
         assert self.run_completion("dl --herdr-workspace ") == []
         assert self.run_completion("dl --herdr-env show ") == []
