@@ -2287,6 +2287,7 @@ esac
     fs::write(&devpod, old.replacen("#!/bin/sh\n", "#!/bin/sh\nif [ \"$1\" = ssh ]; then printf '%s' \"${CLAUDE_CODE_OAUTH_TOKEN-unset}\" > \"$HOME/session-token\"; fi\n", 1)).unwrap();
     let context = [
         ("HERDR_ENV", "1"),
+        ("HERDR_BIN_PATH", herdr.to_str().unwrap()),
         ("HERDR_WORKSPACE_ID", "w1"),
         ("HERDR_SOCKET_PATH", "/tmp/devlaunch-test-herdr.sock"),
         ("HERDR_TAB_ID", "w1:t1"),
