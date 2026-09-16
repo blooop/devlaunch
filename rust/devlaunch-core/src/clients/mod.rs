@@ -26,8 +26,12 @@ pub mod git;
 // `aid`'s richer table is held against it.
 pub(crate) mod herdr;
 // Binary surface: `dl` uses the same agent-name reader before it arranges a
-// Herdr editor split. Only these decisions cross the crate boundary.
-pub use herdr::{agent_named as herdr_agent_named, is_assignment as herdr_is_assignment};
+// Herdr editor split, and the same executable repair before it asks Herdr to do
+// so. Only these decisions cross the crate boundary.
+pub use herdr::{
+    agent_named as herdr_agent_named, binary_from_process as herdr_binary_from_process,
+    is_assignment as herdr_is_assignment,
+};
 // Crate-private for docker's reason: the two signals `dl <ws> kill` sends are
 // the whole of what devlaunch asks of `kill(1)`, and what they came to is
 // reported in the kill flow's vocabulary.

@@ -310,9 +310,6 @@ pub fn devlaunch_core::clients::git::GitRefused::eq(&self, &devlaunch_core::clie
 impl core::fmt::Debug for devlaunch_core::clients::git::GitRefused
 pub fn devlaunch_core::clients::git::GitRefused::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::clients::git::GitRefused
-pub mod devlaunch_core::clients::herdr
-pub fn devlaunch_core::clients::herdr::agent_named(&str) -> core::option::Option<&'static str>
-pub fn devlaunch_core::clients::herdr::is_assignment(&str) -> bool
 pub mod devlaunch_core::clients::ssh
 pub enum devlaunch_core::clients::ssh::NotRun
 pub devlaunch_core::clients::ssh::NotRun::Blocked(devlaunch_runner::OsFailure)
@@ -341,6 +338,9 @@ impl core::fmt::Debug for devlaunch_core::clients::ssh::UnsafeRequest
 pub fn devlaunch_core::clients::ssh::UnsafeRequest::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::clients::ssh::UnsafeRequest
 pub fn devlaunch_core::clients::ssh::tty_disabled_by_environment() -> bool
+pub fn devlaunch_core::clients::herdr_agent_named(&str) -> core::option::Option<&'static str>
+pub fn devlaunch_core::clients::herdr_binary_from_process() -> core::option::Option<alloc::string::String>
+pub fn devlaunch_core::clients::herdr_is_assignment(&str) -> bool
 pub mod devlaunch_core::domain
 pub mod devlaunch_core::domain::config
 pub enum devlaunch_core::domain::config::ConfigError

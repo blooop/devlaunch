@@ -67,7 +67,9 @@ fn manage_inner(words: &[String], workspace: Option<&str>) -> io::Result<()> {
             "use --herdr-env set KEY=VALUE, unset KEY, profile NAME, show, or clear",
         ));
     }
-    let status = Command::new("herdr")
+    let binary = devlaunch_core::clients::herdr_binary_from_process()
+        .ok_or_else(|| invalid("HERDR_BIN_PATH is required"))?;
+    let status = Command::new(binary)
         .args(["workspace", "get", &workspace])
         .stdout(std::process::Stdio::null())
         .status()?;

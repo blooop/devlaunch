@@ -897,7 +897,7 @@ pub(crate) fn runnable_binary(
 /// Split the way [`crate::clients::git::lfs_is_installed`] is: the decision is a
 /// function of its inputs and is asserted as one, and this is the thin call that
 /// supplies the real probe.
-pub(crate) fn binary_from_process() -> Option<String> {
+pub fn binary_from_process() -> Option<String> {
     runnable_binary(crate::osext::env_str(BIN_VAR).as_deref(), |path| {
         use std::os::unix::fs::PermissionsExt as _;
         std::fs::metadata(path)

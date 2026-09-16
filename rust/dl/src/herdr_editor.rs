@@ -101,7 +101,8 @@ fn editor() -> Option<String> {
 }
 
 fn herdr<const N: usize>(args: [&str; N]) -> Option<Value> {
-    let output = Command::new("herdr")
+    let binary = devlaunch_core::clients::herdr_binary_from_process()?;
+    let output = Command::new(binary)
         .args(args)
         .stdin(Stdio::null())
         .output()

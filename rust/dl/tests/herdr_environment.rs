@@ -32,6 +32,7 @@ impl Host {
             .env("PATH", format!("{}:/usr/bin:/bin", self.0.path().display()))
             .env("SHELL", self.0.path().join("shell"))
             .env("HERDR_ENV", "1")
+            .env("HERDR_BIN_PATH", self.0.path().join("herdr"))
             .env("HERDR_SOCKET_PATH", "/tmp/test-herdr-session.sock")
             .env("HERDR_WORKSPACE_ID", "w1")
             .args(args);
@@ -77,6 +78,22 @@ fn ordinary_new_shells_apply_literal_values_unsets_and_workspace_scope() {
             .unwrap(),
     );
     assert!(cleared.starts_with("inherited\n"));
+}
+
+#[test]
+fn environment_management_uses_herdrs_exported_binary_outside_path() {
+    let host = Host::new();
+    let output = host
+        .command(&["--herdr-env", "set", "MESSAGE=ready"])
+        .env("PATH", "/usr/bin:/bin")
+        .env("HERDR_BIN_PATH", host.0.path().join("herdr"))
+        .output()
+        .unwrap();
+    success(output);
+    assert_eq!(
+        success(host.run(&["--herdr-env", "show"])),
+        "{\n  \"variables\": {\n    \"MESSAGE\": \"ready\"\n  },\n  \"profile\": null\n}\n"
+    );
 }
 
 #[test]
