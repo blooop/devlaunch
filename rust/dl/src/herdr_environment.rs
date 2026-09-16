@@ -1,6 +1,7 @@
+use std::fs;
 use std::io;
 use std::os::unix::process::CommandExt as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use devlaunch_core::domain::xdg;
@@ -123,6 +124,31 @@ pub(crate) fn open_pane() -> Ending {
     report(result)
 }
 
+fn chezmoi_source(config: &Path) -> io::Result<Option<PathBuf>> {
+    if fs::symlink_metadata(config).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+        return Ok(None);
+    }
+    let output = match Command::new("chezmoi")
+        .args(["source-path"])
+        .arg(config)
+        .output()
+    {
+        Ok(output) => output,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let source = String::from_utf8(output.stdout)
+        .map_err(|_| invalid("chezmoi returned a source path that is not UTF-8"))?;
+    let source = source.trim();
+    if source.is_empty() {
+        return Err(invalid("chezmoi returned an empty source path"));
+    }
+    Ok(Some(PathBuf::from(source)))
+}
+
 pub(crate) fn setup() -> Ending {
     report((|| {
         let home = home()?;
@@ -136,6 +162,13 @@ pub(crate) fn setup() -> Ending {
             .filter(|s| !s.is_empty())
             .map(PathBuf::from)
             .unwrap_or(fallback_config);
+        if let Some(source) = chezmoi_source(&config)? {
+            return Err(invalid(&format!(
+                "Herdr config is managed by chezmoi from {}; set terminal.default_shell to {} there, apply it, then run `dl --install`",
+                source.display(),
+                script.display()
+            )));
+        }
         // Validate and write the config only after the executable is available.
         if let pane_shell::Installed::Refused { reason, .. } = pane_shell::install(&script) {
             return Err(io::Error::other(reason));

@@ -1458,10 +1458,13 @@ existence rather than its container.
 
 `dl --install` writes the script and leaves the config alone. `dl --herdr-setup`
 uses `$HERDR_CONFIG_PATH` when set, otherwise `$XDG_CONFIG_HOME/herdr/config.toml`, or
-`~/.config/herdr/config.toml` when XDG_CONFIG_HOME is unset. If another tool manages
-that file, record the new setting there too. Re-running setup preserves an already
-current file. A custom `default_shell` is refused with the manual replacement
-instruction, rather than silently replacing the user's launcher.
+`~/.config/herdr/config.toml` when XDG_CONFIG_HOME is unset. If chezmoi manages a
+regular config file, setup refuses the edit and names the source file. Change
+`terminal.default_shell` in that source, apply it, and run `dl --install` to install
+the launcher. A symlink is different: setup preserves the link and updates its
+target. Re-running setup preserves an already current file. A custom `default_shell`
+is refused with the manual replacement instruction, rather than silently replacing
+the user's launcher.
 
 ### Workspace environments and Claude logins
 

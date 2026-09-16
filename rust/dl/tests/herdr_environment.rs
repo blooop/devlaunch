@@ -184,3 +184,33 @@ fn setup_honors_the_herdr_config_override() {
     assert!(content.contains("dl-herdr-shell"));
     assert!(!host.0.path().join(".config/herdr/config.toml").exists());
 }
+
+#[test]
+fn setup_refuses_to_drift_a_chezmoi_managed_regular_config() {
+    let host = Host::new();
+    let config = host.0.path().join(".config/herdr/config.toml");
+    let source = host.0.path().join("dotfiles/config.toml.tmpl");
+    fs::create_dir_all(config.parent().unwrap()).unwrap();
+    fs::create_dir_all(source.parent().unwrap()).unwrap();
+    fs::write(&config, "[terminal]\nfont_size = 17\n").unwrap();
+    fs::write(&source, "the source stays authoritative\n").unwrap();
+    executable(
+        &host.0.path().join("chezmoi"),
+        &format!("#!/bin/sh\nprintf '%s\\n' '{}'\n", source.display()),
+    );
+
+    let output = host
+        .command(&["--herdr-setup"])
+        .env_remove("HERDR_ENV")
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success(), "{output:?}");
+    assert_eq!(
+        fs::read_to_string(&config).unwrap(),
+        "[terminal]\nfont_size = 17\n"
+    );
+    assert!(!host.0.path().join(".local/bin/dl-herdr-shell").exists());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains(source.to_str().unwrap()), "{stderr}");
+}
