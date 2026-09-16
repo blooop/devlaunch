@@ -236,6 +236,16 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
 
 /// Change only Herdr's pane launcher. Unknown launchers require an explicit manual edit.
 pub fn configure(config: &Path, script: &Path, home: &Path) -> io::Result<bool> {
+    let resolved;
+    let config = match fs::symlink_metadata(config) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            resolved = fs::canonicalize(config)?;
+            resolved.as_path()
+        }
+        Ok(_) => config,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => config,
+        Err(error) => return Err(error),
+    };
     let original = match fs::read_to_string(config) {
         Ok(text) => text,
         Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
@@ -385,6 +395,43 @@ mod tests {
         assert!(once.contains("name = 'dark'"));
         assert!(!configure(&config, &script, root.path()).unwrap());
         assert_eq!(fs::read_to_string(&config).unwrap(), once);
+    }
+
+    #[test]
+    fn installer_updates_symlink_target_and_preserves_link() {
+        let root = tempfile::tempdir().unwrap();
+        let config = root.path().join("config.toml");
+        let source = root.path().join("source.toml");
+        fs::write(&source, "# My config\n[terminal]\nfont_size = 14\n").unwrap();
+        std::os::unix::fs::symlink("source.toml", &config).unwrap();
+        let script = root.path().join("bin/dl-herdr-shell");
+
+        assert!(configure(&config, &script, root.path()).unwrap());
+        assert_eq!(fs::read_link(&config).unwrap(), Path::new("source.toml"));
+        let updated = fs::read_to_string(&source).unwrap();
+        let document = updated.parse::<toml_edit::DocumentMut>().unwrap();
+        assert_eq!(
+            document["terminal"]["default_shell"].as_str(),
+            script.to_str()
+        );
+        assert_eq!(document["terminal"]["font_size"].as_integer(), Some(14));
+        assert!(updated.contains("# My config"));
+        assert!(!configure(&config, &script, root.path()).unwrap());
+    }
+
+    #[test]
+    fn installer_refuses_dangling_symlink_without_replacing_it() {
+        let root = tempfile::tempdir().unwrap();
+        let config = root.path().join("config.toml");
+        std::os::unix::fs::symlink("missing.toml", &config).unwrap();
+        let script = root.path().join("bin/dl-herdr-shell");
+
+        assert_eq!(
+            configure(&config, &script, root.path()).unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+        assert_eq!(fs::read_link(&config).unwrap(), Path::new("missing.toml"));
+        assert!(!root.path().join("missing.toml").exists());
     }
 
     #[test]
