@@ -422,6 +422,7 @@ pub(crate) enum Command {
     HerdrShellReady {
         profile: Option<String>,
     },
+    HerdrEditorReady,
     HerdrSetup,
     HerdrEnv {
         words: Vec<String>,
@@ -603,6 +604,8 @@ pub(crate) struct Cli {
     herdr_workspace: Option<String>,
     #[arg(long, group = "what", hide = true)]
     herdr_shell_ready: bool,
+    #[arg(long, group = "what", hide = true)]
+    herdr_editor_ready: bool,
 
     /// Retired: the flag spelling of the `stop` verb. Recognised so it can be
     /// refused with the word to use instead. Deliberately outside the `what` group,
@@ -785,6 +788,7 @@ const AFTER_HELP: &str = "Environment:
   DEVLAUNCH_NO_CLAUDE_TOKEN=1        Do not forward the host's Claude login
   DEVLAUNCH_DOTFILES_ON_ATTACH=1     Refresh dotfiles before every attach
   DEVLAUNCH_NO_TITLE=1               Do not name the terminal after the workspace
+  DEVLAUNCH_HERDR_EDITOR=<program>   Open this editor beside Herdr agent launches
 
 Scripting dl, or driving it from an agent:
   dl <ws> -- <cmd> is a subprocess: the exit status, stdout and stdin are the
@@ -814,6 +818,7 @@ enum Chosen {
     UpdateCache,
     HerdrShell,
     HerdrShellReady,
+    HerdrEditorReady,
     HerdrSetup,
     HerdrEnv,
 }
@@ -836,6 +841,7 @@ impl Cli {
             (self.update_cache, Chosen::UpdateCache),
             (self.herdr_shell, Chosen::HerdrShell),
             (self.herdr_shell_ready, Chosen::HerdrShellReady),
+            (self.herdr_editor_ready, Chosen::HerdrEditorReady),
             (self.herdr_setup, Chosen::HerdrSetup),
             (self.herdr_env, Chosen::HerdrEnv),
         ]
@@ -1011,6 +1017,7 @@ fn global_command(cli: &Cli, chosen: Chosen) -> Result<Command, GrammarError> {
         Chosen::HerdrShellReady => Command::HerdrShellReady {
             profile: cli.claude_profile.clone(),
         },
+        Chosen::HerdrEditorReady => Command::HerdrEditorReady,
         Chosen::HerdrSetup => Command::HerdrSetup,
         Chosen::HerdrEnv => Command::HerdrEnv {
             words: cli.words.clone(),
@@ -1034,6 +1041,7 @@ fn flag_of(chosen: Chosen) -> &'static str {
         Chosen::UpdateCache => "--update-cache",
         Chosen::HerdrShell => "--herdr-shell",
         Chosen::HerdrShellReady => "--herdr-shell-ready",
+        Chosen::HerdrEditorReady => "--herdr-editor-ready",
         Chosen::HerdrSetup => "--herdr-setup",
         Chosen::HerdrEnv => "--herdr-env",
     }

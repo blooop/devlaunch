@@ -139,6 +139,10 @@ pub(crate) fn dispatch(
             crate::herdr_environment::manage(&words, workspace.as_deref())
         }
         Command::HerdrShell => crate::herdr_environment::open_pane(),
+        Command::HerdrEditorReady => {
+            crate::herdr_editor::ready();
+            Ending::Done
+        }
         Command::HerdrShellReady { profile } => match session_manager::pane_destination(runner) {
             PaneDestination::Workspace {
                 workspace_id,
@@ -207,6 +211,9 @@ pub(crate) fn dispatch(
                 Ok(target) => target,
                 Err(ending) => return ending,
             };
+            if starts_agent(&verb) {
+                crate::herdr_editor::start();
+            }
             let after = verb.after_removal();
             let ending = render_workspace(
                 runner,
@@ -223,6 +230,39 @@ pub(crate) fn dispatch(
             );
             hangup::after_the_command(after, ending)
         }
+    }
+}
+
+fn starts_agent(verb: &Verb) -> bool {
+    let Verb::Run(words, _) = verb else {
+        return false;
+    };
+    words
+        .iter()
+        .map(String::as_str)
+        .find(|word| !devlaunch_core::clients::herdr_is_assignment(word))
+        .and_then(devlaunch_core::clients::herdr_agent_named)
+        .is_some()
+}
+
+#[cfg(test)]
+mod herdr_editor_tests {
+    use super::*;
+    use devlaunch_core::domain::workspace_state::NonEmpty;
+
+    fn run(words: &[&str]) -> Verb {
+        Verb::Run(
+            NonEmpty::of(words.iter().map(|word| (*word).to_owned())).unwrap(),
+            RmOnExit::No,
+        )
+    }
+
+    #[test]
+    fn only_agent_commands_ask_for_the_editor_layout() {
+        assert!(starts_agent(&run(&["claude", "fix it"])));
+        assert!(starts_agent(&run(&["IS_SANDBOX=1", "/usr/bin/codex"])));
+        assert!(!starts_agent(&run(&["make", "test"])));
+        assert!(!starts_agent(&Verb::Attach { rm: RmOnExit::No }));
     }
 }
 

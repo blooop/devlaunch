@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Herdr agent launches can open an editor beside the agent.** Set
+  `DEVLAUNCH_HERDR_EDITOR` to an executable such as `nvim`. An `aid` launch or a
+  direct `dl <workspace> -- claude`, `codex`, or `gemini` launch waits until Herdr
+  sees the agent, then opens the editor in a vertical split inside the same
+  devlaunch workspace. The agent pane keeps focus. Tabs that already have a split
+  keep their existing layout.
+
 ## [0.49.0] - 2026-09-14
 
 ### Fixed

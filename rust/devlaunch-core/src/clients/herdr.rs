@@ -75,7 +75,8 @@ pub(crate) fn agent_in(command: &str) -> Option<&'static str> {
 /// whitespace guess entirely: `RemoteCommand::Argv` knows where its words end, and
 /// splitting a word that legitimately contains a space would be a worse answer
 /// than the one it already has.
-pub(crate) fn agent_named(program: &str) -> Option<&'static str> {
+/// Binary surface: `dl` asks this before arranging an optional editor split.
+pub fn agent_named(program: &str) -> Option<&'static str> {
     let name = program.rsplit('/').next()?;
     AGENT_NAMES.iter().copied().find(|known| *known == name)
 }
@@ -85,7 +86,8 @@ pub(crate) fn agent_named(program: &str) -> Option<&'static str> {
 /// `FOO=bar claude` runs claude. The name half must be non-empty for the same
 /// reason the shell requires it: `=x` is a program named `=x`, however unlikely,
 /// and not an assignment.
-pub(crate) fn is_assignment(word: &str) -> bool {
+/// Binary surface: see [`agent_named`].
+pub fn is_assignment(word: &str) -> bool {
     match word.split_once('=') {
         Some((name, _)) => !name.is_empty(),
         None => false,

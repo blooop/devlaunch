@@ -1416,6 +1416,27 @@ other settings and comments. `dl --install` still prints the line for manual set
 key, by mouse, by `herdr pane split`, opens in the container when its tab holds a
 devlaunch session and opens your ordinary shell when it does not.
 
+### Opening an editor beside an agent
+
+Set `DEVLAUNCH_HERDR_EDITOR` to one executable name to give agent launches a
+side-by-side editor:
+
+```bash
+export DEVLAUNCH_HERDR_EDITOR=nvim
+aid blooop/devlaunch@my-branch
+```
+
+This applies to `aid` and to a direct `dl <workspace> -- claude`, `codex`, or
+`gemini` launch. `dl` waits until Herdr recognises the agent, splits its pane to
+the right with `--no-focus`, and starts the editor there. The new pane passes
+through `dl-herdr-shell`, so it enters the same devlaunch container as the agent.
+The agent remains the focused pane.
+
+Only a one-pane tab is changed. If the tab already has another pane, `dl` leaves
+its layout alone, which prevents a resumed agent from adding another editor. The
+value is an executable name or path without arguments. Leave it unset to keep the
+one-pane layout.
+
 ### Why a second name, and not a flag
 
 `default_shell` takes an **executable**, not a command string, so

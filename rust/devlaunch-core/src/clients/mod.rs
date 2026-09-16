@@ -25,6 +25,9 @@ pub mod git;
 // `AGENT_NAMES` is the single copy of which agents devlaunch knows by name and
 // `aid`'s richer table is held against it.
 pub(crate) mod herdr;
+// Binary surface: `dl` uses the same agent-name reader before it arranges a
+// Herdr editor split. Only these decisions cross the crate boundary.
+pub use herdr::{agent_named as herdr_agent_named, is_assignment as herdr_is_assignment};
 // Crate-private for docker's reason: the two signals `dl <ws> kill` sends are
 // the whole of what devlaunch asks of `kill(1)`, and what they came to is
 // reported in the kill flow's vocabulary.
