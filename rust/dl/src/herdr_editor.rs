@@ -6,7 +6,10 @@
 //! helper, which waits until Herdr recognises the agent, splits that pane without
 //! taking focus, and starts the configured editor in the new pane.
 
-use std::process::{Command, Stdio};
+use std::io::{self, Read as _};
+use std::process::{ChildStdin, Command, Stdio};
+use std::sync::Mutex;
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -17,6 +20,7 @@ const AGENT_VAR: &str = "HERDR_AGENT";
 const READY_WORD: &str = "--herdr-editor-ready";
 const WAIT_FOR_AGENT: Duration = Duration::from_secs(30 * 60);
 const RETRY: Duration = Duration::from_millis(500);
+static PARENT_LEASES: Mutex<Vec<ChildStdin>> = Mutex::new(Vec::new());
 
 /// Start the detached waiter when this process has enough context to do so.
 pub(crate) fn start() {
@@ -29,7 +33,17 @@ pub(crate) fn start() {
     let Ok(me) = std::env::current_exe() else {
         return;
     };
-    let _ = waiter_command(me).spawn();
+    let Ok(mut waiter) = waiter_command(me).spawn() else {
+        return;
+    };
+    if let Some(lease) = waiter.stdin.take() {
+        // This process is the lease. The kernel closes every retained writer when
+        // it exits, which cancels the waiter without addressing a possibly reused PID.
+        PARENT_LEASES
+            .lock()
+            .expect("lease lock poisoned")
+            .push(lease);
+    }
 }
 
 fn waiter_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
@@ -39,7 +53,7 @@ fn waiter_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
         // `aid` sets this before entering `dl`. Letting the waiter inherit it
         // makes the waiter itself satisfy the agent probe before a transport exists.
         .env_remove(AGENT_VAR)
-        .stdin(Stdio::null())
+        .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     command
@@ -51,21 +65,27 @@ pub(crate) fn ready() {
     let Ok(pane) = std::env::var("HERDR_PANE_ID") else {
         return;
     };
+    let parent = parent_lease();
     let deadline = Instant::now() + WAIT_FOR_AGENT;
     while Instant::now() < deadline {
+        if lease_closed(&parent) {
+            return;
+        }
         if herdr(["agent", "get", pane.as_str()]).is_some() {
             break;
         }
-        thread::sleep(RETRY);
+        if !retry_while_parent_lives(&parent) {
+            return;
+        }
     }
-    if Instant::now() >= deadline {
+    if Instant::now() >= deadline || lease_closed(&parent) {
         return;
     }
 
     let Some(layout) = herdr(["pane", "layout", "--pane", pane.as_str()]) else {
         return;
     };
-    if pane_count(&layout) != Some(1) {
+    if lease_closed(&parent) || pane_count(&layout) != Some(1) {
         return;
     }
     let Some(split) = herdr([
@@ -87,11 +107,42 @@ pub(crate) fn ready() {
     // attach can take a moment. `pane run` refuses a busy pane without typing
     // into it, so retry until its shell owns the foreground.
     while Instant::now() < editor_deadline {
+        if lease_closed(&parent) {
+            return;
+        }
         if herdr(["pane", "run", editor_pane.as_str(), editor.as_str()]).is_some() {
             return;
         }
-        thread::sleep(RETRY);
+        if !retry_while_parent_lives(&parent) {
+            return;
+        }
     }
+}
+
+fn parent_lease() -> Receiver<()> {
+    let (closed, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let mut input = io::stdin();
+        let mut byte = [0_u8; 1];
+        loop {
+            match input.read(&mut byte) {
+                Ok(0) => break,
+                Ok(_) => {}
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                Err(_) => break,
+            }
+        }
+        let _ = closed.send(());
+    });
+    receiver
+}
+
+fn lease_closed(parent: &Receiver<()>) -> bool {
+    !matches!(parent.try_recv(), Err(TryRecvError::Empty))
+}
+
+fn retry_while_parent_lives(parent: &Receiver<()>) -> bool {
+    matches!(parent.recv_timeout(RETRY), Err(RecvTimeoutError::Timeout))
 }
 
 fn editor() -> Option<String> {

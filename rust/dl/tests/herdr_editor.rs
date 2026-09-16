@@ -1,6 +1,6 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 fn fake_herdr(dir: &std::path::Path) -> std::path::PathBuf {
@@ -23,6 +23,16 @@ esac
     path
 }
 
+fn fake_waiting_herdr(dir: &std::path::Path) {
+    let path = dir.join("herdr");
+    fs::write(
+        &path,
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$HERDR_CALLS\"\nexit 1\n",
+    )
+    .unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
 fn command(dir: &std::path::Path) -> Command {
     let calls = dir.join("calls");
     let mut command = Command::new(env!("CARGO_BIN_EXE_dl"));
@@ -40,7 +50,14 @@ fn command(dir: &std::path::Path) -> Command {
 }
 
 fn run(dir: &std::path::Path) -> Output {
-    command(dir).output().unwrap()
+    let mut child = command(dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let _lease = child.stdin.take().unwrap();
+    child.wait_with_output().unwrap()
 }
 
 #[test]
@@ -65,8 +82,10 @@ fn uses_herdrs_exported_binary_and_repairs_a_deleted_suffix() {
     let mut child = command(dir.path())
         .env("PATH", "/usr/bin:/bin")
         .env("HERDR_BIN_PATH", format!("{} (deleted)", binary.display()))
+        .stdin(Stdio::piped())
         .spawn()
         .unwrap();
+    let _lease = child.stdin.take().unwrap();
     let deadline = Instant::now() + Duration::from_secs(2);
     let status = loop {
         if let Some(status) = child.try_wait().unwrap() {
@@ -85,4 +104,26 @@ fn uses_herdrs_exported_binary_and_repairs_a_deleted_suffix() {
             .unwrap()
             .starts_with("agent get w1:p1\n")
     );
+}
+
+#[test]
+fn stops_waiting_when_the_initiating_process_is_gone() {
+    let dir = tempfile::tempdir().unwrap();
+    fake_waiting_herdr(dir.path());
+    let mut child = command(dir.path()).stdin(Stdio::piped()).spawn().unwrap();
+    drop(child.stdin.take());
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            assert!(status.success(), "{status:?}");
+            break;
+        }
+        if Instant::now() >= deadline {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("editor waiter outlived the process that initiated it");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
