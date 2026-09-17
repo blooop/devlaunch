@@ -8,7 +8,7 @@ fn fake_herdr(dir: &std::path::Path) -> std::path::PathBuf {
     fs::write(
         &path,
         r##"#!/bin/sh
-printf '%s\n' "$*" >> "$HERDR_CALLS"
+printf '<%s>' "$@" >> "$HERDR_CALLS"; echo >> "$HERDR_CALLS"
 case "$*" in
   "agent get w1:p1") printf '%s\n' '{"result":{"agent":{"agent":"codex","agent_status":"working","state_change_seq":42}}}' ;;
   "pane layout --pane w1:p1") printf '%s\n' '{"result":{"layout":{"panes":[{"pane_id":"w1:p1"}]}}}' ;;
@@ -28,7 +28,7 @@ fn fake_waiting_herdr(dir: &std::path::Path) {
     let path = dir.join("herdr");
     fs::write(
         &path,
-        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$HERDR_CALLS\"\nexit 1\n",
+        "#!/bin/sh\nprintf '<%s>' \"$@\" >> \"$HERDR_CALLS\"; echo >> \"$HERDR_CALLS\"\nexit 1\n",
     )
     .unwrap();
     fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
@@ -39,7 +39,7 @@ fn fake_replacing_agent(dir: &std::path::Path) {
     fs::write(
         &path,
         r##"#!/bin/sh
-printf '%s\n' "$*" >> "$HERDR_CALLS"
+printf '<%s>' "$@" >> "$HERDR_CALLS"; echo >> "$HERDR_CALLS"
 case "$*" in
   "agent get w1:p1")
     if [ ! -e "$HERDR_SECOND_AGENT" ]; then
@@ -96,10 +96,10 @@ fn opened_the_editor(dir: &std::path::Path, editor: &str) {
     assert_eq!(
         fs::read_to_string(dir.join("calls")).unwrap_or_default(),
         format!(
-            "agent get w1:p1\n\
-             pane layout --pane w1:p1\n\
-             pane split w1:p1 --direction right --no-focus\n\
-             pane run w1:p2 {editor}\n"
+            "<agent><get><w1:p1>\n\
+             <pane><layout><--pane><w1:p1>\n\
+             <pane><split><w1:p1><--direction><right><--no-focus>\n\
+             <pane><run><w1:p2><{editor}>\n"
         )
     );
 }
@@ -112,10 +112,10 @@ fn starts_an_editor_to_the_right_without_taking_agent_focus() {
     assert!(output.status.success(), "{output:?}");
     assert_eq!(
         fs::read_to_string(dir.path().join("calls")).unwrap(),
-        "agent get w1:p1\n\
-         pane layout --pane w1:p1\n\
-         pane split w1:p1 --direction right --no-focus\n\
-         pane run w1:p2 nvim\n"
+        "<agent><get><w1:p1>\n\
+         <pane><layout><--pane><w1:p1>\n\
+         <pane><split><w1:p1><--direction><right><--no-focus>\n\
+         <pane><run><w1:p2><nvim>\n"
     );
 }
 
@@ -186,11 +186,11 @@ fn waits_for_a_new_matching_agent_instead_of_accepting_the_old_done_one() {
     assert!(output.status.success(), "{output:?}");
     assert_eq!(
         fs::read_to_string(dir.path().join("calls")).unwrap(),
-        "agent get w1:p1\n\
-         agent get w1:p1\n\
-         pane layout --pane w1:p1\n\
-         pane split w1:p1 --direction right --no-focus\n\
-         pane run w1:p2 nvim\n"
+        "<agent><get><w1:p1>\n\
+         <agent><get><w1:p1>\n\
+         <pane><layout><--pane><w1:p1>\n\
+         <pane><split><w1:p1><--direction><right><--no-focus>\n\
+         <pane><run><w1:p2><nvim>\n"
     );
 }
 
@@ -221,7 +221,7 @@ fn uses_herdrs_exported_binary_and_repairs_a_deleted_suffix() {
     assert!(
         fs::read_to_string(dir.path().join("calls"))
             .unwrap()
-            .starts_with("agent get w1:p1\n")
+            .starts_with("<agent><get><w1:p1>\n")
     );
 }
 
@@ -251,7 +251,7 @@ fn fake_wedged_herdr(dir: &std::path::Path) {
     let path = dir.join("herdr");
     fs::write(
         &path,
-        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$HERDR_CALLS\"\nsleep 30\n",
+        "#!/bin/sh\nprintf '<%s>' \"$@\" >> \"$HERDR_CALLS\"; echo >> \"$HERDR_CALLS\"\nsleep 30\n",
     )
     .unwrap();
     fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
@@ -278,7 +278,7 @@ fn gives_up_on_a_herdr_that_takes_the_question_and_never_answers() {
     let asked = wait_until(Instant::now() + Duration::from_secs(5), || {
         fs::read_to_string(&calls)
             .unwrap_or_default()
-            .contains("agent get w1:p1")
+            .contains("<agent><get><w1:p1>")
     });
     if !asked {
         child.kill().unwrap();
