@@ -1741,6 +1741,20 @@ mod tests {
         // branch half is the branch, so upper case, `_`, `.` and a non-ASCII letter
         // all reach a tab intact, and asserting a character set would be asserting
         // the slug rule this change took off the label.
+        // The trailing slash the *cut* writes, which is a different path from the
+        // trailing slash the branch was typed with: every slashed case above is
+        // short enough to survive whole, so all they reach is the empty-segment
+        // filter. `my-repo-v2` plus the suffix and two dashes leaves the ref 31
+        // characters, so a 30-character first segment puts the cut exactly on the
+        // separator and the label ends `...a/` unless `read` trims it -- a path
+        // where a branch was meant, on a branch nobody typed a slash at the end of.
+        let cut_lands_on_the_separator = format!("{}/{}", "a".repeat(30), "b".repeat(10));
+        assert_eq!(
+            id("owner", "my_repo.v2", &cut_lands_on_the_separator).label(),
+            format!("my-repo-v2@{}", "a".repeat(30)),
+            "the case only guards the trim while the cut still falls on the `/`"
+        );
+
         for git_ref in [
             "main",
             "feature/auth",
@@ -1754,6 +1768,7 @@ mod tests {
             "feat/ABC_123",
             "release/1.2_rc.4",
             "feature/caf\u{e9}",
+            cut_lands_on_the_separator.as_str(),
         ] {
             let label = id("owner", "my_repo.v2", git_ref).label();
             assert!(
