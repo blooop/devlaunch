@@ -3296,10 +3296,11 @@ pub(crate) fn dotfiles_update(
 /// # What the title says
 ///
 /// The name is the placement's ([`Placement::title`]), and it is the workspace id
-/// with its two unreadable characteristics taken off: the four-character suffix,
-/// which carries identity and no meaning, and the dash between the repo and the ref,
-/// which is spelled `@`. `docs/workspaces.md` tabulates what a tab, a listing row and
-/// a selector row read for one workspace, and is where that spelling is decided; this
+/// with the parts only devpod needs taken off: the four-character suffix, which
+/// carries identity and no meaning, and the flattened separators, which are spelled
+/// the way the spec spells them -- `@` between the repo and the ref, `/` inside a
+/// ref that had one. `docs/workspaces.md` tabulates what a tab, a listing row and a
+/// selector row read for one workspace, and is where that spelling is decided; this
 /// comment deliberately does not write it, because a comment nothing checks is the
 /// copy that goes stale. [`WorkspaceId::label`]'s own tests carry the worked
 /// examples.
@@ -3307,8 +3308,8 @@ pub(crate) fn dotfiles_update(
 /// **It is the id, not a second derivation of the spec.** The slugs and the
 /// truncation are [`WorkspaceId::label`]'s, which are [`WorkspaceId::value`]'s, so a
 /// tab and a listing row still match by eye: one is the other with a suffix removed
-/// and a separator changed. A tab is read at a glance and a listing row is read
-/// deliberately, and the two characters that go are the two a glance cannot use.
+/// and its separators respelled. A tab is read at a glance and a listing row is read
+/// deliberately, and what goes is what a glance cannot use.
 ///
 /// It has also been the full spec, `owner/repo@ref`, and the reason that is not what
 /// came back is length: [`WorkspaceId::new`] validates the characters of a triple and
@@ -3364,9 +3365,10 @@ impl TerminalTitle {
 /// every prompt. One filter for both because the two halves have to be the one
 /// string, or the tab changes the moment the first prompt paints.
 ///
-/// A *derived* id holds none of the five, since
+/// A *derived* name holds none of the five, since
 /// [`slug`](crate::domain::workspace_id::slug) leaves only lowercase alphanumerics
-/// and dashes, so nothing legitimate is lost. The filter is for the two arms that
+/// and dashes, and the two characters a label adds to those -- the `@` and the
+/// ref's own `/` -- are special to neither sink, so nothing legitimate is lost. The filter is for the two arms that
 /// title without deriving an id -- `Plan::Existing`'s raw spec and
 /// `Plan::Creatable`'s path leaf -- which this crate never validated. devpod's own
 /// name rules would refuse most of what is dangerous here, but that is a guarantee
@@ -11313,19 +11315,20 @@ mod tests {
 
     #[test]
     fn a_triple_names_the_terminal_after_the_label_devpod_is_not_addressed_by() {
-        // The tab reads `devlaunch@feature-auth` where devpod, in this same launch
+        // The tab reads `devlaunch@feature/auth` where devpod, in this same launch
         // (the `status` and `ssh` below), is addressed by
         // `devlaunch-feature-auth-np10`. Both halves are asserted here because the
         // claim is the relationship between them: the label is the id with the
-        // suffix off and one dash spelled `@`, so a tab still matches a `dl --ls`
-        // row by eye without carrying the four characters nothing reads.
+        // suffix off and its separators spelled the way the spec spells them, so a
+        // tab still matches a `dl --ls` row by eye without carrying the four
+        // characters nothing reads.
         //
-        // `feature/auth` is the ref that shows what the *slug* costs, which the `@`
-        // does not buy back: both spell it `feature-auth`, which is also the name of
-        // a different branch this repository could have, so neither can say which of
-        // the two the session is in. Only the full spec could, and it is not what
-        // came back -- see `TerminalTitle` for why the length made that the wrong
-        // trade.
+        // `feature/auth` is the ref that shows what the separators buy: the id has
+        // to flatten the slash, so it reads as the name of a different branch this
+        // repository could have (`feature-auth`) and cannot say which of the two the
+        // session is in. The tab is under no such rule and does not pay it. What the
+        // label still gives up is the owner and the length -- see `TerminalTitle`
+        // for why the full spec was the wrong trade.
         let workspace =
             WorkspaceId::new("blooop", "devlaunch", "feature/auth").expect("a safe triple");
         let mut scene = Scene::new().with_running(workspace.value());
@@ -11365,7 +11368,7 @@ mod tests {
             "{:?}",
             parts.said
         );
-        assert_eq!(workspace.label(), "devlaunch@feature-auth");
+        assert_eq!(workspace.label(), "devlaunch@feature/auth");
         // And the id is what devpod was given, unchanged by any of this.
         assert_eq!(workspace.value(), "devlaunch-feature-auth-np10");
         assert!(

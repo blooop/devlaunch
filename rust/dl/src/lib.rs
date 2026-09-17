@@ -803,6 +803,14 @@ mod early_name_tests {
             early_name("blooop/devlaunch@main").as_deref(),
             Some("devlaunch@main")
         );
+        // A branch with a slash keeps it here too, since this is the same
+        // `WorkspaceId::label` the launch calls. A name derived some other way would
+        // show up as the tab changing from `devlaunch@feature-auth` to
+        // `devlaunch@feature/auth` a few seconds in.
+        assert_eq!(
+            early_name("blooop/devlaunch@feature/auth").as_deref(),
+            Some("devlaunch@feature/auth")
+        );
         // Measured on live herdr 0.8.2: `aid blooop/rocker@nb1` named the tab
         // `rocker@nb1` during the editor and the launch afterwards named it
         // `rocker@nb1` again, so nothing moved.

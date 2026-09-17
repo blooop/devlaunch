@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The name dl puts on a tab spells the branch's slashes.** `dl
+  blooop/devlaunch@feature/auth` titles the terminal, the herdr tab and the
+  container's prompt `devlaunch@feature/auth`, where all three read
+  `devlaunch@feature-auth` before. The flattening was the workspace *id*'s to do,
+  because an id is a devpod workspace name and a DNS label and can hold no slash;
+  a tab is neither, and it was paying a cost that was never its own. What it cost
+  was the one thing a tab is for: `feature/auth` and the different branch
+  `feature-auth` are two workspaces with two ids, and both tabs said
+  `devlaunch@feature-auth`.
+
+  The label is still a rendering of the id rather than a second reading of the
+  spec, which is what keeps a tab matchable by eye against a `dl --ls` row: the
+  same slugs, the same middle segments dropped, the same cut, one character per
+  separator either way. So `dependabot/github_actions/codecov/codecov-action-6`
+  reads as `devlaunch@dependabot/codecov-action-6` beside the id
+  `devlaunch-dependabot-codecov-action-6-amlt`.
+
+  The slash lands where the branch had one and nowhere else: it comes from the
+  segment split, not from a pass over the finished id, so a dash `slug` made
+  inside a segment stays a dash (`github_actions` reads as `github-actions`, never
+  `github/actions`). Nothing about a workspace id, a clone directory, a hostname
+  or a devpod name moves, and the golden id vectors are untouched.
+
 ## [0.49.0] - 2026-09-14
 
 ### Fixed
