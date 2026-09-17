@@ -59,7 +59,9 @@ fn selected_workspace_exists(workspace: &str) -> io::Result<()> {
         .stdout(std::process::Stdio::null())
         .status()?;
     if !status.success() {
-        return Err(invalid("Herdr could not find the selected workspace"));
+        return Err(invalid(&format!(
+            "Herdr could not find the selected workspace {workspace}"
+        )));
     }
     Ok(())
 }

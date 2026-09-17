@@ -25,6 +25,10 @@ impl Host {
         host
     }
 
+    fn herdr(&self, body: &str) {
+        executable(&self.0.path().join("herdr"), body);
+    }
+
     fn command(&self, args: &[&str]) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_dl"));
         command
@@ -367,4 +371,54 @@ fn a_malformed_line_is_refused_as_a_usage_error_inside_or_outside_herdr() {
             .status
             .success()
     );
+}
+
+#[test]
+fn a_workspace_herdr_does_not_know_is_refused_before_any_state_is_written() {
+    let host = Host::new();
+    host.herdr(
+        "#!/bin/sh\nif [ \"$*\" = 'workspace get w9' ]; then\n  exit 1\nfi\nprintf '%s\\n' '{}'\n",
+    );
+    let state = host.0.path().join("state");
+
+    let output = host
+        .command(&["--herdr-workspace", "w9", "--herdr-env", "set", "A=1"])
+        .env("XDG_STATE_HOME", &state)
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("w9"), "{stderr}");
+    assert!(
+        !state.join("devlaunch/herdr-environment").exists(),
+        "{stderr}"
+    );
+
+    let known = host
+        .command(&["--herdr-workspace", "w1", "--herdr-env", "set", "A=1"])
+        .env("XDG_STATE_HOME", &state)
+        .output()
+        .unwrap();
+    assert!(known.status.success(), "{known:?}");
+    assert!(state.join("devlaunch/herdr-environment").exists());
+}
+
+#[test]
+fn managing_an_environment_without_herdrs_binary_is_refused() {
+    let host = Host::new();
+    let state = host.0.path().join("state");
+
+    let output = host
+        .command(&["--herdr-env", "set", "A=1"])
+        .env("PATH", "/usr/bin:/bin")
+        .env("XDG_STATE_HOME", &state)
+        .env_remove("HERDR_BIN_PATH")
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("HERDR_BIN_PATH is required"), "{stderr}");
+    assert!(!state.join("devlaunch/herdr-environment").exists());
 }
