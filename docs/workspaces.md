@@ -55,31 +55,34 @@ The other two are renderings of that same id, cut to what their surface is for:
 
 | Where | Reads | Why that shape |
 |-------|-------|----------------|
-| `dl --ls`, the hostname, devpod | `devlaunch-main-3j1t` | Addressed and typed back, so it must be unique and it must be one word |
-| The [terminal tab](workspace-tools.md#naming-the-terminal-after-the-workspace) | `devlaunch@main` | A handful of characters read at a glance beside a dozen others, so the suffix goes and the branch stays the id's slug |
-| The [selector](cli.md#the-selector) | `blooop \| devlaunch \| main` | One row at a time with the width of a terminal, so the owner comes back and the branch is spelled in full, out of the clone's `HEAD` |
+| `dl --ls`, the hostname, devpod | `devlaunch-feature-auth-np10` | Addressed and typed back, so it must be unique and it must be one word |
+| The [terminal tab](workspace-tools.md#naming-the-terminal-after-the-workspace) | `devlaunch@feature/auth` | A handful of characters read at a glance beside a dozen others, so the suffix goes and the separators are the ones the spec is written with |
+| The [selector](cli.md#the-selector) | `blooop \| devlaunch \| feature/auth` | One row at a time with the width of a terminal, so the owner comes back and the branch is spelled in full, out of the clone's `HEAD` |
 
 They are renderings and not separate derivations, which is what keeps them
-matchable: the tab is the id with the suffix off and one dash spelled `@`, so the
-first two rows are recognisably the same workspace. This table is where the tab's
-spelling is decided, and no other page states it as the answer to a command; where
-one appears elsewhere it is inside an example of the mechanism, like the escape
-sequence and the profile line in
+matchable: the tab is the id with the suffix off and its separators respelled, one
+character for one character, so the first two rows are recognisably the same
+workspace. This table is where the tab's spelling is decided, and no other page
+states it as the answer to a command; where one appears elsewhere it is inside an
+example of the mechanism, like the escape sequence and the profile line in
 [workspace-tools.md](workspace-tools.md#naming-the-terminal-after-the-workspace).
-`a_label_is_the_id_with_the_suffix_off_and_an_at_where_the_dash_was` in
-`rust/devlaunch-core/src/domain/workspace_id.rs` pins the tab's cell against what
+`a_label_is_the_id_with_the_suffix_off_and_its_separators_respelled` in
+`rust/devlaunch-core/src/domain/workspace_id.rs` pins the tab's cells against what
 `WorkspaceId::label` returns.
 
-Which dash the `@` replaces is not readable off the id, since a repo slug holds
-dashes of its own, so the tab's name travels with the launch that resolved it rather
-than being recovered later. A workspace you name by its bare id on the command line
-is therefore titled by that id. The selector is not: it read the triple to draw the
-row, and hands it on with the pick.
+Neither the dash the `@` replaces nor the dashes that stood for slashes are readable
+off the id, since a repo slug holds dashes of its own and so does a branch name, so
+the tab's name travels with the launch that resolved it rather than being recovered
+later. A workspace you name by its bare id on the command line is therefore titled
+by that id. The selector is not: it read the triple to draw the row, and hands it on
+with the pick.
 
-The tab is the one that gives something up. It does not name the owner, since an id
-never carried one, so a fork and its upstream read alike; and it spells the branch as
-the id's slug, so `feature/auth` reads as `feature-auth`. Both are recoverable in the
-selector, which is where a name is read carefully rather than glanced at.
+The tab still gives one thing up. It does not name the owner, since an id never
+carried one, so a fork and its upstream read alike. That is recoverable in the
+selector, which is where a name is read carefully rather than glanced at. What it no
+longer gives up is the branch's own spelling: the branch `feature/auth` reads as
+`devlaunch@feature/auth` on the tab, so the tab tells it apart from the different
+branch `feature-auth` even though the id, which has to flatten the slash, cannot.
 
 At 47 characters the id leaves 17 of the 64-byte hostname limit for tools that stack
 their own prefixes onto the container name. That was about 26 when the hostname was the

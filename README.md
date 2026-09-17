@@ -19,7 +19,7 @@ one argument instead of a clone, a config file and a build command.
 [![GitHub pull-requests merged](https://badgen.net/github/merged-prs/blooop/devlaunch)](https://github.com/blooop/devlaunch/pulls?q=is%3Amerged)
 [![GitHub release](https://img.shields.io/github/release/blooop/devlaunch.svg)](https://GitHub.com/blooop/devlaunch/releases/)
 [![PyPI](https://img.shields.io/pypi/v/devlaunch)](https://pypi.org/project/devlaunch/)
-[![Conda](https://img.shields.io/badge/conda-v0.49.0-brightgreen?logo=anaconda)](https://prefix.dev/channels/blooop/packages/devlaunch)
+[![Conda](https://img.shields.io/badge/conda-v0.50.0-brightgreen?logo=anaconda)](https://prefix.dev/channels/blooop/packages/devlaunch)
 [![License](https://img.shields.io/github/license/blooop/devlaunch)](https://opensource.org/license/mit/)
 [![Platform](https://img.shields.io/badge/platform-linux--64-blue)](https://github.com/blooop/devlaunch/releases)
 [![Pixi Badge](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/prefix-dev/pixi/main/assets/badge/v0.json)](https://pixi.sh)
@@ -340,7 +340,7 @@ clone, and [docs/cleanup.md](docs/cleanup.md) says what it carries one past and 
 
 ```bash
 $ dl --version
-dl 0.49.0
+dl 0.50.0
 ```
 
 `--devcontainer <variant|path>` picks a non-default `devcontainer.json`. A bare name means
@@ -462,9 +462,10 @@ anything to its `devcontainer.json`.
   `DEVLAUNCH_ZELLIJ=1` is the ask, once in a shell profile or per launch; it costs 2.2s to 3.5s
   of a cold launch, which is why it waits to be asked.
 - **A terminal named after the workspace.** In zellij, tmux, or a plain terminal window
-  the pane takes the workspace id read for a person: the hashed suffix off and the dash
-  before the branch spelled `@`, so a tab and the row `dl --ls` prints still match by
-  eye. A workspace you name by its id keeps the id.
+  the pane takes the workspace id read for a person: the hashed suffix off and the
+  separators the spec is written with put back, so `devlaunch-feature-auth-np10` reads
+  `devlaunch@feature/auth` and a tab and the row `dl --ls` prints still match by eye.
+  A workspace you name by its id keeps the id.
   [The three renderings side by side](docs/workspaces.md#workspace-ids).
 - **A shared pixi package cache**, bound in from the host, so dotfiles that provision tools with
   `pixi global sync` download each package once per machine instead of once per container. On one
