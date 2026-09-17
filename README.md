@@ -456,9 +456,10 @@ anything to its `devcontainer.json`.
   `DEVLAUNCH_ZELLIJ=1` is the ask, once in a shell profile or per launch; it costs 2.2s to 3.5s
   of a cold launch, which is why it waits to be asked.
 - **A terminal named after the workspace.** In zellij, tmux, or a plain terminal window
-  the pane takes the workspace id read for a person: the hashed suffix off and the dash
-  before the branch spelled `@`, so a tab and the row `dl --ls` prints still match by
-  eye. A workspace you name by its id keeps the id.
+  the pane takes the workspace id read for a person: the hashed suffix off and the
+  separators the spec is written with put back, so `devlaunch-feature-auth-np10` reads
+  `devlaunch@feature/auth` and a tab and the row `dl --ls` prints still match by eye.
+  A workspace you name by its id keeps the id.
   [The three renderings side by side](docs/workspaces.md#workspace-ids).
 - **A shared pixi package cache**, bound in from the host, so dotfiles that provision tools with
   `pixi global sync` download each package once per machine instead of once per container. On one
