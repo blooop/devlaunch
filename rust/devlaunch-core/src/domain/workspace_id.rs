@@ -1604,26 +1604,22 @@ mod tests {
         ] {
             let parsed = id("owner", repo, git_ref);
             assert_eq!(parsed.label(), label, "{repo}@{git_ref}");
-            // What survives of the old character-for-character identity, and all
-            // that survives: slug the label's branch half and the id's readable
-            // half comes back. It holds while nothing is truncated, which is the
-            // case a tab is read in; `a_label_is_cut_by_the_ids_budget_and_not_by_            // one_of_its_own` is where the two cuts are pinned against each other.
-            let rendered = parsed.label();
-            let (repo_read, ref_read) = rendered.split_once('@').expect("an @");
-            assert_eq!(
-                parsed.value(),
-                format!("{}-{}-{}", repo_read, slug(ref_read), parsed.suffix()),
-                "the id is the label slugged, with the suffix put back"
-            );
         }
     }
 
     #[test]
     fn a_label_is_cut_by_the_ids_budget_and_not_by_one_of_its_own() {
         // The room the ref gets is decided against the suffix's four characters even
-        // though the label does not carry them. That is the point: a label wider than
-        // the id's readable half would be a tab that says more than the `dl --ls` row
-        // it is meant to be matched against, and the room is not the label's to spend.
+        // though the label does not carry them. That is the point: the budget belongs
+        // to the id, and the room is not the label's to spend -- a tab does not get a
+        // cut of its own, it gets the id's cut read the other way, so a segment the
+        // id could not afford is missing from both.
+        //
+        // What that does *not* buy is a matching width. Both spellings are cut to the
+        // same `room`, counted in characters, and the same segments survive it, but
+        // the characters being counted are not the same characters: the cut can land
+        // in a different place in each, and the label can come out wider than the id's
+        // readable half. The last two cases here are where that divergence is pinned.
         let parsed = id("owner", &"r".repeat(47), &"b".repeat(80));
         assert_eq!(
             parsed.label(),
@@ -1635,10 +1631,12 @@ mod tests {
             "the whole id, less the suffix and the dash in front of it"
         );
 
-        // A slash costs exactly what the dash it replaces cost, so the cut falls on
-        // the same character and the label is the same length as the id's readable
-        // half. A separator of any other width would make the two disagree here
-        // before it made them disagree on a tab bar.
+        // A slash costs exactly what the dash it replaces cost. Every segment of this
+        // ref spells itself the same in both alphabets, so the separators are the only
+        // thing that could move one cut off the other, and they do not: the two halves
+        // come out character for character the same. That pins the separator's width
+        // and nothing wider. A separator of any other width would make the two
+        // disagree here before it made them disagree on a tab bar.
         let slashed = id(
             "owner",
             "repo",
@@ -1652,6 +1650,59 @@ mod tests {
                 .trim_end_matches(&format!("-{}", slashed.suffix()))
                 .to_owned(),
             "the slashed label and the dashed id are one cut read two ways"
+        );
+
+        // A ref that is not slug-invariant, which is what every case above is: `__`
+        // is one dash to the slug and two characters on a tab, so the as-typed
+        // spelling runs ahead of the id's and the shared room runs out somewhere else
+        // in it. Same budget, same surviving segments, a different last character --
+        // the id stops inside `page`, the label inside `login`.
+        let collapsing = id(
+            "owner",
+            "repo",
+            "release/1.2.3__hotfix__for__the__login__page",
+        );
+        assert_eq!(
+            collapsing.value(),
+            "repo-release-1-2-3-hotfix-for-the-login-pa-p50u"
+        );
+        assert_eq!(
+            collapsing.label(),
+            "repo@release/1.2.3__hotfix__for__the__logi"
+        );
+        // Spelled as arithmetic because it is the claim, not the strings: one budget,
+        // spent to the last character by both.
+        let room = TARGET_LENGTH - SUFFIX_LENGTH - "repo".len() - 2;
+        assert_eq!(room, 37);
+        let readable = collapsing
+            .value()
+            .trim_start_matches("repo-")
+            .trim_end_matches(&format!("-{}", collapsing.suffix()))
+            .to_owned();
+        assert_eq!(readable.chars().count(), room);
+        assert_eq!(
+            collapsing
+                .label()
+                .split_once('@')
+                .expect("an @")
+                .1
+                .chars()
+                .count(),
+            room
+        );
+
+        // The same asymmetry with only one side cut. This ref slugs to 34 characters
+        // and fits the room whole, while its 39 as typed does not, so the id keeps
+        // every character of the branch and the label loses two. A label that had been
+        // promised the id's width would have had to stop at `redesign` too.
+        let cut_on_one_side = id("owner", "repo", "hotfix__for__the__login__page__redesign");
+        assert_eq!(
+            cut_on_one_side.value(),
+            "repo-hotfix-for-the-login-page-redesign-u5c0"
+        );
+        assert_eq!(
+            cut_on_one_side.label(),
+            "repo@hotfix__for__the__login__page__redesi"
         );
     }
 
