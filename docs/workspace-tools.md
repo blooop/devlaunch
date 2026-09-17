@@ -1487,7 +1487,19 @@ uses `$HERDR_CONFIG_PATH` when set, otherwise `$XDG_CONFIG_HOME/herdr/config.tom
 regular config file, setup refuses the edit and names the source file. Change
 `terminal.default_shell` in that source, apply it, and run `dl --install` to install
 the launcher. A symlink is different: setup preserves the link and updates its
-target. Re-running setup preserves an already current file. A custom `default_shell`
+target.
+
+A chezmoi that cannot answer is refused too, rather than read as "unmanaged".
+`chezmoi source-path <file>` exits nonzero both for a file chezmoi does not manage
+and for a chezmoi that is broken, so setup asks a second question, bare
+`chezmoi source-path`, which prints the source directory when chezmoi is healthy and
+fails with the same complaint when it is not. Only a healthy chezmoi saying nothing
+manages the file lets setup write. The refusal repeats what chezmoi said. One case
+stays invisible: a source directory that has been moved or deleted makes chezmoi
+itself report every file as not managed, and nothing downstream can tell that apart
+from the truth.
+
+Re-running setup preserves an already current file. A custom `default_shell`
 is refused with the manual replacement instruction, rather than silently replacing
 the user's launcher.
 

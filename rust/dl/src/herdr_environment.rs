@@ -146,26 +146,54 @@ pub(crate) fn open_pane() -> Ending {
     report(result)
 }
 
-fn chezmoi_source(config: &Path) -> io::Result<Option<PathBuf>> {
+enum ConfigOwner {
+    Chezmoi(PathBuf),
+    Unmanaged,
+    ProbeFailed(String),
+}
+
+/// `chezmoi source-path <file>` exits nonzero both for a file chezmoi does not
+/// manage and for a chezmoi that cannot answer at all -- an unparseable or
+/// unreadable `chezmoi.toml`, a source path that is not a directory. Collapsing
+/// the two writes over a managed config whenever chezmoi is broken, which is the
+/// case the refusal exists for. A bare `chezmoi source-path` separates them
+/// without reading English out of stderr: it prints the source directory when
+/// chezmoi is healthy, and fails with the same complaint when it is not.
+fn chezmoi_source(config: &Path) -> io::Result<ConfigOwner> {
     if fs::symlink_metadata(config).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
-        return Ok(None);
+        return Ok(ConfigOwner::Unmanaged);
     }
     let config = if config.is_absolute() {
         config.to_owned()
     } else {
         std::env::current_dir()?.join(config)
     };
-    let output = match Command::new("chezmoi")
-        .args(["source-path"])
-        .arg(&config)
-        .output()
-    {
+    let probe = |argument: Option<&Path>| {
+        let mut command = Command::new("chezmoi");
+        command.arg("source-path");
+        if let Some(argument) = argument {
+            command.arg(argument);
+        }
+        command.output()
+    };
+    let output = match probe(Some(&config)) {
         Ok(output) => output,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(ConfigOwner::Unmanaged);
+        }
         Err(error) => return Err(error),
     };
     if !output.status.success() {
-        return Ok(None);
+        let healthy = probe(None).is_ok_and(|output| output.status.success());
+        if healthy {
+            return Ok(ConfigOwner::Unmanaged);
+        }
+        let complaint = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        return Ok(ConfigOwner::ProbeFailed(if complaint.is_empty() {
+            format!("chezmoi source-path exited with {}", output.status)
+        } else {
+            complaint
+        }));
     }
     let source = String::from_utf8(output.stdout)
         .map_err(|_| invalid("chezmoi returned a source path that is not UTF-8"))?;
@@ -173,7 +201,7 @@ fn chezmoi_source(config: &Path) -> io::Result<Option<PathBuf>> {
     if source.is_empty() {
         return Err(invalid("chezmoi returned an empty source path"));
     }
-    Ok(Some(PathBuf::from(source)))
+    Ok(ConfigOwner::Chezmoi(PathBuf::from(source)))
 }
 
 pub(crate) fn setup() -> Ending {
@@ -189,12 +217,21 @@ pub(crate) fn setup() -> Ending {
             .filter(|s| !s.is_empty())
             .map(PathBuf::from)
             .unwrap_or(fallback_config);
-        if let Some(source) = chezmoi_source(&config)? {
-            return Err(invalid(&format!(
-                "Herdr config is managed by chezmoi from {}; set terminal.default_shell to {} there, apply it, then run `dl --install`",
-                source.display(),
-                script.display()
-            )));
+        match chezmoi_source(&config)? {
+            ConfigOwner::Chezmoi(source) => {
+                return Err(invalid(&format!(
+                    "Herdr config is managed by chezmoi from {}; set terminal.default_shell to {} there, apply it, then run `dl --install`",
+                    source.display(),
+                    script.display()
+                )));
+            }
+            ConfigOwner::ProbeFailed(complaint) => {
+                return Err(invalid(&format!(
+                    "chezmoi could not say whether it manages {}, so it was left alone -- fix chezmoi, or unset it from PATH, and run setup again. chezmoi said: {complaint}",
+                    config.display()
+                )));
+            }
+            ConfigOwner::Unmanaged => {}
         }
         // Validate and write the config only after the executable is available.
         if let pane_shell::Installed::Refused { reason, .. } = pane_shell::install(&script) {

@@ -277,3 +277,58 @@ fn an_unusable_pane_selector_opens_the_shell_without_overrides() {
         assert!(stdout.starts_with("inherited\n"), "{unusable:?}: {stdout}");
     }
 }
+
+#[test]
+fn setup_refuses_when_the_chezmoi_probe_cannot_answer() {
+    let host = Host::new();
+    let config = host.0.path().join(".config/herdr/config.toml");
+    fs::create_dir_all(config.parent().unwrap()).unwrap();
+    fs::write(&config, "[terminal]\nfont_size = 17\n").unwrap();
+    executable(
+        &host.0.path().join("chezmoi"),
+        "#!/bin/sh\necho 'chezmoi: invalid config: /home/u/.config/chezmoi/chezmoi.toml: toml: line 1: expected a key' >&2\nexit 1\n",
+    );
+
+    let output = host
+        .command(&["--herdr-setup"])
+        .env_remove("HERDR_ENV")
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success(), "{output:?}");
+    assert_eq!(
+        fs::read_to_string(&config).unwrap(),
+        "[terminal]\nfont_size = 17\n"
+    );
+    assert!(!host.0.path().join(".local/bin/dl-herdr-shell").exists());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("invalid config"), "{stderr}");
+}
+
+#[test]
+fn setup_proceeds_when_chezmoi_answers_that_the_config_is_unmanaged() {
+    let host = Host::new();
+    let config = host.0.path().join(".config/herdr/config.toml");
+    fs::create_dir_all(config.parent().unwrap()).unwrap();
+    fs::write(&config, "[terminal]\nfont_size = 17\n").unwrap();
+    let source = host.0.path().join("dotfiles");
+    fs::create_dir_all(&source).unwrap();
+    executable(
+        &host.0.path().join("chezmoi"),
+        &format!(
+            "#!/bin/sh\nif [ \"$#\" -gt 1 ]; then\n  echo \"chezmoi: $2: not managed\" >&2\n  exit 1\nfi\nprintf '%s\\n' '{}'\n",
+            source.display()
+        ),
+    );
+
+    success(
+        host.command(&["--herdr-setup"])
+            .env_remove("HERDR_ENV")
+            .output()
+            .unwrap(),
+    );
+
+    let installed = fs::read_to_string(&config).unwrap();
+    assert!(installed.contains("font_size = 17"), "{installed}");
+    assert!(installed.contains("dl-herdr-shell"), "{installed}");
+}
