@@ -163,7 +163,7 @@ enum ConfigOwner {
 }
 
 /// `chezmoi source-path <file>` exits nonzero both for a file chezmoi does not
-/// manage and for a chezmoi that cannot answer at all -- an unparseable or
+/// manage and for a chezmoi that cannot answer at all -- an unparsable or
 /// unreadable `chezmoi.toml`, a source path that is not a directory. Collapsing
 /// the two writes over a managed config whenever chezmoi is broken, which is the
 /// case the refusal exists for. A bare `chezmoi source-path` separates them
