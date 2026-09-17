@@ -3295,11 +3295,11 @@ pub(crate) fn dotfiles_update(
 ///
 /// # What the title says
 ///
-/// The name is the placement's ([`Placement::title`]), and it is the workspace id
-/// with the parts only devpod needs taken off: the four-character suffix, which
-/// carries identity and no meaning, and the flattened separators, which are spelled
-/// the way the spec spells them -- `@` between the repo and the ref, `/` inside a
-/// ref that had one. `docs/workspaces.md` tabulates what a tab, a listing row and a
+/// The name is the placement's ([`Placement::title`]), and it is the workspace with
+/// the parts only devpod needs taken off: the four-character suffix, which carries
+/// identity and no meaning, and the id's alphabet over the ref, which gives way to
+/// the branch as it was typed -- its case, its `_`, its `.` and its `/`, all of
+/// which the id has to flatten. `docs/workspaces.md` tabulates what a tab, a listing row and a
 /// selector row read for one workspace, and is where that spelling is decided; this
 /// comment deliberately does not write it, because a comment nothing checks is the
 /// copy that goes stale. [`WorkspaceId::label`]'s own tests carry the worked
@@ -3307,9 +3307,11 @@ pub(crate) fn dotfiles_update(
 ///
 /// **It is the id, not a second derivation of the spec.** The slugs and the
 /// truncation are [`WorkspaceId::label`]'s, which are [`WorkspaceId::value`]'s, so a
-/// tab and a listing row still match by eye: one is the other with a suffix removed
-/// and its separators respelled. A tab is read at a glance and a listing row is read
-/// deliberately, and what goes is what a glance cannot use.
+/// tab and a listing row still match by eye: the same segments survive in each, cut
+/// to the one budget, and slugging the tab's branch half answers the id's readable
+/// half whenever the branch was short enough to escape the cut. A tab is read at a
+/// glance and a listing row is read deliberately, and what goes is what a glance
+/// cannot use.
 ///
 /// It has also been the full spec, `owner/repo@ref`, and the reason that is not what
 /// came back is length: [`WorkspaceId::new`] validates the characters of a triple and
@@ -3365,18 +3367,23 @@ impl TerminalTitle {
 /// every prompt. One filter for both because the two halves have to be the one
 /// string, or the tab changes the moment the first prompt paints.
 ///
-/// A *derived* name holds none of the five, since
-/// [`slug`](crate::domain::workspace_id::slug) leaves only lowercase alphanumerics
-/// and dashes, and the two characters a label adds to those -- the `@` and the
-/// ref's own `/` -- are special to neither sink, so nothing legitimate is lost. The filter is for the two arms that
-/// title without deriving an id -- `Plan::Existing`'s raw spec and
-/// `Plan::Creatable`'s path leaf -- which this crate never validated. devpod's own
-/// name rules would refuse most of what is dangerous here, but that is a guarantee
-/// borrowed from another program's validation, which is the difference between a
-/// safe title and a title that is safe until devpod loosens a rule. Dropping rather
-/// than escaping keeps both sinks with nothing to decide, and there is no escaping
-/// that would work for `PS1` anyway: it is re-expanded, not re-parsed, and `\$`
-/// renders as `#` for root.
+/// A *derived* name holds none of the five, and no longer because the slug took
+/// them out: a label spells the branch as it was typed
+/// ([`label`](crate::domain::workspace_id::WorkspaceId::label)), so the case, the
+/// `_` and the `.` all reach a title now. What keeps the five out is the parse
+/// boundary above it. `is_safe_name` admits word characters, dots, slashes and
+/// dashes and nothing else, which excludes `$`, a backtick and a backslash
+/// outright; the one control it lets through is a trailing newline, and
+/// `as_typed` drops that beside the cut. So nothing legitimate is lost here. The
+/// filter is for the two arms that title without deriving an id --
+/// `Plan::Existing`'s raw spec and `Plan::Creatable`'s path leaf -- which this
+/// crate never validated. devpod's own name rules would refuse most of what is
+/// dangerous here, but that is a guarantee borrowed from another program's
+/// validation, which is the difference between a safe title and a title that is
+/// safe until devpod loosens a rule. Dropping rather than escaping keeps both
+/// sinks with nothing to decide, and there is no escaping that would work for
+/// `PS1` anyway: it is re-expanded, not re-parsed, and `\$` renders as `#` for
+/// root.
 fn sanitize_title(name: &str) -> Option<String> {
     let text: String = name
         .chars()
@@ -11318,9 +11325,9 @@ mod tests {
         // The tab reads `devlaunch@feature/auth` where devpod, in this same launch
         // (the `status` and `ssh` below), is addressed by
         // `devlaunch-feature-auth-np10`. Both halves are asserted here because the
-        // claim is the relationship between them: the label is the id with the
-        // suffix off and its separators spelled the way the spec spells them, so a
-        // tab still matches a `dl --ls` row by eye without carrying the four
+        // claim is the relationship between them: the label is the id's segments
+        // read for a person, the suffix off and the branch spelled as it was typed,
+        // so a tab still matches a `dl --ls` row by eye without carrying the four
         // characters nothing reads.
         //
         // `feature/auth` is the ref that shows what the separators buy: the id has

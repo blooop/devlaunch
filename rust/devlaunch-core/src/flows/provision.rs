@@ -7321,11 +7321,16 @@ fi
         // survive it, and all three are inert in a prompt. The characters that are
         // not inert never reach this function; `sanitize_title` is where they go, and
         // `a_name_cannot_smuggle_a_command_into_the_prompt_that_repaints_it` is where
-        // that is asserted. The `@` and the `/` are there because a real title holds
-        // them -- a label is `<repo>@<branch>` with the branch's own slashes
-        // (`WorkspaceId::label`) -- and both are inert here for the same reason: the
-        // second reading expands, it does not glob or split.
-        let title = "ws@feature/auth!x*[1]";
+        // that is asserted.
+        //
+        // The rest are here because a real title holds them: a label is
+        // `<repo>@<branch>` with the branch spelled as it was typed
+        // (`WorkspaceId::label`), so the `@`, the `/`, the `_`, the `.` and the
+        // upper case all arrive intact. Each is inert here for the one reason --
+        // the second reading expands, it does not glob, split or case-fold -- and
+        // this is where that stops being an argument and becomes a render through a
+        // real bash.
+        let title = "ws@feat/ABC_1.2!x*[1]";
         let line = profile_title_line(title);
         let rendered = std::process::Command::new("bash")
             .arg("-ic")

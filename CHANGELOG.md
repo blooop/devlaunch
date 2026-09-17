@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The name dl puts on a tab spells the branch as you typed it.** `dl
+  blooop/devlaunch@feat/ABC_123` titles the terminal, the herdr tab and the
+  container's prompt `devlaunch@feat/ABC_123`, where all three read
+  `devlaunch@feat-abc-123` before. 0.50.0 did this for the `/` and stopped there,
+  which left the case, the `_` and the `.` still flattened on no principle that
+  told them apart from the slash: all four come off a branch because the workspace
+  *id* has to be a DNS label, and a tab is neither a DNS label nor a devpod name.
+  Each of them is inert in all three places a title lands, the OSC 2 escape ends at
+  a BEL, `herdr tab rename` takes the title as argv with no shell, and the profile
+  line is re-expanded rather than re-parsed, so only `$`, a backtick and a
+  backslash would ever act and a branch name cannot hold one.
+
+  What the tab still shares with the id is its structure: one derivation decides
+  which branch segments survive and what budget they are cut to, so a long branch is
+  cut and a middle segment the id dropped is missing from the tab too. What it gives
+  up is matching the id character for character, which is the price the decision was
+  made at: the cut can land on a different character in each, and slugging the tab's
+  branch half answers the id's readable half only while neither was cut. The repo half stays slugged, because owner and repo are matched
+  case-insensitively and so "as typed" names no particular spelling of them.
+
+  Nothing about an id, a clone directory or a devpod workspace moves. The
+  renderings table in [docs/workspaces.md](docs/workspaces.md#workspace-ids) is
+  where the tab's spelling is written down.
+
 ## [0.51.0] - 2026-09-17
 
 ### Added
