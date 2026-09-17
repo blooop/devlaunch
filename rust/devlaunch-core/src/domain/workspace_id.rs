@@ -657,37 +657,91 @@ fn head(s: &str, n: usize) -> &str {
 /// label nor a devpod name. So the final [`head`] can fall on a different
 /// character in each, and `read` can be longer or shorter than `id`.
 fn fit_ref(git_ref: &str, room: usize) -> FittedRef {
-    let mut segments: Vec<(String, String)> = git_ref
+    let mut segments: Vec<Segment> = git_ref
         .split(REF_SEPARATOR)
-        .map(|segment| (slug(segment), as_typed(segment)))
+        .map(|segment| Segment {
+            id: slug(segment),
+            read: as_typed(segment),
+        })
         // The id's rule, applied to both: a segment that slugs to nothing is not
         // a segment. It is what keeps `read` empty exactly when `id` is, which is
         // the test [`WorkspaceId::label`] makes before it writes an `@`.
-        .filter(|(id, _)| !id.is_empty())
+        .filter(|segment| !segment.id.is_empty())
         .collect();
-    let spell =
-        |segments: &[(String, String)], separator: char, pick: fn(&(String, String)) -> &str| {
-            segments
-                .iter()
-                .map(pick)
-                .collect::<Vec<_>>()
-                .join(&separator.to_string())
-        };
-    while segments.len() > 2 && spell(&segments, ID_SEPARATOR, |(id, _)| id).len() > room {
+    // Measured in the id's spelling, which is the one the budget belongs to.
+    while segments.len() > 2 && Spelling::Id.spell(&segments).len() > room {
         segments.remove(1);
     }
     FittedRef {
-        id: head(&spell(&segments, ID_SEPARATOR, |(id, _)| id), room)
-            .trim_matches(ID_SEPARATOR)
-            .to_string(),
-        // Only the slash is trimmed. It is the one character here that is
-        // structure rather than branch, so a cut that leaves one dangling leaves
-        // a path where a branch was meant; a dash or a dot or an underscore is an
-        // ordinary branch character wherever it ends up, the cut's own end
-        // included, and trimming one would take a character off a segment.
-        read: head(&spell(&segments, REF_SEPARATOR, |(_, read)| read), room)
-            .trim_matches(REF_SEPARATOR)
-            .to_string(),
+        id: Spelling::Id.fit(&segments, room),
+        read: Spelling::Read.fit(&segments, room),
+    }
+}
+
+/// One surviving ref segment, carried in both spellings.
+///
+/// Named halves rather than a pair, because nothing else tells them apart: both
+/// are the same segment and both are a `String`.
+struct Segment {
+    /// [`slug`]'s characters, which is what an id may spell.
+    id: String,
+    /// The branch's own characters, which is what a person typed.
+    read: String,
+}
+
+/// Which spelling of a ref is being written.
+///
+/// A spelling decides three things that have to agree -- the separator the
+/// segments are joined on, which half of each [`Segment`] is written, and which
+/// character a cut is allowed to leave dangling -- and only two combinations of
+/// them mean anything. Choosing a spelling is choosing all three at once, so no
+/// call site can pair them up wrongly.
+#[derive(Clone, Copy)]
+enum Spelling {
+    /// The id's: [`slug`]ged segments joined by [`ID_SEPARATOR`].
+    Id,
+    /// A person's: the segments as typed, joined by [`REF_SEPARATOR`].
+    Read,
+}
+
+impl Spelling {
+    fn separator(self) -> char {
+        match self {
+            Self::Id => ID_SEPARATOR,
+            Self::Read => REF_SEPARATOR,
+        }
+    }
+
+    fn half(self, segment: &Segment) -> &str {
+        match self {
+            Self::Id => &segment.id,
+            Self::Read => &segment.read,
+        }
+    }
+
+    /// The segments written out in this spelling, uncut.
+    fn spell(self, segments: &[Segment]) -> String {
+        segments
+            .iter()
+            .map(|segment| self.half(segment))
+            .collect::<Vec<_>>()
+            .join(&self.separator().to_string())
+    }
+
+    /// [`spell`](Self::spell) cut to *room*, less a separator the cut left
+    /// dangling.
+    ///
+    /// The separator is the only character a cut can strand that stands for
+    /// structure rather than for a segment: a slash left hanging leaves a path
+    /// where a branch was meant, and a dash at either end of the id is a join
+    /// too, since [`slug`] has already taken a segment's own off. Every other
+    /// character -- a dot, an underscore, a dash inside a segment -- is ordinary
+    /// wherever the cut ends, the cut's own end included, and trimming one would
+    /// take a character off a segment.
+    fn fit(self, segments: &[Segment], room: usize) -> String {
+        head(&self.spell(segments), room)
+            .trim_matches(self.separator())
+            .to_string()
     }
 }
 
@@ -708,9 +762,9 @@ fn as_typed(segment: &str) -> String {
 
 /// The two spellings [`fit_ref`] cuts together.
 struct FittedRef {
-    /// The id's: [`slug`]ged segments joined by [`ID_SEPARATOR`].
+    /// The same segments in [`Spelling::Id`].
     id: String,
-    /// A person's: the segments as typed, joined by [`REF_SEPARATOR`].
+    /// The same segments in [`Spelling::Read`].
     read: String,
 }
 

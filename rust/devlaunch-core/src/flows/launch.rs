@@ -3374,15 +3374,16 @@ impl TerminalTitle {
 /// boundary above it. `is_safe_name` admits word characters, dots, slashes and
 /// dashes and nothing else, which excludes `$`, a backtick and a backslash
 /// outright; the one control it lets through is a trailing newline, and
-/// `as_typed` drops that beside the cut. So nothing legitimate is lost here. The filter is for the two arms that
-/// title without deriving an id -- `Plan::Existing`'s raw spec and
-/// `Plan::Creatable`'s path leaf -- which this crate never validated. devpod's own
-/// name rules would refuse most of what is dangerous here, but that is a guarantee
-/// borrowed from another program's validation, which is the difference between a
-/// safe title and a title that is safe until devpod loosens a rule. Dropping rather
-/// than escaping keeps both sinks with nothing to decide, and there is no escaping
-/// that would work for `PS1` anyway: it is re-expanded, not re-parsed, and `\$`
-/// renders as `#` for root.
+/// `as_typed` drops that beside the cut. So nothing legitimate is lost here. The
+/// filter is for the two arms that title without deriving an id --
+/// `Plan::Existing`'s raw spec and `Plan::Creatable`'s path leaf -- which this
+/// crate never validated. devpod's own name rules would refuse most of what is
+/// dangerous here, but that is a guarantee borrowed from another program's
+/// validation, which is the difference between a safe title and a title that is
+/// safe until devpod loosens a rule. Dropping rather than escaping keeps both
+/// sinks with nothing to decide, and there is no escaping that would work for
+/// `PS1` anyway: it is re-expanded, not re-parsed, and `\$` renders as `#` for
+/// root.
 fn sanitize_title(name: &str) -> Option<String> {
     let text: String = name
         .chars()
