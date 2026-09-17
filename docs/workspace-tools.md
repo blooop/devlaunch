@@ -1418,11 +1418,11 @@ devlaunch session and opens your ordinary shell when it does not.
 
 ### Opening an editor beside an agent
 
-Set `DEVLAUNCH_HERDR_EDITOR` to one executable name to give agent launches a
-side-by-side editor:
+Set `NVIM_SPLIT` to give agent launches a side-by-side editor. It is off by
+default:
 
 ```bash
-export DEVLAUNCH_HERDR_EDITOR=nvim
+export NVIM_SPLIT=1
 aid blooop/devlaunch@my-branch
 ```
 
@@ -1434,8 +1434,9 @@ The agent remains the focused pane.
 
 Only a one-pane tab is changed. If the tab already has another pane, `dl` leaves
 its layout alone, which prevents a resumed agent from adding another editor. The
-value is an executable name or path without arguments. Leave it unset to keep the
-one-pane layout.
+editor is `$VISUAL`, then `$EDITOR`, and finally `nvim` when neither is set. The
+program must be one executable name or path without arguments. Empty, `0`,
+`false`, and `no` disable the split; any other `NVIM_SPLIT` value enables it.
 
 ### Why a second name, and not a flag
 

@@ -70,8 +70,9 @@ fn command(dir: &std::path::Path) -> Command {
         .env("HERDR_BIN_PATH", dir.join("herdr"))
         .env("HERDR_PANE_ID", "w1:p1")
         .env("HERDR_CALLS", calls)
-        .env("DEVLAUNCH_HERDR_EDITOR_EXPECTED_AGENT", "codex")
-        .env("DEVLAUNCH_HERDR_EDITOR", "nvim");
+        .env("DEVLAUNCH_HERDR_SPLIT_EXPECTED_AGENT", "codex")
+        .env("NVIM_SPLIT", "1")
+        .env("VISUAL", "nvim");
     command
 }
 
@@ -102,6 +103,18 @@ fn starts_an_editor_to_the_right_without_taking_agent_focus() {
 }
 
 #[test]
+fn is_off_by_default_even_when_an_editor_is_configured() {
+    let dir = tempfile::tempdir().unwrap();
+    fake_herdr(dir.path());
+    let output = command(dir.path())
+        .env_remove("NVIM_SPLIT")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(!dir.path().join("calls").exists());
+}
+
+#[test]
 fn waits_for_a_new_matching_agent_instead_of_accepting_the_old_done_one() {
     let dir = tempfile::tempdir().unwrap();
     fake_replacing_agent(dir.path());
@@ -109,7 +122,7 @@ fn waits_for_a_new_matching_agent_instead_of_accepting_the_old_done_one() {
     command
         .env("HERDR_SECOND_AGENT", dir.path().join("second-agent"))
         .env(
-            "DEVLAUNCH_HERDR_EDITOR_BASELINE",
+            "DEVLAUNCH_HERDR_SPLIT_BASELINE",
             r#"{"kind":"claude","state_change_seq":41,"activity":"done"}"#,
         )
         .stdin(Stdio::piped())

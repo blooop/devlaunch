@@ -788,7 +788,7 @@ const AFTER_HELP: &str = "Environment:
   DEVLAUNCH_NO_CLAUDE_TOKEN=1        Do not forward the host's Claude login
   DEVLAUNCH_DOTFILES_ON_ATTACH=1     Refresh dotfiles before every attach
   DEVLAUNCH_NO_TITLE=1               Do not name the terminal after the workspace
-  DEVLAUNCH_HERDR_EDITOR=<program>   Open this editor beside Herdr agent launches
+  NVIM_SPLIT=1                       Open $VISUAL beside Herdr agent launches
 
 Scripting dl, or driving it from an agent:
   dl <ws> -- <cmd> is a subprocess: the exit status, stdout and stdin are the

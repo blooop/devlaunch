@@ -4,7 +4,7 @@
 //! live devlaunch sibling for `dl-herdr-shell` to inspect, so it opens on the host
 //! instead of in the container. The parent therefore starts this short-lived
 //! helper, which waits until Herdr recognises the agent, splits that pane without
-//! taking focus, and starts the configured editor in the new pane.
+//! taking focus, and starts the shell's configured editor in the new pane.
 
 use std::io::{self, Read as _};
 use std::process::{ChildStdin, Command, Stdio};
@@ -16,10 +16,10 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub(crate) const EDITOR_VAR: &str = "DEVLAUNCH_HERDR_EDITOR";
+pub(crate) const SPLIT_VAR: &str = "NVIM_SPLIT";
 const AGENT_VAR: &str = "HERDR_AGENT";
-const EXPECTED_AGENT_VAR: &str = "DEVLAUNCH_HERDR_EDITOR_EXPECTED_AGENT";
-const BASELINE_VAR: &str = "DEVLAUNCH_HERDR_EDITOR_BASELINE";
+const EXPECTED_AGENT_VAR: &str = "DEVLAUNCH_HERDR_SPLIT_EXPECTED_AGENT";
+const BASELINE_VAR: &str = "DEVLAUNCH_HERDR_SPLIT_BASELINE";
 const READY_WORD: &str = "--herdr-editor-ready";
 const WAIT_FOR_AGENT: Duration = Duration::from_secs(30 * 60);
 const RETRY: Duration = Duration::from_millis(500);
@@ -247,9 +247,23 @@ fn retry_while_parent_lives(parent: &Receiver<()>) -> bool {
 }
 
 fn editor() -> Option<String> {
-    let value = std::env::var(EDITOR_VAR).ok()?;
+    let enabled = std::env::var(SPLIT_VAR).ok();
+    if !split_enabled_value(enabled.as_deref()) {
+        return None;
+    }
+    let value = std::env::var("VISUAL")
+        .or_else(|_| std::env::var("EDITOR"))
+        .unwrap_or_else(|_| "nvim".to_owned());
     let value = value.trim();
     (!value.is_empty() && !value.chars().any(char::is_whitespace)).then(|| value.to_owned())
+}
+
+fn split_enabled_value(value: Option<&str>) -> bool {
+    let Some(value) = value else { return false };
+    !matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "" | "0" | "false" | "no"
+    )
 }
 
 fn herdr<const N: usize>(args: [&str; N]) -> Option<Value> {
@@ -292,6 +306,16 @@ mod tests {
         let split = serde_json::json!({"result": {"pane": {"pane_id": "w1:p2"}}});
         assert_eq!(pane_count(&layout), Some(1));
         assert_eq!(split_pane(&split).as_deref(), Some("w1:p2"));
+    }
+
+    #[test]
+    fn the_split_switch_is_off_until_enabled() {
+        for value in [None, Some(""), Some("0"), Some(" false "), Some("NO")] {
+            assert!(!split_enabled_value(value), "{value:?}");
+        }
+        for value in [Some("1"), Some("true"), Some("yes"), Some("nvim")] {
+            assert!(split_enabled_value(value), "{value:?}");
+        }
     }
 
     #[test]
