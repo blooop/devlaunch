@@ -75,7 +75,8 @@ pub(crate) fn agent_in(command: &str) -> Option<&'static str> {
 /// whitespace guess entirely: `RemoteCommand::Argv` knows where its words end, and
 /// splitting a word that legitimately contains a space would be a worse answer
 /// than the one it already has.
-pub(crate) fn agent_named(program: &str) -> Option<&'static str> {
+/// Binary surface: `dl` asks this before arranging an optional editor split.
+pub fn agent_named(program: &str) -> Option<&'static str> {
     let name = program.rsplit('/').next()?;
     AGENT_NAMES.iter().copied().find(|known| *known == name)
 }
@@ -85,7 +86,8 @@ pub(crate) fn agent_named(program: &str) -> Option<&'static str> {
 /// `FOO=bar claude` runs claude. The name half must be non-empty for the same
 /// reason the shell requires it: `=x` is a program named `=x`, however unlikely,
 /// and not an assignment.
-pub(crate) fn is_assignment(word: &str) -> bool {
+/// Binary surface: see [`agent_named`].
+pub fn is_assignment(word: &str) -> bool {
     match word.split_once('=') {
         Some((name, _)) => !name.is_empty(),
         None => false,
@@ -895,7 +897,7 @@ pub(crate) fn runnable_binary(
 /// Split the way [`crate::clients::git::lfs_is_installed`] is: the decision is a
 /// function of its inputs and is asserted as one, and this is the thin call that
 /// supplies the real probe.
-pub(crate) fn binary_from_process() -> Option<String> {
+pub fn binary_from_process() -> Option<String> {
     runnable_binary(crate::osext::env_str(BIN_VAR).as_deref(), |path| {
         use std::os::unix::fs::PermissionsExt as _;
         std::fs::metadata(path)

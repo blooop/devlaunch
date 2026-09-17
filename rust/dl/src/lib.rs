@@ -26,6 +26,8 @@
 mod cli;
 mod commands;
 mod hangup;
+mod herdr_editor;
+mod herdr_environment;
 mod launch;
 mod pane_shell;
 mod render;
@@ -667,6 +669,9 @@ fn grammar_refusal(refused: &cli::GrammarError) -> String {
              stops at work that is nowhere else, which is what makes it safe to leave on a \
              line you recall. Use 'dl <workspace> rm --force' to delete one despite it."
                 .to_owned()
+        }
+        cli::GrammarError::HerdrEnvUsage => {
+            "use --herdr-env set KEY=VALUE, unset KEY, profile NAME, show, or clear".to_owned()
         }
         cli::GrammarError::Devcontainer {
             raw,

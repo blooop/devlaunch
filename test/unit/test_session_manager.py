@@ -150,7 +150,7 @@ class TestTheWordsThatBelongToHerdr:
         heading, so a section retitled to promise something else fails here.
         """
         doc = _workspace_tools()
-        assert re.search(r"^### Nothing is remembered\b", doc, re.MULTILINE), (
+        assert re.search(r"^### Container destinations follow live panes\b", doc, re.MULTILINE), (
             "the section arguing why the tab is read live rather than remembered is "
             "gone or retitled. It is the load-bearing half of the design."
         )

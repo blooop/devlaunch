@@ -97,6 +97,12 @@ fn run(argv: &[String]) -> i32 {
     if argv.first().is_some_and(|word| word == "--update-cache") {
         return dl::run(argv);
     }
+    if argv
+        .first()
+        .is_some_and(|word| word == "--herdr-editor-ready")
+    {
+        return dl::run(argv);
+    }
     // No arguments is the help *and* a failure, which is Python's pair of endings for
     // one body: somebody who typed `aid` asked for a workspace and named none, and
     // somebody who typed `aid --help` got what they asked for.

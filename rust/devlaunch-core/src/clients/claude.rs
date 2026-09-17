@@ -161,7 +161,7 @@ impl Token {
 /// name is joined onto a path, so anything that could climb out of the profiles root
 /// or name something other than a leaf is refused rather than cleaned up.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ProfileName(String);
+pub struct ProfileName(String);
 
 impl ProfileName {
     /// `raw` if it can be a leaf directory name worth offering, else nothing.
@@ -182,7 +182,7 @@ impl ProfileName {
     /// Slightly stricter than the `^[A-Za-z0-9._-]+$` the managing tool validates with,
     /// which accepts a leading dot it then never lists. Refusing by a named rule beats
     /// honouring a name nothing shows you.
-    pub(crate) fn parse(raw: &str) -> Option<Self> {
+    pub fn parse(raw: &str) -> Option<Self> {
         let flat = !raw.is_empty()
             && !raw.starts_with(['-', '.'])
             && raw
@@ -191,7 +191,7 @@ impl ProfileName {
         flat.then(|| Self(raw.to_owned()))
     }
 
-    pub(crate) fn as_str(&self) -> &str {
+    pub fn as_str(&self) -> &str {
         &self.0
     }
 }

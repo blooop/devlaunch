@@ -130,6 +130,7 @@ struct Flag {
     /// The group exists because its members are mutually exclusive for exactly
     /// that reason, which is what makes it the original this fact is copied from.
     names_a_command: bool,
+    requires_herdr_env: bool,
 }
 
 /// Every flag the `Cli` struct declares, in declaration order.
@@ -177,6 +178,7 @@ fn grammar_flags(grammar: &str) -> Vec<Flag> {
             hidden: parts.contains(&"hide = true"),
             takes_value: ty.trim().trim_end_matches(',') != "bool",
             names_a_command: parts.contains(&"group = \"what\""),
+            requires_herdr_env: parts.contains(&"requires = \"herdr_env\""),
         });
     }
     assert!(
@@ -456,7 +458,12 @@ fn the_flags_a_value_follows_are_the_grammars_value_taking_flags() {
         .collect();
 
     assert_eq!(assigned(&script, "local value_opts="), expected);
-    assert_eq!(aid_flag_list(&rewrite, "DL_VALUE_OPTIONS"), expected);
+    let launch_values: BTreeSet<String> = grammar_flags(&grammar)
+        .iter()
+        .filter(|flag| flag.takes_value && !flag.hidden && !flag.requires_herdr_env)
+        .map(|flag| flag.long.clone())
+        .collect();
+    assert_eq!(aid_flag_list(&rewrite, "DL_VALUE_OPTIONS"), launch_values);
     assert!(
         expected.is_subset(&dl_first_argument_flags(&script)),
         "a flag whose value is completed is a flag that can be reached"
@@ -494,7 +501,10 @@ fn the_flags_a_spec_may_follow_are_the_launch_modifiers_the_grammar_leaves_over(
     let expected: BTreeSet<String> = grammar_flags(&grammar)
         .iter()
         .filter(|flag| {
-            !flag.names_a_command && !flag.hidden && !withheld.contains(flag.long.as_str())
+            !flag.names_a_command
+                && !flag.hidden
+                && !flag.requires_herdr_env
+                && !withheld.contains(flag.long.as_str())
         })
         .map(|flag| flag.long.clone())
         .collect();
@@ -523,7 +533,15 @@ fn every_flag_whose_value_is_completed_is_one_a_spec_may_follow() {
     // change fixes. Checked for both binaries, because aid's table is its own.
     let script = completion_script();
 
-    let values = assigned(&script, "local value_opts=");
+    let management_values: BTreeSet<String> = grammar_flags(&argument_grammar())
+        .iter()
+        .filter(|flag| flag.takes_value && flag.requires_herdr_env)
+        .map(|flag| flag.long.clone())
+        .collect();
+    let values: BTreeSet<String> = assigned(&script, "local value_opts=")
+        .difference(&management_values)
+        .cloned()
+        .collect();
     for table in ["local spec_follows=", "spec_follows="] {
         let follows = assigned(&script, table);
         for flag in &values {
