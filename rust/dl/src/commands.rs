@@ -134,7 +134,16 @@ pub(crate) fn dispatch(
         // workspace is a `dl <ws>`, and the whole point is that it is
         // indistinguishable from one typed by hand -- same launch, same terminal
         // title, same agent reporting, same everything a manager reads.
-        Command::HerdrShell => match session_manager::pane_destination(runner) {
+        Command::HerdrSetup => crate::herdr_environment::setup(),
+        Command::HerdrEnv { action, workspace } => {
+            crate::herdr_environment::manage(&action, workspace.as_deref())
+        }
+        Command::HerdrShell => crate::herdr_environment::open_pane(),
+        Command::HerdrEditorReady => {
+            crate::herdr_editor::ready();
+            Ending::Done
+        }
+        Command::HerdrShellReady { profile } => match session_manager::pane_destination(runner) {
             PaneDestination::Workspace {
                 workspace_id,
                 claude_profile,
@@ -153,7 +162,7 @@ pub(crate) fn dispatch(
                         // which account it is. Without this a pane opened beside an
                         // agent authenticated as a different account than the agent,
                         // which is the one way this feature could mislead quietly.
-                        claude_profile,
+                        claude_profile: profile.or(claude_profile),
                     },
                 );
                 if pane_shell::no_session_ran(ending) {
@@ -202,6 +211,9 @@ pub(crate) fn dispatch(
                 Ok(target) => target,
                 Err(ending) => return ending,
             };
+            if let Some(agent) = started_agent(&verb) {
+                crate::herdr_editor::start(agent);
+            }
             let after = verb.after_removal();
             let ending = render_workspace(
                 runner,
@@ -219,6 +231,17 @@ pub(crate) fn dispatch(
             hangup::after_the_command(after, ending)
         }
     }
+}
+
+fn started_agent(verb: &Verb) -> Option<crate::herdr_editor::AgentKind> {
+    let Verb::Run(words, _) = verb else {
+        return None;
+    };
+    words
+        .iter()
+        .map(String::as_str)
+        .find(|word| !devlaunch_core::clients::herdr_is_assignment(word))
+        .and_then(crate::herdr_editor::AgentKind::from_program)
 }
 
 /// The spec a target word stands for, once a pull request reference in it has been
@@ -1800,5 +1823,32 @@ pub(crate) fn report(records: &Records<'_>) {
         for line in render::records_notice(notice) {
             eprintln!("{line}");
         }
+    }
+}
+
+#[cfg(test)]
+mod herdr_editor_tests {
+    use super::*;
+    use devlaunch_core::domain::workspace_state::NonEmpty;
+
+    fn run(words: &[&str]) -> Verb {
+        Verb::Run(
+            NonEmpty::of(words.iter().map(|word| (*word).to_owned())).unwrap(),
+            RmOnExit::No,
+        )
+    }
+
+    #[test]
+    fn only_agent_commands_ask_for_the_editor_layout() {
+        assert_eq!(
+            started_agent(&run(&["claude", "fix it"])).map(|agent| agent.as_str()),
+            Some("claude")
+        );
+        assert_eq!(
+            started_agent(&run(&["IS_SANDBOX=1", "/usr/bin/codex"])).map(|agent| agent.as_str()),
+            Some("codex")
+        );
+        assert_eq!(started_agent(&run(&["make", "test"])), None);
+        assert_eq!(started_agent(&Verb::Attach { rm: RmOnExit::No }), None);
     }
 }

@@ -11,7 +11,7 @@ members = [
 # The single source of the version (docs/rust-rewrite-plan.md: cutover ships
 # 0.1.0, version read from Cargo.toml).
 [workspace.package]
-version = "0.50.0"
+version = "0.51.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/blooop/devlaunch"
@@ -33,6 +33,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 indexmap = { version = "2", features = ["serde"] }
 toml = "0.9"
+toml_edit = "0.23"
 clap = { version = "4", features = ["derive"] }
 skim = "0.20"
 # flock(2) — per open file description, kernel-released — as Python's

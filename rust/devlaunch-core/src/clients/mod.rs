@@ -1,7 +1,9 @@
-// Crate-private, like `docker` and unlike the rest: nothing outside core names
-// the Claude login, and what it produces reaches a caller as flags and an
-// environment through `flows::launch`.
+// Crate-private, like `docker` and unlike the rest, but for one type: nothing
+// outside core names the Claude login, and what it produces reaches a caller as
+// flags and an environment through `flows::launch`. `ProfileName` crosses the
+// boundary because `flows::herdr_environment` stores one.
 pub(crate) mod claude;
+pub use claude::ProfileName;
 // Crate-private, like `claude`, whose module note this one is read against:
 // nothing outside core names the Codex login either, and what it produces reaches
 // a caller as flags and an environment through `flows::launch`.
@@ -25,6 +27,13 @@ pub mod git;
 // `AGENT_NAMES` is the single copy of which agents devlaunch knows by name and
 // `aid`'s richer table is held against it.
 pub(crate) mod herdr;
+// Binary surface: `dl` uses the same agent-name reader before it arranges a
+// Herdr editor split, and the same executable repair before it asks Herdr to do
+// so. Only these decisions cross the crate boundary.
+pub use herdr::{
+    agent_named as herdr_agent_named, binary_from_process as herdr_binary_from_process,
+    is_assignment as herdr_is_assignment,
+};
 // Crate-private for docker's reason: the two signals `dl <ws> kill` sends are
 // the whole of what devlaunch asks of `kill(1)`, and what they came to is
 // reported in the kill flow's vocabulary.

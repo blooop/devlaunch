@@ -338,6 +338,21 @@ impl core::fmt::Debug for devlaunch_core::clients::ssh::UnsafeRequest
 pub fn devlaunch_core::clients::ssh::UnsafeRequest::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::clients::ssh::UnsafeRequest
 pub fn devlaunch_core::clients::ssh::tty_disabled_by_environment() -> bool
+pub struct devlaunch_core::clients::ProfileName(_)
+impl devlaunch_core::clients::ProfileName
+pub fn devlaunch_core::clients::ProfileName::as_str(&self) -> &str
+pub fn devlaunch_core::clients::ProfileName::parse(&str) -> core::option::Option<Self>
+impl core::clone::Clone for devlaunch_core::clients::ProfileName
+pub fn devlaunch_core::clients::ProfileName::clone(&self) -> devlaunch_core::clients::ProfileName
+impl core::cmp::Eq for devlaunch_core::clients::ProfileName
+impl core::cmp::PartialEq for devlaunch_core::clients::ProfileName
+pub fn devlaunch_core::clients::ProfileName::eq(&self, &devlaunch_core::clients::ProfileName) -> bool
+impl core::fmt::Debug for devlaunch_core::clients::ProfileName
+pub fn devlaunch_core::clients::ProfileName::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::clients::ProfileName
+pub fn devlaunch_core::clients::herdr_agent_named(&str) -> core::option::Option<&'static str>
+pub fn devlaunch_core::clients::herdr_binary_from_process() -> core::option::Option<alloc::string::String>
+pub fn devlaunch_core::clients::herdr_is_assignment(&str) -> bool
 pub mod devlaunch_core::domain
 pub mod devlaunch_core::domain::config
 pub enum devlaunch_core::domain::config::ConfigError
@@ -1430,6 +1445,49 @@ impl core::fmt::Debug for devlaunch_core::flows::disk_usage::DiskUsage
 pub fn devlaunch_core::flows::disk_usage::DiskUsage::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::disk_usage::DiskUsage
 pub fn devlaunch_core::flows::disk_usage::describe_usage(&devlaunch_core::flows::disk_usage::DiskUsage) -> alloc::string::String
+pub mod devlaunch_core::flows::herdr_environment
+pub enum devlaunch_core::flows::herdr_environment::ClaudeConfig
+pub devlaunch_core::flows::herdr_environment::ClaudeConfig::Cleared
+pub devlaunch_core::flows::herdr_environment::ClaudeConfig::Directory(alloc::string::String)
+pub devlaunch_core::flows::herdr_environment::ClaudeConfig::Inherited
+pub devlaunch_core::flows::herdr_environment::ClaudeConfig::Profile(devlaunch_core::clients::ProfileName)
+pub devlaunch_core::flows::herdr_environment::ClaudeConfig::ServerDefault
+impl devlaunch_core::flows::herdr_environment::ClaudeConfig
+pub fn devlaunch_core::flows::herdr_environment::ClaudeConfig::profile_name(&self) -> core::option::Option<&str>
+impl core::clone::Clone for devlaunch_core::flows::herdr_environment::ClaudeConfig
+pub fn devlaunch_core::flows::herdr_environment::ClaudeConfig::clone(&self) -> devlaunch_core::flows::herdr_environment::ClaudeConfig
+impl core::cmp::Eq for devlaunch_core::flows::herdr_environment::ClaudeConfig
+impl core::cmp::PartialEq for devlaunch_core::flows::herdr_environment::ClaudeConfig
+pub fn devlaunch_core::flows::herdr_environment::ClaudeConfig::eq(&self, &devlaunch_core::flows::herdr_environment::ClaudeConfig) -> bool
+impl core::default::Default for devlaunch_core::flows::herdr_environment::ClaudeConfig
+pub fn devlaunch_core::flows::herdr_environment::ClaudeConfig::default() -> devlaunch_core::flows::herdr_environment::ClaudeConfig
+impl core::fmt::Debug for devlaunch_core::flows::herdr_environment::ClaudeConfig
+pub fn devlaunch_core::flows::herdr_environment::ClaudeConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::herdr_environment::ClaudeConfig
+pub struct devlaunch_core::flows::herdr_environment::Environment
+impl devlaunch_core::flows::herdr_environment::Environment
+pub fn devlaunch_core::flows::herdr_environment::Environment::claude(&self) -> &devlaunch_core::flows::herdr_environment::ClaudeConfig
+pub fn devlaunch_core::flows::herdr_environment::Environment::select_profile(&mut self, &str, &std::path::Path) -> core::io::error::Result<()>
+pub fn devlaunch_core::flows::herdr_environment::Environment::set(&mut self, &str, core::option::Option<alloc::string::String>) -> core::io::error::Result<()>
+pub fn devlaunch_core::flows::herdr_environment::Environment::variables(&self) -> &alloc::collections::btree::map::BTreeMap<alloc::string::String, core::option::Option<alloc::string::String>>
+impl core::clone::Clone for devlaunch_core::flows::herdr_environment::Environment
+pub fn devlaunch_core::flows::herdr_environment::Environment::clone(&self) -> devlaunch_core::flows::herdr_environment::Environment
+impl core::default::Default for devlaunch_core::flows::herdr_environment::Environment
+pub fn devlaunch_core::flows::herdr_environment::Environment::default() -> devlaunch_core::flows::herdr_environment::Environment
+impl core::fmt::Debug for devlaunch_core::flows::herdr_environment::Environment
+pub fn devlaunch_core::flows::herdr_environment::Environment::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl serde_core::ser::Serialize for devlaunch_core::flows::herdr_environment::Environment
+pub fn devlaunch_core::flows::herdr_environment::Environment::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for devlaunch_core::flows::herdr_environment::Environment
+pub fn devlaunch_core::flows::herdr_environment::Environment::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct devlaunch_core::flows::herdr_environment::Store
+impl devlaunch_core::flows::herdr_environment::Store
+pub fn devlaunch_core::flows::herdr_environment::Store::clear(&self) -> core::io::error::Result<()>
+pub fn devlaunch_core::flows::herdr_environment::Store::new(&std::path::Path, &std::path::Path, &str) -> core::io::error::Result<Self>
+pub fn devlaunch_core::flows::herdr_environment::Store::read(&self) -> core::io::error::Result<devlaunch_core::flows::herdr_environment::Environment>
+pub fn devlaunch_core::flows::herdr_environment::Store::update(&self, impl core::ops::function::FnOnce(&mut devlaunch_core::flows::herdr_environment::Environment) -> core::io::error::Result<()>) -> core::io::error::Result<()>
+pub fn devlaunch_core::flows::herdr_environment::configure(&std::path::Path, &std::path::Path, &std::path::Path) -> core::io::error::Result<bool>
+pub fn devlaunch_core::flows::herdr_environment::profile_directory(&devlaunch_core::clients::ProfileName, &std::path::Path) -> core::io::error::Result<std::path::PathBuf>
 pub mod devlaunch_core::flows::kept_copies
 pub mod devlaunch_core::flows::kill
 pub enum devlaunch_core::flows::kill::ContainerRefusal

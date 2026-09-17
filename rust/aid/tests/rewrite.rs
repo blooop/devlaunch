@@ -434,6 +434,21 @@ fn the_detached_cache_refresh_reaches_dl_through_aids_own_name() {
 }
 
 #[test]
+fn the_detached_editor_waiter_reaches_dl_through_aids_own_name() {
+    // The editor waiter is re-spawned through `current_exe` too. An aid launch
+    // therefore re-enters as aid and must hand this internal word straight back
+    // to dl instead of parsing it as a user launch with no workspace.
+    let world = World::with(&["--warm"]);
+    let run = world.aid(&["--herdr-editor-ready"]);
+    run.exited(0);
+    assert!(
+        !run.err.contains("aid needs a workspace"),
+        "the waiter was refused as an aid line: {}",
+        run.err
+    );
+}
+
+#[test]
 fn each_agent_is_started_the_way_its_own_cli_takes_a_prompt() {
     // gemini's initial prompt is a flag that is a syntax error without one, so the
     // flag only appears beside a prompt; codex takes no prompt flag and no

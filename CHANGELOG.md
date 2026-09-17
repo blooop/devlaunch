@@ -33,6 +33,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   renderings table in [docs/workspaces.md](docs/workspaces.md#workspace-ids) is
   where the tab's spelling is written down.
 
+## [0.51.0] - 2026-09-17
+
+### Added
+
+- **A Herdr workspace can carry its own environment and Claude login across
+  every new tab and split.** `dl --herdr-setup` installs the pane launcher, and
+  `dl --herdr-env` saves ordinary overrides or selects an existing Claude profile
+  for one workspace, with `set`, `unset`, `show`, `clear` and `profile`.
+  `--herdr-workspace` targets another workspace on the same server. Settings are
+  scoped by Herdr server socket and workspace ID, so two workspaces on one server
+  keep separate environments, and a named profile is resolved again each time a
+  pane opens, which is what stops a retargeted profile leaving host and container
+  panes on different accounts.
+
+  Setup preserves the comments and symlinks in an existing Herdr config, and
+  refuses rather than overwriting when chezmoi owns the file, naming the source
+  it found. A selector it cannot use costs the overrides and never the pane: the
+  shell still opens, inheriting the server's environment.
+
+- **Herdr agent launches can open an editor beside the agent.** Set
+  `NVIM_SPLIT=1` to opt in. An `aid` launch or a
+  direct `dl <workspace> -- claude`, `codex`, or `gemini` launch waits until Herdr
+  sees the agent, then opens the editor in a vertical split inside the same
+  devlaunch workspace. It uses `$VISUAL`, then `$EDITOR`, and falls back to
+  `nvim`. The agent pane keeps focus. Tabs that already have a split keep their
+  existing layout.
+
 ## [0.50.0] - 2026-09-17
 
 ### Changed
