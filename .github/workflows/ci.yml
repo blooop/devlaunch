@@ -297,6 +297,22 @@ jobs:
         run: |
           timeout -k 10 300 cargo test --locked -p dl --test interrupt -- --test-threads=1 --nocapture > interrupt.log 2>&1; ec=$?
           cat interrupt.log; exit $ec
+      # `herdr_editor` is the third suite that spawns real process trees: its
+      # fakes `sleep 30` and its waiters detach, so it gets the same log-file
+      # fence as the two above. `|| ec=$?` rather than `; ec=$?` because the
+      # `run:` block is `bash -e` and a bare `;` exits at the failing line, so
+      # the `cat` never runs and a timeout reports with an empty log -- see the
+      # backstop's comment below. `herdr_environment` spawns nothing and takes
+      # the plain form.
+      - name: Test dl herdr_editor
+        working-directory: rust
+        run: |
+          ec=0
+          timeout -k 10 300 cargo test --locked -p dl --test herdr_editor -- --test-threads=1 --nocapture > herdr_editor.log 2>&1 || ec=$?
+          cat herdr_editor.log; exit $ec
+      - name: Test dl herdr_environment
+        working-directory: rust
+        run: timeout 300 cargo test --locked -p dl --test herdr_environment -- --test-threads=1 --nocapture
       # And then the whole thing, because everything above is a list somebody
       # maintains by hand and a list is a thing a suite falls off.
       #
