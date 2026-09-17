@@ -422,3 +422,62 @@ fn managing_an_environment_without_herdrs_binary_is_refused() {
     assert!(stderr.contains("HERDR_BIN_PATH is required"), "{stderr}");
     assert!(!state.join("devlaunch/herdr-environment").exists());
 }
+
+#[test]
+fn the_workspace_flag_beats_the_ambient_variable_on_both_sides() {
+    let host = Host::new();
+    success(host.run(&[
+        "--herdr-workspace",
+        "w2",
+        "--herdr-env",
+        "set",
+        "MESSAGE=two",
+    ]));
+
+    let targeted = success(
+        host.command(&["--herdr-shell"])
+            .env("HERDR_WORKSPACE_ID", "w2")
+            .output()
+            .unwrap(),
+    );
+    assert!(targeted.starts_with("two\n"), "{targeted}");
+
+    let ambient = success(host.run(&["--herdr-shell"]));
+    assert!(ambient.starts_with("unset\n"), "{ambient}");
+}
+
+#[test]
+fn a_bad_workspace_id_is_reported_on_the_flag_and_swallowed_on_the_variable() {
+    let host = Host::new();
+    let state = host.0.path().join("state");
+
+    let typed = host
+        .command(&[
+            "--herdr-workspace",
+            "my.project",
+            "--herdr-env",
+            "set",
+            "MESSAGE=two",
+        ])
+        .env("XDG_STATE_HOME", &state)
+        .output()
+        .unwrap();
+
+    assert!(!typed.status.success(), "{typed:?}");
+    let stderr = String::from_utf8(typed.stderr).unwrap();
+    assert!(stderr.contains("invalid Herdr workspace ID"), "{stderr}");
+    assert!(!state.join("devlaunch/herdr-environment").exists());
+
+    let opened = host
+        .command(&["--herdr-shell"])
+        .env("HERDR_WORKSPACE_ID", "my.project")
+        .env("MESSAGE", "inherited")
+        .output()
+        .unwrap();
+    assert!(opened.status.success(), "{opened:?}");
+    assert!(
+        String::from_utf8(opened.stdout)
+            .unwrap()
+            .starts_with("inherited\n")
+    );
+}
