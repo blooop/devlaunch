@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -209,7 +209,7 @@ impl Store {
         change(&mut environment)?;
         environment.validate()?;
         let bytes = serde_json::to_vec_pretty(&environment)?;
-        atomic_write(&self.path, &bytes)
+        write_private(&self.path, &bytes)
     }
 
     pub fn clear(&self) -> io::Result<()> {
@@ -234,11 +234,11 @@ impl Store {
     }
 }
 
-fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let mut temporary = tempfile::NamedTempFile::new_in(path.parent().expect("file has a parent"))?;
-    temporary.write_all(bytes)?;
-    // Replacing a file must change its contents and nothing else, so an existing mode is carried
-    // onto the replacement; only a file we create ourselves gets the temporary's private default.
+// The two writers below take opposite mode policies on purpose, and which one a caller wants
+// follows from who owns the file: a config belongs to the user, so its mode is theirs to choose,
+// while the state file is ours and holds whatever secrets were set as overrides.
+fn replace_preserving_mode(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let temporary = staged(path, bytes)?;
     match fs::metadata(path) {
         Ok(existing) => temporary
             .as_file()
@@ -248,6 +248,21 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     }
     temporary.persist(path).map_err(|e| e.error)?;
     Ok(())
+}
+
+fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let temporary = staged(path, bytes)?;
+    temporary
+        .as_file()
+        .set_permissions(fs::Permissions::from_mode(0o600))?;
+    temporary.persist(path).map_err(|e| e.error)?;
+    Ok(())
+}
+
+fn staged(path: &Path, bytes: &[u8]) -> io::Result<tempfile::NamedTempFile> {
+    let mut temporary = tempfile::NamedTempFile::new_in(path.parent().expect("file has a parent"))?;
+    temporary.write_all(bytes)?;
+    Ok(temporary)
 }
 
 /// Change only Herdr's pane launcher. Unknown launchers require an explicit manual edit.
@@ -301,7 +316,7 @@ pub fn configure(config: &Path, script: &Path, home: &Path) -> io::Result<bool> 
         .parent()
         .ok_or_else(|| invalid("config path has no parent"))?;
     fs::create_dir_all(directory)?;
-    atomic_write(config, document.to_string().as_bytes())?;
+    replace_preserving_mode(config, document.to_string().as_bytes())?;
     Ok(true)
 }
 
@@ -331,6 +346,23 @@ mod tests {
         );
         first.clear().unwrap();
         assert!(first.read().unwrap().variables().is_empty());
+    }
+
+    #[test]
+    fn a_world_readable_state_file_is_written_back_private() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::new(root.path(), Path::new("/tmp/first.sock"), "w1").unwrap();
+        store
+            .update(|e| e.set("ANTHROPIC_API_KEY", Some("secret".into())))
+            .unwrap();
+        fs::set_permissions(&store.path, fs::Permissions::from_mode(0o644)).unwrap();
+        store
+            .update(|e| e.set("OTHER", Some("value".into())))
+            .unwrap();
+        assert_eq!(
+            fs::metadata(&store.path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
     }
 
     #[test]
