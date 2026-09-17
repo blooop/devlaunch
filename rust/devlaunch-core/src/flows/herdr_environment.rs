@@ -237,6 +237,15 @@ impl Store {
 fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let mut temporary = tempfile::NamedTempFile::new_in(path.parent().expect("file has a parent"))?;
     temporary.write_all(bytes)?;
+    // Replacing a file must change its contents and nothing else, so an existing mode is carried
+    // onto the replacement; only a file we create ourselves gets the temporary's private default.
+    match fs::metadata(path) {
+        Ok(existing) => temporary
+            .as_file()
+            .set_permissions(existing.permissions())?,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
     temporary.persist(path).map_err(|e| e.error)?;
     Ok(())
 }
@@ -424,6 +433,46 @@ mod tests {
         assert!(once.contains("name = 'dark'"));
         assert!(!configure(&config, &script, root.path()).unwrap());
         assert_eq!(fs::read_to_string(&config).unwrap(), once);
+    }
+
+    #[test]
+    fn installer_keeps_the_mode_the_config_already_had() {
+        let root = tempfile::tempdir().unwrap();
+        let script = root.path().join("bin/dl-herdr-shell");
+        for mode in [0o644, 0o600] {
+            let config = root.path().join(format!("config-{mode:o}.toml"));
+            fs::write(&config, "[terminal]\nfont_size = 14\n").unwrap();
+            fs::set_permissions(&config, fs::Permissions::from_mode(mode)).unwrap();
+            assert!(configure(&config, &script, root.path()).unwrap());
+            assert_eq!(
+                fs::metadata(&config).unwrap().permissions().mode() & 0o777,
+                mode,
+                "{mode:o}"
+            );
+        }
+        let fresh = root.path().join("fresh.toml");
+        assert!(configure(&fresh, &script, root.path()).unwrap());
+        assert_eq!(
+            fs::metadata(&fresh).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    #[test]
+    fn installer_keeps_the_mode_of_a_symlink_target() {
+        let root = tempfile::tempdir().unwrap();
+        let config = root.path().join("linked.toml");
+        let source = root.path().join("linked-source.toml");
+        fs::write(&source, "[terminal]\nfont_size = 14\n").unwrap();
+        fs::set_permissions(&source, fs::Permissions::from_mode(0o644)).unwrap();
+        std::os::unix::fs::symlink("linked-source.toml", &config).unwrap();
+        let script = root.path().join("bin/dl-herdr-shell");
+
+        assert!(configure(&config, &script, root.path()).unwrap());
+        assert_eq!(
+            fs::metadata(&source).unwrap().permissions().mode() & 0o777,
+            0o644
+        );
     }
 
     #[test]
