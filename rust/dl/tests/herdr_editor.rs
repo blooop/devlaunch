@@ -246,3 +246,58 @@ fn stops_waiting_when_the_initiating_process_is_gone() {
         std::thread::sleep(Duration::from_millis(10));
     }
 }
+
+fn fake_wedged_herdr(dir: &std::path::Path) {
+    let path = dir.join("herdr");
+    fs::write(
+        &path,
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$HERDR_CALLS\"\nsleep 30\n",
+    )
+    .unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+fn wait_until(deadline: Instant, mut done: impl FnMut() -> bool) -> bool {
+    while Instant::now() < deadline {
+        if done() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    done()
+}
+
+#[test]
+fn gives_up_on_a_herdr_that_takes_the_question_and_never_answers() {
+    let dir = tempfile::tempdir().unwrap();
+    fake_wedged_herdr(dir.path());
+    let calls = dir.path().join("calls");
+    let mut child = command(dir.path()).stdin(Stdio::piped()).spawn().unwrap();
+    let lease = child.stdin.take().unwrap();
+
+    let asked = wait_until(Instant::now() + Duration::from_secs(5), || {
+        fs::read_to_string(&calls)
+            .unwrap_or_default()
+            .contains("agent get w1:p1")
+    });
+    if !asked {
+        child.kill().unwrap();
+        child.wait().unwrap();
+        panic!("the waiter never asked herdr anything");
+    }
+    drop(lease);
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            assert!(status.success(), "{status:?}");
+            break;
+        }
+        if Instant::now() >= deadline {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("a herdr that never answers left the editor waiter blocked forever");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}

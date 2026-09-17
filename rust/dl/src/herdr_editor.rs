@@ -13,6 +13,7 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use devlaunch_core::runner::{Invocation, Outcome, ProcessRunner, Runner, SpawnSpec};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -22,6 +23,16 @@ const EXPECTED_AGENT_VAR: &str = "DEVLAUNCH_HERDR_SPLIT_EXPECTED_AGENT";
 const BASELINE_VAR: &str = "DEVLAUNCH_HERDR_SPLIT_BASELINE";
 const READY_WORD: &str = "--herdr-editor-ready";
 const WAIT_FOR_AGENT: Duration = Duration::from_secs(30 * 60);
+/// How long one question to Herdr may take before the answer is given up on.
+///
+/// One second, and a bound at all is the point: Herdr is asked over a unix
+/// socket, so a manager that accepts the connection and never replies leaves an
+/// unbounded read on the launch path itself. The first of these questions runs
+/// before the agent is rendered, so the whole cost of a wedged manager is a
+/// second of pause and no editor beside the agent, rather than a launch that
+/// never returns. A second is three orders of magnitude above the round trip
+/// this answers in and still short enough to sit in front of a launch.
+const ANSWER_WITHIN: Duration = Duration::from_secs(1);
 const RETRY: Duration = Duration::from_millis(500);
 static PARENT_LEASES: Mutex<Vec<ChildStdin>> = Mutex::new(Vec::new());
 
@@ -92,7 +103,19 @@ pub(crate) fn start(expected: AgentKind) {
     };
     // Completed agents remain queryable in their pane. Carry what was there
     // before this launch so the waiter cannot mistake it for the new transport.
-    let baseline = agent_observation(&pane);
+    let baseline = match ask(["agent", "get", pane.as_str()]) {
+        Answer::Replied(response) => AgentObservation::from_response(&response),
+        Answer::Absent => None,
+        // Given up rather than carried on with, because a baseline nobody could
+        // read is the one the waiter would mistake a finished agent for.
+        Answer::Wedged => {
+            eprintln!(
+                "dl: herdr did not answer within {}s, so this launch gets no editor split",
+                ANSWER_WITHIN.as_secs()
+            );
+            return;
+        }
+    };
     let Ok(me) = std::env::current_exe() else {
         return;
     };
@@ -126,6 +149,11 @@ fn waiter_command(
         .env(EXPECTED_AGENT_VAR, expected.as_str())
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
+        // Null and not inherited: this child outlives the call that starts it and
+        // shares the pane with a full-screen agent, so a line written here lands in
+        // the middle of that display with nothing to say which process wrote it.
+        // The one failure worth reporting is reported by [`start`] instead, before
+        // the agent owns the pane.
         .stderr(Stdio::null());
     match baseline {
         Some(observation) => {
@@ -273,20 +301,56 @@ fn split_enabled_value(value: Option<&str>) -> bool {
     )
 }
 
+/// What asking Herdr one question came to.
+enum Answer {
+    Replied(Value),
+    /// Nothing was answered within [`ANSWER_WITHIN`], so the manager is wedged
+    /// rather than slow: kept apart from [`Answer::Absent`] because it is the one
+    /// ending a caller on the launch path has something to say about.
+    Wedged,
+    /// Refused, not installed, or unreadable: three facts, one consequence.
+    Absent,
+}
+
+fn ask<const N: usize>(args: [&str; N]) -> Answer {
+    let Some(binary) = devlaunch_core::clients::herdr_binary_from_process() else {
+        return Answer::Absent;
+    };
+    let spec = SpawnSpec::new(
+        Invocation::new(binary)
+            .with_args(args)
+            // `aid` exports this for the later transport. An automation subprocess
+            // must not briefly identify itself as that agent while asking Herdr.
+            // The environment is built rather than inherited because the seam can
+            // set a variable and not unset one; a name or value that is not UTF-8
+            // is dropped, which is all the seam can carry either way.
+            .with_env(without_agent_var()),
+    )
+    .with_stdin_null()
+    .with_timeout(ANSWER_WITHIN);
+    match ProcessRunner.capture(&spec) {
+        Outcome::Ran { exit, io } if exit.is_success() => {
+            Answer::Replied(serde_json::from_str(&io.stdout).unwrap_or(Value::Null))
+        }
+        Outcome::TimedOut => Answer::Wedged,
+        _ => Answer::Absent,
+    }
+}
+
+fn without_agent_var() -> devlaunch_core::runner::EnvSpec {
+    let mut env = devlaunch_core::runner::EnvSpec::empty();
+    env.entries = std::env::vars_os()
+        .filter_map(|(name, value)| Some((name.into_string().ok()?, value.into_string().ok()?)))
+        .filter(|(name, _)| name != AGENT_VAR)
+        .collect();
+    env
+}
+
 fn herdr<const N: usize>(args: [&str; N]) -> Option<Value> {
-    let binary = devlaunch_core::clients::herdr_binary_from_process()?;
-    let output = Command::new(binary)
-        .args(args)
-        // `aid` exports this for the later transport. An automation subprocess
-        // must not briefly identify itself as that agent while asking Herdr.
-        .env_remove(AGENT_VAR)
-        .stdin(Stdio::null())
-        .output()
-        .ok()?;
-    output
-        .status
-        .success()
-        .then(|| serde_json::from_slice(&output.stdout).unwrap_or(Value::Null))
+    match ask(args) {
+        Answer::Replied(response) => Some(response),
+        Answer::Wedged | Answer::Absent => None,
+    }
 }
 
 fn pane_count(response: &Value) -> Option<usize> {
