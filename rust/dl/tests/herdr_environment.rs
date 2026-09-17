@@ -253,3 +253,27 @@ fn setup_refuses_to_drift_a_chezmoi_managed_regular_config() {
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(stderr.contains(source.to_str().unwrap()), "{stderr}");
 }
+
+#[test]
+fn an_unusable_pane_selector_opens_the_shell_without_overrides() {
+    let host = Host::new();
+    success(host.run(&["--herdr-env", "set", "MESSAGE=saved"]));
+    for unusable in [
+        ("HERDR_WORKSPACE_ID", Some("my.project")),
+        ("HERDR_WORKSPACE_ID", None),
+        ("HERDR_SOCKET_PATH", None),
+        ("HERDR_SOCKET_PATH", Some("")),
+        ("HERDR_SOCKET_PATH", Some("relative.sock")),
+    ] {
+        let mut command = host.command(&["--herdr-shell"]);
+        command.env("MESSAGE", "inherited");
+        match unusable.1 {
+            Some(value) => command.env(unusable.0, value),
+            None => command.env_remove(unusable.0),
+        };
+        let output = command.output().unwrap();
+        assert!(output.status.success(), "{unusable:?}: {output:?}");
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert!(stdout.starts_with("inherited\n"), "{unusable:?}: {stdout}");
+    }
+}

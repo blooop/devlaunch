@@ -102,7 +102,16 @@ fn manage_inner(words: &[String], workspace: Option<&str>) -> io::Result<()> {
 pub(crate) fn open_pane() -> Ending {
     let result = (|| -> io::Result<()> {
         let environment = if std::env::var("HERDR_ENV").as_deref() == Ok("1") {
-            store(None)?.0.read()?
+            // A selector this cannot resolve names no saved state, so there is
+            // nothing to apply and nothing to refuse over. A saved state that is
+            // broken still refuses, below: that one is the person's own.
+            match store(None) {
+                Ok((store, _)) => store.read()?,
+                Err(error) => {
+                    eprintln!("dl: no Herdr workspace environment: {error}");
+                    Default::default()
+                }
+            }
         } else {
             Default::default()
         };
