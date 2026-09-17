@@ -445,9 +445,9 @@ impl WorkspaceId {
     /// **A slash lands where the branch had one and nowhere else**, because the
     /// separator comes from the segment split rather than from a pass over the
     /// finished id: a dash [`slug`] made inside a segment stays a dash, so
-    /// `dependabot/github_actions/codecov` labels as
-    /// `dependabot/github-actions/codecov` and never as
-    /// `dependabot/github/actions/codecov`. Which of an id's dashes stood for
+    /// `devlaunch` at `dependabot/github_actions/x` labels as
+    /// `devlaunch@dependabot/github-actions/x` and never as
+    /// `devlaunch@dependabot/github/actions/x`. Which of an id's dashes stood for
     /// slashes is not readable off the id, which is why this is derived beside the
     /// cut rather than recovered from the id downstream.
     ///
