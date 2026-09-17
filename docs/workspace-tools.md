@@ -1434,9 +1434,12 @@ The agent remains the focused pane.
 
 Only a one-pane tab is changed. If the tab already has another pane, `dl` leaves
 its layout alone, which prevents a resumed agent from adding another editor. The
-editor is `$VISUAL`, then `$EDITOR`, and finally `nvim` when neither is set. The
-program must be one executable name or path without arguments. Empty, `0`,
-`false`, and `no` disable the split; any other `NVIM_SPLIT` value enables it.
+editor is `$VISUAL`, then `$EDITOR`, and finally `nvim`. Arguments are allowed,
+because `herdr pane run` takes command text, so `VISUAL="nvim -p"` starts `nvim
+-p` in the new pane. A variable that is set but blank, or that holds a control
+character such as a newline, is skipped and the next one is used, so a value the
+split cannot run never turns the split off. Empty, `0`, `false`, and `no` disable
+the split; any other `NVIM_SPLIT` value enables it.
 
 ### Why a second name, and not a flag
 

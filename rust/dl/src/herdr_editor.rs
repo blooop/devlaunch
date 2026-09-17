@@ -251,11 +251,18 @@ fn editor() -> Option<String> {
     if !split_enabled_value(enabled.as_deref()) {
         return None;
     }
-    let value = std::env::var("VISUAL")
-        .or_else(|_| std::env::var("EDITOR"))
-        .unwrap_or_else(|_| "nvim".to_owned());
+    Some(
+        ["VISUAL", "EDITOR"]
+            .into_iter()
+            .filter_map(|name| std::env::var(name).ok())
+            .find_map(|value| runnable_editor(&value))
+            .unwrap_or_else(|| "nvim".to_owned()),
+    )
+}
+
+fn runnable_editor(value: &str) -> Option<String> {
     let value = value.trim();
-    (!value.is_empty() && !value.chars().any(char::is_whitespace)).then(|| value.to_owned())
+    (!value.is_empty() && !value.chars().any(char::is_control)).then(|| value.to_owned())
 }
 
 fn split_enabled_value(value: Option<&str>) -> bool {

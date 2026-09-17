@@ -14,6 +14,7 @@ case "$*" in
   "pane layout --pane w1:p1") printf '%s\n' '{"result":{"layout":{"panes":[{"pane_id":"w1:p1"}]}}}' ;;
   "pane split w1:p1 --direction right --no-focus") printf '%s\n' '{"result":{"pane":{"pane_id":"w1:p2"}}}' ;;
   "pane run w1:p2 nvim") printf '%s\n' '{"result":{}}' ;;
+  "pane run w1:p2 nvim -p") printf '%s\n' '{"result":{}}' ;;
   *) exit 1 ;;
 esac
 "##,
@@ -76,8 +77,8 @@ fn command(dir: &std::path::Path) -> Command {
     command
 }
 
-fn run(dir: &std::path::Path) -> Output {
-    let mut child = command(dir)
+fn drive(mut command: Command) -> Output {
+    let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -85,6 +86,22 @@ fn run(dir: &std::path::Path) -> Output {
         .unwrap();
     let _lease = child.stdin.take().unwrap();
     child.wait_with_output().unwrap()
+}
+
+fn run(dir: &std::path::Path) -> Output {
+    drive(command(dir))
+}
+
+fn opened_the_editor(dir: &std::path::Path, editor: &str) {
+    assert_eq!(
+        fs::read_to_string(dir.join("calls")).unwrap_or_default(),
+        format!(
+            "agent get w1:p1\n\
+             pane layout --pane w1:p1\n\
+             pane split w1:p1 --direction right --no-focus\n\
+             pane run w1:p2 {editor}\n"
+        )
+    );
 }
 
 #[test]
@@ -100,6 +117,41 @@ fn starts_an_editor_to_the_right_without_taking_agent_focus() {
          pane split w1:p1 --direction right --no-focus\n\
          pane run w1:p2 nvim\n"
     );
+}
+
+#[test]
+fn a_visual_with_arguments_runs_the_whole_command() {
+    let dir = tempfile::tempdir().unwrap();
+    fake_herdr(dir.path());
+    let mut configured = command(dir.path());
+    configured.env("VISUAL", "nvim -p");
+    let output = drive(configured);
+    assert!(output.status.success(), "{output:?}");
+    opened_the_editor(dir.path(), "nvim -p");
+}
+
+#[test]
+fn a_visual_that_cannot_be_run_falls_through_to_editor() {
+    for visual in ["", "   ", "nvim\nrm -rf /"] {
+        let dir = tempfile::tempdir().unwrap();
+        fake_herdr(dir.path());
+        let mut configured = command(dir.path());
+        configured.env("VISUAL", visual).env("EDITOR", "nvim");
+        let output = drive(configured);
+        assert!(output.status.success(), "{visual:?} {output:?}");
+        opened_the_editor(dir.path(), "nvim");
+    }
+}
+
+#[test]
+fn neither_variable_set_still_opens_nvim() {
+    let dir = tempfile::tempdir().unwrap();
+    fake_herdr(dir.path());
+    let mut configured = command(dir.path());
+    configured.env_remove("VISUAL").env_remove("EDITOR");
+    let output = drive(configured);
+    assert!(output.status.success(), "{output:?}");
+    opened_the_editor(dir.path(), "nvim");
 }
 
 #[test]
