@@ -1594,6 +1594,9 @@ mod tests {
             "release/9.9.9",
             "UPPER/Case",
             "a//b",
+            "feature/auth/",
+            "feature//",
+            "a/_",
         ] {
             let label = id("owner", "my_repo.v2", git_ref).label();
             assert!(
@@ -1608,9 +1611,9 @@ mod tests {
             // An empty segment is dropped rather than spelled, so no label ever
             // carries a `//`, a leading `/` after the `@` or a trailing one. A tab
             // reading `my-repo-v2@/leading` would be a path where a branch was meant.
-            // A ref that *begins* or *ends* with a slash cannot get this far --
-            // `validate_ref_name` refuses it, which is why only the doubled one is
-            // in the list above -- so these hold against the cut as well as the slug.
+            // Only a *leading* slash is stopped at the parse boundary: `is_safe_name`
+            // constrains the first character and nothing else, so a trailing slash
+            // and a trailing empty segment both get this far and are dropped here.
             assert!(!label.contains("//"), "{label}");
             assert!(!label.ends_with(REF_SEPARATOR), "{label}");
             assert!(!label.contains("@/"), "{label}");
