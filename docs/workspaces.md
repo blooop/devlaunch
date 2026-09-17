@@ -69,9 +69,10 @@ mechanism, like the escape sequence and the profile line in
 `WorkspaceId::label` returns.
 
 **What the tab shares with the id is its structure, not its alphabet.** One
-derivation decides which branch segments survive and where the cut falls, so a
-middle segment the id dropped is missing from the tab too and neither is truncated
-to a budget of its own. Inside a surviving segment they part company: the id has to
+derivation decides which branch segments survive and what budget they are cut to, so
+a middle segment the id dropped is missing from the tab too and neither is truncated
+to a budget of its own. Where that cut falls is not shared, because the two halves
+are not counting the same characters. Inside a surviving segment they part company: the id has to
 be a DNS label, and a tab is neither a DNS label nor a devpod name, so the tab keeps
 the case, the `_` and the `.` that the id has to flatten. A branch is what tells two
 workspaces apart at a glance, and `feat/ABC_123` and `feat-abc-123` are different
@@ -80,7 +81,7 @@ branches that the id, which must spell both `feat-abc-123`, cannot separate.
 The price is that the two no longer match character for character. Putting
 `devlaunch@feat/ABC_123` beside `devlaunch-feat-abc-123-ktsk` takes knowing that the
 id lowercases and dashes: slug the tab's branch half and the id's readable half
-comes back. That trade is made on the half of the pair nothing addresses a workspace
+comes back, so long as the branch was short enough to escape the cut. That trade is made on the half of the pair nothing addresses a workspace
 by.
 
 **The repo half is still slugged, and that is deliberate.** Owner and repo are

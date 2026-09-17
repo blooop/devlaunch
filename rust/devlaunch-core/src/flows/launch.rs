@@ -3295,11 +3295,11 @@ pub(crate) fn dotfiles_update(
 ///
 /// # What the title says
 ///
-/// The name is the placement's ([`Placement::title`]), and it is the workspace id
-/// with the parts only devpod needs taken off: the four-character suffix, which
-/// carries identity and no meaning, and the flattened separators, which are spelled
-/// the way the spec spells them -- `@` between the repo and the ref, `/` inside a
-/// ref that had one. `docs/workspaces.md` tabulates what a tab, a listing row and a
+/// The name is the placement's ([`Placement::title`]), and it is the workspace with
+/// the parts only devpod needs taken off: the four-character suffix, which carries
+/// identity and no meaning, and the id's alphabet over the ref, which gives way to
+/// the branch as it was typed -- its case, its `_`, its `.` and its `/`, all of
+/// which the id has to flatten. `docs/workspaces.md` tabulates what a tab, a listing row and a
 /// selector row read for one workspace, and is where that spelling is decided; this
 /// comment deliberately does not write it, because a comment nothing checks is the
 /// copy that goes stale. [`WorkspaceId::label`]'s own tests carry the worked
@@ -3307,9 +3307,11 @@ pub(crate) fn dotfiles_update(
 ///
 /// **It is the id, not a second derivation of the spec.** The slugs and the
 /// truncation are [`WorkspaceId::label`]'s, which are [`WorkspaceId::value`]'s, so a
-/// tab and a listing row still match by eye: one is the other with a suffix removed
-/// and its separators respelled. A tab is read at a glance and a listing row is read
-/// deliberately, and what goes is what a glance cannot use.
+/// tab and a listing row still match by eye: the same segments survive in each, cut
+/// to the one budget, and slugging the tab's branch half answers the id's readable
+/// half whenever the branch was short enough to escape the cut. A tab is read at a
+/// glance and a listing row is read deliberately, and what goes is what a glance
+/// cannot use.
 ///
 /// It has also been the full spec, `owner/repo@ref`, and the reason that is not what
 /// came back is length: [`WorkspaceId::new`] validates the characters of a triple and
@@ -11322,9 +11324,9 @@ mod tests {
         // The tab reads `devlaunch@feature/auth` where devpod, in this same launch
         // (the `status` and `ssh` below), is addressed by
         // `devlaunch-feature-auth-np10`. Both halves are asserted here because the
-        // claim is the relationship between them: the label is the id with the
-        // suffix off and its separators spelled the way the spec spells them, so a
-        // tab still matches a `dl --ls` row by eye without carrying the four
+        // claim is the relationship between them: the label is the id's segments
+        // read for a person, the suffix off and the branch spelled as it was typed,
+        // so a tab still matches a `dl --ls` row by eye without carrying the four
         // characters nothing reads.
         //
         // `feature/auth` is the ref that shows what the separators buy: the id has

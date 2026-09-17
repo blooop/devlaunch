@@ -991,8 +991,8 @@ repo half is the exception, and it stays flattened: owner and repo are matched
 case-insensitively, so one workspace has several spellings of them and no particular
 one is the one you typed.
 
-The branch is still cut to the id's budget by the id's cut, so a long branch is cut
-where the id cuts it and a middle segment the id dropped is dropped here too:
+The branch is still cut to the id's budget, so a long branch is cut and a middle
+segment the id dropped is dropped here too:
 `dependabot/github_actions/codecov/codecov-action-6` reads as
 `devlaunch@dependabot/codecov-action-6`. That is the tab bar's constraint rather than
 a shortfall: a name in a tab shares a strip of screen with a dozen others and is read

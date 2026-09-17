@@ -510,9 +510,9 @@ fn suffix_of(identity: &Identity) -> String {
 /// The three pieces an id is joined from, each already cut to its budget.
 ///
 /// One derivation for [`WorkspaceId::value`] and [`WorkspaceId::label`] rather
-/// than two that agree by inspection: the label is the id with the suffix dropped
-/// and its separators respelled, and that claim only stays true while a single
-/// function decides where the cuts fall.
+/// than two that agree by inspection: the two spellings survive the same segments
+/// and are cut to the same budget, and that claim only stays true while a single
+/// function decides both.
 ///
 /// A free function over the triple rather than a method, so [`WorkspaceId::new`]
 /// can derive the id it stores *before* there is a value to call a method on --
@@ -682,8 +682,9 @@ fn fit_ref(git_ref: &str, room: usize) -> FittedRef {
             .to_string(),
         // Only the slash is trimmed. It is the one character here that is
         // structure rather than branch, so a cut that leaves one dangling leaves
-        // a path where a branch was meant; a dash or a dot or an underscore at
-        // the end is a character the branch has, and this spelling is the branch.
+        // a path where a branch was meant; a dash or a dot or an underscore is an
+        // ordinary branch character wherever it ends up, the cut's own end
+        // included, and trimming one would take a character off a segment.
         read: head(&spell(&segments, REF_SEPARATOR, |(_, read)| read), room)
             .trim_matches(REF_SEPARATOR)
             .to_string(),
@@ -1543,8 +1544,8 @@ mod tests {
         // The whole claim: the branch half is the branch, character for character,
         // and the repo half is the id's slug of the repo. Nothing derives the label
         // from the triple a second time -- one `parts_of` decides which segments
-        // survive and where the cut falls -- so a change to how the id is cut still
-        // cannot move one without moving the other.
+        // survive and what budget they are cut to -- so a change to how the id is
+        // cut still cannot move one without moving the other.
         //
         // These two are the first two cells of the renderings table in
         // `docs/workspaces.md`, which is where that spelling is decided. Pinned here

@@ -22,11 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   backslash would ever act and a branch name cannot hold one.
 
   What the tab still shares with the id is its structure: one derivation decides
-  which branch segments survive and where the cut falls, so a long branch is cut
-  where the id cuts it and a middle segment the id dropped is missing from the tab
-  too. What it gives up is matching the id character for character, which is the
-  price the decision was made at: slug the tab's branch half and the id's readable
-  half comes back. The repo half stays slugged, because owner and repo are matched
+  which branch segments survive and what budget they are cut to, so a long branch is
+  cut and a middle segment the id dropped is missing from the tab too. What it gives
+  up is matching the id character for character, which is the price the decision was
+  made at: the cut can land on a different character in each, and slugging the tab's
+  branch half answers the id's readable half only while neither was cut. The repo half stays slugged, because owner and repo are matched
   case-insensitively and so "as typed" names no particular spelling of them.
 
   Nothing about an id, a clone directory or a devpod workspace moves. The
