@@ -5,8 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use devlaunch_core::domain::xdg;
-use devlaunch_core::flows::claude_profiles;
-use devlaunch_core::flows::herdr_environment::{self, Store};
+use devlaunch_core::flows::herdr_environment::{self, ClaudeConfig, Store};
 use devlaunch_core::osext;
 
 use crate::commands::Ending;
@@ -115,14 +114,6 @@ pub(crate) fn open_pane() -> Ending {
         } else {
             Default::default()
         };
-        let profile_directory = match environment.profile() {
-            Some(profile) if profile != claude_profiles::DEFAULT_PROFILE => {
-                let root = xdg::claude_profiles_root()
-                    .map_err(|_| invalid("no Claude profiles directory"))?;
-                environment.profile_directory(&root)?
-            }
-            _ => None,
-        };
         let mut command = Command::new(std::env::current_exe()?);
         command.arg("--herdr-shell-ready");
         for (key, value) in environment.variables() {
@@ -135,10 +126,25 @@ pub(crate) fn open_pane() -> Ending {
                 }
             }
         }
-        if let Some(directory) = profile_directory {
-            command.env("CLAUDE_CONFIG_DIR", directory);
+        match environment.claude() {
+            ClaudeConfig::Inherited => {}
+            ClaudeConfig::Cleared => {
+                command.env_remove("CLAUDE_CONFIG_DIR");
+            }
+            ClaudeConfig::Directory(value) => {
+                command.env("CLAUDE_CONFIG_DIR", value);
+            }
+            ClaudeConfig::ServerDefault => {}
+            ClaudeConfig::Profile(name) => {
+                let root = xdg::claude_profiles_root()
+                    .map_err(|_| invalid("no Claude profiles directory"))?;
+                command.env(
+                    "CLAUDE_CONFIG_DIR",
+                    herdr_environment::profile_directory(name, &root)?,
+                );
+            }
         }
-        if let Some(profile) = environment.profile() {
+        if let Some(profile) = environment.claude().profile_name() {
             command.args(["--claude-profile", profile]);
         }
         Err(command.exec())

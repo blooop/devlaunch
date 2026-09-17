@@ -1,7 +1,9 @@
-// Crate-private, like `docker` and unlike the rest: nothing outside core names
-// the Claude login, and what it produces reaches a caller as flags and an
-// environment through `flows::launch`.
+// Crate-private, like `docker` and unlike the rest, but for one type: nothing
+// outside core names the Claude login, and what it produces reaches a caller as
+// flags and an environment through `flows::launch`. `ProfileName` crosses the
+// boundary because `flows::herdr_environment` stores one.
 pub(crate) mod claude;
+pub use claude::ProfileName;
 // Crate-private, like `claude`, whose module note this one is read against:
 // nothing outside core names the Codex login either, and what it produces reaches
 // a caller as flags and an environment through `flows::launch`.

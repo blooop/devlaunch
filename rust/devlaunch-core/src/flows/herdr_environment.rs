@@ -35,40 +35,133 @@ fn validate_key(key: &str) -> io::Result<()> {
     Ok(())
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+/// Which Claude configuration a pane gets, as one choice rather than two fields
+/// that can disagree.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum ClaudeConfig {
+    /// No override: the pane keeps whatever `CLAUDE_CONFIG_DIR` the host exported.
+    #[default]
+    Inherited,
+    /// `CLAUDE_CONFIG_DIR` removed from the pane, whatever the host exported.
+    Cleared,
+    /// `CLAUDE_CONFIG_DIR` set to a value the person typed.
+    Directory(String),
+    /// A profile under the profiles root, resolved again every time a pane opens.
+    Profile(ProfileName),
+    /// `profile default`: no saved directory and no saved authentication, so the
+    /// pane uses the server's own Claude environment.
+    ServerDefault,
+}
+
+impl ClaudeConfig {
+    /// The name to pass on as `--claude-profile`, for the two arms that name one.
+    pub fn profile_name(&self) -> Option<&str> {
+        match self {
+            Self::Profile(name) => Some(name.as_str()),
+            Self::ServerDefault => Some(super::claude_profiles::DEFAULT_PROFILE),
+            Self::Inherited | Self::Cleared | Self::Directory(_) => None,
+        }
+    }
+}
+
+/// Where `name` lives now, refusing rather than opening a pane against a directory
+/// that has gone.
+pub fn profile_directory(name: &ProfileName, root: &Path) -> io::Result<PathBuf> {
+    let directory = root.join(name.as_str());
+    if !directory.is_dir() {
+        return Err(invalid(format!(
+            "saved Claude profile directory disappeared: {}",
+            directory.display()
+        )));
+    }
+    fs::canonicalize(directory)
+}
+
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct Environment {
+struct Stored {
     variables: BTreeMap<String, Option<String>>,
     profile: Option<String>,
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(try_from = "Stored", into = "Stored")]
+pub struct Environment {
+    variables: BTreeMap<String, Option<String>>,
+    claude: ClaudeConfig,
+}
+
+impl TryFrom<Stored> for Environment {
+    type Error = String;
+
+    fn try_from(stored: Stored) -> Result<Self, Self::Error> {
+        let Stored {
+            mut variables,
+            profile,
+        } = stored;
+        let directory = variables.remove("CLAUDE_CONFIG_DIR");
+        let claude = match (profile, directory) {
+            (Some(_), Some(_)) => {
+                return Err("saved profile duplicates its Claude configuration directory".into());
+            }
+            (Some(name), None) => {
+                let name = ProfileName::parse(&name)
+                    .ok_or_else(|| "invalid Claude profile name".to_owned())?;
+                if name.as_str() == super::claude_profiles::DEFAULT_PROFILE {
+                    ClaudeConfig::ServerDefault
+                } else {
+                    ClaudeConfig::Profile(name)
+                }
+            }
+            (None, Some(Some(value))) => ClaudeConfig::Directory(value),
+            (None, Some(None)) => ClaudeConfig::Cleared,
+            (None, None) => ClaudeConfig::Inherited,
+        };
+        for (key, value) in &variables {
+            validate_key(key).map_err(|e| e.to_string())?;
+            if value.as_ref().is_some_and(|v| v.contains('\0')) {
+                return Err(format!("NUL in value for {key}"));
+            }
+        }
+        if matches!(&claude, ClaudeConfig::Directory(value) if value.contains('\0')) {
+            return Err("NUL in value for CLAUDE_CONFIG_DIR".to_owned());
+        }
+        Ok(Self { variables, claude })
+    }
+}
+
+impl From<Environment> for Stored {
+    fn from(environment: Environment) -> Self {
+        let Environment {
+            mut variables,
+            claude,
+        } = environment;
+        let mut profile = None;
+        match claude {
+            ClaudeConfig::Inherited => {}
+            ClaudeConfig::Cleared => {
+                variables.insert("CLAUDE_CONFIG_DIR".to_owned(), None);
+            }
+            ClaudeConfig::Directory(value) => {
+                variables.insert("CLAUDE_CONFIG_DIR".to_owned(), Some(value));
+            }
+            ClaudeConfig::Profile(name) => profile = Some(name.as_str().to_owned()),
+            ClaudeConfig::ServerDefault => {
+                profile = Some(super::claude_profiles::DEFAULT_PROFILE.to_owned());
+            }
+        }
+        Self { variables, profile }
+    }
+}
+
 impl Environment {
+    /// Every override but the Claude configuration, which is [`Environment::claude`].
     pub fn variables(&self) -> &BTreeMap<String, Option<String>> {
         &self.variables
     }
 
-    pub fn profile(&self) -> Option<&str> {
-        self.profile.as_deref()
-    }
-
-    fn validate(&self) -> io::Result<()> {
-        for (key, value) in &self.variables {
-            validate_key(key)?;
-            if value.as_ref().is_some_and(|v| v.contains('\0')) {
-                return Err(invalid(format!("NUL in value for {key}")));
-            }
-        }
-        if let Some(profile) = &self.profile {
-            if ProfileName::parse(profile).is_none() {
-                return Err(invalid("invalid Claude profile name"));
-            }
-            if self.variables.contains_key("CLAUDE_CONFIG_DIR") {
-                return Err(invalid(
-                    "saved profile duplicates its Claude configuration directory",
-                ));
-            }
-        }
-        Ok(())
+    pub fn claude(&self) -> &ClaudeConfig {
+        &self.claude
     }
 
     pub fn set(&mut self, key: &str, value: Option<String>) -> io::Result<()> {
@@ -77,7 +170,11 @@ impl Environment {
             return Err(invalid(format!("NUL in value for {key}")));
         }
         if key == "CLAUDE_CONFIG_DIR" {
-            self.profile = None;
+            self.claude = match value {
+                Some(value) => ClaudeConfig::Directory(value),
+                None => ClaudeConfig::Cleared,
+            };
+            return Ok(());
         }
         self.variables.insert(key.to_owned(), value);
         Ok(())
@@ -88,24 +185,21 @@ impl Environment {
             ProfileName::parse(name).ok_or_else(|| invalid("invalid Claude profile name"))?;
         if name.as_str() == super::claude_profiles::DEFAULT_PROFILE {
             for key in [
-                "CLAUDE_CONFIG_DIR",
                 "CLAUDE_CODE_OAUTH_TOKEN",
                 "ANTHROPIC_API_KEY",
                 "ANTHROPIC_AUTH_TOKEN",
             ] {
                 self.variables.remove(key);
             }
-            self.profile = Some(name.as_str().to_owned());
+            self.claude = ClaudeConfig::ServerDefault;
             return Ok(());
         }
-        let directory = root.join(name.as_str());
-        if !directory.is_dir() {
+        if !root.join(name.as_str()).is_dir() {
             return Err(invalid(format!(
                 "Claude profile directory does not exist: {}",
-                directory.display()
+                root.join(name.as_str()).display()
             )));
         }
-        self.variables.remove("CLAUDE_CONFIG_DIR");
         for key in [
             "CLAUDE_CODE_OAUTH_TOKEN",
             "ANTHROPIC_API_KEY",
@@ -113,32 +207,8 @@ impl Environment {
         ] {
             self.set(key, None)?;
         }
-        self.profile = Some(name.as_str().to_owned());
+        self.claude = ClaudeConfig::Profile(name);
         Ok(())
-    }
-
-    pub fn profile_directory(&self, root: &Path) -> io::Result<Option<PathBuf>> {
-        let Some(profile) = self
-            .profile
-            .as_deref()
-            .filter(|profile| *profile != super::claude_profiles::DEFAULT_PROFILE)
-        else {
-            return Ok(None);
-        };
-        let directory = root.join(profile);
-        if !directory.is_dir() {
-            return Err(invalid(format!(
-                "saved Claude profile directory disappeared: {}",
-                directory.display()
-            )));
-        }
-        Ok(Some(fs::canonicalize(directory)?))
-    }
-
-    fn normalize_legacy_profile(&mut self) {
-        if self.profile.is_some() {
-            self.variables.remove("CLAUDE_CONFIG_DIR");
-        }
     }
 }
 
@@ -172,17 +242,12 @@ impl Store {
 
     pub fn read(&self) -> io::Result<Environment> {
         match fs::read(&self.path) {
-            Ok(bytes) => {
-                let mut environment: Environment = serde_json::from_slice(&bytes).map_err(|e| {
-                    invalid(format!(
-                        "invalid workspace environment {}: {e}",
-                        self.path.display()
-                    ))
-                })?;
-                environment.normalize_legacy_profile();
-                environment.validate()?;
-                Ok(environment)
-            }
+            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| {
+                invalid(format!(
+                    "invalid workspace environment {}: {e}",
+                    self.path.display()
+                ))
+            }),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Environment::default()),
             Err(error) => Err(error),
         }
@@ -207,7 +272,6 @@ impl Store {
         rustix::fs::flock(&lock, rustix::fs::FlockOperation::LockExclusive)?;
         let mut environment = self.read()?;
         change(&mut environment)?;
-        environment.validate()?;
         let bytes = serde_json::to_vec_pretty(&environment)?;
         write_private(&self.path, &bytes)
     }
@@ -409,10 +473,13 @@ mod tests {
         fs::create_dir_all(&ordinary).unwrap();
         let mut e = Environment::default();
         e.select_profile("work", &profiles).unwrap();
-        assert_eq!(e.profile(), Some("work"));
+        assert_eq!(e.claude().profile_name(), Some("work"));
+        let ClaudeConfig::Profile(name) = e.claude().clone() else {
+            panic!("{:?}", e.claude())
+        };
         assert_eq!(
-            e.profile_directory(&profiles).unwrap().as_deref(),
-            Some(profiles.join("work").as_path())
+            profile_directory(&name, &profiles).unwrap(),
+            profiles.join("work")
         );
         assert!(!e.variables().contains_key("CLAUDE_CONFIG_DIR"));
         for key in [
@@ -424,18 +491,22 @@ mod tests {
         }
         assert!(e.select_profile("missing", &profiles).is_err());
         assert!(e.select_profile("../work", &profiles).is_err());
-        assert_eq!(e.profile(), Some("work"));
+        assert_eq!(e.claude().profile_name(), Some("work"));
         e.select_profile("default", &profiles).unwrap();
+        assert_eq!(*e.claude(), ClaudeConfig::ServerDefault);
+        assert_eq!(e.claude().profile_name(), Some("default"));
         assert!(!e.variables().contains_key("CLAUDE_CONFIG_DIR"));
         assert!(!e.variables().contains_key("CLAUDE_CODE_OAUTH_TOKEN"));
         e.select_profile("work", &profiles).unwrap();
         fs::remove_dir(profiles.join("work")).unwrap();
-        assert!(e.profile_directory(&profiles).is_err());
+        assert!(profile_directory(&name, &profiles).is_err());
     }
 
     #[test]
-    fn legacy_profile_state_drops_its_duplicated_directory() {
+    fn a_profile_and_a_config_directory_cannot_both_be_saved() {
         let root = tempfile::tempdir().unwrap();
+        let profiles = root.path().join("profiles");
+        fs::create_dir_all(profiles.join("work")).unwrap();
         let store = Store::new(root.path(), Path::new("/tmp/sock"), "w1").unwrap();
         fs::create_dir_all(store.path.parent().unwrap()).unwrap();
         fs::write(
@@ -444,10 +515,40 @@ mod tests {
         )
         .unwrap();
 
-        let environment = store.read().unwrap();
-        assert_eq!(environment.profile(), Some("work"));
-        assert!(!environment.variables().contains_key("CLAUDE_CONFIG_DIR"));
-        assert_eq!(environment.variables()["MESSAGE"].as_deref(), Some("kept"));
+        let refused = store.read().unwrap_err();
+        assert!(
+            refused.to_string().contains("duplicates"),
+            "{refused}: a state file naming both must be reported, not silently halved"
+        );
+
+        let mut e = Environment::default();
+        e.select_profile("work", &profiles).unwrap();
+        e.set("CLAUDE_CONFIG_DIR", Some("/old/target".into()))
+            .unwrap();
+        assert_eq!(
+            *e.claude(),
+            ClaudeConfig::Directory("/old/target".to_owned())
+        );
+        e.select_profile("work", &profiles).unwrap();
+        assert_eq!(e.claude().profile_name(), Some("work"));
+        assert!(!Stored::from(e).variables.contains_key("CLAUDE_CONFIG_DIR"));
+    }
+
+    #[test]
+    fn a_cleared_configuration_directory_survives_a_round_trip() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::new(root.path(), Path::new("/tmp/sock"), "w1").unwrap();
+        store.update(|e| e.set("CLAUDE_CONFIG_DIR", None)).unwrap();
+        assert_eq!(*store.read().unwrap().claude(), ClaudeConfig::Cleared);
+        store
+            .update(|e| e.set("CLAUDE_CONFIG_DIR", Some("/chosen".into())))
+            .unwrap();
+        assert_eq!(
+            *store.read().unwrap().claude(),
+            ClaudeConfig::Directory("/chosen".to_owned())
+        );
+        store.clear().unwrap();
+        assert_eq!(*store.read().unwrap().claude(), ClaudeConfig::Inherited);
     }
 
     #[test]
