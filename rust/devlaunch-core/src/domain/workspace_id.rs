@@ -1601,6 +1601,16 @@ mod tests {
                 "dependabot/github_actions/x",
                 "devlaunch@dependabot/github_actions/x",
             ),
+            // A middle segment that slugs to nothing is gone from the branch half
+            // too, although the budget had room for it and the branch is what this
+            // half claims to spell. That is the id's segment-dropping applied to
+            // both spellings rather than an oversight: `fit_ref` drops it once, off
+            // the slug, so `read` is empty exactly when `id` is -- which is the test
+            // `label` makes before it writes an `@`. Drop it from the id alone and a
+            // ref of nothing but non-ASCII letters would pass that test with a ref
+            // half the id does not have, and `label` would write an `@` around a
+            // segment the workspace is not addressed by.
+            ("repo", "feature/\u{4e2d}\u{6587}/x", "repo@feature/x"),
         ] {
             let parsed = id("owner", repo, git_ref);
             assert_eq!(parsed.label(), label, "{repo}@{git_ref}");
@@ -1719,6 +1729,21 @@ mod tests {
         let no_ref = id("owner", "devlaunch", "_");
         assert_eq!(no_ref.label(), no_ref.value());
         assert_eq!(no_ref.label(), format!("devlaunch-{}", no_ref.suffix()));
+
+        // `_` is not the only way in, and the other way is the one that makes the
+        // fallback's own reasoning load-bearing. `slug` dashes every non-ASCII
+        // character and trims, so a ref of nothing but CJK slugs to nothing as
+        // surely as `_` does -- but here the branch half *has* characters to spell,
+        // and they are dropped anyway because the segment they are in did not
+        // survive the id's filter. The two halves are empty together by
+        // construction, which is what lets `label` decide on the id's spelling and
+        // then print the other one.
+        let unslugged = id("owner", "devlaunch", "\u{4e2d}\u{6587}");
+        assert_eq!(unslugged.label(), unslugged.value());
+        assert_eq!(
+            unslugged.label(),
+            format!("devlaunch-{}", unslugged.suffix())
+        );
     }
 
     #[test]
