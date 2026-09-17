@@ -18,13 +18,16 @@
 //! [`REPO_SLUG_LENGTH`] characters, never shorter. `ref-slug` absorbs all
 //! remaining truncation.
 //!
-//! [`WorkspaceId::label`] is the same three pieces read for a person rather than
-//! for devpod: `<repo-slug>@<ref-slug>`, no suffix. It is a second *rendering* and
-//! not a second derivation, which is the property worth keeping: both come out of
-//! one [`parts_of`], so a change to where the cuts fall moves the id and
-//! the label together or not at all. Nothing addresses a workspace by a label and
-//! it is not unique, which is what lets it drop the four characters that carry the
-//! identity. See its own docs for where that is spent.
+//! [`WorkspaceId::label`] is the same pieces read for a person rather than for
+//! devpod: `<repo-slug>@<branch>`, no suffix, and the branch spelled the way it
+//! was typed rather than the way a DNS label has to be. It shares the id's
+//! *structure* and not its alphabet: both come out of one [`parts_of`], so a
+//! change to where the cuts fall or to which segments survive moves the id and
+//! the label together or not at all, but the characters inside a surviving
+//! segment are [`slug`]'s on one side and the branch's own on the other. Nothing
+//! addresses a workspace by a label and it is not unique, which is what lets it
+//! drop both the four characters that carry the identity and the alphabet that
+//! carries the DNS rule. See its own docs for where that is spent.
 //!
 //! **What truncation does and does not guarantee.** Only the slugs are ever
 //! shortened, and the suffix is hashed over the full triple before any of that,
@@ -127,10 +130,12 @@ const ID_SEPARATOR: char = '-';
 /// What a ref writes between its own segments, in the branch and in
 /// [`WorkspaceId::label`] alike.
 ///
-/// The one character an id cannot carry and a person reads the branch by, which is
-/// why the label spells it and the id does not. It is also what [`fit_ref`] splits
-/// a ref on, so the character the segments come apart at is the character they go
-/// back together with.
+/// A character an id cannot carry and a person reads the branch by, which is why
+/// the label spells it and the id does not. It is also what [`fit_ref`] splits a
+/// ref on, so the character the segments come apart at is the character they go
+/// back together with -- and the reason a label's other restored characters need
+/// no constant of their own: `_`, `.` and the case are never separators, they are
+/// simply what [`as_typed`] leaves alone inside a segment.
 const REF_SEPARATOR: char = '/';
 
 /// The alphabet the suffix is spelled in: every character a DNS label allows
@@ -422,31 +427,54 @@ impl WorkspaceId {
         &self.value
     }
 
-    /// The same id read as `repo@ref`: no suffix, an `@` where the id has a dash,
-    /// and the branch's own slashes where the id flattens them to dashes.
+    /// The workspace read as `repo@branch`: the repo slugged, the branch as it was
+    /// typed, no suffix.
     ///
-    /// This is the name for a tab bar rather than for devpod, and it is the *id*
-    /// rather than a second derivation of the triple: the same slugs, the same
-    /// middle segments dropped, cut to the same lengths by the same budget, so
-    /// `devlaunch@feature/auth` and `devlaunch-feature-auth-np10` are one string
-    /// with the suffix off and two separators respelled. That is what keeps a tab
-    /// matchable by eye against a `dl --ls` row, which a name truncated to a budget
-    /// of its own would not be.
+    /// This is the name for a tab bar rather than for devpod, and the branch half
+    /// is **the branch** rather than the id's spelling of it: `dl
+    /// blooop/devlaunch@feat/ABC_123` labels as `devlaunch@feat/ABC_123` where the
+    /// id has to read `devlaunch-feat-abc-123-ktsk`. The id's alphabet is
+    /// [`slug`]'s because an id is a devpod workspace name and a container
+    /// hostname, so it has to be a DNS label. A tab is neither, and every
+    /// character the slug takes off a branch -- the case, the `_`, the `.` and the
+    /// `/` -- is inert in all three sinks a title reaches: the OSC 2 escape ends
+    /// at a BEL, `herdr tab rename` takes the title as argv with no shell, and the
+    /// container's `PS1` line is re-*expanded* rather than re-parsed, so only `$`,
+    /// a backtick and a backslash would ever act and [`is_safe_name`] admits none
+    /// of the three.
     ///
-    /// **The suffix goes because nothing reads it, and the `@` and the slashes come
-    /// back because people do.** The suffix carries the workspace's identity and
-    /// none of its meaning: it is what keeps two branches whose readable halves cut
-    /// to the same string in two containers, and somebody looking at a tab has
-    /// already told them apart by the branch. The other two are the characters the
-    /// spec is written with, so `devlaunch@feature/auth` reads as the branch it is
-    /// where `devlaunch-feature-auth` reads as one dashed word — and as the same
-    /// dashed word the *different* branch `feature-auth` would read as.
+    /// **The repo half stays slugged, and that is the one asymmetry here.** Owner
+    /// and repo fold case for identity ([`identity_of`]), so `NVIDIA/cuda-samples`
+    /// and `nvidia/cuda-samples` are one workspace with two spellings and "as
+    /// typed" names no particular one of them: the same container would take two
+    /// different tab names depending on how the launch was typed. A ref does not
+    /// fold -- git refs are case-sensitive, so a workspace has exactly one branch
+    /// spelling -- which is what makes "as typed" a function of the workspace on
+    /// that half and not on this one. `rust/dl/src/lib.rs` leans on the slugged
+    /// repo half directly, naming a tab from a branchless spec before a triple
+    /// exists.
+    ///
+    /// **What it keeps of the id: the structure.** The same segments survive, in
+    /// the same order, cut to the same budget by the same [`parts_of`], so a middle
+    /// segment the id dropped is missing from the tab too and neither is truncated
+    /// to a budget of its own. What it gives up is the character-for-character
+    /// match: a reader putting `devlaunch@feat/ABC_123` beside
+    /// `devlaunch-feat-abc-123-ktsk` has to know the slug rule to see one
+    /// workspace. That is the price the decision was made at, and it is paid on the
+    /// half of the pair that is *read* rather than typed back.
+    ///
+    /// **The suffix goes because nothing reads it, and the `@` comes back because
+    /// people do.** The suffix carries the workspace's identity and none of its
+    /// meaning: it is what keeps two branches whose readable halves cut to the same
+    /// string in two containers, and somebody looking at a tab has already told
+    /// them apart by the branch. The `@` is the character the spec is written with,
+    /// so `devlaunch@feature-auth` reads as the branch it is where
+    /// `devlaunch-feature-auth` reads as one dashed word.
     ///
     /// **A slash lands where the branch had one and nowhere else**, because the
     /// separator comes from the segment split rather than from a pass over the
-    /// finished id: a dash [`slug`] made inside a segment stays a dash, so
-    /// `devlaunch` at `dependabot/github_actions/x` labels as
-    /// `devlaunch@dependabot/github-actions/x` and never as
+    /// finished id: `devlaunch` at `dependabot/github_actions/x` labels as
+    /// `devlaunch@dependabot/github_actions/x` and never as
     /// `devlaunch@dependabot/github/actions/x`. Which of an id's dashes stood for
     /// slashes is not readable off the id, which is why this is derived beside the
     /// cut rather than recovered from the id downstream.
@@ -461,6 +489,10 @@ impl WorkspaceId {
     /// Falls back to the id when either half is empty — a repo or a ref that
     /// slugs to nothing, `_` being the shortest of them. There is nothing for the
     /// `@` to sit between there, and the id is the one name that is never empty.
+    /// The test is the id's spelling of the ref even though the branch's own is
+    /// what gets printed: a segment is dropped by the id's rule or not at all, so
+    /// the two are empty together, and a branch of nothing but `_` has no reading
+    /// that is not the id.
     pub fn label(&self) -> String {
         let parts = parts_of(&self.owner, &self.repo, &self.git_ref);
         if parts.repo.is_empty() || parts.git_ref.is_empty() {
@@ -493,11 +525,7 @@ fn parts_of(owner: &str, repo: &str, git_ref: &str) -> Parts {
     // cut does fire, the ref is left TARGET_LENGTH - 20 - 1 - 1 - 4 = 21
     // characters, so it can never come out of that branch with nothing to spend
     // — the hole that let a 47-char repo name skip truncation altogether.
-    let untruncated = join(&[
-        &repo_part,
-        &fit_ref(git_ref, TARGET_LENGTH, ID_SEPARATOR),
-        &suffix,
-    ]);
+    let untruncated = join(&[&repo_part, &fit_ref(git_ref, TARGET_LENGTH).id, &suffix]);
     if untruncated.len() > TARGET_LENGTH {
         repo_part = head(&repo_part, REPO_SLUG_LENGTH)
             .trim_matches('-')
@@ -510,14 +538,16 @@ fn parts_of(owner: &str, repo: &str, git_ref: &str) -> Parts {
     // asks for -1 characters of a ref there is none of. `fit_ref` at 0 answers
     // the empty string, `join` drops it, and the id lands exactly on the cap.
     let room = TARGET_LENGTH.saturating_sub(suffix.len() + repo_part.len() + separators);
+    // One cut, read two ways. The segments that survive are chosen once, against
+    // the id's lengths, which is what makes the tab's structure the id's structure
+    // rather than a second one that agrees until a branch is long. A `replace`
+    // over the finished id could not do it either way: it cannot tell a separator
+    // from a dash the slug made inside a segment -- see [`WorkspaceId::label`] on
+    // where a slash may land.
+    let fitted = fit_ref(git_ref, room);
     Parts {
-        git_ref: fit_ref(git_ref, room, ID_SEPARATOR),
-        // The same cut a second time, differing only in the character between the
-        // segments that survived it. Two calls rather than one call and a
-        // `replace`, because a `replace` over the finished string cannot tell a
-        // separator from a dash the slug made inside a segment -- see
-        // [`WorkspaceId::label`] on where a slash may land.
-        git_ref_read: fit_ref(git_ref, room, REF_SEPARATOR),
+        git_ref: fitted.id,
+        git_ref_read: fitted.read,
         repo: repo_part,
         suffix,
     }
@@ -534,11 +564,12 @@ fn join_parts(parts: &Parts) -> String {
 /// spelling as a stray dash.
 ///
 /// The ref is carried twice: once as the id spells it and once as a person reads
-/// it. They are the same characters in the same places with the same cut, and
-/// differ only where a `/` in the branch became a `-` in the id, so
-/// `git_ref_read.len() == git_ref.len()` always holds. Empty in one is empty in
-/// the other, which is what lets [`WorkspaceId::label`] test the id's copy and
-/// print the other.
+/// it. The same segments survive in both, in the same order, cut to the same
+/// budget -- but not to the same string and not even to the same length, since
+/// the id's copy is slugged and a person's is the branch's own characters. Empty
+/// in one is still empty in the other, because a segment is dropped by the id's
+/// rule or not at all, and that is what lets [`WorkspaceId::label`] test the id's
+/// copy and print the other.
 struct Parts {
     repo: String,
     git_ref: String,
@@ -603,8 +634,8 @@ fn head(s: &str, n: usize) -> &str {
     }
 }
 
-/// Slug *git_ref* down to *room* characters, dropping whole segments first, with
-/// *separator* written between the segments that survive.
+/// Cut *git_ref* down to *room* characters, dropping whole segments first, and
+/// answer with both spellings of the result.
 ///
 /// Refs are path-shaped, and their middle segments are usually taxonomy while
 /// the ends carry the meaning. Truncating characters first turns
@@ -612,26 +643,74 @@ fn head(s: &str, n: usize) -> &str {
 /// `dependabot-github-actions-`, which says nothing about *which* action.
 /// Dropping middle segments instead keeps `dependabot-codecov-action-6`.
 ///
-/// The separator is the *only* thing it varies: both are one character, so the
-/// budget, the segments dropped and the character the cut falls on are the same
-/// whichever is asked for. That is what makes [`ID_SEPARATOR`] and
-/// [`REF_SEPARATOR`] two spellings of one derivation rather than two derivations
-/// -- and what lets the trim take both characters, since the separator a cut can
-/// leave dangling is whichever one was written and the other never occurs in the
-/// string at all.
-fn fit_ref(git_ref: &str, room: usize, separator: char) -> String {
-    let mut segments: Vec<String> = git_ref
+/// **One split, one drop, two spellings.** Which segments survive is decided
+/// once, against the id's lengths, and both spellings are joined from the
+/// segments that did. That is what keeps the id's structure and the tab's
+/// structure the same thing read twice rather than two derivations that agree
+/// until a branch is long: a middle segment the id dropped is missing from the
+/// tab too, and a segment the id dropped for slugging to nothing is missing from
+/// both.
+///
+/// What the two spellings no longer share is their *characters*. The id's are
+/// [`slug`]'s -- lowercase alphanumerics and dashes, because the id is a DNS
+/// label -- and a person's are the branch's own, because a tab is neither a DNS
+/// label nor a devpod name. So the final [`head`] can fall on a different
+/// character in each, and `read` can be longer or shorter than `id`.
+fn fit_ref(git_ref: &str, room: usize) -> FittedRef {
+    let mut segments: Vec<(String, String)> = git_ref
         .split(REF_SEPARATOR)
-        .map(slug)
-        .filter(|segment| !segment.is_empty())
+        .map(|segment| (slug(segment), as_typed(segment)))
+        // The id's rule, applied to both: a segment that slugs to nothing is not
+        // a segment. It is what keeps `read` empty exactly when `id` is, which is
+        // the test [`WorkspaceId::label`] makes before it writes an `@`.
+        .filter(|(id, _)| !id.is_empty())
         .collect();
-    let joined = |segments: &[String]| segments.join(&separator.to_string());
-    while segments.len() > 2 && joined(&segments).len() > room {
+    let spell =
+        |segments: &[(String, String)], separator: char, pick: fn(&(String, String)) -> &str| {
+            segments
+                .iter()
+                .map(pick)
+                .collect::<Vec<_>>()
+                .join(&separator.to_string())
+        };
+    while segments.len() > 2 && spell(&segments, ID_SEPARATOR, |(id, _)| id).len() > room {
         segments.remove(1);
     }
-    head(&joined(&segments), room)
-        .trim_matches([ID_SEPARATOR, REF_SEPARATOR])
-        .to_string()
+    FittedRef {
+        id: head(&spell(&segments, ID_SEPARATOR, |(id, _)| id), room)
+            .trim_matches(ID_SEPARATOR)
+            .to_string(),
+        // Only the slash is trimmed. It is the one character here that is
+        // structure rather than branch, so a cut that leaves one dangling leaves
+        // a path where a branch was meant; a dash or a dot or an underscore at
+        // the end is a character the branch has, and this spelling is the branch.
+        read: head(&spell(&segments, REF_SEPARATOR, |(_, read)| read), room)
+            .trim_matches(REF_SEPARATOR)
+            .to_string(),
+    }
+}
+
+/// One ref segment as it was typed, less anything a terminal would read as an
+/// instruction.
+///
+/// [`is_safe_name`] is what bounds the rest: a validated ref holds word
+/// characters, dots, slashes and dashes, none of which is special to an OSC 2
+/// escape or to a re-expanded `PS1`. The one thing it lets past is a single
+/// trailing newline, the quirk Python's `$` left behind (see the module docs),
+/// and that is a control character heading for an escape sequence. Filtering
+/// controls here rather than trimming that one newline keeps the guarantee
+/// structural: it holds for whatever the parse boundary admits next, not for
+/// the quirk this boundary happens to have today.
+fn as_typed(segment: &str) -> String {
+    segment.chars().filter(|c| !c.is_control()).collect()
+}
+
+/// The two spellings [`fit_ref`] cuts together.
+struct FittedRef {
+    /// The id's: [`slug`]ged segments joined by [`ID_SEPARATOR`].
+    id: String,
+    /// A person's: the segments as typed, joined by [`REF_SEPARATOR`].
+    read: String,
 }
 
 /// SHA-256 (FIPS 180-4), because the frozen suffix is defined by this digest.
@@ -1460,12 +1539,12 @@ mod tests {
     // ------------------------------------------------- the name a person reads
 
     #[test]
-    fn a_label_is_the_id_with_the_suffix_off_and_its_separators_respelled() {
-        // The whole claim: the two strings hold the same characters in the same
-        // order, less the five the tab has no use for, with the separators written
-        // the way the spec writes them. Nothing derives the label from the triple a
-        // second time, so a change to how the id is cut cannot move one without
-        // moving the other.
+    fn a_label_is_the_branch_as_typed_beside_the_id_slug_of_the_repo() {
+        // The whole claim: the branch half is the branch, character for character,
+        // and the repo half is the id's slug of the repo. Nothing derives the label
+        // from the triple a second time -- one `parts_of` decides which segments
+        // survive and where the cut falls -- so a change to how the id is cut still
+        // cannot move one without moving the other.
         //
         // These two are the first two cells of the renderings table in
         // `docs/workspaces.md`, which is where that spelling is decided. Pinned here
@@ -1500,27 +1579,41 @@ mod tests {
         for (repo, git_ref, label) in [
             ("devlaunch", "feature/auth", "devlaunch@feature/auth"),
             ("my-repo", "main", "my-repo@main"),
-            ("my_repo.v2", "release/1.2", "my-repo-v2@release/1-2"),
-            // A slash where the branch had one, and a dash where `slug` made one
-            // inside a segment. A `replace('-', "/")` over the finished id passes
-            // every case above and fails this one.
+            // The four characters the id's alphabet takes off a branch, all in one
+            // row: the case, the `_`, the `.` and the `/`. The repo beside it keeps
+            // all four flattened, which is the asymmetry `label` argues for -- owner
+            // and repo fold case for identity, so "as typed" names no one spelling
+            // of them, and a ref does not fold.
+            ("my_repo.v2", "Release/1.2_RC", "my-repo-v2@Release/1.2_RC"),
+            // The issue's own two cases (#628), by the spellings it measured.
+            (
+                "devlaunch",
+                "test/branc-title_123",
+                "devlaunch@test/branc-title_123",
+            ),
+            ("devlaunch", "feat/ABC_123", "devlaunch@feat/ABC_123"),
+            // A slash where the branch had one and nowhere else. The segment split
+            // is what writes the separator, so an `_` inside a segment stays an `_`
+            // and never becomes a second slash. A `replace('-', "/")` over the
+            // finished id passes every row above and fails this one.
             (
                 "devlaunch",
                 "dependabot/github_actions/x",
-                "devlaunch@dependabot/github-actions/x",
+                "devlaunch@dependabot/github_actions/x",
             ),
         ] {
             let parsed = id("owner", repo, git_ref);
             assert_eq!(parsed.label(), label, "{repo}@{git_ref}");
+            // What survives of the old character-for-character identity, and all
+            // that survives: slug the label's branch half and the id's readable
+            // half comes back. It holds while nothing is truncated, which is the
+            // case a tab is read in; `a_label_is_cut_by_the_ids_budget_and_not_by_            // one_of_its_own` is where the two cuts are pinned against each other.
+            let rendered = parsed.label();
+            let (repo_read, ref_read) = rendered.split_once('@').expect("an @");
             assert_eq!(
                 parsed.value(),
-                format!(
-                    "{}-{}",
-                    parsed.label().replace(['@', REF_SEPARATOR], "-"),
-                    parsed.suffix()
-                ),
-                "the label and the id differ by the suffix and how the separators \
-                 are spelled"
+                format!("{}-{}-{}", repo_read, slug(ref_read), parsed.suffix()),
+                "the id is the label slugged, with the suffix put back"
             );
         }
     }
@@ -1582,11 +1675,21 @@ mod tests {
         // The label reaches two sinks that fear characters: an OSC 2 escape, ended by
         // a control, and a `PS1` assignment bash expands again at every prompt. Both
         // are filtered downstream (`sanitize_title`), and this is why that filter
-        // finds nothing to do on this path: `slug` leaves lowercase alphanumerics and
-        // dashes, and the only characters added to them are the `@` and the ref's own
-        // slashes. Neither is special to either sink -- OSC 2 ends at the BEL, and
-        // `PS1` is re-*expanded* rather than re-parsed, so only `$`, a backtick and a
-        // backslash would act.
+        // still finds nothing to do on this path now that the branch half is spelled
+        // as typed rather than slugged.
+        //
+        // Two things carry it, and neither is the slug any more. `is_safe_name` is
+        // the wider one: a validated ref holds word characters, dots, slashes and
+        // dashes, so `$`, a backtick and a backslash cannot arrive at all -- and
+        // those three are the whole of what `PS1` would act on, since the second
+        // reading expands rather than re-parses. `as_typed` is the narrow one, for
+        // the single thing `is_safe_name` does let past: a trailing newline, which
+        // is a control heading for an escape sequence that ends at a control.
+        //
+        // What is deliberately *not* asserted here any more is an alphabet. The
+        // branch half is the branch, so upper case, `_`, `.` and a non-ASCII letter
+        // all reach a tab intact, and asserting a character set would be asserting
+        // the slug rule this change took off the label.
         for git_ref in [
             "main",
             "feature/auth",
@@ -1597,15 +1700,18 @@ mod tests {
             "feature/auth/",
             "feature//",
             "a/_",
+            "feat/ABC_123",
+            "release/1.2_rc.4",
+            "feature/caf\u{e9}",
         ] {
             let label = id("owner", "my_repo.v2", git_ref).label();
             assert!(
-                label.chars().all(|c| c.is_ascii_lowercase()
-                    || c.is_ascii_digit()
-                    || c == ID_SEPARATOR
-                    || c == REF_SEPARATOR
-                    || c == '@'),
-                "{label}"
+                !label.chars().any(|c| c.is_control()),
+                "a control would end the escape early: {label:?}"
+            );
+            assert!(
+                !label.contains(['$', '`', '\\']),
+                "the three characters a re-expanded `PS1` would act on: {label:?}"
             );
             assert!(label.matches('@').count() <= 1, "{label}");
             // An empty segment is dropped rather than spelled, so no label ever

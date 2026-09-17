@@ -967,25 +967,32 @@ A "no" variable, where `DEVLAUNCH_ZELLIJ` is an opt-in one, because the two are 
 the same size of decision. That one installs a package into a container and starts a
 session; this one writes an escape sequence and two lines into a profile.
 
-**It is the [workspace id](workspaces.md#workspace-ids) read for a person:
-`<repo>@<branch>`, with the hashed suffix off.** The [renderings
-table](workspaces.md#workspace-ids) is where the three are written down side by side
-and where the spelling is decided; the escape sequence above and the profile line
-below show it in place rather than settle it. The same string with the suffix off and
-its separators respelled, one character for one character, so a tab and a listing row
-still match by eye.
+**It is the [workspace](workspaces.md#workspace-ids) read for a person:
+`<repo>@<branch>`, the branch spelled as you typed it and the hashed suffix off.**
+The [renderings table](workspaces.md#workspace-ids) is where the three are written
+down side by side and where the spelling is decided; the escape sequence above and
+the profile line below show it in place rather than settle it.
 
 What goes is what a glance cannot use. The suffix carries the workspace's identity
 and none of its meaning: it is what keeps two branches whose readable halves cut to
 the same string in two containers, and by the time you are looking at a tab you have
-told them apart by the branch. What comes back are the two characters a spec is
-written with. `devlaunch@main` reads as the branch it is where `devlaunch-main` reads
-as one dashed word, and `devlaunch@feature/auth` reads as the branch it is where
-`devlaunch-feature-auth` reads as the name of a different branch the repository could
-have.
+told them apart by the branch. What comes back is the branch. `devlaunch@main` reads
+as the branch it is where `devlaunch-main` reads as one dashed word, and
+`devlaunch@feat/ABC_123` reads as the branch it is where `devlaunch-feat-abc-123`
+reads as the name of a different branch the repository could have.
 
-The branch is still the id's slug of one, cut to the id's budget, so a long branch is
-cut where the id cuts it and a middle segment the id dropped is dropped here too:
+An id has to be a DNS label, since it names a devpod workspace and is the container's
+hostname, and that is the whole reason it lowercases and flattens. A tab is neither,
+and every character the id has to give up is inert in all three places a title lands:
+the OSC 2 escape above ends at a BEL, `herdr tab rename` takes the title as argv with
+no shell, and the profile line below is re-expanded rather than re-parsed, so only
+`$`, a backtick and a backslash would ever act and a branch name cannot hold one. The
+repo half is the exception, and it stays flattened: owner and repo are matched
+case-insensitively, so one workspace has several spellings of them and no particular
+one is the one you typed.
+
+The branch is still cut to the id's budget by the id's cut, so a long branch is cut
+where the id cuts it and a middle segment the id dropped is dropped here too:
 `dependabot/github_actions/codecov/codecov-action-6` reads as
 `devlaunch@dependabot/codecov-action-6`. That is the tab bar's constraint rather than
 a shortfall: a name in a tab shares a strip of screen with a dozen others and is read
@@ -993,9 +1000,9 @@ at a glance. Where the whole branch matters, the [selector](cli.md#the-selector)
 spells it out.
 
 A slash lands where the branch had one and nowhere else. The separator comes from the
-same segment split the id is cut by, not from a pass over the finished id, so a dash
-the slug made inside a segment stays a dash: `github_actions` reads as
-`github-actions` in a label, never as `github/actions`.
+same segment split the id is cut by, not from a pass over the finished id, so nothing
+inside a segment turns into one: `github_actions` reads as `github_actions` in a
+label, never as `github/actions`.
 
 It used to be the whole spec you typed, resolved, `blooop/devlaunch@main`, and the
 reason that is not what came back is length. A triple is checked for the characters

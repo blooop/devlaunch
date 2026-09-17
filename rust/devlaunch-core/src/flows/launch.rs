@@ -3365,10 +3365,14 @@ impl TerminalTitle {
 /// every prompt. One filter for both because the two halves have to be the one
 /// string, or the tab changes the moment the first prompt paints.
 ///
-/// A *derived* name holds none of the five, since
-/// [`slug`](crate::domain::workspace_id::slug) leaves only lowercase alphanumerics
-/// and dashes, and the two characters a label adds to those -- the `@` and the
-/// ref's own `/` -- are special to neither sink, so nothing legitimate is lost. The filter is for the two arms that
+/// A *derived* name holds none of the five, and no longer because the slug took
+/// them out: a label spells the branch as it was typed
+/// ([`label`](crate::domain::workspace_id::WorkspaceId::label)), so the case, the
+/// `_` and the `.` all reach a title now. What keeps the five out is the parse
+/// boundary above it. `is_safe_name` admits word characters, dots, slashes and
+/// dashes and nothing else, which excludes `$`, a backtick and a backslash
+/// outright; the one control it lets through is a trailing newline, and
+/// `as_typed` drops that beside the cut. So nothing legitimate is lost here. The filter is for the two arms that
 /// title without deriving an id -- `Plan::Existing`'s raw spec and
 /// `Plan::Creatable`'s path leaf -- which this crate never validated. devpod's own
 /// name rules would refuse most of what is dangerous here, but that is a guarantee

@@ -51,24 +51,44 @@ addressed by, what `dl --ls` prints and what the container's hostname is set to:
 everything that has to be unique, or has to be typed back, or has to fit in a DNS
 label.
 
-The other two are renderings of that same id, cut to what their surface is for:
+The other two are read rather than typed back, and each is cut to what its surface
+is for:
 
 | Where | Reads | Why that shape |
 |-------|-------|----------------|
-| `dl --ls`, the hostname, devpod | `devlaunch-feature-auth-np10` | Addressed and typed back, so it must be unique and it must be one word |
-| The [terminal tab](workspace-tools.md#naming-the-terminal-after-the-workspace) | `devlaunch@feature/auth` | A handful of characters read at a glance beside a dozen others, so the suffix goes and the separators are the ones the spec is written with |
-| The [selector](cli.md#the-selector) | `blooop \| devlaunch \| feature/auth` | One row at a time with the width of a terminal, so the owner comes back and the branch is spelled in full, out of the clone's `HEAD` |
+| `dl --ls`, the hostname, devpod | `devlaunch-feat-abc-123-ktsk` | Addressed and typed back, so it must be unique and it must be a DNS label |
+| The [terminal tab](workspace-tools.md#naming-the-terminal-after-the-workspace) | `devlaunch@feat/ABC_123` | A handful of characters read at a glance beside a dozen others, so the suffix goes and the branch is spelled the way you typed it |
+| The [selector](cli.md#the-selector) | `blooop \| devlaunch \| feat/ABC_123` | One row at a time with the width of a terminal, so the owner comes back and the branch is spelled in full, out of the clone's `HEAD` |
 
-They are renderings and not separate derivations, which is what keeps them
-matchable: the tab is the id with the suffix off and its separators respelled, one
-character for one character, so the first two rows are recognisably the same
-workspace. This table is where the tab's spelling is decided, and no other page
-states it as the answer to a command; where one appears elsewhere it is inside an
-example of the mechanism, like the escape sequence and the profile line in
+This table is where the tab's spelling is decided, and no other page states it as
+the answer to a command; where one appears elsewhere it is inside an example of the
+mechanism, like the escape sequence and the profile line in
 [workspace-tools.md](workspace-tools.md#naming-the-terminal-after-the-workspace).
-`a_label_is_the_id_with_the_suffix_off_and_its_separators_respelled` in
+`a_label_is_the_branch_as_typed_beside_the_id_slug_of_the_repo` in
 `rust/devlaunch-core/src/domain/workspace_id.rs` pins the tab's cells against what
 `WorkspaceId::label` returns.
+
+**What the tab shares with the id is its structure, not its alphabet.** One
+derivation decides which branch segments survive and where the cut falls, so a
+middle segment the id dropped is missing from the tab too and neither is truncated
+to a budget of its own. Inside a surviving segment they part company: the id has to
+be a DNS label, and a tab is neither a DNS label nor a devpod name, so the tab keeps
+the case, the `_` and the `.` that the id has to flatten. A branch is what tells two
+workspaces apart at a glance, and `feat/ABC_123` and `feat-abc-123` are different
+branches that the id, which must spell both `feat-abc-123`, cannot separate.
+
+The price is that the two no longer match character for character. Putting
+`devlaunch@feat/ABC_123` beside `devlaunch-feat-abc-123-ktsk` takes knowing that the
+id lowercases and dashes: slug the tab's branch half and the id's readable half
+comes back. That trade is made on the half of the pair nothing addresses a workspace
+by.
+
+**The repo half is still slugged, and that is deliberate.** Owner and repo are
+matched case-insensitively, so `NVIDIA/cuda-samples` and `nvidia/cuda-samples` are
+one workspace with two spellings, and "as typed" would name neither of them: the
+same container would take a different tab name depending on how the launch happened
+to be typed. Branch names are case-sensitive, because git refs are, so a workspace
+has exactly one branch spelling and "as typed" is a property of the workspace there.
 
 Neither the dash the `@` replaces nor the dashes that stood for slashes are readable
 off the id, since a repo slug holds dashes of its own and so does a branch name, so
@@ -79,10 +99,7 @@ with the pick.
 
 The tab still gives one thing up. It does not name the owner, since an id never
 carried one, so a fork and its upstream read alike. That is recoverable in the
-selector, which is where a name is read carefully rather than glanced at. What it no
-longer gives up is the branch's own spelling: the branch `feature/auth` reads as
-`devlaunch@feature/auth` on the tab, so the tab tells it apart from the different
-branch `feature-auth` even though the id, which has to flatten the slash, cannot.
+selector, which is where a name is read carefully rather than glanced at.
 
 At 47 characters the id leaves 17 of the 64-byte hostname limit for tools that stack
 their own prefixes onto the container name. That was about 26 when the hostname was the
