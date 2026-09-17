@@ -1847,6 +1847,22 @@ mod tests {
         assert!(!value.contains(&"b".repeat(12)), "{value}");
     }
 
+    /// The drop loop measures the id's spelling, and this ref is where the two
+    /// spellings disagree about the budget: `aa__bb__cc__dd` is 14 characters as
+    /// typed and 11 slugged, which is the whole of the difference between keeping
+    /// `eeee` and dropping it. Measure `read` instead and this workspace's id
+    /// becomes `repo-aa-bb-cc-dd-ffffffffffffffffffff-duk2` -- a different
+    /// directory and a different container for a branch nobody renamed.
+    #[test]
+    fn which_segments_survive_is_decided_by_the_ids_lengths() {
+        let parsed = id("owner", "repo", "aa__bb__cc__dd/eeee/ffffffffffffffffffff");
+        assert_eq!(
+            parsed.value(),
+            "repo-aa-bb-cc-dd-eeee-ffffffffffffffffffff-duk2"
+        );
+        assert_eq!(parsed.label(), "repo@aa__bb__cc__dd/eeee/fffffffffffffffff");
+    }
+
     /// The other side of the same rule: nothing drops until it has to.
     #[test]
     fn a_ref_that_fits_whole_keeps_every_segment() {
