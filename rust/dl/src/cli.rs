@@ -425,7 +425,7 @@ pub(crate) enum Command {
     HerdrEditorReady,
     HerdrSetup,
     HerdrEnv {
-        words: Vec<String>,
+        action: HerdrEnvAction,
         workspace: Option<String>,
     },
     /// A verb with no workspace named: the fuzzy selector picks one (M8) — or,
@@ -442,6 +442,45 @@ pub(crate) enum Command {
         devcontainer: Option<DevcontainerPath>,
         claude_profile: Option<String>,
     },
+}
+
+/// What a `--herdr-env` line asks for, resolved from its words here so that the
+/// arity and the spelling are settled before anything looks for a Herdr session.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum HerdrEnvAction {
+    /// `set KEY=VALUE`
+    Set { key: String, value: String },
+    /// `unset KEY`
+    Unset { key: String },
+    /// `profile NAME`
+    Profile { name: String },
+    /// `show`
+    Show,
+    /// `clear`
+    Clear,
+}
+
+impl HerdrEnvAction {
+    fn of(words: &[String]) -> Option<Self> {
+        match words {
+            [action] if action == "show" => Some(Self::Show),
+            [action] if action == "clear" => Some(Self::Clear),
+            [action, operand] if action == "set" => {
+                let (key, value) = operand.split_once('=')?;
+                Some(Self::Set {
+                    key: key.to_owned(),
+                    value: value.to_owned(),
+                })
+            }
+            [action, operand] if action == "unset" => Some(Self::Unset {
+                key: operand.clone(),
+            }),
+            [action, operand] if action == "profile" => Some(Self::Profile {
+                name: operand.clone(),
+            }),
+            _ => None,
+        }
+    }
 }
 
 /// A command line clap accepted but `dl` cannot make a command of.
@@ -499,6 +538,12 @@ pub(crate) enum GrammarError {
     /// makes this a shape rather than a special case: `-f` is `docker rm`'s, and
     /// `docker run --rm` has no forcing flag at all.
     RmForced,
+    /// `--herdr-env` with words that name no action, or an action without the
+    /// operand it takes.
+    ///
+    /// Raised here rather than where the action runs, so that a mistyped line is
+    /// told it is mistyped whether or not the process is inside Herdr.
+    HerdrEnvUsage,
     /// The `--devcontainer` value cannot be a path.
     Devcontainer {
         raw: String,
@@ -1020,7 +1065,7 @@ fn global_command(cli: &Cli, chosen: Chosen) -> Result<Command, GrammarError> {
         Chosen::HerdrEditorReady => Command::HerdrEditorReady,
         Chosen::HerdrSetup => Command::HerdrSetup,
         Chosen::HerdrEnv => Command::HerdrEnv {
-            words: cli.words.clone(),
+            action: HerdrEnvAction::of(&cli.words).ok_or(GrammarError::HerdrEnvUsage)?,
             workspace: cli.herdr_workspace.clone(),
         },
     })

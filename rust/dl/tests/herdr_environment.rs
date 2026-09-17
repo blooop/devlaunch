@@ -332,3 +332,39 @@ fn setup_proceeds_when_chezmoi_answers_that_the_config_is_unmanaged() {
     assert!(installed.contains("font_size = 17"), "{installed}");
     assert!(installed.contains("dl-herdr-shell"), "{installed}");
 }
+
+#[test]
+fn a_malformed_line_is_refused_as_a_usage_error_inside_or_outside_herdr() {
+    let host = Host::new();
+    for words in [
+        vec!["--herdr-env"],
+        vec!["--herdr-env", "set"],
+        vec!["--herdr-env", "set", "NOEQUALS"],
+        vec!["--herdr-env", "show", "clear"],
+        vec!["--herdr-env", "bogus"],
+        vec!["--herdr-env", "bogus", "x"],
+    ] {
+        for inside in [true, false] {
+            let mut command = host.command(&words);
+            if !inside {
+                command.env_remove("HERDR_ENV");
+            }
+            let output = command.output().unwrap();
+            let stderr = String::from_utf8(output.stderr).unwrap();
+            assert!(!output.status.success(), "{words:?} inside={inside}");
+            assert!(
+                stderr.contains("--herdr-env set KEY=VALUE"),
+                "{words:?} inside={inside}: {stderr}"
+            );
+        }
+    }
+    assert!(
+        !host
+            .command(&["--herdr-env", "set", "A=1", "B=2"])
+            .env_remove("HERDR_ENV")
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+}

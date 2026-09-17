@@ -670,6 +670,9 @@ fn grammar_refusal(refused: &cli::GrammarError) -> String {
              line you recall. Use 'dl <workspace> rm --force' to delete one despite it."
                 .to_owned()
         }
+        cli::GrammarError::HerdrEnvUsage => {
+            "use --herdr-env set KEY=VALUE, unset KEY, profile NAME, show, or clear".to_owned()
+        }
         cli::GrammarError::Devcontainer {
             raw,
             why: DevcontainerRefError::Missing,

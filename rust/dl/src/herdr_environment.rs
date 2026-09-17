@@ -8,6 +8,7 @@ use devlaunch_core::domain::xdg;
 use devlaunch_core::flows::herdr_environment::{self, ClaudeConfig, Store};
 use devlaunch_core::osext;
 
+use crate::cli::HerdrEnvAction;
 use crate::commands::Ending;
 use crate::pane_shell;
 
@@ -50,47 +51,48 @@ fn report(result: io::Result<()>) -> Ending {
     }
 }
 
-pub(crate) fn manage(words: &[String], workspace: Option<&str>) -> Ending {
-    report(manage_inner(words, workspace))
-}
-
-fn manage_inner(words: &[String], workspace: Option<&str>) -> io::Result<()> {
-    let (store, workspace) = store(workspace)?;
-    if words == ["show"] {
-        println!("{}", serde_json::to_string_pretty(&store.read()?)?);
-        return Ok(());
-    }
-    let valid = matches!(words, [action] if action == "clear")
-        || matches!(words, [action, _] if matches!(action.as_str(), "set" | "unset" | "profile"));
-    if !valid {
-        return Err(invalid(
-            "use --herdr-env set KEY=VALUE, unset KEY, profile NAME, show, or clear",
-        ));
-    }
+fn selected_workspace_exists(workspace: &str) -> io::Result<()> {
     let binary = devlaunch_core::clients::herdr_binary_from_process()
         .ok_or_else(|| invalid("HERDR_BIN_PATH is required"))?;
     let status = Command::new(binary)
-        .args(["workspace", "get", &workspace])
+        .args(["workspace", "get", workspace])
         .stdout(std::process::Stdio::null())
         .status()?;
     if !status.success() {
         return Err(invalid("Herdr could not find the selected workspace"));
     }
-    match words[0].as_str() {
-        "clear" => store.clear()?,
-        "set" => {
-            let (key, value) = words[1]
-                .split_once('=')
-                .ok_or_else(|| invalid("set expects KEY=VALUE"))?;
-            store.update(|environment| environment.set(key, Some(value.to_owned())))?;
+    Ok(())
+}
+
+pub(crate) fn manage(action: &HerdrEnvAction, workspace: Option<&str>) -> Ending {
+    report(manage_inner(action, workspace))
+}
+
+fn manage_inner(action: &HerdrEnvAction, workspace: Option<&str>) -> io::Result<()> {
+    let (store, workspace) = store(workspace)?;
+    match action {
+        HerdrEnvAction::Show => {
+            println!("{}", serde_json::to_string_pretty(&store.read()?)?);
+            return Ok(());
         }
-        "unset" => store.update(|environment| environment.set(&words[1], None))?,
-        "profile" => {
+        HerdrEnvAction::Clear => {
+            selected_workspace_exists(&workspace)?;
+            store.clear()?;
+        }
+        HerdrEnvAction::Set { key, value } => {
+            selected_workspace_exists(&workspace)?;
+            store.update(|environment| environment.set(key, Some(value.clone())))?;
+        }
+        HerdrEnvAction::Unset { key } => {
+            selected_workspace_exists(&workspace)?;
+            store.update(|environment| environment.set(key, None))?;
+        }
+        HerdrEnvAction::Profile { name } => {
+            selected_workspace_exists(&workspace)?;
             let root =
                 xdg::claude_profiles_root().map_err(|_| invalid("no Claude profiles directory"))?;
-            store.update(|environment| environment.select_profile(&words[1], &root))?;
+            store.update(|environment| environment.select_profile(name, &root))?;
         }
-        _ => unreachable!("validated action"),
     }
     eprintln!(
         "Saved environment for {workspace}. New shells use it; running processes keep their environment."

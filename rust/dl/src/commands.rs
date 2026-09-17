@@ -135,8 +135,8 @@ pub(crate) fn dispatch(
         // indistinguishable from one typed by hand -- same launch, same terminal
         // title, same agent reporting, same everything a manager reads.
         Command::HerdrSetup => crate::herdr_environment::setup(),
-        Command::HerdrEnv { words, workspace } => {
-            crate::herdr_environment::manage(&words, workspace.as_deref())
+        Command::HerdrEnv { action, workspace } => {
+            crate::herdr_environment::manage(&action, workspace.as_deref())
         }
         Command::HerdrShell => crate::herdr_environment::open_pane(),
         Command::HerdrEditorReady => {
