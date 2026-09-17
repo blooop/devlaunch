@@ -2315,3 +2315,210 @@ esac
             .any(|call| call == &format!("devpod ssh {MAIN} --send-env CLAUDE_CODE_OAUTH_TOKEN"))
     );
 }
+
+// ===========================================================================
+// the editor split beside an agent launch
+// ===========================================================================
+//
+// `herdr_editor::start` runs on the launch path, in front of the agent, and the
+// suite next door drives only the detached waiter it spawns. These three rows are
+// the launch side: what a wedged manager costs, what the switch buys when it is
+// on, and what it costs when it is not.
+
+/// A fake `herdr` on the world's PATH, appending every call to `bin/herdr-calls`.
+///
+/// `@SEEN@` and `@GATE@` in `body` are marker paths in the world, so a script can
+/// answer the second question differently from the first and can say when the
+/// waiter has finished.
+fn fake_herdr(world: &World, body: &str) -> String {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let path = world.path("bin/herdr");
+    let script = format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> @CALLS@\n{body}")
+        .replace(
+            "@CALLS@",
+            &world.path("bin/herdr-calls").display().to_string(),
+        )
+        .replace(
+            "@SEEN@",
+            &world.path("bin/herdr-seen").display().to_string(),
+        )
+        .replace("@GATE@", &split_done(world).display().to_string());
+    std::fs::write(&path, script).expect("the fake herdr is written");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+        .expect("the fake herdr is executable");
+    path.display().to_string()
+}
+
+/// A herdr that answers, and whose agent is a new one from the second question on.
+///
+/// `start` reads the pane before the agent exists and hands that reading to the
+/// waiter as the baseline, so a fixture answering the same thing twice would leave
+/// the waiter waiting for thirty minutes rather than splitting.
+const ANSWERS: &str = r##"case "$*" in
+  "agent get w1:p1")
+    if [ -e @SEEN@ ]; then
+      printf '%s\n' '{"result":{"agent":{"agent":"claude","agent_status":"working","state_change_seq":42}}}'
+    else
+      : > @SEEN@
+      printf '%s\n' '{"result":{"agent":{"agent":"claude","agent_status":"done","state_change_seq":41}}}'
+    fi ;;
+  "pane layout --pane w1:p1") printf '%s\n' '{"result":{"layout":{"panes":[{"pane_id":"w1:p1"}]}}}' ;;
+  "pane split w1:p1 --direction right --no-focus") printf '%s\n' '{"result":{"pane":{"pane_id":"w1:p2"}}}' ;;
+  "pane run w1:p2 nvim") : > @GATE@; printf '%s\n' '{"result":{}}' ;;
+  *) exit 1 ;;
+esac
+"##;
+
+/// A herdr that takes the question and never answers it.
+const NEVER_ANSWERS: &str = "sleep 30\n";
+
+/// The marker the answering fixture drops once the editor has been started.
+fn split_done(world: &World) -> PathBuf {
+    world.path("bin/herdr-split-done")
+}
+
+/// The calls the fake herdr recorded, in order.
+fn herdr_calls(world: &World) -> Vec<String> {
+    std::fs::read_to_string(world.path("bin/herdr-calls"))
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Hold the session call until `gate` exists.
+///
+/// The waiter's lease is the launching process itself, so a launch that exits
+/// first cancels the split it asked for: without this the row below would be
+/// asserting a race rather than the feature. Bounded, so a split that never
+/// happens fails on the calls rather than hanging.
+fn gate_the_session_on(world: &World, gate: &Path) {
+    let devpod = world.path("bin/devpod");
+    let script = std::fs::read_to_string(&devpod).expect("the fake devpod");
+    std::fs::write(
+        &devpod,
+        script.replacen(
+            "#!/bin/sh\n",
+            &format!(
+                "#!/bin/sh\nif [ \"$1\" = ssh ]; then n=0; while [ ! -e {} ] && [ $n -lt 1500 ]; \
+                 do n=$((n+1)); sleep 0.01; done; fi\n",
+                gate.display()
+            ),
+            1,
+        ),
+    )
+    .expect("the gated devpod is written");
+}
+
+#[test]
+fn a_herdr_that_never_answers_costs_the_split_and_not_the_launch() {
+    // The launch half of the fix in `f2a6b29`, which the suite next door covers
+    // only for the waiter. The first question is asked in front of the agent, over
+    // a unix socket, so a manager that accepts the connection and says nothing used
+    // to hold the whole launch open behind it. What it costs now is one second and
+    // the editor: the agent still runs, and the line says which of the two was
+    // given up.
+    let world = World::with(&["--warm"]);
+    let herdr = fake_herdr(&world, NEVER_ANSWERS);
+    let started = Instant::now();
+    let run = world.dl_with(
+        &[MAIN, "--", "claude", "go"],
+        &[
+            ("HERDR_ENV", "1"),
+            ("HERDR_PANE_ID", "w1:p1"),
+            ("HERDR_BIN_PATH", &herdr),
+            ("NVIM_SPLIT", "1"),
+            ("VISUAL", "nvim"),
+        ],
+    );
+    let took = started.elapsed();
+    run.exited(0);
+    assert!(
+        took < Duration::from_secs(15),
+        "the launch waited {took:?} on a herdr that never answers"
+    );
+    assert!(
+        run.stderr_lines()
+            .contains(&"dl: herdr did not answer within 1s, so this launch gets no editor split"),
+        "{:?}",
+        run.stderr_lines()
+    );
+    // The agent still got its session, and the one question that was asked is the
+    // whole of what the wedged manager was asked: nothing was spawned to go on
+    // waiting behind a baseline nobody could read.
+    assert_eq!(
+        world.calls().exact(&world.root),
+        [
+            format!("devpod status {MAIN} --output json"),
+            format!("devpod ssh {MAIN} --log-output json --command bash -lc 'claude go'"),
+        ]
+    );
+    assert_eq!(herdr_calls(&world), ["agent get w1:p1"]);
+}
+
+#[test]
+fn an_agent_launch_that_asked_for_a_split_gets_one_beside_it_and_keeps_the_focus() {
+    // The enabled path end to end, from the command line rather than from the
+    // waiter's re-entry: two questions about the pane -- the launch's baseline and
+    // the waiter's, which is how a finished agent is told from the new one -- then
+    // the split and the editor in it.
+    let world = World::with(&["--warm"]);
+    let herdr = fake_herdr(&world, ANSWERS);
+    gate_the_session_on(&world, &split_done(&world));
+    let run = world.dl_with(
+        &[MAIN, "--", "claude", "go"],
+        &[
+            ("HERDR_ENV", "1"),
+            ("HERDR_PANE_ID", "w1:p1"),
+            ("HERDR_BIN_PATH", &herdr),
+            ("NVIM_SPLIT", "1"),
+            ("VISUAL", "nvim"),
+        ],
+    );
+    run.exited(0);
+    // `--no-focus` is the half a person notices: the editor opens beside the agent
+    // and the keystrokes still go to the agent.
+    assert_eq!(
+        herdr_calls(&world),
+        [
+            "agent get w1:p1",
+            "agent get w1:p1",
+            "pane layout --pane w1:p1",
+            "pane split w1:p1 --direction right --no-focus",
+            "pane run w1:p2 nvim",
+        ]
+    );
+    assert_eq!(
+        world.calls().exact(&world.root).last(),
+        Some(&format!(
+            "devpod ssh {MAIN} --log-output json --command bash -lc 'claude go'"
+        ))
+    );
+}
+
+#[test]
+fn an_agent_launch_asks_herdr_nothing_until_the_split_is_switched_on() {
+    // The shipped default, pinned where the feature is reached from: no variable,
+    // no question. The switch is read before the pane is, so a launch that did not
+    // ask for a split costs one nothing -- and the fixture here is the answering
+    // one, so silence is the switch's doing and not a herdr that could not reply.
+    let world = World::with(&["--warm"]);
+    let herdr = fake_herdr(&world, ANSWERS);
+    let run = world.dl_with(
+        &[MAIN, "--", "claude", "go"],
+        &[
+            ("HERDR_ENV", "1"),
+            ("HERDR_PANE_ID", "w1:p1"),
+            ("VISUAL", "nvim"),
+            ("HERDR_BIN_PATH", &herdr),
+        ],
+    );
+    run.exited(0);
+    assert!(
+        !world.path("bin/herdr-calls").exists(),
+        "herdr was asked {:?}",
+        herdr_calls(&world)
+    );
+    assert!(!split_done(&world).exists());
+}
