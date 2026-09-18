@@ -224,26 +224,61 @@ fn wait_for(mut ready: impl FnMut() -> bool) -> bool {
 /// the one the e2e suite keys on too.
 const BANNER: &str = "press Enter";
 
-/// The OSC 2 title `dl` writes for [`MAIN`], bytes and all.
+/// The name [`MAIN`] is put on a terminal under.
 ///
 /// The label and not the id, although the id is what is typed: the scenario records
-/// the triple, and a launch handed an id looks the triple up rather than parsing it
-/// back out (blooop/devlaunch#632). This is the only test that watches that arrive
-/// as bytes on a real terminal, through the shipped binary.
-const TITLE: &str = "\x1b]2;devlaunch@main\x07";
+/// the triple, and a workspace reached by its id is looked up rather than parsed
+/// back out (blooop/devlaunch#632).
+const TITLED: &str = "devlaunch@main";
+
+/// The OSC 2 escape that names a terminal *name*, bytes and all.
+fn osc_title(name: &str) -> String {
+    format!("\x1b]2;{name}\x07")
+}
 
 #[test]
 fn the_terminal_really_is_named_on_a_real_pty() {
     // The one test that proves the bytes arrive. Everything else about the title
     // is judged on a `Host` value or a notice; this watches the escape come out of
-    // the pty the launch was handed, through the shipped binary, which is the only
-    // place the stderr-is-a-tty guard is exercised for real. An argv prompt rather
-    // than a typed one so the editor is out of the way and the title is the only
-    // thing under test.
+    // the pty, through the shipped binary, which is the only place the
+    // stderr-is-a-tty guard is exercised for real.
+    //
+    // A *typed* prompt rather than an argv one, because the editor window is where
+    // the name is decided and where a wrong one is looked at longest. `aid <id>`
+    // with nothing on the line names the terminal itself, in front of a boot it
+    // cannot wait for, and holds that name for the typing plus an entire
+    // `devpod up`. So the run writes the escape twice -- once before the banner,
+    // once at the handover -- and waiting only for the second one passes whether or
+    // not the first said `devlaunch-main-3j1t`, which is exactly what
+    // blooop/devlaunch#632 was reported as.
+    let titled = osc_title(TITLED);
+    let by_id = osc_title(MAIN);
     let world = World::with(&["--warm"]);
-    let session = PtyAid::spawn(&world, &[MAIN, "fix", "the", "bug"], &[]);
-    session.expect(TITLE);
+    let mut session = PtyAid::spawn(&world, &[MAIN], &[]);
+    session.expect(BANNER);
+    // Exact bytes and from the very first one: nothing precedes the name on this
+    // terminal, so a prefix check is the whole claim about what the editor window
+    // is titled.
+    assert!(
+        session.text().starts_with(&titled),
+        "the editor window was not named {titled:?}; the pty said:\n{:?}",
+        session.text()
+    );
+    session.send_line("fix the bug");
+    session.expect("aid -> dl");
+    let seen = Arc::clone(&session.seen);
     assert_eq!(session.wait(), 0);
+
+    let whole = String::from_utf8_lossy(&seen.lock().expect("the pty buffer")).into_owned();
+    assert_eq!(
+        whole.matches(&titled).count(),
+        2,
+        "the name is written twice, by the editor and by the launch; the pty said:\n{whole:?}"
+    );
+    assert!(
+        !whole.contains(&by_id),
+        "the id was written as a title; the pty said:\n{whole:?}"
+    );
 }
 
 #[test]
