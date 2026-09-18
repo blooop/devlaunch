@@ -4137,12 +4137,17 @@ fn titled(workspace_id: &str, workspace: &WorkspaceId) -> String {
 /// triple beside the id derived from it -- the same records [`colliding_record`]
 /// reads -- so the id does not have to be parsed. It is looked up.
 ///
-/// **A record is taken only when its triple derives this very id**, which is the
-/// test [`titled`] makes of the picker's evidence, for the reason it makes it: the
-/// tab is a rendering of the id it is addressed by, or it is that id. A workspace
-/// recorded under an older id scheme (devlaunch#88) is named by some other id, and
-/// labelling this one from its triple would put a name on the tab that the
-/// `dl --ls` row beside it does not carry.
+/// **A record is taken only when it is the record of this workspace and its triple
+/// derives this very id.** The second half is the test [`titled`] makes of the
+/// picker's evidence, for the reason it makes it: the tab is a rendering of the id
+/// it is addressed by, or it is that id. The first half is what says the evidence
+/// is about this workspace at all, and devlaunch#88 breaks them apart in both
+/// directions. A workspace recorded under an older id scheme is named by some other
+/// id, so its triple must not label this one -- and the id that triple derives is a
+/// second devpod workspace, which devpod may hold directly and the record says
+/// nothing about, so that record must not label *it* either. Either way the name on
+/// the tab would be one the `dl --ls` row beside it does not carry. Which fields
+/// hold an id is [`stored_as`], the two arms [`holds_id`] shares with this.
 ///
 /// Reads the records and not the machinery, so a warm attach still brings up no
 /// clone manager, no `config.toml` and no migration (devlaunch#145) -- see
@@ -4151,7 +4156,8 @@ fn titled(workspace_id: &str, workspace: &WorkspaceId) -> String {
 fn recorded_label(cold: &mut dyn ColdMachinery<'_>, workspace_id: &str) -> Option<String> {
     cold.recorded()?.worktrees().values().find_map(|record| {
         let derived = WorkspaceId::new(&record.owner, &record.repo, &record.branch).ok()?;
-        (derived.value() == workspace_id).then(|| derived.label())
+        (stored_as(record, workspace_id) && derived.value() == workspace_id)
+            .then(|| derived.label())
     })
 }
 
@@ -4242,10 +4248,23 @@ fn colliding_record(
 /// other than the triple in play would answer a question nobody asked.
 fn holds_id(record: &WorktreeInfo, workspace: &WorkspaceId) -> bool {
     let derived = workspace.value();
-    record.workspace_id == derived
-        || record.devpod_workspace_id.as_deref() == Some(derived)
+    stored_as(record, derived)
         || WorkspaceId::new(&record.owner, &record.repo, &record.branch)
             .is_ok_and(|derivable| derivable.value() == derived)
+}
+
+/// Whether *record* was written down as the devpod workspace *workspace_id*: the
+/// first two of [`holds_id`]'s three arms, which are the ones that read a stored
+/// field rather than re-deriving one.
+///
+/// [`recorded_label`] asks for exactly these two and not the third, which is why
+/// they are spelled once here rather than left inside [`holds_id`]. The third arm
+/// re-derives from the record's own triple, and at that call site the triple in
+/// play *is* the record's, so the arm answers `true` for every record and the
+/// whole predicate with it.
+fn stored_as(record: &WorktreeInfo, workspace_id: &str) -> bool {
+    record.workspace_id == workspace_id
+        || record.devpod_workspace_id.as_deref() == Some(workspace_id)
 }
 
 /// The default branch a bare `owner/repo` means.
@@ -11614,6 +11633,48 @@ mod tests {
         }
 
         assert_eq!(parts.provision.titles(), vec![Some(legacy.to_owned())]);
+    }
+
+    #[test]
+    fn a_record_of_another_devpod_workspace_does_not_name_this_one() {
+        // The other direction of devlaunch#88, and the one that was reachable: the
+        // record is `devlaunch-main-legacy`'s, and the id being launched is the
+        // `devlaunch-main-3j1t` its triple *would* derive now -- a devpod workspace
+        // of its own, which devpod holds directly and the record says nothing about.
+        // A record earns the tab by being the record of this workspace; deriving the
+        // id is the second half of that question, not the whole of it.
+        let derived = WorkspaceId::new("blooop", "devlaunch", "main").expect("a safe triple");
+        let mut scene = Scene::new().with_running(derived.value());
+        scene.host.stderr_tty = true;
+        record_worktree(
+            scene.cache_dir(),
+            "blooop",
+            "devlaunch",
+            "main",
+            "devlaunch-main-legacy",
+        );
+        let git = Git::new(&scene.runner);
+        let mut cold = RealCold::new(scene.cache_dir(), git);
+        let updater = SelfInvocation::new("dl");
+        let completion = scene.cache_dir().join("completion.json");
+        let mut parts = launching(&scene.runner, &updater, &completion);
+        {
+            let mut launch = Launch::new(
+                &mut parts.context,
+                &mut parts.refresh,
+                &mut cold,
+                &parts.provision,
+                &scene.host,
+                &mut parts.chatter,
+                &mut parts.said,
+            );
+            let _ = launch.run(derived.value(), &LaunchVerb::Up, None);
+        }
+
+        assert_eq!(
+            parts.provision.titles(),
+            vec![Some(derived.value().to_owned())]
+        );
     }
 
     #[test]
