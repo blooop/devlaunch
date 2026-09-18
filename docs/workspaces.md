@@ -99,9 +99,15 @@ looked up instead: `metadata.json` holds the triple beside the id derived from i
 `dl devlaunch-main-3j1t` reads `devlaunch@main` too. The selector needs neither, since
 it read the triple to draw the row and hands it on with the pick.
 
-What a lookup cannot answer, it declines. A record counts only when its triple derives
-the very id being launched, so a workspace made under an older id scheme keeps its id
-on the tab, and so does one dl holds no record of at all.
+**The record is the authority on what the workspace is**, because it is the file dl
+wrote when it made the workspace rather than a guess about which one this is. So a
+workspace made under an older id scheme is named from its record's triple whatever
+that triple would derive today: the tab reads `devlaunch@main` while the `dl --ls` row
+beside it reads `devlaunch-main-legacy`. The tab says what the workspace is, the row
+says what it is called, and a tab is not addressed by anything, so two of them may
+read alike. What a lookup cannot answer it declines, and the id is the answer then: a
+workspace dl holds no record of, one devpod made or one whose cache was cleared, keeps
+its id on the tab.
 
 The tab still gives one thing up. It does not name the owner, since an id never
 carried one, so a fork and its upstream read alike. That is recoverable in the

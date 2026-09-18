@@ -1027,11 +1027,18 @@ else ([opening a new pane](#opening-a-new-pane-in-the-workspace-its-tab-already-
 so a tab named `devlaunch@herdr_title2` by the first pane used to go back to reading
 `devlaunch-herdr-title2-tg2z` the moment a second pane opened in it.
 
-A record is used only when its triple derives the very id in play. A workspace made
-under an older id scheme is addressed by the id the record holds rather than by the
-one its triple derives now, and naming that tab from the triple would put a label on
-it that its own `dl --ls` row does not carry. A workspace dl has no record of, one
-devpod made or one whose cache was cleared, is titled by its id as it always was.
+**The record that holds the id is the answer, whatever its triple derives now.** A
+record is not a guess about which workspace this is: it is the file dl wrote when it
+made the workspace. So a workspace made under an older id scheme, which is addressed
+by the id the record stores rather than by the one its triple derives today, reads
+`devlaunch@main` on the tab while its own `dl --ls` row reads
+`devlaunch-main-legacy`. That is the intended answer and not a slip. The tab says
+what the workspace is and the row says what it is called, and nothing addresses a
+workspace by its tab, so two tabs are allowed to read alike where two rows are not.
+What is refused is a record that does not hold this id at all, because the id its
+triple derives is a second devpod workspace the record says nothing about. A
+workspace dl has no record of, one devpod made or one whose cache was cleared, is
+titled by its id as it always was.
 
 **The selector had the triple all along**, because `dl` with no arguments is how a
 workspace is reopened. It hands the launch a workspace id like any other, but it read
@@ -1039,11 +1046,13 @@ the owner and repo out of the cache layout and the branch out of the clone's `HE
 draw the row you picked, so it passes that on rather than making the launch look up
 what it already knows.
 
-It is checked rather than trusted, and against the same test. `HEAD` is the branch
-checked out *now*, so a `git switch` inside the container leaves a triple that derives
-some other workspace; a triple that does not derive this very id is dropped, and the
-records are asked instead. That is the same check a workspace addressed by a recorded
-id gets.
+It is the one triple still checked rather than trusted, and it is checked because of
+where it came from. `HEAD` is the branch checked out *now*, so a `git switch` inside
+the container leaves a triple that derives some other workspace. A triple that does
+not derive this very id is dropped and the records are asked instead, which is a
+better answer than the id: the record is what the workspace was made from, where
+`HEAD` is what is checked out inside it at this moment. The records themselves are
+held to nothing of the kind, for the reason above.
 
 **Written to stderr, and only when stderr is a terminal.** stdout belongs to the
 completion machinery and to `wf`, which parse it. The tty check is on stderr for
@@ -1215,16 +1224,19 @@ the launch's own id arm calls, which costs a file read and no lock.
 
 | spec | named while you type | the launch then says |
 |---|---|---|
-| `owner/repo@ref` | `repo@ref` | the same, unless a record holds a legacy id |
+| `owner/repo@ref` | `repo@ref` | the same |
 | `owner/repo` | `repo` | `repo@<default branch>` |
 | an existing workspace name | `repo@ref` when a record holds the triple, else itself | the same |
 | anything else `plan` cannot classify | itself | the launch refuses it |
 | a path, or a source URL | nothing | the leaf devpod resolves |
 
-So two of the four rows that name anything can still be corrected a moment later,
-and a tab reading `rocker` while you type and `rocker@main` afterwards beats one
-reading `7`. A spec that names nothing `dl` will accept is not named at all, because
-the name is derived through the same `plan` that refuses it.
+So one of the four rows that name anything is still corrected a moment later, and a
+tab reading `rocker` while you type and `rocker@main` afterwards beats one reading
+`7`. It is the only row left: a triple with a ref on it needs no resolving at either
+end, and the bare-id row is looked up through the very function the launch's own id
+arm calls, so the row that costs a `git ls-remote` to settle is the whole of what the
+launch corrects. A spec that names nothing `dl` will accept is not named at all,
+because the name is derived through the same `plan` that refuses it.
 
 The row that mattered most was the third one. `aid devlaunch-herdr-title2-tg2z`
 used to put that bare id on the tab and hold it there for the typing and for the

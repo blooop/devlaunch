@@ -465,8 +465,8 @@ anything to its `devcontainer.json`.
   the pane takes the workspace read for a person: the hashed suffix off and the branch
   spelled the way you typed it, so `devlaunch-feat-abc-123-ktsk` reads
   `devlaunch@feat/ABC_123`. An id has to be a DNS label and a tab does not.
-  A workspace you name by its id keeps the id.
-  [The three renderings side by side](docs/workspaces.md#workspace-ids).
+  A workspace you name by its id reads the same, because the triple is looked up rather
+  than parsed back out. [The three renderings side by side](docs/workspaces.md#workspace-ids).
 - **A shared pixi package cache**, bound in from the host, so dotfiles that provision tools with
   `pixi global sync` download each package once per machine instead of once per container. On one
   measured profile that is 18s to 28s instead of 62s to 113s and 1.2 GB.
