@@ -11653,6 +11653,64 @@ mod tests {
     }
 
     #[test]
+    fn the_tab_herdr_is_told_to_rename_carries_the_recorded_label_too() {
+        // blooop/devlaunch#632 is a *herdr tab* bug, and this is the sink it was
+        // reported against. Every other test on this arm reads the name off the
+        // provision pass or off the escape, either of which could go on saying
+        // `devlaunch@herdr_title2` while the rename herdr actually receives went
+        // back to saying the id -- and the tab is the thing the user was looking at.
+        // Both names come off the one `placement.title()`, and this is what holds
+        // the rename to it for the launch shape the pane shell uses: `dl
+        // <workspace_id>` and nothing else.
+        let workspace =
+            WorkspaceId::new("blooop", "devlaunch", "herdr_title2").expect("a safe triple");
+        let mut scene = Scene::new().with_running(workspace.value());
+        scene.host.stderr_tty = true;
+        scene.host.herdr_tab_id = Some("w8:tB".to_owned());
+        record_worktree(
+            scene.cache_dir(),
+            "blooop",
+            "devlaunch",
+            "herdr_title2",
+            workspace.value(),
+        );
+        let git = Git::new(&scene.runner);
+        let mut cold = RealCold::new(scene.cache_dir(), git);
+        let updater = SelfInvocation::new("dl");
+        let completion = scene.cache_dir().join("completion.json");
+        let mut parts = launching(&scene.runner, &updater, &completion);
+        {
+            let mut launch = Launch::new(
+                &mut parts.context,
+                &mut parts.refresh,
+                &mut cold,
+                &parts.provision,
+                &scene.host,
+                &mut parts.chatter,
+                &mut parts.said,
+            );
+            let _ = launch.run(
+                workspace.value(),
+                &LaunchVerb::Attach {
+                    command: Some(RemoteCommand::argv(&["true"])),
+                },
+                None,
+            );
+        }
+
+        assert!(
+            parts.said.iter().any(|notice| notice
+                == &LaunchNotice::HerdrTab(HerdrTabRename::Run {
+                    bin: HERDR_BIN_FALLBACK.to_owned(),
+                    tab_id: "w8:tB".to_owned(),
+                    label: workspace.label(),
+                })),
+            "{:?}",
+            parts.said
+        );
+    }
+
+    #[test]
     fn a_record_that_holds_this_id_names_it_whatever_its_triple_derives_now() {
         // devlaunch#88: a workspace made under an older id scheme is addressed by the
         // id `metadata.json` recorded rather than by the one its triple derives now.
