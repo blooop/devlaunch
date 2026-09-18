@@ -11736,6 +11736,59 @@ mod tests {
     }
 
     #[test]
+    fn a_record_whose_triple_will_not_parse_is_walked_past_rather_than_answered_with() {
+        // `is_safe_name` refuses an empty ref, and nothing stops such a record
+        // reaching `metadata.json`: a store hand-edited, or written by the Python
+        // implementation, holds triples this crate never validated. The scan for
+        // "which record is this workspace" asks only which record *says* it is
+        // (`stored_as`), so one it walks past on the way costs nothing. A scan that
+        // parsed each record as it went would end at the broken one and put
+        // `devlaunch-main-3j1t` on the tab with the answer sitting one entry further
+        // down, which is the id standing in for a record dl has.
+        let workspace = WorkspaceId::new("blooop", "devlaunch", "main").expect("a safe triple");
+        assert!(
+            WorkspaceId::new("blooop", "devlaunch", "").is_err(),
+            "the record written first is one no triple parses back out of",
+        );
+        let mut scene = Scene::new().with_running(workspace.value());
+        scene.host.stderr_tty = true;
+        // First in the file, and the record of some other workspace entirely.
+        record_worktree(
+            scene.cache_dir(),
+            "blooop",
+            "devlaunch",
+            "",
+            "devlaunch-broken-0000",
+        );
+        record_worktree(
+            scene.cache_dir(),
+            "blooop",
+            "devlaunch",
+            "main",
+            workspace.value(),
+        );
+        let git = Git::new(&scene.runner);
+        let mut cold = RealCold::new(scene.cache_dir(), git);
+        let updater = SelfInvocation::new("dl");
+        let completion = scene.cache_dir().join("completion.json");
+        let mut parts = launching(&scene.runner, &updater, &completion);
+        {
+            let mut launch = Launch::new(
+                &mut parts.context,
+                &mut parts.refresh,
+                &mut cold,
+                &parts.provision,
+                &scene.host,
+                &mut parts.chatter,
+                &mut parts.said,
+            );
+            let _ = launch.run(workspace.value(), &LaunchVerb::Up, None);
+        }
+
+        assert_eq!(parts.provision.titles(), vec![Some(workspace.label())]);
+    }
+
+    #[test]
     fn a_bare_name_names_the_terminal_after_the_id_because_that_is_all_it_has() {
         // A name dl has no record of, which is the arm where the id is still all
         // there is: `myws` is not one of dl's own ids, nothing in `metadata.json`
