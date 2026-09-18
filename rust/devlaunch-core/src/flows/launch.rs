@@ -74,7 +74,7 @@ use crate::clients::gh::{self, GhEvent, StagedToken, Token, TokenLookup};
 use crate::clients::herdr;
 use crate::clients::ssh;
 use crate::domain::locks::{self, Contention, LockError};
-use crate::domain::metadata::MetadataStorage;
+use crate::domain::metadata::{MetadataStorage, stored_as};
 use crate::domain::model::WorktreeInfo;
 use crate::domain::spec::{self, DevcontainerPath, SpecIdentity, WorkspaceSpec};
 use crate::domain::workspace_id::{
@@ -4156,17 +4156,17 @@ fn titled(workspace_id: &str, workspace: &WorkspaceId) -> String {
 /// second devpod workspace, which devpod may hold directly and the record says
 /// nothing about, so that record must not label *it* either. Either way the name on
 /// the tab would be one the `dl --ls` row beside it does not carry. Which fields
-/// hold an id is [`stored_as`], the two arms [`holds_id`] shares with this.
+/// hold an id is [`stored_as`](crate::domain::metadata::stored_as), the two arms
+/// [`holds_id`] shares with this.
 ///
 /// Reads the records and not the machinery, so a warm attach still brings up no
 /// clone manager, no `config.toml` and no migration (devlaunch#145) -- see
 /// [`ColdMachinery::recorded`], which is also why a store that cannot be read
 /// answers `None` here and leaves the launch titled by its id, exactly as it was.
 fn recorded_label(cold: &mut dyn ColdMachinery<'_>, workspace_id: &str) -> Option<String> {
-    cold.recorded()?.worktrees().values().find_map(|record| {
-        let derived = WorkspaceId::new(&record.owner, &record.repo, &record.branch).ok()?;
-        label_if_derived(workspace_id, &derived).filter(|_| stored_as(record, workspace_id))
-    })
+    let record = cold.recorded()?.worktree_for_workspace_id(workspace_id)?;
+    let derived = WorkspaceId::new(&record.owner, &record.repo, &record.branch).ok()?;
+    label_if_derived(workspace_id, &derived)
 }
 
 /// The devpod workspace id `metadata.json` holds for a triple, if any.
@@ -4259,20 +4259,6 @@ fn holds_id(record: &WorktreeInfo, workspace: &WorkspaceId) -> bool {
     stored_as(record, derived)
         || WorkspaceId::new(&record.owner, &record.repo, &record.branch)
             .is_ok_and(|derivable| derivable.value() == derived)
-}
-
-/// Whether *record* was written down as the devpod workspace *workspace_id*: the
-/// first two of [`holds_id`]'s three arms, which are the ones that read a stored
-/// field rather than re-deriving one.
-///
-/// [`recorded_label`] asks for exactly these two and not the third, which is why
-/// they are spelled once here rather than left inside [`holds_id`]. The third arm
-/// re-derives from the record's own triple, and at that call site the triple in
-/// play *is* the record's, so the arm answers `true` for every record and the
-/// whole predicate with it.
-fn stored_as(record: &WorktreeInfo, workspace_id: &str) -> bool {
-    record.workspace_id == workspace_id
-        || record.devpod_workspace_id.as_deref() == Some(workspace_id)
 }
 
 /// The default branch a bare `owner/repo` means.

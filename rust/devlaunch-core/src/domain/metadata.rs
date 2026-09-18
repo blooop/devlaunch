@@ -537,6 +537,23 @@ impl MetadataStorage {
             .find(|worktree| worktree.workspace_id == workspace_id)
     }
 
+    /// The record of the devpod workspace *workspace_id*, by either of the two
+    /// fields that can name one.
+    ///
+    /// The map is keyed by owner/repo/branch, so "which record is workspace X" has
+    /// no key to ask it by and is a scan. It is still a lookup rather than a
+    /// search: the answer is the record that says it is this workspace, and
+    /// nothing about the record's triple is re-derived to reach it. That is the
+    /// difference from [`Self::get_worktree_by_workspace_id`], which reads the
+    /// `workspace_id` field alone because its callers want the clone directory
+    /// that field names; devlaunch#88 splits the two apart, because a workspace
+    /// made under an older id scheme is addressed by its `devpod_workspace_id`.
+    pub(crate) fn worktree_for_workspace_id(&self, workspace_id: &str) -> Option<&WorktreeInfo> {
+        self.worktrees
+            .values()
+            .find(|worktree| stored_as(worktree, workspace_id))
+    }
+
     // --- mutations --------------------------------------------------------
 
     /// Add or update a repository.
@@ -1085,6 +1102,19 @@ struct Document<'a> {
     worktrees: &'a IndexMap<String, WorktreeInfo>,
 }
 
+/// Whether *record* was written down as the devpod workspace *workspace_id*.
+///
+/// The two fields that can hold one, spelled once. `workspace_id` is the id the
+/// triple derived when the record was written, and `devpod_workspace_id` is the
+/// name devpod was actually given, which devlaunch#88 lets differ. Re-deriving an
+/// id from the record's triple is a third question and deliberately not asked
+/// here: it is about what the record *would* be called now, not about what it
+/// says it is.
+pub(crate) fn stored_as(record: &WorktreeInfo, workspace_id: &str) -> bool {
+    record.workspace_id == workspace_id
+        || record.devpod_workspace_id.as_deref() == Some(workspace_id)
+}
+
 fn repository_key(owner: &str, repo: &str) -> String {
     format!("{owner}/{repo}")
 }
@@ -1584,6 +1614,45 @@ mod tests {
         assert_eq!(found.owner, "owner1");
         assert_eq!(found.branch, "main");
         assert_eq!(storage.get_worktree_by_workspace_id("nonexistent"), None);
+    }
+
+    #[test]
+    fn a_worktree_is_the_record_of_either_devpod_name_it_stores() {
+        // devlaunch#88: the name devpod was given can outlive the id the triple
+        // derives, so a record answers for both of the fields that can hold one --
+        // and for no id it does not store, however close.
+        let dir = temp_dir();
+        let mut storage = quiet_storage(dir.path());
+        let mut derived = worktree("owner1", "repo1", "main");
+        derived.workspace_id = "repo1-main-3j1t".to_owned();
+        storage.add_worktree(derived).expect("saved");
+        let mut adopted = worktree("owner2", "repo2", "main");
+        adopted.workspace_id = "repo2-main-7k2p".to_owned();
+        adopted.devpod_workspace_id = Some("repo2-main-legacy".to_owned());
+        storage.add_worktree(adopted).expect("saved");
+
+        assert_eq!(
+            storage
+                .worktree_for_workspace_id("repo1-main-3j1t")
+                .map(|found| found.owner.as_str()),
+            Some("owner1"),
+        );
+        assert_eq!(
+            storage
+                .worktree_for_workspace_id("repo2-main-legacy")
+                .map(|found| found.owner.as_str()),
+            Some("owner2"),
+            "the devpod name is the name the workspace is addressed by",
+        );
+        assert_eq!(
+            storage
+                .worktree_for_workspace_id("repo2-main-7k2p")
+                .map(|found| found.owner.as_str()),
+            Some("owner2"),
+            "and the derived id it also stores still finds it",
+        );
+        assert_eq!(storage.worktree_for_workspace_id("repo1-main"), None);
+        assert_eq!(storage.worktree_for_workspace_id("nonexistent"), None);
     }
 
     #[test]
