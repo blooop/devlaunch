@@ -12490,6 +12490,74 @@ mod tests {
     }
 
     #[test]
+    fn a_workspace_names_itself_the_same_the_moment_after_it_is_created() {
+        // blooop/devlaunch#632 from the cold end, which is the end a person is
+        // actually standing at. Every other test on this arm starts from a
+        // workspace that already exists and a record something else wrote, so the
+        // one sequence nobody had run is the one everybody runs: `dl
+        // blooop/devlaunch@herdr_title2` on a workspace that is not there yet, and
+        // seconds later a second pane opening in the same tab and re-entering as
+        // `dl <workspace_id>`. Nothing here calls `record_worktree`: the record the
+        // second launch reads is the one the first launch's own `prepare_cold`
+        // wrote (`workspace_clone.rs`, step 5), which is the whole claim.
+        //
+        // Two `RealCold`s rather than one, because the second launch is a second
+        // process: it opens `metadata.json` again rather than inheriting the store
+        // the first one still had in hand. A record that was only ever in memory
+        // would pass with one and fail here, which is the difference worth having.
+        let workspace =
+            WorkspaceId::new("blooop", "devlaunch", "herdr_title2").expect("a safe triple");
+        let scene = Scene::new();
+        let updater = SelfInvocation::new("dl");
+        let completion = scene.cache_dir().join("completion.json");
+        let mut parts = launching(&scene.runner, &updater, &completion);
+        {
+            let mut cold = RealCold::new(scene.cache_dir(), Git::new(&scene.runner));
+            let mut launch = Launch::new(
+                &mut parts.context,
+                &mut parts.refresh,
+                &mut cold,
+                &parts.provision,
+                &scene.host,
+                &mut parts.chatter,
+                &mut parts.said,
+            );
+            let _ = launch.run("blooop/devlaunch@herdr_title2", &LaunchVerb::Up, None);
+        }
+
+        // The cold path really was taken: devpod had never heard of this id before
+        // the launch, and the launch is what made it. Asserted rather than assumed,
+        // because a scene that quietly resolved warm would make the rest of this
+        // test the sibling above with more steps.
+        assert_eq!(
+            scene.runner.state_of(workspace.value()),
+            Some(WorkspaceState::Running),
+            "the first launch created the workspace rather than finding it",
+        );
+
+        {
+            let mut cold = RealCold::new(scene.cache_dir(), Git::new(&scene.runner));
+            let mut launch = Launch::new(
+                &mut parts.context,
+                &mut parts.refresh,
+                &mut cold,
+                &parts.provision,
+                &scene.host,
+                &mut parts.chatter,
+                &mut parts.said,
+            );
+            let _ = launch.run(workspace.value(), &LaunchVerb::Up, None);
+        }
+
+        assert_eq!(
+            parts.provision.titles(),
+            vec![Some(workspace.label()), Some(workspace.label())],
+            "the second launch has only the id, and the record the first one wrote \
+             is what turns it back into the name the tab already carried",
+        );
+    }
+
+    #[test]
     fn a_ref_holding_a_control_cannot_reach_the_container_at_all() {
         // `is_safe_name` accepts one trailing newline -- Python's `$` anchor did, and
         // the quirk is ported deliberately -- so `main\n` is a ref. It used to be a
