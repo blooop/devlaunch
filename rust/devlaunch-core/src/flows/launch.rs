@@ -11558,6 +11558,49 @@ mod tests {
     }
 
     #[test]
+    fn a_stale_picker_triple_falls_through_to_the_record_and_not_to_the_id() {
+        // The other half of the test above, and the half the fall-through exists
+        // for: a `git switch` inside the container costs the picker its evidence,
+        // but it does not touch the file dl wrote when it made the workspace. A
+        // stale triple that dropped straight to `unwrap_or_else` would put
+        // `devlaunch-main-3j1t` on the tab with `devlaunch@main` recorded one lookup
+        // away, which is throwing away dl's own answer rather than falling back to
+        // one. The test above passes `NeverCold` and so pins only the arm where
+        // there is nothing recorded to reach.
+        let workspace = WorkspaceId::new("blooop", "devlaunch", "main").expect("a safe triple");
+        let switched = WorkspaceId::new("blooop", "devlaunch", "other").expect("a safe triple");
+        let mut scene = Scene::new().with_running(workspace.value());
+        scene.host.stderr_tty = true;
+        record_worktree(
+            scene.cache_dir(),
+            "blooop",
+            "devlaunch",
+            "main",
+            workspace.value(),
+        );
+        let git = Git::new(&scene.runner);
+        let mut cold = RealCold::new(scene.cache_dir(), git);
+        let updater = SelfInvocation::new("dl");
+        let completion = scene.cache_dir().join("completion.json");
+        let mut parts = launching(&scene.runner, &updater, &completion);
+        {
+            let mut launch = Launch::new(
+                &mut parts.context,
+                &mut parts.refresh,
+                &mut cold,
+                &parts.provision,
+                &scene.host,
+                &mut parts.chatter,
+                &mut parts.said,
+            )
+            .recognised_as(Some(switched));
+            let _ = launch.run(workspace.value(), &LaunchVerb::Up, None);
+        }
+
+        assert_eq!(parts.provision.titles(), vec![Some(workspace.label())]);
+    }
+
+    #[test]
     fn a_workspace_reached_by_its_id_is_named_by_the_record_that_holds_its_triple() {
         // blooop/devlaunch#632. This arm is not the rare one and it is the one that
         // renames the tab *last*: every pane herdr opens beside a session re-enters
