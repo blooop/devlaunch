@@ -314,15 +314,19 @@ pub fn interactive_terminal() -> bool {
 ///
 /// | spec | named while you type | the launch then says |
 /// |---|---|---|
-/// | `owner/repo@ref` | `repo@ref` | the same, unless a record holds a legacy id |
+/// | `owner/repo@ref` | `repo@ref` | the same |
 /// | `owner/repo` | `repo` | `repo@<default branch>` |
 /// | an existing workspace name | `repo@ref` when a record holds the triple, else itself | the same |
 /// | anything else `plan` cannot classify | itself | the launch refuses it |
 /// | a path, or a source URL | nothing | the leaf devpod resolves |
 ///
-/// So two of the four rows that name anything can still be corrected by the launch
-/// a moment later, and that is the trade: a tab that reads `rocker` while you type
-/// and `rocker@main` afterwards beats one that reads `7`. Both names go through
+/// So one of the four rows that name anything is still corrected by the launch a
+/// moment later, and that is the trade: a tab that reads `rocker` while you type
+/// and `rocker@main` afterwards beats one that reads `7`. It is the only row left:
+/// a triple with a ref on it needs no resolving at either end, and the bare-id row
+/// is looked up through the very function the launch's own id arm calls, so the one
+/// row that still costs a `git ls-remote` to settle is the whole of what the launch
+/// corrects. Both names go through
 /// [`names_for`](devlaunch_core::flows::launch::names_for), so the tab and the pane
 /// are never given different answers at either point.
 ///

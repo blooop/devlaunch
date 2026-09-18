@@ -3322,8 +3322,12 @@ pub(crate) fn dotfiles_update(
 /// owner is the fork: `blooop/devlaunch@main` and a fork of it read alike, since an
 /// id has never carried an owner and this is still the id.
 ///
-/// The three arms that never formed a triple -- a bare devpod name, a path and a URL
-/// -- have no ref for an `@` to precede and are titled by id, exactly as before.
+/// Two of the three arms that never formed a triple -- a path and a URL -- have no
+/// ref for an `@` to precede and are titled by id, exactly as before. A bare devpod
+/// name was the third and is not one any more. It carries no triple either, but the
+/// triple dl made the workspace from is in `metadata.json` beside the id, so the
+/// name is looked up rather than parsed back out of the id ([`recorded_label`]).
+/// What is still titled by its id there is a workspace no record answers for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TerminalTitle {
     /// Write this, exactly.
@@ -5315,13 +5319,23 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
     /// looks the triple up in the records and derives the same label from the same
     /// triple ([`recorded_label`]), so those agree with them.
     ///
-    /// What is left is a workspace dl has **no record of** -- one devpod created,
-    /// or one whose record went with a cache that was cleared -- opened *both* ways,
-    /// once as `blooop/devlaunch@main` and once as `dl devlaunch-main-3j1t`. That
-    /// writes two lines and keeps whichever came last. It is the price of the `@`,
-    /// and it is bounded twice over: one extra line and a tab named by the id
-    /// instead of the label, on a workspace that had to have lost its record to get
-    /// here at all.
+    /// What is left is a launch by id the records did not answer, on a workspace
+    /// opened *both* ways -- once as `blooop/devlaunch@main` and once as `dl
+    /// devlaunch-main-3j1t`. That writes two lines and keeps whichever came last.
+    ///
+    /// **A missing record is not the only way in.** The obvious one is a workspace
+    /// dl has **no record of**: one devpod created, or one whose record went with a
+    /// cache that was cleared. The other is a store that could not be read for that
+    /// one launch, because [`ColdMachinery::recorded`] answers `None` to "nothing
+    /// recorded" and "could not read" alike, and deliberately -- a lookup that
+    /// failed must not be able to stop a command that would otherwise have worked.
+    /// So a single unreadable read is enough, on a workspace whose record is
+    /// perfectly good, and it does not heal: the line is written under a mark hashed
+    /// from its own text, so the next launch that reads the store fine finds *its*
+    /// line already in the profile, appends nothing, and leaves the id line the last
+    /// one. It is the price of the `@`, and it is bounded at one extra line and a
+    /// tab named by the id instead of the label. What it is not bounded by is the
+    /// workspace having lost its record.
     ///
     /// Filtered by [`sanitize_title`], the same way the escape is, because the two
     /// halves must not disagree about what a name may hold. A label and a *derived*
@@ -5821,9 +5835,10 @@ mod tests {
 
     /// [`attach_workspace`] with the chatter thrown away.
     ///
-    /// Titles the workspace after its id, which is what the bare-name arm does: these
-    /// tests are given an id and no triple, so there is no spec for [`Launch::titled`]
-    /// to prefer. The launch-level tests are where the spec form is pinned.
+    /// Titles the workspace after its id, which is what the bare-name arm falls back
+    /// to: these tests call the attach directly with a name and nothing else, so
+    /// there is no picker triple and no records for [`Launch::recognised_title`] to
+    /// prefer. The launch-level tests are where the resolved form is pinned.
     fn attaching(
         scene: &Scene,
         token: &HostToken,
@@ -11567,9 +11582,14 @@ mod tests {
         // `HEAD` is the branch checked out *now*, so a `git switch` inside the
         // container leaves the picker holding a triple that derives a different
         // workspace. Naming the tab from it would put another workspace's label on
-        // this one. The check is core's and not the picker's: the picker carries
-        // the evidence, `titled` reaches the verdict, and it is the same verdict the
-        // recorded-id path gets.
+        // this one. The check is core's and not the picker's: the picker carries the
+        // evidence, `label_if_derived` reaches the verdict, and it is the last such
+        // verdict in the module. A record is not held to it, because a record is not
+        // a reading of a live checkout. What a stale triple falls through to is the
+        // records and only then the id, so `NeverCold` here is what makes the id the
+        // answer -- `a_stale_picker_triple_falls_through_to_the_record_and_not_to_the_id`
+        // is the other half, where there is a record to fall through to.
+
         let workspace = WorkspaceId::new("blooop", "devlaunch", "main").expect("a safe triple");
         let switched = WorkspaceId::new("blooop", "devlaunch", "other").expect("a safe triple");
         let scene = Scene::new().with_running(workspace.value());
