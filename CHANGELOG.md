@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A pane opened beside a session no longer renames the tab back to the
+  workspace id.** `dl blooop/devlaunch@herdr_title2` named the herdr tab
+  `devlaunch@herdr_title2`, and opening a second pane in that tab put
+  `devlaunch-herdr-title2-tg2z` back over it: no `@`, the branch slugged, and the
+  four-character suffix on the end. The pane herdr spawns asks the pane beside it
+  what it is running and re-enters as `dl <workspace_id>`, which is the one arm
+  that resolves no triple, so the tab got the id because the id was all the launch
+  had. It is also the arm that renames the tab last.
+
+  A branch still cannot be read back out of an id, and it no longer has to be:
+  `metadata.json` has stored the triple beside the id derived from it since dl made
+  the workspace, so the id is looked up rather than parsed. `dl
+  devlaunch-main-3j1t` typed by hand is titled `devlaunch@main` for the same
+  reason, and a workspace reached both ways now installs one profile line instead
+  of two.
+
+  A record counts only when its triple derives the very id in play, which is the
+  test the selector's triple already had to pass: a workspace made under an older
+  id scheme, or one dl holds no record of, keeps its id on the tab. The lookup
+  reads the records and brings no clone manager, `config.toml` or cache migration
+  up, so a warm attach costs what it did before.
+  ([#632](https://github.com/blooop/devlaunch/issues/632))
+
 ## [0.52.0] - 2026-09-17
 
 ### Changed

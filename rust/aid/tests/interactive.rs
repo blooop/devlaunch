@@ -225,7 +225,12 @@ fn wait_for(mut ready: impl FnMut() -> bool) -> bool {
 const BANNER: &str = "press Enter";
 
 /// The OSC 2 title `dl` writes for [`MAIN`], bytes and all.
-const TITLE: &str = "\x1b]2;devlaunch-main-3j1t\x07";
+///
+/// The label and not the id, although the id is what is typed: the scenario records
+/// the triple, and a launch handed an id looks the triple up rather than parsing it
+/// back out (blooop/devlaunch#632). This is the only test that watches that arrive
+/// as bytes on a real terminal, through the shipped binary.
+const TITLE: &str = "\x1b]2;devlaunch@main\x07";
 
 #[test]
 fn the_terminal_really_is_named_on_a_real_pty() {

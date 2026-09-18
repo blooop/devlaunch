@@ -1012,22 +1012,38 @@ suffix and its dash take. What stays lost with the owner is the fork: an id has 
 carried one, so `blooop/devlaunch@main` and a fork of it read alike.
 
 `dl ./some/dir` and a plain URL never had a branch for an `@` to precede, so those
-are titled by id, exactly as before. So is a workspace you name by its id on the
-command line: `dl devlaunch-main-3j1t` is handed a name and nothing else, and a
-branch cannot be read back out of an id (the repo slug holds dashes of its own, so
-`my-repo@main` and `my@repo-main` are one id read two ways).
+are titled by id, exactly as before.
 
-**The selector is the exception, and it is the one that matters**, because `dl` with
-no arguments is how a workspace is reopened. It hands the launch a workspace id like
-any other, but it had the triple a moment earlier: it read the owner and repo out of
-the cache layout and the branch out of the clone's `HEAD` to draw the row you picked.
-That travels with the pick, so a workspace opened from the selector is titled
-exactly as one opened as `dl blooop/devlaunch@main` is.
+**A workspace named by its id is not one of them.** A branch cannot be read back out
+of an id, and it does not have to be read out of one. The repo slug holds dashes of
+its own, so `my-repo@main` and `my@repo-main` are one id read two ways, but
+`metadata.json` has stored the triple beside the id derived from it since dl made the
+workspace. So `dl devlaunch-main-3j1t` looks the triple up and is titled
+`devlaunch@main`, the same as `dl blooop/devlaunch@main` is.
 
-It is checked rather than trusted. `HEAD` is the branch checked out *now*, so a
-`git switch` inside the container leaves a triple that derives some other workspace,
-and a triple that does not derive this very id is dropped in favour of the id. That is
-the same check a workspace addressed by a recorded id gets.
+That is the arm that renames the tab last, which is why it matters more than the
+typing suggests. A pane opened beside a session is `dl <workspace_id>` and nothing
+else ([opening a new pane](#opening-a-new-pane-in-the-workspace-its-tab-already-holds)),
+so a tab named `devlaunch@herdr_title2` by the first pane used to go back to reading
+`devlaunch-herdr-title2-tg2z` the moment a second pane opened in it.
+
+A record is used only when its triple derives the very id in play. A workspace made
+under an older id scheme is addressed by the id the record holds rather than by the
+one its triple derives now, and naming that tab from the triple would put a label on
+it that its own `dl --ls` row does not carry. A workspace dl has no record of, one
+devpod made or one whose cache was cleared, is titled by its id as it always was.
+
+**The selector had the triple all along**, because `dl` with no arguments is how a
+workspace is reopened. It hands the launch a workspace id like any other, but it read
+the owner and repo out of the cache layout and the branch out of the clone's `HEAD` to
+draw the row you picked, so it passes that on rather than making the launch look up
+what it already knows.
+
+It is checked rather than trusted, and against the same test. `HEAD` is the branch
+checked out *now*, so a `git switch` inside the container leaves a triple that derives
+some other workspace; a triple that does not derive this very id is dropped, and the
+records are asked instead. That is the same check a workspace addressed by a recorded
+id gets.
 
 **Written to stderr, and only when stderr is a terminal.** stdout belongs to the
 completion machinery and to `wf`, which parse it. The tty check is on stderr for
@@ -1198,7 +1214,7 @@ resolving it costs a record lookup and, for an `owner/repo` with no ref, a
 |---|---|---|
 | `owner/repo@ref` | `repo@ref` | the same |
 | `owner/repo` | `repo` | `repo@<default branch>` |
-| an existing workspace name | itself | the same |
+| an existing workspace name | itself | `repo@ref`, when a record knows the triple |
 | a path, or a source URL | nothing | the leaf devpod resolves |
 
 So two rows are corrected a moment later, and a tab reading `rocker` while you type

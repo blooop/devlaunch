@@ -310,12 +310,12 @@ pub fn interactive_terminal() -> bool {
 /// |---|---|---|
 /// | `owner/repo@ref` | `repo@ref` | the same, unless a record holds a legacy id |
 /// | `owner/repo` | `repo` | `repo@<default branch>` |
-/// | an existing workspace name | itself | the same |
+/// | an existing workspace name | itself | `repo@ref` when a record holds the triple |
 /// | anything else `plan` cannot classify | itself | the launch refuses it |
 /// | a path, or a source URL | nothing | the leaf devpod resolves |
 ///
-/// So two of the four rows are corrected by the launch a moment later, and that is
-/// the trade: a tab that reads `rocker` while you type and `rocker@main` afterwards
+/// So three of the four rows can be corrected by the launch a moment later, and that
+/// is the trade: a tab that reads `rocker` while you type and `rocker@main` afterwards
 /// beats one that reads `7`. Both names go through
 /// [`names_for`](devlaunch_core::flows::launch::names_for), so the tab and the pane
 /// are never given different answers at either point.

@@ -93,10 +93,15 @@ has exactly one branch spelling and "as typed" is a property of the workspace th
 
 Neither the dash the `@` replaces nor the dashes that stood for slashes are readable
 off the id, since a repo slug holds dashes of its own and so does a branch name, so
-the tab's name travels with the launch that resolved it rather than being recovered
-later. A workspace you name by its bare id on the command line is therefore titled
-by that id. The selector is not: it read the triple to draw the row, and hands it on
-with the pick.
+the tab's name travels with the launch that resolved it rather than being parsed back
+out of the id later. A workspace you name by its bare id on the command line is
+looked up instead: `metadata.json` holds the triple beside the id derived from it, so
+`dl devlaunch-main-3j1t` reads `devlaunch@main` too. The selector needs neither, since
+it read the triple to draw the row and hands it on with the pick.
+
+What a lookup cannot answer, it declines. A record counts only when its triple derives
+the very id being launched, so a workspace made under an older id scheme keeps its id
+on the tab, and so does one dl holds no record of at all.
 
 The tab still gives one thing up. It does not name the owner, since an id never
 carried one, so a fork and its upstream read alike. That is recoverable in the
