@@ -4167,7 +4167,47 @@ fn label_if_derived(workspace_id: &str, workspace: &WorkspaceId) -> Option<Strin
 /// [`ColdMachinery::recorded`], which is also why a store that cannot be read
 /// answers `None` here and leaves the launch titled by its id, exactly as it was.
 fn recorded_label(cold: &mut dyn ColdMachinery<'_>, workspace_id: &str) -> Option<String> {
-    let record = cold.recorded()?.worktree_for_workspace_id(workspace_id)?;
+    label_in(cold.recorded()?, workspace_id)
+}
+
+/// The same answer as [`recorded_label`], for a caller that has a cache directory
+/// and no launch.
+///
+/// **`aid` is the caller, and the window it covers is the one nothing else can.**
+/// `aid <spec>` with no prompt on the line opens the prompt editor and boots the
+/// workspace behind it, so it names the terminal and the herdr tab itself, up
+/// front, from the spec read syntactically (`dl::name_before_launch`). The launch
+/// that would say [`recorded_label`]'s answer has not happened yet and does not
+/// for as long as the typing plus the boot takes -- an entire `devpod up` for a
+/// cold workspace. A bare id named the tab `devlaunch-herdr-title2-tg2z` and held
+/// it there for all of it, which is the string blooop/devlaunch#632 was reported
+/// as. This is how that caller reaches the derivation instead of growing a second
+/// copy of it: one function, so the name in front of the launch and the name the
+/// launch gives cannot disagree.
+///
+/// The cache directory is a parameter for [`Host::from_process`]'s reason -- the
+/// binary has already resolved it, and a second answer here could disagree with
+/// the first -- and it is the whole of what this reads: [`MetadataStorage::look`],
+/// which takes no lock, runs no migration and writes nothing, on the file
+/// [`MetadataStorage::path_in`] names under it. A store that is missing, damaged
+/// or holds no record of this id answers `None`, and the caller keeps the id,
+/// exactly as before.
+#[must_use]
+pub fn recorded_label_in(cache_dir: &Path, workspace_id: &str) -> Option<String> {
+    label_in(
+        &MetadataStorage::look(MetadataStorage::path_in(cache_dir)),
+        workspace_id,
+    )
+}
+
+/// [`WorkspaceId::label`] of the record *records* holds for *workspace_id*.
+///
+/// The derivation itself, spelled once for the two ways of getting the records:
+/// [`recorded_label`] is handed them by a launch that may already have them open,
+/// and [`recorded_label_in`] reads the file. Which store answered is not a
+/// difference the name can depend on.
+fn label_in(records: &MetadataStorage, workspace_id: &str) -> Option<String> {
+    let record = records.worktree_for_workspace_id(workspace_id)?;
     Some(
         WorkspaceId::new(&record.owner, &record.repo, &record.branch)
             .ok()?
@@ -11790,6 +11830,48 @@ mod tests {
         assert_eq!(
             parts.provision.titles(),
             vec![Some(derived.value().to_owned())]
+        );
+    }
+
+    #[test]
+    fn the_records_answer_a_reader_holding_only_a_cache_directory_the_same_name() {
+        // `recorded_label_in` is the way in for a caller that has no launch to ask.
+        // `aid <id>` with no prompt on the line names the tab in front of a boot it
+        // cannot wait for, so it has a cache directory, an id, and nothing else --
+        // and it has to reach the name the launch will reach, or the tab carries the
+        // bare id for the whole editor window and an entire `devpod up`
+        // (blooop/devlaunch#632). One derivation, asked two ways.
+        let scene = Scene::new();
+        record_worktree(
+            scene.cache_dir(),
+            "blooop",
+            "devlaunch",
+            "main",
+            "devlaunch-main-legacy",
+        );
+
+        assert_eq!(
+            recorded_label_in(scene.cache_dir(), "devlaunch-main-legacy").as_deref(),
+            Some("devlaunch@main"),
+        );
+        // The same two refusals the launch's side makes, because they are the same
+        // lookup: an id no record holds is a devpod workspace this record says
+        // nothing about, and a cache that is not there is a store with nothing in it
+        // rather than a failure. Both leave the caller its own id to fall back on.
+        assert_eq!(
+            recorded_label_in(scene.cache_dir(), "devlaunch-main-3j1t"),
+            None,
+        );
+        assert_eq!(
+            recorded_label_in(
+                &scene.cache_dir().join("no-cache-here"),
+                "devlaunch-main-legacy",
+            ),
+            None,
+        );
+        assert!(
+            !scene.cache_dir().join("no-cache-here").exists(),
+            "a look creates nothing, which is what lets this sit in front of a launch",
         );
     }
 

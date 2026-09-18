@@ -1206,21 +1206,31 @@ through the same pair the launch uses. The boot child cannot do it: its stdout a
 stderr are a log file, so the gate refuses it a name, and correctly, because an OSC
 escape written into a log is not a title.
 
-**The name is what the spec says rather than what it resolves to,** because
-resolving it costs a record lookup and, for an `owner/repo` with no ref, a
-`git ls-remote` for the default branch. An editor may not wait behind either.
+**The name is read off the spec rather than resolved from it, with one exception,**
+because resolving costs, for an `owner/repo` with no ref, a `git ls-remote` for the
+default branch, and an editor may not wait behind one. The exception is a bare
+workspace id, because it says nothing about itself at all: the triple is in
+`metadata.json` or it is nowhere. That row is looked up, through the very function
+the launch's own id arm calls, which costs a file read and no lock.
 
 | spec | named while you type | the launch then says |
 |---|---|---|
-| `owner/repo@ref` | `repo@ref` | the same |
+| `owner/repo@ref` | `repo@ref` | the same, unless a record holds a legacy id |
 | `owner/repo` | `repo` | `repo@<default branch>` |
-| an existing workspace name | itself | `repo@ref`, when a record knows the triple |
+| an existing workspace name | `repo@ref` when a record holds the triple, else itself | the same |
+| anything else `plan` cannot classify | itself | the launch refuses it |
 | a path, or a source URL | nothing | the leaf devpod resolves |
 
-So two rows are corrected a moment later, and a tab reading `rocker` while you type
-and `rocker@main` afterwards beats one reading `7`. A spec that names nothing
-`dl` will accept is not named at all, because the name is derived through the same
-`plan` that refuses it.
+So two of the four rows that name anything can still be corrected a moment later,
+and a tab reading `rocker` while you type and `rocker@main` afterwards beats one
+reading `7`. A spec that names nothing `dl` will accept is not named at all, because
+the name is derived through the same `plan` that refuses it.
+
+The row that mattered most was the third one. `aid devlaunch-herdr-title2-tg2z`
+used to put that bare id on the tab and hold it there for the typing and for the
+whole of a cold `devpod up`, which is the string
+[#632](https://github.com/blooop/devlaunch/issues/632) was reported as, and the
+launch corrected it only at the end.
 
 The tab and the pane are still never given different answers: both are written
 together at both points, from one call that has no way to return half an answer.

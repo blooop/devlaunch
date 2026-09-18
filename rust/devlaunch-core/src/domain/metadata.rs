@@ -382,7 +382,20 @@ enum OnDisk {
 impl MetadataStorage {
     /// Where the file lives when nothing says otherwise.
     pub fn default_path() -> Result<PathBuf, NoHomeDirectory> {
-        xdg::devlaunch_cache().map(|cache| cache.join("metadata.json"))
+        xdg::devlaunch_cache().map(|cache| Self::path_in(&cache))
+    }
+
+    /// Where the file lives under *cache_dir*, for a caller holding a cache
+    /// directory it resolved itself.
+    ///
+    /// Split out of [`Self::default_path`] rather than spelled twice: the file
+    /// name is one fact, and a second copy of it is a store two callers could
+    /// point at different files. `dl` resolves the cache once per command and
+    /// hands it down (`Host::from_process`), so a reader that already has it
+    /// asks here instead of resolving the home directory a second time.
+    #[must_use]
+    pub(crate) fn path_in(cache_dir: &Path) -> PathBuf {
+        cache_dir.join("metadata.json")
     }
 
     /// Open the store at `metadata_path`, loading what is there.
