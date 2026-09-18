@@ -4099,29 +4099,38 @@ pub fn resolve_triple(
     })
 }
 
+/// [`WorkspaceId::label`] where *workspace* is the triple *workspace_id* derives
+/// from, and `None` where it is some other triple's.
+///
+/// The one test every name on a tab passes, wherever the triple came from.
+/// [`lifecycle::resolve_known_workspace`] may answer with an id `metadata.json`
+/// recorded instead, for a workspace created under an older id scheme and not yet
+/// reconciled, and a label derived from the triple is then a rendering of the id
+/// the triple *would* have derived rather than of the one in play: `devlaunch@main`
+/// on the tab of a workspace whose `dl --ls` row reads `devlaunch-main-legacy`,
+/// with nothing between them to match by eye. The tab is a rendering of the id it
+/// is addressed by, or it is that id.
+///
+/// Three callers asked this in three spellings until they were folded here:
+/// [`titled`], [`Launch::recognised_title`]'s picker arm and [`recorded_label`].
+/// What each one does with a `None` is its own, and is all that differed.
+fn label_if_derived(workspace_id: &str, workspace: &WorkspaceId) -> Option<String> {
+    (workspace.value() == workspace_id).then(|| workspace.label())
+}
+
 /// What to call *workspace_id* where a person reads it, given the triple that
 /// resolved to it.
 ///
-/// [`WorkspaceId::label`] only where the id is this triple's own derivation.
-/// [`lifecycle::resolve_known_workspace`] may answer with an id `metadata.json`
-/// recorded instead, for a workspace created under an older id scheme and not yet
-/// reconciled, and a label derived from the triple is a rendering of the id the
-/// triple *would* have derived rather than of the one in play: `devlaunch@main` on
-/// the tab of a workspace whose `dl --ls` row reads `devlaunch-main-legacy`, with
-/// nothing between them to match by eye. The tab is a rendering of the id it is
-/// addressed by, or it is that id.
+/// [`label_if_derived`], falling back to the id itself, which is a name the tab can
+/// always carry because it is the one the launch was addressed by.
 fn titled(workspace_id: &str, workspace: &WorkspaceId) -> String {
-    if workspace_id == workspace.value() {
-        workspace.label()
-    } else {
-        workspace_id.to_owned()
-    }
+    label_if_derived(workspace_id, workspace).unwrap_or_else(|| workspace_id.to_owned())
 }
 
 /// What to call a workspace that was reached by its id, asked of the records.
 ///
-/// [`titled`]'s question with the evidence coming from `metadata.json` instead of
-/// from a caller. A bare name carries no triple, so [`Plan::Existing`] had nothing
+/// [`label_if_derived`]'s question with the evidence coming from `metadata.json`
+/// instead of from a caller. A bare name carries no triple, so [`Plan::Existing`] had nothing
 /// to render and every launch through it titled the tab with the id it was handed:
 /// `devlaunch-herdr-title2-tg2z`, no `@`, the branch slugged and the suffix on the
 /// end. That is not a rare shape. The herdr pane shell re-enters as
@@ -4138,9 +4147,9 @@ fn titled(workspace_id: &str, workspace: &WorkspaceId) -> String {
 /// reads -- so the id does not have to be parsed. It is looked up.
 ///
 /// **A record is taken only when it is the record of this workspace and its triple
-/// derives this very id.** The second half is the test [`titled`] makes of the
-/// picker's evidence, for the reason it makes it: the tab is a rendering of the id
-/// it is addressed by, or it is that id. The first half is what says the evidence
+/// derives this very id.** The second half is [`label_if_derived`], the same test
+/// the picker's evidence passes, for the same reason: the tab is a rendering of the
+/// id it is addressed by, or it is that id. The first half is what says the evidence
 /// is about this workspace at all, and devlaunch#88 breaks them apart in both
 /// directions. A workspace recorded under an older id scheme is named by some other
 /// id, so its triple must not label this one -- and the id that triple derives is a
@@ -4156,8 +4165,7 @@ fn titled(workspace_id: &str, workspace: &WorkspaceId) -> String {
 fn recorded_label(cold: &mut dyn ColdMachinery<'_>, workspace_id: &str) -> Option<String> {
     cold.recorded()?.worktrees().values().find_map(|record| {
         let derived = WorkspaceId::new(&record.owner, &record.repo, &record.branch).ok()?;
-        (stored_as(record, workspace_id) && derived.value() == workspace_id)
-            .then(|| derived.label())
+        label_if_derived(workspace_id, &derived).filter(|_| stored_as(record, workspace_id))
     })
 }
 
@@ -4648,7 +4656,7 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
     /// `devpod status` and no more, and a caller that passes a triple for the wrong
     /// workspace gets a differently-titled tab and nothing else. That is what makes
     /// this safe to take from a caller at all, and it is why the check on it lives
-    /// in [`titled`] rather than out there: the picker carries evidence, core
+    /// in [`label_if_derived`] rather than out there: the picker carries evidence, core
     /// reaches the verdict, and a `HEAD` that has moved since the workspace was made
     /// is refused here exactly as a recorded id is.
     ///
@@ -5227,7 +5235,7 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
     /// Two sources of a triple and one test applied to both. [`Self::recognised_as`]
     /// is the picker's: it read the owner and repo out of the cache layout and the
     /// branch out of the clone's `HEAD` a moment ago, and that evidence is live
-    /// enough to be stale, which is what [`titled`] checks. The records are
+    /// enough to be stale, which is what [`label_if_derived`] checks. The records are
     /// [`recorded_label`]'s, and answer for every other way of reaching a workspace
     /// by id -- a name typed by hand, and the pane herdr opens beside a session,
     /// which is `dl <workspace_id>` and nothing else (blooop/devlaunch#632).
@@ -5245,12 +5253,9 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
     ///
     /// The id itself when neither answers, which is what this arm always said.
     fn recognised_title(&mut self, workspace_id: &str) -> String {
-        let recognised = self
-            .recognised
+        self.recognised
             .as_ref()
-            .filter(|workspace| workspace.value() == workspace_id)
-            .map(WorkspaceId::label);
-        recognised
+            .and_then(|workspace| label_if_derived(workspace_id, workspace))
             .or_else(|| recorded_label(self.cold, workspace_id))
             .unwrap_or_else(|| workspace_id.to_owned())
     }
