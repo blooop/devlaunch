@@ -35,6 +35,8 @@ mod select;
 mod session;
 mod target;
 
+use std::path::Path;
+
 use devlaunch_core::clients::ssh;
 use devlaunch_core::flows::completion_cache;
 use devlaunch_core::flows::lifecycle::{Refresh, RefreshReason};
@@ -300,23 +302,31 @@ pub fn interactive_terminal() -> bool {
 /// to `rocker@nb1` within 6 seconds of the prompt being submitted. `dl` on the same
 /// build, and `aid` with a prompt on the line, both named it within 6 seconds.
 ///
-/// **The name is what the spec says, not what it resolves to,** and the difference
-/// is deliberate. The launch's title is a fact about the spec that resolved, which
-/// costs a record lookup and, for an `owner/repo` with no ref, a `git ls-remote` to
-/// learn the default branch. An editor may not wait behind either, so this reads
-/// the triple syntactically:
+/// **The name is read off the spec rather than resolved from it, with one
+/// exception,** and the difference is deliberate. The launch's title is a fact
+/// about the spec that resolved, which for an `owner/repo` with no ref costs a
+/// `git ls-remote` to learn the default branch, and an editor may not wait behind
+/// one. The exception is a bare workspace id, because it says nothing about itself
+/// at all: the triple is in `metadata.json` or it is nowhere. That row is looked
+/// up, through the very function the launch's own id arm calls
+/// ([`recorded_label_in`](devlaunch_core::flows::launch::recorded_label_in)), which
+/// costs a file read and no lock:
 ///
-/// | spec | named | the launch later says |
+/// | spec | named while you type | the launch then says |
 /// |---|---|---|
-/// | `owner/repo@ref` | `repo@ref` | the same, unless a record holds a legacy id |
+/// | `owner/repo@ref` | `repo@ref` | the same |
 /// | `owner/repo` | `repo` | `repo@<default branch>` |
-/// | an existing workspace name | itself | the same |
+/// | an existing workspace name | `repo@ref` when a record holds the triple, else itself | the same |
 /// | anything else `plan` cannot classify | itself | the launch refuses it |
 /// | a path, or a source URL | nothing | the leaf devpod resolves |
 ///
-/// So two of the four rows are corrected by the launch a moment later, and that is
-/// the trade: a tab that reads `rocker` while you type and `rocker@main` afterwards
-/// beats one that reads `7`. Both names go through
+/// So one of the four rows that name anything is still corrected by the launch a
+/// moment later, and that is the trade: a tab that reads `rocker` while you type
+/// and `rocker@main` afterwards beats one that reads `7`. It is the only row left:
+/// a triple with a ref on it needs no resolving at either end, and the bare-id row
+/// is looked up through the very function the launch's own id arm calls, so the one
+/// row that still costs a `git ls-remote` to settle is the whole of what the launch
+/// corrects. Both names go through
 /// [`names_for`](devlaunch_core::flows::launch::names_for), so the tab and the pane
 /// are never given different answers at either point.
 ///
@@ -326,10 +336,10 @@ pub fn name_before_launch(spec: &str) {
     use devlaunch_core::flows::launch::{Host, LaunchNotice, names_for};
     use devlaunch_core::notices::Notices as _;
 
-    let Some(named) = early_name(spec) else {
+    let Ok(cache) = session::cache_dir() else {
         return;
     };
-    let Ok(cache) = session::cache_dir() else {
+    let Some(named) = early_name(spec, &cache) else {
         return;
     };
     let (title, herdr_tab) = names_for(&Host::from_process(cache), &named);
@@ -367,10 +377,18 @@ pub fn pull_request_spec(word: &str) -> Result<String, i32> {
 /// and the rest of that function is two writes: a test can state a spec and read
 /// the name, where the writes need a terminal and a herdr. `None` is "say nothing",
 /// and the table in [`name_before_launch`] is the contract.
-fn early_name(spec: &str) -> Option<String> {
+///
+/// `cache_dir` is devlaunch's cache, which the one row that is not purely
+/// syntactic reads: an existing workspace name is looked up in the records rather
+/// than rendered, so the name in front of the launch is the name the launch will
+/// give. Passed in rather than resolved here for
+/// [`Host::from_process`](devlaunch_core::flows::launch::Host::from_process)'s
+/// reason -- the caller has already resolved it, and a second answer could
+/// disagree with the first.
+fn early_name(spec: &str, cache_dir: &Path) -> Option<String> {
     use devlaunch_core::domain::spec::{SpecIdentity, identity};
     use devlaunch_core::domain::workspace_id::WorkspaceId;
-    use devlaunch_core::flows::launch::{Plan, plan};
+    use devlaunch_core::flows::launch::{Plan, plan, recorded_label_in};
 
     // A pull request reference names nothing here. Only the lookup in
     // `flows::pull_request` knows which branch it is, so the honest early answer
@@ -418,11 +436,19 @@ fn early_name(spec: &str) -> Option<String> {
         },
         // `plan`'s fallback, which is wider than "a workspace name": anything not a
         // triple, a path or a git source lands here, a mistyped triple included.
-        // Passed through unvalidated because `Plan::Existing { name }` is exactly
-        // what the launch titles the workspace, so this is the only answer that
-        // agrees with it. The cost is a label in front of a launch that then finds
-        // no such workspace -- see the test.
-        Plan::Existing { name } => Some(name),
+        //
+        // The one row that is not read off the spec text, and it cannot be: an id
+        // carries no triple, so the answer is in the records or it is nowhere. The
+        // launch reached by the same id looks it up the same way and derives the
+        // same label from the same record (`recorded_label_in` is the function it
+        // shares), which is what makes this row agree with the launch instead of
+        // being corrected by it a `devpod up` later (blooop/devlaunch#632).
+        //
+        // The id itself when no record answers, which is what this arm always
+        // said, and still the only honest answer for a name that is not a
+        // workspace at all -- a mistyped triple lands here too. The cost is a label
+        // in front of a launch that then finds no such workspace -- see the test.
+        Plan::Existing { name } => Some(recorded_label_in(cache_dir, &name).unwrap_or(name)),
         // A path, a URL, a host path or an scp-style remote. devpod names a path
         // after the directory it resolves, which is the filesystem's answer and not
         // this module's, and a source after an id derived from the source. Neither
@@ -793,7 +819,23 @@ mod drained_signals {
 
 #[cfg(test)]
 mod early_name_tests {
+    use std::path::Path;
+
     use super::early_name;
+
+    /// A cache directory with nothing recorded in it.
+    ///
+    /// Every row of the table but one is read off the spec text and opens no file,
+    /// and passing this is what says so: `MetadataStorage::look` on a path that is
+    /// not there creates nothing, reports nothing and answers with an empty store,
+    /// so a case that passes it is asserting the syntactic answer and only that.
+    /// The row that does read the records is `recorded_label_in`'s, and
+    /// `devlaunch-core` owns the test of what it derives; what reaches a real
+    /// record through this function is watched on a pty in
+    /// `aid/tests/interactive.rs`.
+    fn no_records() -> &'static Path {
+        Path::new("/nonexistent/devlaunch-cache")
+    }
 
     #[test]
     fn a_triple_is_named_the_way_the_launch_will_name_it() {
@@ -801,11 +843,11 @@ mod early_name_tests {
         // name the launch then changes is a tab that flickers. `repo@ref`, which is
         // `WorkspaceId::label`, which is what `Placement::title` carries.
         assert_eq!(
-            early_name("blooop/rocker@nb1").as_deref(),
+            early_name("blooop/rocker@nb1", no_records()).as_deref(),
             Some("rocker@nb1")
         );
         assert_eq!(
-            early_name("blooop/devlaunch@main").as_deref(),
+            early_name("blooop/devlaunch@main", no_records()).as_deref(),
             Some("devlaunch@main")
         );
         // A branch with a slash keeps it here too, since this is the same
@@ -813,7 +855,7 @@ mod early_name_tests {
         // show up as the tab changing from `devlaunch@feature-auth` to
         // `devlaunch@feature/auth` a few seconds in.
         assert_eq!(
-            early_name("blooop/devlaunch@feature/auth").as_deref(),
+            early_name("blooop/devlaunch@feature/auth", no_records()).as_deref(),
             Some("devlaunch@feature/auth")
         );
         // Measured on live herdr 0.8.2: `aid blooop/rocker@nb1` named the tab
@@ -827,14 +869,19 @@ mod early_name_tests {
         // default branch, which needs a record or a `git ls-remote`, and the editor
         // opens in front of both. Measured: the tab read `rocker` for the whole
         // editor window and `rocker@main` within 6s of the prompt being submitted.
-        assert_eq!(early_name("blooop/rocker").as_deref(), Some("rocker"));
+        assert_eq!(
+            early_name("blooop/rocker", no_records()).as_deref(),
+            Some("rocker")
+        );
     }
 
     #[test]
-    fn an_existing_workspace_name_is_its_own_name() {
-        // What the launch's bare-name arm does, so these agree by construction.
+    fn an_existing_workspace_name_no_record_answers_for_is_its_own_name() {
+        // What the launch's bare-name arm does when the records have nothing to say
+        // either (`Launch::recognised_title` ends `.unwrap_or_else(|| id)`), so the
+        // two agree here as well as on the row where a record does answer.
         assert_eq!(
-            early_name("rocker-nb1-pjke").as_deref(),
+            early_name("rocker-nb1-pjke", no_records()).as_deref(),
             Some("rocker-nb1-pjke")
         );
     }
@@ -852,7 +899,7 @@ mod early_name_tests {
             "github.com/blooop/rocker",
             "https://github.com/blooop/rocker.git",
         ] {
-            assert_eq!(early_name(spec), None, "{spec}");
+            assert_eq!(early_name(spec, no_records()), None, "{spec}");
         }
     }
 
@@ -875,7 +922,11 @@ mod early_name_tests {
             "blooop/rocker@",
             "blooop/rocker@my branch",
         ] {
-            assert_eq!(early_name(spec).as_deref(), Some(spec), "{spec}");
+            assert_eq!(
+                early_name(spec, no_records()).as_deref(),
+                Some(spec),
+                "{spec}"
+            );
         }
     }
 
@@ -893,7 +944,7 @@ mod early_name_tests {
             "blooop/-weird",
             "blooop/rocker@../../etc",
         ] {
-            assert_eq!(early_name(spec), None, "{spec}");
+            assert_eq!(early_name(spec, no_records()), None, "{spec}");
         }
     }
 
@@ -908,7 +959,7 @@ mod early_name_tests {
             "https://github.com/blooop/devlaunch/pull/579",
             "github.com/blooop/devlaunch/pull/579",
         ] {
-            assert_eq!(early_name(spec), None, "{spec}");
+            assert_eq!(early_name(spec, no_records()), None, "{spec}");
         }
     }
 
@@ -919,15 +970,19 @@ mod early_name_tests {
         // the underscores, so the early name and the launch's disagreed in more than
         // the branch suffix this row is meant to be missing.
         assert_eq!(
-            early_name("blooop/Rocker.git").as_deref(),
+            early_name("blooop/Rocker.git", no_records()).as_deref(),
             Some("rocker-git")
         );
-        assert_eq!(early_name("blooop/my_repo").as_deref(), Some("my-repo"));
+        assert_eq!(
+            early_name("blooop/my_repo", no_records()).as_deref(),
+            Some("my-repo")
+        );
         // And capped, which nothing downstream does: `sanitize_title` filters
         // control characters and trims, and has no opinion about length, so an
         // uncapped repo reached the escape and the tab label at whatever width the
         // spec was typed at.
-        let long = early_name(&format!("blooop/{}", "z".repeat(200))).expect("a name");
+        let long =
+            early_name(&format!("blooop/{}", "z".repeat(200)), no_records()).expect("a name");
         assert!(long.len() <= 47, "uncapped at {} chars", long.len());
     }
 
@@ -937,6 +992,6 @@ mod early_name_tests {
         // or ref. A spec it rejects must not be named from here either: the launch
         // will refuse it, and a tab named after something that never launched is
         // worse than a tab left alone.
-        assert_eq!(early_name("blooop/rocker@../../etc"), None);
+        assert_eq!(early_name("blooop/rocker@../../etc", no_records()), None);
     }
 }

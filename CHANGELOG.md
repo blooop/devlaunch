@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **A tab is a name for the workspace, not a rendering of the id it was addressed
+  by.** `dl blooop/devlaunch@herdr_title2` named the herdr tab
+  `devlaunch@herdr_title2`, and opening a second pane in that tab put
+  `devlaunch-herdr-title2-tg2z` back over it: no `@`, the branch slugged, and the
+  four-character suffix on the end. The pane herdr spawns asks the pane beside it
+  what it is running and re-enters as `dl <workspace_id>`, which was the one arm
+  that resolved no triple, so the tab got the id because the id was all the launch
+  had. It is also the arm that renames the tab last, which is why an arm that reads
+  as an edge case is the one somebody actually looks at.
+
+  A branch still cannot be read back out of an id, and it no longer has to be:
+  `metadata.json` has stored the triple beside the id derived from it since dl made
+  the workspace, so the id is looked up rather than parsed. Every launch that
+  reaches a workspace by its bare id now names the tab from that record's triple,
+  which is the herdr pane and `dl devlaunch-main-3j1t` typed by hand alike, and a
+  workspace reached both ways installs one profile line instead of two. A workspace
+  dl holds no record of still shows its id, and so do a path and a source URL,
+  which never had a branch for an `@` to precede.
+
+  **The record is the authority on what the workspace is**, because it is the file
+  dl wrote when it made the workspace rather than a guess about which one this is.
+  So a workspace made under an older id scheme, addressed by the id its record
+  stores rather than by the one its triple derives today, now reads `devlaunch@main`
+  on the tab while its `dl --ls` row still reads `devlaunch-main-legacy`. That is
+  the intended answer and not a slip: the tab says what the workspace is, the row
+  says what it is called, and nothing addresses a workspace by its tab. The one
+  triple still checked against the id is the selector's, because its branch comes
+  from a live `HEAD` that a `git switch` inside the container moves, and a stale one
+  now falls through to the records rather than to the id.
+
+  `aid <spec>` with no prompt on the line names the tab in front of the boot, and
+  says what the launch will say. It opens the prompt editor and boots the workspace
+  behind it, so `aid devlaunch-herdr-title2-tg2z` used to hold that bare id on the
+  tab for the whole editor window and the whole of a cold `devpod up`, and the
+  launch corrected it at the end, which is the one moment nobody is waiting. That
+  row is read out of the same records through the same function, so the name in
+  front of a launch and the name the launch gives cannot disagree.
+
+  The lookup reads the records and brings no clone manager, `config.toml` or cache
+  migration up, so a warm attach costs what it did before.
+  ([#632](https://github.com/blooop/devlaunch/issues/632))
+
 ## [0.52.0] - 2026-09-17
 
 ### Changed

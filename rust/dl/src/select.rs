@@ -129,19 +129,29 @@ pub(crate) struct Offer {
     /// The triple this row's clone is of, when the id it derives is this very
     /// workspace.
     ///
-    /// The picker is the one caller that opens a workspace **by id** and still
-    /// knows its triple: it read the owner and repo out of the cache layout and the
+    /// The picker is the one caller that opens a workspace **by id** and already
+    /// holds its triple: it read the owner and repo out of the cache layout and the
     /// branch out of the clone's `HEAD` to draw the row. A launch handed a bare id
-    /// cannot recover any of that, so without this the tab of every workspace
-    /// opened from the picker reads as the id where the same workspace opened as
-    /// `dl blooop/devlaunch@main` reads the name for a person that
-    /// `docs/workspaces.md` tabulates.
+    /// can reach a triple too now, out of `metadata.json`
+    /// (`flows::launch::recorded_label`), so this is no longer the only thing
+    /// standing between the picker and a tab that reads as the id where the same
+    /// workspace opened as `dl blooop/devlaunch@main` reads the name for a person
+    /// that `docs/workspaces.md` tabulates.
+    ///
+    /// **It earns the field twice over anyway.** The triple is in hand here, where
+    /// the records are a file to open and scan, so handing it on is an answer
+    /// already paid for rather than one bought a second time. And the records are
+    /// not the only place a workspace can be missing from: this reading comes off
+    /// the cache layout and the clone's `HEAD`, so a clone whose record went with a
+    /// cleared `metadata.json` is still drawn as a row, still opened from it, and
+    /// has nothing else that knows what it is.
     ///
     /// `None` where the row is not one of dl's clones, and **also** where the
     /// recovered triple derives some *other* id: `HEAD` is the branch checked out
     /// now, so a `git switch` inside the container leaves a triple that is no
     /// longer this workspace's. Core makes that check itself
-    /// (`flows::launch::titled`); this carries the evidence, not the verdict.
+    /// (`flows::launch::label_if_derived`); this carries the evidence, not the
+    /// verdict.
     pub(crate) triple: Option<WorkspaceId>,
 }
 
@@ -162,8 +172,9 @@ struct Naming {
     /// Kept beside [`Self::tail`] rather than read back out of it, because the two
     /// answer different questions and stop agreeing: a row that collides is
     /// *drawn* as its whole id ([`named`]) while still *being* the triple. It is
-    /// what a launch by bare id has no way to recover for itself, so it travels out
-    /// on the [`Offer`] (see [`Offer::triple`]).
+    /// what a launch by bare id would otherwise go to the records for, and the only
+    /// answer at all where no record holds the id, so it travels out on the
+    /// [`Offer`] (see [`Offer::triple`]).
     triple: Option<WorkspaceId>,
     /// The workspace's own id, kept beside the tail because it is what every
     /// fallback falls back *to* — and a fallback that had to go looking for it

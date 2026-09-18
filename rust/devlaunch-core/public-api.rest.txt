@@ -1981,6 +1981,7 @@ pub fn devlaunch_core::flows::launch::UnquotableCommand::fmt(&self, &mut core::f
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::launch::UnquotableCommand
 pub fn devlaunch_core::flows::launch::names_for(&devlaunch_core::flows::launch::Host, &str) -> (devlaunch_core::flows::launch::TerminalTitle, devlaunch_core::flows::launch::HerdrTabRename)
 pub fn devlaunch_core::flows::launch::plan(&str) -> core::result::Result<devlaunch_core::flows::launch::Plan, devlaunch_core::domain::workspace_id::UnsafeName>
+pub fn devlaunch_core::flows::launch::recorded_label_in(&std::path::Path, &str) -> core::option::Option<alloc::string::String>
 pub fn devlaunch_core::flows::launch::resolve_triple(&mut devlaunch_core::flows::listing::CommandContext<'_>, &mut dyn devlaunch_core::flows::launch::ColdMachinery<'_>, &devlaunch_core::domain::workspace_id::WorkspaceId, &mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::launch::LaunchNotice>, devlaunch_core::clients::devpod::Patience) -> core::result::Result<devlaunch_core::flows::launch::Resolution, devlaunch_core::clients::devpod::NotRun>
 pub mod devlaunch_core::flows::launch_locks
 pub struct devlaunch_core::flows::launch_locks::LaunchLocks
