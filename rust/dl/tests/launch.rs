@@ -937,7 +937,7 @@ fn up_on_a_running_workspace_says_so_and_still_provisions_the_tools() {
             &format!("{MAIN}: the hostname setup stage did not report; it may not have run."),
             // The title stage runs for every arm now, where it used to run only for
             // a launch that resolved a triple: the name it installs is the workspace
-            // id, which every arm has. See `Launch::titled`.
+            // id, which every arm has. See `Placement::title`.
             &format!("{MAIN}: the title setup stage did not report; it may not have run."),
             &format!("{MAIN}: the onboarding setup stage did not report; it may not have run."),
             &format!("{MAIN}: the trust setup stage did not report; it may not have run."),

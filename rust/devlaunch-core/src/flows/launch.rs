@@ -4062,6 +4062,14 @@ pub enum Resolution {
 /// machinery, so a devpod that recognises the derived id costs no metadata I/O at
 /// all.
 ///
+/// **The name on the tab is this triple's label, on both answers.** Where devpod
+/// denied the derived id and the record named another one (devlaunch#88), the id
+/// in play is not the one *workspace* derives -- but it is the one the record maps
+/// *workspace* to, and the triple is the one the user typed and this crate
+/// validated. Neither end of that is hearsay, so there is nothing here to check:
+/// see [`recorded_label`], which reaches the same workspace from the other side
+/// and reaches the same name.
+///
 /// Charged to the `devpod-up` stage with a `devpod status` span, for the reason
 /// `is_running` gives: the span belongs inside the stage the lifecycle helper
 /// opens, and a guard around the call would drop after that stage had closed.
@@ -4088,7 +4096,7 @@ pub fn resolve_triple(
             state,
         } => Resolution::Warm {
             placement: Placement::Known {
-                title: titled(&workspace_id, workspace),
+                title: workspace.label(),
                 workspace_id,
                 state,
             },
@@ -4102,35 +4110,24 @@ pub fn resolve_triple(
 /// [`WorkspaceId::label`] where *workspace* is the triple *workspace_id* derives
 /// from, and `None` where it is some other triple's.
 ///
-/// The one test every name on a tab passes, wherever the triple came from.
-/// [`lifecycle::resolve_known_workspace`] may answer with an id `metadata.json`
-/// recorded instead, for a workspace created under an older id scheme and not yet
-/// reconciled, and a label derived from the triple is then a rendering of the id
-/// the triple *would* have derived rather than of the one in play: `devlaunch@main`
-/// on the tab of a workspace whose `dl --ls` row reads `devlaunch-main-legacy`,
-/// with nothing between them to match by eye. The tab is a rendering of the id it
-/// is addressed by, or it is that id.
+/// **One caller, and the check is why it may be called at all.**
+/// [`Launch::recognised_as`] takes a triple from outside this crate, and the
+/// picker's triple is a reading rather than a record: `dl/src/select.rs` takes the
+/// owner and repo off the cache directory layout and the branch off the clone's
+/// live `HEAD`, which a `git switch` inside the container moves. A triple that no
+/// longer derives the id it was offered for is evidence that has gone stale, and
+/// the workspace falls through to [`recorded_label`], which reads what dl wrote
+/// down when it made the workspace.
 ///
-/// Three callers asked this in three spellings until they were folded here:
-/// [`titled`], [`Launch::recognised_title`]'s picker arm and [`recorded_label`].
-/// What each one does with a `None` is its own, and is all that differed.
+/// A name that *came from* the records is not held to this, because a record is
+/// not a guess about which workspace it is: see [`recorded_label`].
 fn label_if_derived(workspace_id: &str, workspace: &WorkspaceId) -> Option<String> {
     (workspace.value() == workspace_id).then(|| workspace.label())
 }
 
-/// What to call *workspace_id* where a person reads it, given the triple that
-/// resolved to it.
-///
-/// [`label_if_derived`], falling back to the id itself, which is a name the tab can
-/// always carry because it is the one the launch was addressed by.
-fn titled(workspace_id: &str, workspace: &WorkspaceId) -> String {
-    label_if_derived(workspace_id, workspace).unwrap_or_else(|| workspace_id.to_owned())
-}
-
 /// What to call a workspace that was reached by its id, asked of the records.
 ///
-/// [`label_if_derived`]'s question with the evidence coming from `metadata.json`
-/// instead of from a caller. A bare name carries no triple, so [`Plan::Existing`] had nothing
+/// A bare name carries no triple, so [`Plan::Existing`] had nothing
 /// to render and every launch through it titled the tab with the id it was handed:
 /// `devlaunch-herdr-title2-tg2z`, no `@`, the branch slugged and the suffix on the
 /// end. That is not a rare shape. The herdr pane shell re-enters as
@@ -4144,20 +4141,26 @@ fn titled(workspace_id: &str, workspace: &WorkspaceId) -> String {
 /// read two ways, which is why [`Placement::title`] carries the name beside the id
 /// rather than deriving one from the other. But [`WorktreeInfo`] already stores the
 /// triple beside the id derived from it -- the same records [`colliding_record`]
-/// reads -- so the id does not have to be parsed. It is looked up.
+/// reads -- so the id does not have to be parsed. It is looked up, by
+/// [`MetadataStorage::worktree_for_workspace_id`].
 ///
-/// **A record is taken only when it is the record of this workspace and its triple
-/// derives this very id.** The second half is [`label_if_derived`], the same test
-/// the picker's evidence passes, for the same reason: the tab is a rendering of the
-/// id it is addressed by, or it is that id. The first half is what says the evidence
-/// is about this workspace at all, and devlaunch#88 breaks them apart in both
-/// directions. A workspace recorded under an older id scheme is named by some other
-/// id, so its triple must not label this one -- and the id that triple derives is a
-/// second devpod workspace, which devpod may hold directly and the record says
-/// nothing about, so that record must not label *it* either. Either way the name on
-/// the tab would be one the `dl --ls` row beside it does not carry. Which fields
-/// hold an id is [`stored_as`](crate::domain::metadata::stored_as), the two arms
-/// [`holds_id`] shares with this.
+/// **The record that holds this id is this workspace, whatever its triple derives
+/// now.** A tab is a name for the workspace rather than a rendering of the id it
+/// was addressed by, and the record is the authority on what the workspace is: it
+/// is the file dl wrote when it made it. So a workspace recorded under an older id
+/// scheme (devlaunch#88) reads `devlaunch@main` on the tab where its `dl --ls` row
+/// reads `devlaunch-main-legacy` -- the tab says what it is, the row says what it
+/// is called, and names need not be unique. What stays refused is a record that
+/// does not hold this id at all: the id its triple derives is a *second* devpod
+/// workspace, which devpod may hold directly and this record says nothing about,
+/// so it must not name that one. Which fields hold an id is
+/// [`stored_as`](crate::domain::metadata::stored_as), the two arms [`holds_id`]
+/// shares with the lookup.
+///
+/// `None` where the record's own triple will not parse back into a
+/// [`WorkspaceId`], which a hand-edited or Python-era `metadata.json` can hold:
+/// there is no label to derive, and the id the launch was addressed by is still a
+/// name the tab can carry.
 ///
 /// Reads the records and not the machinery, so a warm attach still brings up no
 /// clone manager, no `config.toml` and no migration (devlaunch#145) -- see
@@ -4165,8 +4168,11 @@ fn titled(workspace_id: &str, workspace: &WorkspaceId) -> String {
 /// answers `None` here and leaves the launch titled by its id, exactly as it was.
 fn recorded_label(cold: &mut dyn ColdMachinery<'_>, workspace_id: &str) -> Option<String> {
     let record = cold.recorded()?.worktree_for_workspace_id(workspace_id)?;
-    let derived = WorkspaceId::new(&record.owner, &record.repo, &record.branch).ok()?;
-    label_if_derived(workspace_id, &derived)
+    Some(
+        WorkspaceId::new(&record.owner, &record.repo, &record.branch)
+            .ok()?
+            .label(),
+    )
 }
 
 /// The devpod workspace id `metadata.json` holds for a triple, if any.
@@ -4642,9 +4648,11 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
     /// `devpod status` and no more, and a caller that passes a triple for the wrong
     /// workspace gets a differently-titled tab and nothing else. That is what makes
     /// this safe to take from a caller at all, and it is why the check on it lives
-    /// in [`label_if_derived`] rather than out there: the picker carries evidence, core
-    /// reaches the verdict, and a `HEAD` that has moved since the workspace was made
-    /// is refused here exactly as a recorded id is.
+    /// in [`label_if_derived`] rather than out there: the picker carries evidence,
+    /// core reaches the verdict, and a `HEAD` that has moved since the workspace
+    /// was made is refused here. It is the one triple in this module still asked to
+    /// prove itself, because it is the one that was read off a live checkout rather
+    /// than written down.
     ///
     /// `None` is the default and the answer for every other arm.
     #[must_use]
@@ -5218,24 +5226,27 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
 
     /// What to call *workspace_id*, on the arm that was handed nothing else.
     ///
-    /// Two sources of a triple and one test applied to both. [`Self::recognised_as`]
-    /// is the picker's: it read the owner and repo out of the cache layout and the
-    /// branch out of the clone's `HEAD` a moment ago, and that evidence is live
-    /// enough to be stale, which is what [`label_if_derived`] checks. The records are
-    /// [`recorded_label`]'s, and answer for every other way of reaching a workspace
-    /// by id -- a name typed by hand, and the pane herdr opens beside a session,
-    /// which is `dl <workspace_id>` and nothing else (blooop/devlaunch#632).
+    /// Two sources of a triple, and only one of them is hearsay.
+    /// [`Self::recognised_as`] is the picker's: it read the owner and repo out of
+    /// the cache layout and the branch out of the clone's `HEAD` a moment ago, and
+    /// that evidence is live enough to be stale, which is what
+    /// [`label_if_derived`] checks -- the last such check in this module. The
+    /// records are [`recorded_label`]'s, and answer for every other way of reaching
+    /// a workspace by id -- a name typed by hand, and the pane herdr opens beside a
+    /// session, which is `dl <workspace_id>` and nothing else
+    /// (blooop/devlaunch#632). A record is not evidence *about* a workspace, it is
+    /// the file dl wrote when it made one, so it names it outright.
     ///
-    /// **The picker first, and the order is not arbitrary.** Both sources have to
-    /// derive this id to be used at all, so where both answer they answer the same
-    /// thing; what the order decides is which one pays. The picker's triple is in
-    /// hand, and reaching past it to read a file would be work for an answer already
-    /// held.
+    /// **The picker first, and the order is not arbitrary.** It decides which
+    /// source pays, not which answer wins: the picker's triple is in hand, and
+    /// reaching past it to read a file would be work for an answer already held.
+    /// The two disagree only where `HEAD` has moved or the workspace predates the
+    /// current id scheme, and in both of those the records are the better answer,
+    /// which is the direction the fall-through already runs.
     ///
     /// A picker whose `HEAD` has moved falls through to the records rather than to
-    /// the id, which is a strictly better answer and the same one: the record is
-    /// what the workspace was made from, where `HEAD` is what is checked out inside
-    /// it now.
+    /// the id: the record is what the workspace was made from, where `HEAD` is what
+    /// is checked out inside it now.
     ///
     /// The id itself when neither answers, which is what this arm always said.
     fn recognised_title(&mut self, workspace_id: &str) -> String {
@@ -10444,16 +10455,17 @@ mod tests {
     }
 
     #[test]
-    fn an_id_metadata_recorded_is_titled_by_that_id_and_not_by_the_triples_label() {
-        // The label is a rendering of the id in play, and this is the one path where
-        // the id in play is not the one the triple derives. `resolve_known_workspace`
-        // answers with the id `metadata.json` recorded when devpod has never heard of
-        // the derived one -- a workspace created under an older id scheme and not yet
-        // reconciled. Titling that by `devlaunch@main` would put a rendering of
-        // `devlaunch-main-3j1t` on the tab of a workspace whose `dl --ls` row reads
-        // `devlaunch-main-legacy`, with no two characters between them and nothing to
-        // match by eye. It also installs that name in the legacy container's profile,
-        // where nothing on screen ties it back to anything.
+    fn an_id_metadata_recorded_is_still_titled_by_the_triple_it_was_recorded_for() {
+        // `resolve_known_workspace` answers with the id `metadata.json` recorded when
+        // devpod has never heard of the derived one -- a workspace created under an
+        // older id scheme and not yet reconciled (devlaunch#88). Nothing about that
+        // is a guess: the triple is the one the user typed and this crate validated,
+        // and the id is the one the record itself maps that triple to. So the tab
+        // reads `devlaunch@main` while the `dl --ls` row reads
+        // `devlaunch-main-legacy` -- the tab names the workspace, the row names the
+        // devpod workspace. `recorded_label` reaches the same workspace from the
+        // other side, by the bare id, and has to reach this same name or the profile
+        // collects a second title line.
         let workspace = WorkspaceId::new("blooop", "devlaunch", "main").expect("a safe triple");
         let scene = Scene::new().with_running("devlaunch-main-legacy");
         {
@@ -10485,10 +10497,15 @@ mod tests {
             Ok(Resolution::Warm {
                 placement: Placement::Known {
                     workspace_id: "devlaunch-main-legacy".to_owned(),
-                    title: "devlaunch-main-legacy".to_owned(),
+                    title: "devlaunch@main".to_owned(),
                     state: ContainerState::Running,
                 }
             })
+        );
+        assert_eq!(
+            workspace.label(),
+            "devlaunch@main",
+            "the title is this triple's label and not a string that happens to match",
         );
     }
 
@@ -11593,14 +11610,14 @@ mod tests {
     }
 
     #[test]
-    fn a_record_whose_triple_derives_some_other_id_does_not_name_this_workspace() {
+    fn a_record_that_holds_this_id_names_it_whatever_its_triple_derives_now() {
         // devlaunch#88: a workspace made under an older id scheme is addressed by the
         // id `metadata.json` recorded rather than by the one its triple derives now.
-        // The triple is a true fact about that workspace and still the wrong name for
-        // this one -- `devlaunch@main` on a tab whose `dl --ls` row reads
-        // `devlaunch-main-legacy`, with nothing between the two to match by eye. It
-        // is the verdict `titled` reaches about a picker whose `HEAD` has moved, for
-        // the same reason, which is why the records are held to the same test.
+        // The record is not a guess about which workspace this is -- it is the file
+        // dl wrote when it made it -- so the triple in it is what the workspace *is*,
+        // and the tab says so. `devlaunch@main` on a tab whose `dl --ls` row reads
+        // `devlaunch-main-legacy`: the tab names the workspace, the row names the
+        // devpod workspace, and names are not required to be unique.
         let legacy = "devlaunch-main-legacy";
         let mut scene = Scene::new().with_running(legacy);
         scene.host.stderr_tty = true;
@@ -11623,17 +11640,24 @@ mod tests {
             let _ = launch.run(legacy, &LaunchVerb::Up, None);
         }
 
-        assert_eq!(parts.provision.titles(), vec![Some(legacy.to_owned())]);
+        let derived = WorkspaceId::new("blooop", "devlaunch", "main").expect("a safe triple");
+        assert_ne!(
+            derived.value(),
+            legacy,
+            "the record's triple derives some other id, which is the whole case",
+        );
+        assert_eq!(parts.provision.titles(), vec![Some(derived.label())]);
     }
 
     #[test]
     fn a_record_of_another_devpod_workspace_does_not_name_this_one() {
-        // The other direction of devlaunch#88, and the one that was reachable: the
-        // record is `devlaunch-main-legacy`'s, and the id being launched is the
+        // The other direction of devlaunch#88, and the one the lookup still refuses:
+        // the record is `devlaunch-main-legacy`'s, and the id being launched is the
         // `devlaunch-main-3j1t` its triple *would* derive now -- a devpod workspace
         // of its own, which devpod holds directly and the record says nothing about.
-        // A record earns the tab by being the record of this workspace; deriving the
-        // id is the second half of that question, not the whole of it.
+        // A record names the workspace it is the record *of*, and this is not it.
+        // The check that the record holds this id is the only one left, so this is
+        // what keeps the lookup honest.
         let derived = WorkspaceId::new("blooop", "devlaunch", "main").expect("a safe triple");
         let mut scene = Scene::new().with_running(derived.value());
         scene.host.stderr_tty = true;

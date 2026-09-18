@@ -141,7 +141,8 @@ pub(crate) struct Offer {
     /// recovered triple derives some *other* id: `HEAD` is the branch checked out
     /// now, so a `git switch` inside the container leaves a triple that is no
     /// longer this workspace's. Core makes that check itself
-    /// (`flows::launch::titled`); this carries the evidence, not the verdict.
+    /// (`flows::launch::label_if_derived`); this carries the evidence, not the
+    /// verdict.
     pub(crate) triple: Option<WorkspaceId>,
 }
 
