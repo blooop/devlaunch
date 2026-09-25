@@ -162,6 +162,17 @@ def test_ci_installs_the_version_the_script_pins():
 
 
 @pytest.mark.unit
+def test_ci_installs_the_nightly_the_script_pins():
+    job = ci_job("public-api")
+    assert "--print-nightly" in job, (
+        "ci.yml installs a nightly of its own choosing; the pin belongs to the script, "
+        "since rustdoc renders the rows and a new nightly moved every snapshot on a "
+        "PR that touched none of them"
+    )
+    assert "dtolnay/rust-toolchain@nightly" not in job, "a floating nightly is back"
+
+
+@pytest.mark.unit
 def test_regenerating_is_documented_outside_the_ci_error_string():
     document = DEV_DOC.read_text(encoding="utf-8")
     assert "### The public-API snapshots" in document, (
