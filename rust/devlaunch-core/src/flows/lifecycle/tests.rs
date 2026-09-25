@@ -2875,6 +2875,35 @@ fn commits_the_remote_has_not_got_still_refuse_with_the_same_count() {
     assert!(clone.exists());
 }
 
+/// A host with `fetch.prune` set does not get to prune the guard's fetch. A
+/// branch merged and deleted upstream keeps the tracking ref that counts its
+/// commits as pushed, so the only unpushed-looking commits are the ones the
+/// remote has by URL, and `rm` deletes.
+#[test]
+fn a_host_that_prunes_on_fetch_does_not_turn_a_merged_branch_into_unpushed_work() {
+    let (mut world, clone) = a_world_ready_to_remove();
+    run_git(&clone, &["checkout", "-b", "side"]);
+    std::fs::write(clone.join("side.txt"), "merged upstream\n").expect("a file");
+    commit(&clone, "side");
+    run_git(&clone, &["push", "-u", "origin", "side"]);
+    run_git(&clone, &["checkout", "main"]);
+    run_git(
+        &clone,
+        &["push", &world.origin.display().to_string(), ":side"],
+    );
+    run_git(&clone, &["config", "fetch.prune", "true"]);
+    commit_locally(&clone, 2);
+    push_by_url(&world, &clone);
+
+    let (outcome, _) = remove(&mut world, Removal::Guarded);
+
+    assert!(
+        matches!(outcome, RemoveOutcome::Deleted { .. }),
+        "side's commit was on the remote and main's are there now: {outcome:?}"
+    );
+    assert_eq!(world.devpod.deleted(), ["r-main-aa"]);
+}
+
 /// Some of the commits pushed, some not: the pushed ones drop out and the rest
 /// still refuse. The count after the fetch is the smaller one.
 #[test]
@@ -3016,7 +3045,10 @@ fn the_fetch_goes_to_the_clone_the_guard_read_and_prunes_nothing() {
             format!("--work-tree={}", root.display()),
             "fetch".to_owned(),
             "--no-tags".to_owned(),
+            "--no-prune".to_owned(),
+            "--refmap=".to_owned(),
             "origin".to_owned(),
+            "+refs/heads/*:refs/remotes/origin/*".to_owned(),
         ]
     );
 }

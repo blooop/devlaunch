@@ -665,10 +665,13 @@ fn the_background_sweep_s_bound_reaches_the_spawn() {
 #[test]
 fn the_guard_s_fetch_is_pinned_bounded_and_cannot_prompt() {
     // devlaunch#638. Pinned, because a fetch into an ancestor repository is a
-    // write to somebody's dotfiles. No `--prune`, because pruning a merged branch
-    // puts its commits back into the unpushed count, and `--no-tags`, because a
-    // moved tag fails the whole fetch. The bound is the caller's, and no prompt,
-    // because a prompt under a bound eats it.
+    // write to somebody's dotfiles. `--no-prune`, because pruning a merged branch
+    // puts its commits back into the unpushed count and a host's `fetch.prune`
+    // would otherwise do it. `--no-tags`, because a moved tag fails the whole
+    // fetch. The refspec on the command line with an empty `--refmap=`, so the
+    // clone's own `remote.origin.fetch` cannot aim the fetch at local branches.
+    // The bound is the caller's, and no prompt, because a prompt under a bound
+    // eats it.
     let fake = ScriptedRunner::new();
 
     Git::new(&fake).fetch_origin(Path::new("/ws"), Duration::from_secs(30));
@@ -681,7 +684,10 @@ fn the_guard_s_fetch_is_pinned_bounded_and_cannot_prompt() {
             "--work-tree=/ws",
             "fetch",
             "--no-tags",
-            "origin"
+            "--no-prune",
+            "--refmap=",
+            "origin",
+            "+refs/heads/*:refs/remotes/origin/*"
         ]
     );
     assert_eq!(cwd(&fake).as_deref(), Some(Path::new("/ws")));

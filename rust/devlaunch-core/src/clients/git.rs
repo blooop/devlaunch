@@ -481,25 +481,39 @@ impl<'r> Git<'r> {
     /// The flags are chosen so the fetch can take commits *out* of the unpushed
     /// count and cannot quietly add them:
     ///
-    /// - No `--prune`. A branch merged and deleted upstream leaves its
-    ///   remote-tracking ref behind, and that ref is what keeps its commits
+    /// - `--no-prune`, spelled out. A branch merged and deleted upstream leaves
+    ///   its remote-tracking ref behind, and that ref is what keeps its commits
     ///   counted as pushed. Pruning it would turn every squash-merged branch
-    ///   into unpushed work.
+    ///   into unpushed work. Leaving `--prune` off is not enough: a host with
+    ///   `fetch.prune` or `remote.origin.prune` set prunes anyway, and the
+    ///   command-line flag beats both.
     /// - `--no-tags`. Which tags came off the remote is the bare cache's to say
     ///   (#487), and a tag the remote moved is rejected with
     ///   `would clobber existing tag`, which fails the whole fetch.
+    /// - The refspec `+refs/heads/*:refs/remotes/origin/*` on the command line,
+    ///   with an empty `--refmap=`. It is what `git clone` wrote, but the
+    ///   clone's `remote.origin.fetch` is config the container can edit, and a
+    ///   `+refs/heads/*:refs/heads/*` there would force-move local branches. A
+    ///   command-line refspec alone does not stop that, because git still
+    ///   applies the configured one as the refmap. The empty `--refmap=` turns
+    ///   it off.
     ///
-    /// The refspec is the clone's own, which `git clone` wrote as
-    /// `+refs/heads/*:refs/remotes/origin/*`, and it forces. So a branch the
-    /// remote rewrote does move its tracking ref off the old commits, and those
-    /// commits then count. That is the truth about the remote, not a regression:
-    /// the old commits are no longer on it.
+    /// The refspec forces. So a branch the remote rewrote does move its tracking
+    /// ref off the old commits, and those commits then count. That is the truth
+    /// about the remote, not a regression: the old commits are no longer on it.
     ///
     /// `GIT_TERMINAL_PROMPT=0` because this runs under *limit*: a credential
     /// prompt would eat the deadline and then be killed. A remote that asks for
     /// one is a refusal, and the caller keeps the clone.
     pub(crate) fn fetch_origin(&self, clone: &Path, limit: Duration) -> GitAnswer<String> {
-        let args = ["fetch", "--no-tags", "origin"];
+        let args = [
+            "fetch",
+            "--no-tags",
+            "--no-prune",
+            "--refmap=",
+            "origin",
+            "+refs/heads/*:refs/remotes/origin/*",
+        ];
         let spec = SpawnSpec::new(pinned(clone, &args).with_var("GIT_TERMINAL_PROMPT", "0"))
             .with_timeout(limit);
         self.captured("fetch", &spec)

@@ -1089,8 +1089,12 @@ The fetch is kept to the one case it can change:
   or beside unpushed commits, because the remote cannot clear a dirty tree.
 - `kill` does not fetch, because it promises not to wait. `rm --force` looks at
   nothing, so it fetches nothing.
-- The fetch does not prune. A branch merged and deleted upstream keeps the
-  tracking ref that counts its commits as pushed.
+- The fetch does not prune, even on a host with `fetch.prune` set. A branch
+  merged and deleted upstream keeps the tracking ref that counts its commits as
+  pushed.
+- It names its own refspec, `+refs/heads/*:refs/remotes/origin/*`, and ignores
+  the clone's `remote.origin.fetch`. So it writes only tracking refs and never
+  moves a local branch.
 - It fetches no tags. Which tags came off the remote is still the mirror's to say,
   as described above.
 - `dl --ls --json` stays offline, so its `unsaved` is as of the clone's last fetch
