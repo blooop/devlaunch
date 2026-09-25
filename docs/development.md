@@ -118,13 +118,18 @@ scripts/public-api-snapshots.sh
 
 That script is also what CI runs, into a scratch tree and then diffing the files it names via
 `--print-files`, so the filter that decides which row is a promise, the `-ss` flag, the pinned
-`cargo-public-api` version and the list of snapshots all exist in exactly one place. Two
-prerequisites, and this repository's devcontainer has neither, so it is a host command: a nightly
-toolchain (cargo-public-api's rustdoc-JSON backend is nightly-only; the crates themselves still
-build on the stable pin) and the pinned tool.
+`cargo-public-api` version, the pinned nightly and the list of snapshots all exist in exactly one
+place. Two prerequisites, and this repository's devcontainer has neither, so it is a host command:
+the pinned nightly toolchain (cargo-public-api's rustdoc-JSON backend is nightly-only; the crates
+themselves still build on the stable pin) and the pinned tool.
+
+The nightly is pinned because rustdoc renders the rows. A new one moves them with no crate change:
+the 2026-09-24 nightly printed `clone(&self) -> Self` where 2026-09-17 printed the full path, and
+every snapshot went red on a pull request that touched none of those types. Bump it in the script,
+together with regenerated files.
 
 ```bash
-rustup toolchain install nightly
+rustup toolchain install "$(scripts/public-api-snapshots.sh --print-nightly)"
 cargo install cargo-public-api --locked --version "$(scripts/public-api-snapshots.sh --print-pin)"
 ```
 

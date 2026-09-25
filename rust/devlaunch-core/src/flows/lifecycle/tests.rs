@@ -160,6 +160,10 @@ fn a_devpod_that_cannot_be_run_fails_the_stage_but_one_that_refuses_does_not() {
 struct Devpod {
     fake: FakeRunner,
     processes: ProcessRunner,
+    /// Every argv a real process was run for, through any of the four methods,
+    /// git above all, so a test can say a fetch did not happen as well as that
+    /// one did.
+    ran: std::sync::Mutex<Vec<Vec<String>>>,
     /// See [`timing::exclusive`]. Last field, so it is dropped last.
     _serialized: timing::Exclusive,
 }
@@ -177,6 +181,7 @@ impl Devpod {
         Self {
             fake: FakeRunner::new(),
             processes: ProcessRunner,
+            ran: std::sync::Mutex::new(Vec::new()),
             _serialized: timing::exclusive(),
         }
     }
@@ -206,8 +211,26 @@ impl Devpod {
             .script(["devpod", "list"], Response::failed(1, stderr));
     }
 
+    fn record(&self, spec: &SpawnSpec) {
+        self.ran
+            .lock()
+            .expect("the call log")
+            .push(spec.invocation.argv());
+    }
+
     fn devpod_argvs(&self) -> Vec<Vec<String>> {
         self.fake.args_to(devpod::PROGRAM)
+    }
+
+    /// Every real `git fetch` this runner was asked for, whatever flags came first.
+    fn git_fetches(&self) -> Vec<Vec<String>> {
+        self.ran
+            .lock()
+            .expect("the call log")
+            .iter()
+            .filter(|argv| argv[0] == "git" && argv.iter().any(|word| word == "fetch"))
+            .cloned()
+            .collect()
     }
 
     /// Every id `devpod delete` was called about, in order.
@@ -251,6 +274,7 @@ impl Runner for Devpod {
         if faked(&spec.invocation.program) {
             self.fake.capture(spec)
         } else {
+            self.record(spec);
             self.processes.capture(spec)
         }
     }
@@ -259,6 +283,7 @@ impl Runner for Devpod {
         if faked(&spec.invocation.program) {
             self.fake.passthrough(spec)
         } else {
+            self.record(spec);
             self.processes.passthrough(spec)
         }
     }
@@ -267,6 +292,7 @@ impl Runner for Devpod {
         if faked(&spec.invocation.program) {
             self.fake.session(spec, on_stderr_line)
         } else {
+            self.record(spec);
             self.processes.session(spec, on_stderr_line)
         }
     }
@@ -275,6 +301,7 @@ impl Runner for Devpod {
         if faked(&spec.invocation.program) {
             self.fake.watched(spec, on_line)
         } else {
+            self.record(spec);
             self.processes.watched(spec, on_line)
         }
     }
@@ -2503,7 +2530,12 @@ fn stands_holding(losses: workspace_state::Losses) -> Standing {
 #[test]
 fn a_collectable_verdict_is_the_only_answer_that_is_permission() {
     assert_eq!(
-        guard_removal("ws", Verdict::test_collectable(), Insistence::NotInsisted),
+        guard_removal(
+            "ws",
+            Verdict::test_collectable(),
+            RemoteCheck::NotAsked,
+            Insistence::NotInsisted
+        ),
         Guarded::MayRemove
     );
 }
@@ -2519,13 +2551,15 @@ fn work_saved_nowhere_else_stops_the_delete_and_names_what_it_is() {
     let guarded = guard_removal(
         "ws",
         Verdict::Stands(standing.clone()),
+        RemoteCheck::NotAsked,
         Insistence::NotInsisted,
     );
     assert_eq!(
         guarded,
         Guarded::Refused(RemovalRefused {
             workspace_id: "ws".to_owned(),
-            because: refusal_from(&standing)
+            because: refusal_from(&standing),
+            remote: RemoteCheck::NotAsked,
         })
     );
 }
@@ -2546,13 +2580,15 @@ fn an_answer_git_would_not_give_stops_the_delete_too() {
     let guarded = guard_removal(
         "ws",
         Verdict::Stands(standing.clone()),
+        RemoteCheck::NotAsked,
         Insistence::NotInsisted,
     );
     assert_eq!(
         guarded,
         Guarded::Refused(RemovalRefused {
             workspace_id: "ws".to_owned(),
-            because: refusal_from(&standing)
+            because: refusal_from(&standing),
+            remote: RemoteCheck::NotAsked,
         })
     );
 }
@@ -2574,7 +2610,7 @@ fn force_gets_past_both_refusals() {
         }]),
     ] {
         assert_eq!(
-            guard_removal("ws", verdict, Insistence::Insisted),
+            guard_removal("ws", verdict, RemoteCheck::NotAsked, Insistence::Insisted),
             Guarded::MayRemove
         );
     }
@@ -2731,6 +2767,368 @@ fn a_clone_already_removed_by_hand_is_still_deletable() {
         guard_reads(&world, "r-main-aa"),
         Verdict::Collectable(_)
     ));
+}
+
+// =======================================================================
+// the guard asks the remote before it refuses (devlaunch#638)
+// =======================================================================
+
+/// One recorded, running workspace `r-main-aa`, fully pushed, ready for `rm`.
+fn a_world_ready_to_remove() -> (World, PathBuf) {
+    let mut world = World::empty();
+    let clone = world.clone_at("r-main-aa", "main");
+    world.record("r-main-aa", "main", &clone);
+    world.devpod.knows("r-main-aa");
+    (world, clone)
+}
+
+/// Commit `count` new files in *clone*, pushed nowhere.
+fn commit_locally(clone: &Path, count: usize) {
+    for n in 0..count {
+        std::fs::write(clone.join(format!("later-{n}.txt")), "later\n").expect("a file");
+        commit(clone, &format!("later {n}"));
+    }
+}
+
+/// Push *clone*'s HEAD to the remote **by URL**, not through `origin`.
+///
+/// What an agent does when SSH fails inside the container and it falls back to
+/// the HTTPS URL. The commits land on the remote and `refs/remotes/origin/*` in
+/// the clone does not move, which is the whole of devlaunch#638.
+fn push_by_url(world: &World, clone: &Path) {
+    run_git(
+        clone,
+        &["push", &world.origin.display().to_string(), "HEAD:main"],
+    );
+}
+
+/// `dl r-main-aa <removal>`, through the one call the binary makes.
+fn remove(world: &mut World, removal: Removal) -> (RemoveOutcome, Vec<LifecycleNotice>) {
+    let clones = clones_for(&world.repos_dir, &world.devpod);
+    let mut context = CommandContext::new(&world.devpod);
+    let updater = SelfInvocation::new("dl");
+    let cache_path = fresh_cache(world.tmp());
+    let mut refresh = Refresh::new(&updater, &cache_path);
+    let copies = world.copies();
+    let mut notices = Vec::new();
+    let outcome = workspace_remove(
+        &mut context,
+        &mut refresh,
+        &clones,
+        &mut world.storage,
+        &world.cache,
+        None,
+        &copies,
+        "r-main-aa",
+        removal,
+        &mut unblocked(),
+        &mut notices,
+    )
+    .expect("devpod ran");
+    (outcome, notices)
+}
+
+fn checked_the_remote(notices: &[LifecycleNotice]) -> bool {
+    notices
+        .iter()
+        .any(|notice| matches!(notice, LifecycleNotice::CheckingRemote { .. }))
+}
+
+/// **The ticket, as a test.** The commits are on the remote and the clone does
+/// not know, so the first reading counts them as unpushed. One fetch later the
+/// guard asks again, finds nothing to lose, and `rm` deletes with no `--force`.
+#[test]
+fn commits_pushed_by_url_do_not_stop_a_plain_rm() {
+    let (mut world, clone) = a_world_ready_to_remove();
+    commit_locally(&clone, 4);
+    push_by_url(&world, &clone);
+    // The trap is really set: asked offline, the clone reads four unpushed.
+    assert!(
+        losses_of(&guard_reads(&world, "r-main-aa")).contains("4 unpushed commit(s)"),
+        "the fixture has to leave the clone's tracking refs stale"
+    );
+
+    let (outcome, notices) = remove(&mut world, Removal::Guarded);
+
+    assert!(
+        matches!(outcome, RemoveOutcome::Deleted { .. }),
+        "the commits are on the remote, so nothing would be lost: {outcome:?}"
+    );
+    assert_eq!(world.devpod.deleted(), ["r-main-aa"]);
+    assert!(!clone.exists(), "the clone goes with the workspace");
+    assert!(
+        checked_the_remote(&notices),
+        "the fetch is said before it runs"
+    );
+}
+
+/// Commits the remote really has not got still refuse, with the count they
+/// had before the fetch. The fetch only takes out what the remote has.
+#[test]
+fn commits_the_remote_has_not_got_still_refuse_with_the_same_count() {
+    let (mut world, clone) = a_world_ready_to_remove();
+    commit_locally(&clone, 2);
+    let before = losses_of(&guard_reads(&world, "r-main-aa"));
+
+    let (outcome, _) = remove(&mut world, Removal::Guarded);
+
+    let RemoveOutcome::Refused(refusal) = outcome else {
+        panic!("two commits exist only here: {outcome:?}");
+    };
+    assert_eq!(refusal.because, RemovalGrounds::WouldLose(before.clone()));
+    assert!(before.contains("2 unpushed commit(s)"), "{before}");
+    assert_eq!(refusal.remote, RemoteCheck::Fetched);
+    assert_eq!(world.devpod.git_fetches().len(), 1);
+    assert!(world.devpod.deleted().is_empty(), "devpod is never asked");
+    assert!(clone.exists());
+}
+
+/// A host with `fetch.prune` set does not get to prune the guard's fetch. A
+/// branch merged and deleted upstream keeps the tracking ref that counts its
+/// commits as pushed, so the only unpushed-looking commits are the ones the
+/// remote has by URL, and `rm` deletes.
+#[test]
+fn a_host_that_prunes_on_fetch_does_not_turn_a_merged_branch_into_unpushed_work() {
+    let (mut world, clone) = a_world_ready_to_remove();
+    run_git(&clone, &["checkout", "-b", "side"]);
+    std::fs::write(clone.join("side.txt"), "merged upstream\n").expect("a file");
+    commit(&clone, "side");
+    run_git(&clone, &["push", "-u", "origin", "side"]);
+    run_git(&clone, &["checkout", "main"]);
+    run_git(
+        &clone,
+        &["push", &world.origin.display().to_string(), ":side"],
+    );
+    run_git(&clone, &["config", "fetch.prune", "true"]);
+    commit_locally(&clone, 2);
+    push_by_url(&world, &clone);
+
+    let (outcome, _) = remove(&mut world, Removal::Guarded);
+
+    assert!(
+        matches!(outcome, RemoveOutcome::Deleted { .. }),
+        "side's commit was on the remote and main's are there now: {outcome:?}"
+    );
+    assert_eq!(world.devpod.deleted(), ["r-main-aa"]);
+}
+
+/// Some of the commits pushed, some not: the pushed ones drop out and the rest
+/// still refuse. The count after the fetch is the smaller one.
+#[test]
+fn only_the_commits_the_remote_now_has_drop_out_of_the_count() {
+    let (mut world, clone) = a_world_ready_to_remove();
+    commit_locally(&clone, 3);
+    push_by_url(&world, &clone);
+    std::fs::write(clone.join("unpushed.txt"), "mine\n").expect("a file");
+    commit(&clone, "unpushed");
+
+    let (outcome, _) = remove(&mut world, Removal::Guarded);
+
+    let RemoveOutcome::Refused(refusal) = outcome else {
+        panic!("one commit exists only here: {outcome:?}");
+    };
+    assert_eq!(
+        refusal.because,
+        RemovalGrounds::WouldLose("1 unpushed commit(s)".to_owned())
+    );
+    assert_eq!(refusal.remote, RemoteCheck::Fetched);
+}
+
+/// **Fail towards keeping.** The commits are in fact on the remote, but the
+/// remote cannot be reached, so nothing has shown it. The first reading stands,
+/// and the refusal says why it could not be checked.
+#[test]
+fn a_remote_that_cannot_be_reached_leaves_the_refusal_standing() {
+    let (mut world, clone) = a_world_ready_to_remove();
+    commit_locally(&clone, 1);
+    push_by_url(&world, &clone);
+    let nowhere = world.tmp().join("no-such-remote.git");
+    run_git(
+        &clone,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            &nowhere.display().to_string(),
+        ],
+    );
+    let before = losses_of(&guard_reads(&world, "r-main-aa"));
+
+    let (outcome, _) = remove(&mut world, Removal::Guarded);
+
+    let RemoveOutcome::Refused(refusal) = outcome else {
+        panic!("a fetch that failed must never become permission: {outcome:?}");
+    };
+    assert_eq!(refusal.because, RemovalGrounds::WouldLose(before));
+    let RemoteCheck::Unreachable { reason } = &refusal.remote else {
+        panic!("the refusal has to say the remote was not reached: {refusal:?}");
+    };
+    assert!(!reason.is_empty(), "git's words are carried");
+    assert!(world.devpod.deleted().is_empty());
+    assert!(clone.exists());
+}
+
+/// A clean clone is permission already, so `rm` stays offline.
+#[test]
+fn a_clean_clone_is_removed_without_a_fetch() {
+    let (mut world, clone) = a_world_ready_to_remove();
+
+    let (outcome, notices) = remove(&mut world, Removal::Guarded);
+
+    assert!(matches!(outcome, RemoveOutcome::Deleted { .. }));
+    assert!(!clone.exists());
+    assert_eq!(world.devpod.git_fetches(), Vec::<Vec<String>>::new());
+    assert!(!checked_the_remote(&notices));
+}
+
+/// A dirty tree refuses whatever the remote says, so a fetch for it would be a
+/// wait that cannot change the answer. Beside an unpushed commit too: the dirty
+/// tree alone keeps the clone.
+#[test]
+fn uncommitted_work_is_refused_without_a_fetch() {
+    for unpushed in [0, 1] {
+        let (mut world, clone) = a_world_ready_to_remove();
+        commit_locally(&clone, unpushed);
+        std::fs::write(clone.join("notes.md"), "an hour of work\n").expect("a file");
+
+        let (outcome, notices) = remove(&mut world, Removal::Guarded);
+
+        let RemoveOutcome::Refused(refusal) = outcome else {
+            panic!("a dirty tree is work: {outcome:?}");
+        };
+        assert_eq!(refusal.remote, RemoteCheck::NotAsked);
+        assert_eq!(world.devpod.git_fetches(), Vec::<Vec<String>>::new());
+        assert!(!checked_the_remote(&notices));
+    }
+}
+
+/// `kill` promises not to wait, and a fetch is a wait. It reports the stale
+/// count it has and deletes.
+#[test]
+fn kill_does_not_ask_the_remote() {
+    let (mut world, clone) = a_world_ready_to_remove();
+    commit_locally(&clone, 1);
+
+    let (outcome, notices) = remove(&mut world, Removal::Wedged);
+
+    assert!(matches!(outcome, RemoveOutcome::Deleted { .. }));
+    assert_eq!(world.devpod.git_fetches(), Vec::<Vec<String>>::new());
+    assert!(!checked_the_remote(&notices));
+    let reported = notices.iter().find_map(|notice| match notice {
+        LifecycleNotice::RemovingOverWork { refusal } => Some(refusal.remote.clone()),
+        _ => None,
+    });
+    assert_eq!(reported, Some(RemoteCheck::NotAsked));
+}
+
+/// `rm --force` looks at nothing, so it fetches nothing either.
+#[test]
+fn force_does_not_ask_the_remote() {
+    let (mut world, clone) = a_world_ready_to_remove();
+    commit_locally(&clone, 1);
+
+    let (outcome, notices) = remove(&mut world, Removal::Insisted);
+
+    assert!(matches!(outcome, RemoveOutcome::Deleted { .. }));
+    assert_eq!(world.devpod.git_fetches(), Vec::<Vec<String>>::new());
+    assert!(!checked_the_remote(&notices));
+}
+
+/// The fetch the guard makes, argv and all: pinned to the clone it read, no tags,
+/// no prune. The bound is `clients::git`'s test to pin.
+#[test]
+fn the_fetch_goes_to_the_clone_the_guard_read_and_prunes_nothing() {
+    let (mut world, clone) = a_world_ready_to_remove();
+    commit_locally(&clone, 1);
+
+    remove(&mut world, Removal::Guarded);
+
+    let fetches = world.devpod.git_fetches();
+    let [fetch] = fetches.as_slice() else {
+        panic!("one fetch, got {fetches:?}");
+    };
+    let root = std::fs::canonicalize(&clone).expect("the clone");
+    assert_eq!(
+        fetch,
+        &[
+            "git".to_owned(),
+            format!("--git-dir={}", root.join(".git").display()),
+            format!("--work-tree={}", root.display()),
+            "fetch".to_owned(),
+            "--no-tags".to_owned(),
+            "--no-prune".to_owned(),
+            "--refmap=".to_owned(),
+            "origin".to_owned(),
+            "+refs/heads/*:refs/remotes/origin/*".to_owned(),
+        ]
+    );
+}
+
+/// One pushed agent worktree `agent-one` inside *clone*, with `.claude/`
+/// gitignored and pushed the way a real clone has it.
+fn a_site_in(clone: &Path) -> PathBuf {
+    std::fs::write(clone.join(".gitignore"), ".claude/\n").expect("a gitignore");
+    commit(clone, "ignore the agent worktrees");
+    run_git(clone, &["push", "origin", "main"]);
+    an_agent_worktree(clone, "agent-one")
+}
+
+/// The same trap one level down: an agent worktree inside the clone pushed its
+/// branch by URL. The bare cache never saw that branch, so only the clone's
+/// fetch can show the commits are safe.
+#[test]
+fn a_site_pushed_by_url_does_not_stop_a_plain_rm() {
+    let (mut world, clone) = a_world_ready_to_remove();
+    let site = a_site_in(&clone);
+    commit_locally(&site, 2);
+    run_git(
+        &site,
+        &[
+            "push",
+            &world.origin.display().to_string(),
+            "HEAD:agent-one",
+        ],
+    );
+    as_a_host_sees_them(&clone);
+    assert!(
+        run_git(&world.bare, &["branch", "--list", "agent-one"])
+            .trim()
+            .is_empty(),
+        "the bare cache must not know the site's branch"
+    );
+    assert!(
+        losses_of(&guard_reads(&world, "r-main-aa")).contains("2 unpushed commit(s)"),
+        "the fixture has to leave the site's tracking ref stale"
+    );
+
+    let (outcome, notices) = remove(&mut world, Removal::Guarded);
+
+    assert!(
+        matches!(outcome, RemoveOutcome::Deleted { .. }),
+        "the site's commits are on the remote: {outcome:?}"
+    );
+    assert_eq!(world.devpod.git_fetches().len(), 1);
+    assert!(checked_the_remote(&notices));
+    assert!(!clone.exists());
+}
+
+/// A dirty site refuses whatever the remote says, so it is not asked.
+#[test]
+fn a_dirty_site_is_refused_without_a_fetch() {
+    let (mut world, clone) = a_world_ready_to_remove();
+    let site = a_site_in(&clone);
+    std::fs::write(site.join("notes.md"), "an hour of work\n").expect("a file");
+    as_a_host_sees_them(&clone);
+
+    let (outcome, notices) = remove(&mut world, Removal::Guarded);
+
+    let RemoveOutcome::Refused(refusal) = outcome else {
+        panic!("a dirty site is work: {outcome:?}");
+    };
+    assert_eq!(refusal.remote, RemoteCheck::NotAsked);
+    assert_eq!(world.devpod.git_fetches(), Vec::<Vec<String>>::new());
+    assert!(!checked_the_remote(&notices));
+    assert!(clone.exists());
 }
 
 // =======================================================================

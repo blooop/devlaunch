@@ -13,7 +13,7 @@ dependencies = [
 
 [[package]]
 name = "aid"
-version = "0.53.0"
+version = "0.54.0"
 dependencies = [
  "devlaunch-test-support",
  "dl",
@@ -437,7 +437,7 @@ dependencies = [
 
 [[package]]
 name = "devlaunch-core"
-version = "0.53.0"
+version = "0.54.0"
 dependencies = [
  "devlaunch-runner",
  "devlaunch-test-support",
@@ -456,7 +456,7 @@ dependencies = [
 
 [[package]]
 name = "devlaunch-runner"
-version = "0.53.0"
+version = "0.54.0"
 dependencies = [
  "libc",
  "portable-pty",
@@ -465,7 +465,7 @@ dependencies = [
 
 [[package]]
 name = "devlaunch-test-support"
-version = "0.53.0"
+version = "0.54.0"
 dependencies = [
  "devlaunch-runner",
  "serde",
@@ -507,7 +507,7 @@ dependencies = [
 
 [[package]]
 name = "dl"
-version = "0.53.0"
+version = "0.54.0"
 dependencies = [
  "clap",
  "devlaunch-core",

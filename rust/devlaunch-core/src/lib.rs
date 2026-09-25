@@ -212,8 +212,8 @@ pub mod api {
     // store is a parameter of the removal, so it is promised with it.
     pub use crate::flows::kept_copies::KeptCopies;
     pub use crate::flows::lifecycle::{
-        DeleteStalled, Insistence, LifecycleNotice, Removal, RemovalGrounds, RemovalRefused,
-        RemoveOutcome,
+        DeleteStalled, Insistence, LifecycleNotice, RemoteCheck, Removal, RemovalGrounds,
+        RemovalRefused, RemoveOutcome,
     };
     pub use crate::flows::records::Records;
     pub use crate::flows::workspace_clone::WorkspaceCloneManager;

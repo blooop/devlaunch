@@ -27,8 +27,8 @@ use std::sync::{Mutex, MutexGuard};
 
 use devlaunch_core::api::{
     ColdPath, CommandContext, DeleteStalled, DevpodHome, KeptCopies, LifecycleNotice, Notices,
-    Records, RecordsNotice, Refresh, Removal, RemovalGrounds, RemovalRefused, RemoveOutcome,
-    SelfInvocation, workspace_remove,
+    Records, RecordsNotice, Refresh, RemoteCheck, Removal, RemovalGrounds, RemovalRefused,
+    RemoveOutcome, SelfInvocation, workspace_remove,
 };
 use devlaunch_core::runner::{
     CapturedText, DetachOutcome, Invocation, Outcome, ProcessRunner, Runner, SpawnSpec,
@@ -61,11 +61,15 @@ fn a_guarded_removal_refuses_over_unsaved_work_and_never_asks_devpod() {
     let RemoveOutcome::Refused(RemovalRefused {
         workspace_id,
         because,
+        remote,
     }) = outcome
     else {
         panic!("expected a refusal that names what would be lost, got {outcome:?}");
     };
     assert_eq!(workspace_id, WORKSPACE);
+    // A dirty tree refuses whatever the remote has, so nothing was fetched for it
+    // (devlaunch#638), and the type says so rather than a clause in the words.
+    assert_eq!(remote, RemoteCheck::NotAsked);
     // **Destructured rather than read through a method, and that is this file's
     // whole point.** Every type named here is reached through
     // `devlaunch_core::api` and nothing else, so a promised shape carrying a

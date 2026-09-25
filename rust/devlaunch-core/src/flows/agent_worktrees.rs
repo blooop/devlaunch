@@ -982,6 +982,24 @@ impl Standing {
         parts.join(" and ")
     }
 
+    /// Whether every reason here is commits no remote-tracking ref reaches, and
+    /// nothing else: no dirty tree anywhere, and no question left unanswered.
+    ///
+    /// The one standing a fetch can turn into permission, and so the one
+    /// `dl <ws> rm` asks the remote about before refusing (devlaunch#638). Any
+    /// other reason refuses whatever the remote says, so a fetch for it is a wait
+    /// that cannot change the answer. A site's unpushed commits count as well:
+    /// its question is asked of the same repository's remote-tracking refs.
+    pub(crate) fn only_unpushed(&self) -> bool {
+        self.iter().all(|reason| match reason {
+            Reason::Holds { losses, .. } => losses.iter().all(|loss| match loss {
+                Loss::Unpushed { .. } => true,
+                Loss::Uncommitted(_) => false,
+            }),
+            Reason::CouldNotProve { .. } => false,
+        })
+    }
+
     // `any_unproved` lived here and is deleted rather than kept for symmetry.
     // It was written for the refusal's wording and never called: the render
     // sites match on which words exist, which answers the same question without

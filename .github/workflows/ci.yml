@@ -530,7 +530,7 @@ jobs:
   #
   # Nightly because cargo-public-api's rustdoc-JSON backend needs it; the crates
   # themselves still build on the stable pin everywhere else. The pinned
-  # version, the `-ss` rationale, the split filter and the list of files to
+  # version, the pinned nightly, the `-ss` rationale, the split filter and the list of files to
   # check all live in the regeneration script, which is also what this job runs
   # — so what CI checks cannot drift from what a developer regenerates, and a
   # fourth snapshot needs no workflow edit to be covered.
@@ -540,7 +540,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@nightly
+      - name: The nightly the script pins
+        id: nightly
+        run: echo "toolchain=$(scripts/public-api-snapshots.sh --print-nightly)" >>"$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.nightly.outputs.toolchain }}
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust
