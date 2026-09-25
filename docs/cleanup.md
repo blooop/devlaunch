@@ -1057,6 +1057,7 @@ neither, and is described below.)
 
 ```
 $ dl blooop/repo@feature rm
+Checking whether devlaunch-repo-feature-xyz's unpushed commits are on the remote...
 error: devlaunch-repo-feature-xyz holds 1 unpushed commit(s).
        Push or commit it, or run: dl blooop/repo@feature rm --force
 ```
@@ -1071,6 +1072,44 @@ error: devlaunch-repo-feature-xyz: git could not read /home/…/repo/feature:
 That refusal is the only judgement `dl` makes here, and it is not about finished
 work. It is `dl` declining to destroy the only copy of something, including
 when it cannot prove there is another copy. Say `--force` if you mean it.
+
+**Before it refuses over unpushed commits, `rm` asks the remote** (#638). A
+workspace clone's remote-tracking refs move only when something in the workspace
+fetches, or pushes through `origin`. A push to the URL instead, which is what an
+agent falls back to when SSH fails inside the container, puts the commits on the
+forge and leaves the clone saying `ahead 4`. So when unpushed commits are the only
+thing standing, `rm` runs one `git fetch --no-tags origin` in the clone, with a 30
+second deadline, and asks again. Commits the remote now has drop out of the count.
+The rest still refuse, with the count they had. That is the first example above:
+the progress line is the fetch, and the commit really is nowhere else.
+
+The fetch is kept to the one case it can change:
+
+- A clean clone never fetches. Nor does a refusal for uncommitted changes, alone
+  or beside unpushed commits, because the remote cannot clear a dirty tree.
+- `kill` does not fetch, because it promises not to wait. `rm --force` looks at
+  nothing, so it fetches nothing.
+- The fetch does not prune. A branch merged and deleted upstream keeps the
+  tracking ref that counts its commits as pushed.
+- It fetches no tags. Which tags came off the remote is still the mirror's to say,
+  as described above.
+- `dl --ls --json` stays offline, so its `unsaved` is as of the clone's last fetch
+  and can still count commits that `rm` would find on the remote.
+
+If the fetch fails, times out or cannot authenticate, the refusal stands and says
+so. It never turns into nothing to lose:
+
+```
+$ dl blooop/repo@feature rm
+Checking whether devlaunch-repo-feature-xyz's unpushed commits are on the remote...
+error: devlaunch-repo-feature-xyz holds 1 unpushed commit(s). devlaunch could not
+       reach the remote to check (fatal: could not read Username for
+       'https://github.com': terminal prompts disabled), so the unpushed count is as
+       of the clone's last fetch. Push or commit it, or run: dl blooop/repo@feature rm --force
+```
+
+Some of that count may then already be on the remote. Fetch in the clone yourself
+and run `rm` again, or read the commits and decide on `--force`.
 
 `--force` changes one more answer: an already-absent workspace counts as
 deleted, like `rm -f`. Unforced, `rm` reports devpod's refusal to delete a

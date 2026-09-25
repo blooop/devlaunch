@@ -74,6 +74,13 @@ pub enum LifecycleNotice {
     /// guard and `devpod delete`, and only
     /// [`workspace_remove`](super::workspace_remove) knows where that is.
     Removing { workspace_id: String },
+    /// The guard found unpushed commits and nothing else, and is fetching the
+    /// clone's `origin` before it refuses (devlaunch#638).
+    ///
+    /// Said before the fetch, because the fetch is a network round trip of up to
+    /// [`REMOTE_CHECK_DEADLINE`](super::delete_guard::REMOTE_CHECK_DEADLINE), and
+    /// a wait with no line in front of it reads as a hang.
+    CheckingRemote { workspace_id: String },
     /// The removal found work that exists nowhere else and is going ahead anyway.
     ///
     /// Only [`Removal::Wedged`](super::Removal::Wedged) produces this: `dl <ws>

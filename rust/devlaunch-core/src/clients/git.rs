@@ -456,24 +456,53 @@ impl<'r> Git<'r> {
     /// short. Untracked entries start `??` and were unharmed, which is exactly
     /// why the tests missed it.
     fn about(&self, repo: &Path, args: &[&str]) -> GitAnswer<String> {
-        let root = pinned_root(repo);
-        let mut argv = vec![
-            format!("--git-dir={}", root.join(".git").display()),
-            format!("--work-tree={}", root.display()),
-        ];
-        argv.extend(args.iter().map(|arg| (*arg).to_owned()));
-        let spec = SpawnSpec::new(
-            Invocation::new(PROGRAM)
-                .with_args(argv)
-                .with_cwd(repo.to_path_buf()),
-        )
-        .with_timeout(ABOUT_ONE_REPO);
+        let spec = SpawnSpec::new(pinned(repo, args)).with_timeout(ABOUT_ONE_REPO);
         // Named by the whole argument list rather than by a verb: this family's
         // fallback message is `workspace_state._git`'s, which spells out what was
         // asked ("git status --porcelain exited 128"), where every other site
         // names the subcommand alone.
         self.captured(&args.join(" "), &spec)
             .map(|stdout| stdout.trim_end_matches('\n').to_owned())
+    }
+
+    /// Bring *clone*'s remote-tracking refs up to what its `origin` has now.
+    ///
+    /// The one network call the delete guard makes, and only when it is about to
+    /// refuse over unpushed commits alone (devlaunch#638). A workspace clone is
+    /// cut from the bare cache with no fetch of its own, and a push to a URL
+    /// rather than through `origin` moves nothing in `refs/remotes/origin/*`, so
+    /// the clone can say `ahead 4` about four commits the forge already has.
+    ///
+    /// Pinned like every other question asked of a workspace clone, for
+    /// [`Git::about`]'s reason: a fetch into an *ancestor* repository would write
+    /// into somebody's dotfiles, and a guard reading the ancestor's refs
+    /// afterwards is devlaunch#171 again.
+    ///
+    /// The flags are chosen so the fetch can take commits *out* of the unpushed
+    /// count and cannot quietly add them:
+    ///
+    /// - No `--prune`. A branch merged and deleted upstream leaves its
+    ///   remote-tracking ref behind, and that ref is what keeps its commits
+    ///   counted as pushed. Pruning it would turn every squash-merged branch
+    ///   into unpushed work.
+    /// - `--no-tags`. Which tags came off the remote is the bare cache's to say
+    ///   (#487), and a tag the remote moved is rejected with
+    ///   `would clobber existing tag`, which fails the whole fetch.
+    ///
+    /// The refspec is the clone's own, which `git clone` wrote as
+    /// `+refs/heads/*:refs/remotes/origin/*`, and it forces. So a branch the
+    /// remote rewrote does move its tracking ref off the old commits, and those
+    /// commits then count. That is the truth about the remote, not a regression:
+    /// the old commits are no longer on it.
+    ///
+    /// `GIT_TERMINAL_PROMPT=0` because this runs under *limit*: a credential
+    /// prompt would eat the deadline and then be killed. A remote that asks for
+    /// one is a refusal, and the caller keeps the clone.
+    pub(crate) fn fetch_origin(&self, clone: &Path, limit: Duration) -> GitAnswer<String> {
+        let args = ["fetch", "--no-tags", "origin"];
+        let spec = SpawnSpec::new(pinned(clone, &args).with_var("GIT_TERMINAL_PROMPT", "0"))
+            .with_timeout(limit);
+        self.captured("fetch", &spec)
     }
 
     /// The branch *clone* has checked out, as `rev-parse --abbrev-ref HEAD`.
@@ -1501,6 +1530,19 @@ fn pinned_root(repo: &Path) -> PathBuf {
     std::fs::canonicalize(repo)
         .or_else(|_| std::path::absolute(repo))
         .unwrap_or_else(|_| repo.to_path_buf())
+}
+
+/// git, told that *repo* is the whole of what it may touch. See [`Git::about`].
+fn pinned(repo: &Path, args: &[&str]) -> Invocation {
+    let root = pinned_root(repo);
+    let mut argv = vec![
+        format!("--git-dir={}", root.join(".git").display()),
+        format!("--work-tree={}", root.display()),
+    ];
+    argv.extend(args.iter().map(|arg| (*arg).to_owned()));
+    Invocation::new(PROGRAM)
+        .with_args(argv)
+        .with_cwd(repo.to_path_buf())
 }
 
 /// The environment for the two verbs whose failure is read from words git

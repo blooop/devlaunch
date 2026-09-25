@@ -45,8 +45,8 @@ use devlaunch_core::flows::launch::{
 };
 use devlaunch_core::flows::lifecycle::{
     Insistence, KeptBecause, LifecycleNotice, LockKeptBecause, NotAdopted, Promotion, PrunePlan,
-    PruneReport, PurgeOutcome, PurgePlan, PurgeStep, ReconcilePlan, RemovalGrounds, RemovalRefused,
-    SweepOccasion, Unlocatable, VolumeRefusal, VolumesKeptBecause,
+    PruneReport, PurgeOutcome, PurgePlan, PurgeStep, ReconcilePlan, RemoteCheck, RemovalGrounds,
+    RemovalRefused, SweepOccasion, Unlocatable, VolumeRefusal, VolumesKeptBecause,
 };
 use devlaunch_core::flows::listing::{
     self, CloneDisk, LastUsed, SizeCell, Sizes, SourceKind, SweptRepoNote, TableRow, WorkspaceTable,
@@ -1115,6 +1115,9 @@ fn lifecycle_notice(notice: &LifecycleNotice) -> Option<String> {
              this build derives '{derived}'"
         ),
         LifecycleNotice::Removing { workspace_id } => removing(workspace_id),
+        LifecycleNotice::CheckingRemote { workspace_id } => {
+            format!("Checking whether {workspace_id}'s unpushed commits are on the remote...")
+        }
         LifecycleNotice::RemovingOverWork { refusal } => removing_over_work(refusal),
         LifecycleNotice::Cache(cache) => return cache_notice(cache),
     })
@@ -1401,15 +1404,22 @@ pub(crate) fn unsafe_name(refused: &UnsafeName) -> String {
 /// that always said `rm --force` would answer an `rme` by sending the reader back
 /// to the two-step `rme` exists to collapse: delete, wait, then close the tab by
 /// hand. Both words are offered the way past *they* asked for.
+///
+/// Where the remote could not be asked (devlaunch#638), a sentence says so
+/// between the finding and the way past, because it changes what the finding
+/// means: the count is as of the clone's last fetch, and some of it may already be
+/// on the remote. A refusal the remote was asked about, or was never going to be,
+/// reads exactly as it did before there was a fetch.
 pub(crate) fn removal_refusal(refused: &RemovalRefused, spec: &str, word: &str) -> String {
     let workspace_id = &refused.workspace_id;
-    match &refused.because {
-        RemovalGrounds::WouldLose(holds) => format!(
-            "{workspace_id} holds {holds}. Push or commit it, or run: dl {spec} {word} --force"
+    let (finding, way_past) = match &refused.because {
+        RemovalGrounds::WouldLose(holds) => (
+            format!("{workspace_id} holds {holds}."),
+            "Push or commit it",
         ),
-        RemovalGrounds::CouldNotTell(blank) => format!(
-            "{workspace_id}: {blank}. devlaunch will not delete a clone it cannot check. Look \
-             at it, or run: dl {spec} {word} --force"
+        RemovalGrounds::CouldNotTell(blank) => (
+            format!("{workspace_id}: {blank}. devlaunch will not delete a clone it cannot check."),
+            "Look at it",
         ),
         // Both at once -- a dirty tree beside a refused probe, or a nested
         // worktree's loss beside a lock. Saying one would be telling half the
@@ -1417,11 +1427,31 @@ pub(crate) fn removal_refusal(refused: &RemovalRefused, spec: &str, word: &str) 
         RemovalGrounds::BothAtOnce {
             would_lose: holds,
             could_not_tell: blank,
-        } => format!(
-            "{workspace_id} holds {holds}, and {blank}. devlaunch will not delete a clone it \
-             cannot check. Push or commit it, look at it, or run: dl {spec} {word} --force"
+        } => (
+            format!(
+                "{workspace_id} holds {holds}, and {blank}. devlaunch will not delete a clone \
+                 it cannot check."
+            ),
+            "Push or commit it, look at it",
         ),
-    }
+    };
+    let remote = match &refused.remote {
+        RemoteCheck::NotAsked | RemoteCheck::Fetched => String::new(),
+        // git's first line only. It is the one that names the cause: the rest of
+        // what a failed fetch prints is `Could not read from remote repository`
+        // and a paragraph of advice, the same for every cause, which in the middle
+        // of a one-line refusal is noise. Core carries all of it.
+        RemoteCheck::Unreachable { reason } => format!(
+            " devlaunch could not reach the remote to check ({}), so the unpushed count is as \
+             of the clone's last fetch.",
+            reason
+                .lines()
+                .map(str::trim)
+                .find(|line| !line.is_empty())
+                .unwrap_or("no reason given")
+        ),
+    };
+    format!("{finding}{remote} {way_past}, or run: dl {spec} {word} --force")
 }
 
 /// `--rm`, at the moment the session has ended and the removal begins.

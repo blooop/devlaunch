@@ -240,29 +240,31 @@ impl World {
     /// config of the machine running the suite.
     fn commit_in(&self, clone: &str, file: &str, contents: &str) {
         std::fs::write(self.path(clone).join(file), contents).expect("a file in the clone");
-        for args in [
-            vec!["add", "-A"],
-            vec!["commit", "-q", "-m", "work nobody else has"],
-        ] {
-            let done = Command::new("git")
-                .args(&args)
-                .current_dir(self.path(clone))
-                .envs([
-                    ("GIT_CONFIG_GLOBAL", "/dev/null"),
-                    ("GIT_CONFIG_SYSTEM", "/dev/null"),
-                    ("GIT_AUTHOR_NAME", "t"),
-                    ("GIT_AUTHOR_EMAIL", "t@t"),
-                    ("GIT_COMMITTER_NAME", "t"),
-                    ("GIT_COMMITTER_EMAIL", "t@t"),
-                ])
-                .output()
-                .expect("git is installed");
-            assert!(
-                done.status.success(),
-                "git {args:?} in {clone}: {}",
-                String::from_utf8_lossy(&done.stderr)
-            );
-        }
+        self.git_in(clone, &["add", "-A"]);
+        self.git_in(clone, &["commit", "-q", "-m", "work nobody else has"]);
+    }
+
+    /// Run one git command in a clone the fixture built, as [`World::commit_in`]
+    /// does: the fixture's identity, and none of this machine's config.
+    fn git_in(&self, clone: &str, args: &[&str]) {
+        let done = Command::new("git")
+            .args(args)
+            .current_dir(self.path(clone))
+            .envs([
+                ("GIT_CONFIG_GLOBAL", "/dev/null"),
+                ("GIT_CONFIG_SYSTEM", "/dev/null"),
+                ("GIT_AUTHOR_NAME", "t"),
+                ("GIT_AUTHOR_EMAIL", "t@t"),
+                ("GIT_COMMITTER_NAME", "t"),
+                ("GIT_COMMITTER_EMAIL", "t@t"),
+            ])
+            .output()
+            .expect("git is installed");
+        assert!(
+            done.status.success(),
+            "git {args:?} in {clone}: {}",
+            String::from_utf8_lossy(&done.stderr)
+        );
     }
 
     /// Put a `git` first on the run's PATH that refuses `pack-refs` and is the
@@ -1070,11 +1072,77 @@ fn a_clone_holding_a_commit_no_remote_has_is_refused_and_named_as_that() {
     run.exited(1);
     assert_eq!(
         run.err,
-        "devlaunch-unpushed-committed holds 1 unpushed commit(s). Push or commit it, or run: dl \
+        "Checking whether devlaunch-unpushed-committed's unpushed commits are on the remote...\n\
+         devlaunch-unpushed-committed holds 1 unpushed commit(s). Push or commit it, or run: dl \
          devlaunch-unpushed-committed rm --force\n"
     );
 }
 
+#[test]
+fn a_commit_pushed_by_url_does_not_stop_rm() {
+    // devlaunch#638 at the binary boundary. The commit is on the remote, pushed to
+    // the URL and not through `origin`, so the clone's tracking ref is stale and
+    // the offline answer is "1 unpushed". `rm` fetches, asks again, and deletes
+    // with no `--force`.
+    let world = World::with(&["--unpushed"]);
+    let clone = "cache/devlaunch/repos/blooop/devlaunch/devlaunch-unpushed-committed";
+    let origin = world.path("origin.git").display().to_string();
+    world.git_in(clone, &["push", "-q", &origin, "HEAD:refs/heads/unpushed"]);
+
+    let run = world.dl(&["devlaunch-unpushed-committed", "rm"]);
+
+    run.exited(0);
+    assert!(
+        run.err
+            .starts_with("Checking whether devlaunch-unpushed-committed's unpushed commits are on the remote...\n"),
+        "{}",
+        run.err
+    );
+    assert!(
+        !world.exists(clone),
+        "the clone held nothing the remote lacks"
+    );
+}
+
+#[test]
+fn a_remote_rm_cannot_reach_leaves_the_refusal_and_says_so() {
+    // Fail towards keeping. The fetch fails, so the count stands as the clone last
+    // knew it, and the refusal says the remote was not reached: the reader then
+    // knows some of that count may already be pushed.
+    let world = World::with(&["--unpushed"]);
+    let clone = "cache/devlaunch/repos/blooop/devlaunch/devlaunch-unpushed-committed";
+    let nowhere = world.path("no-such-remote.git").display().to_string();
+    world.git_in(clone, &["remote", "set-url", "origin", &nowhere]);
+
+    let run = world.dl(&["devlaunch-unpushed-committed", "rm"]);
+
+    run.exited(1);
+    let refusal = run
+        .err
+        .strip_prefix(
+            "Checking whether devlaunch-unpushed-committed's unpushed commits are on the \
+             remote...\ndevlaunch-unpushed-committed holds 1 unpushed commit(s). devlaunch \
+             could not reach the remote to check (",
+        )
+        .unwrap_or_else(|| panic!("{}", run.err));
+    assert!(
+        refusal.lines().count() == 1,
+        "git's words are cut to their first line, so the refusal stays one line: {}",
+        run.err
+    );
+    assert!(
+        refusal.ends_with(
+            "), so the unpushed count is as of the clone's last fetch. Push or commit it, or \
+             run: dl devlaunch-unpushed-committed rm --force\n"
+        ),
+        "{}",
+        run.err
+    );
+    assert!(
+        world.exists(clone),
+        "a failed fetch must never become permission"
+    );
+}
 #[test]
 fn a_clone_whose_last_tag_the_remote_carries_too_is_deleted_like_any_other() {
     // devlaunch#485 at the binary boundary, and it is the guard refusing a clean
@@ -1127,7 +1195,8 @@ fn a_commit_only_a_local_tag_reaches_stops_the_delete() {
     // looking at, and in the #487 case it is the name of the thing being saved.
     assert_eq!(
         run.err,
-        "devlaunch-local-tag holds 1 unpushed commit(s), 1 reachable only from local tag(s) \
+        "Checking whether devlaunch-local-tag's unpushed commits are on the remote...\n\
+         devlaunch-local-tag holds 1 unpushed commit(s), 1 reachable only from local tag(s) \
          (backup). Push or commit it, or run: dl devlaunch-local-tag rm --force\n"
     );
     assert!(world.exists(clone), "the refusal deleted the clone anyway");
@@ -1155,7 +1224,8 @@ fn a_pushed_tag_does_not_hide_a_commit_that_really_is_nowhere_else() {
     run.exited(1);
     assert_eq!(
         run.err,
-        "devlaunch-tagged-release holds 1 unpushed commit(s). Push or commit it, or run: dl \
+        "Checking whether devlaunch-tagged-release's unpushed commits are on the remote...\n\
+         devlaunch-tagged-release holds 1 unpushed commit(s). Push or commit it, or run: dl \
          devlaunch-tagged-release rm --force\n"
     );
     assert!(world.exists(clone), "the refusal deleted the clone anyway");

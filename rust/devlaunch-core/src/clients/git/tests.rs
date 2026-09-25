@@ -663,6 +663,37 @@ fn the_background_sweep_s_bound_reaches_the_spawn() {
 }
 
 #[test]
+fn the_guard_s_fetch_is_pinned_bounded_and_cannot_prompt() {
+    // devlaunch#638. Pinned, because a fetch into an ancestor repository is a
+    // write to somebody's dotfiles. No `--prune`, because pruning a merged branch
+    // puts its commits back into the unpushed count, and `--no-tags`, because a
+    // moved tag fails the whole fetch. The bound is the caller's, and no prompt,
+    // because a prompt under a bound eats it.
+    let fake = ScriptedRunner::new();
+
+    Git::new(&fake).fetch_origin(Path::new("/ws"), Duration::from_secs(30));
+
+    assert_eq!(
+        strs(&argv(&fake)),
+        [
+            "git",
+            "--git-dir=/ws/.git",
+            "--work-tree=/ws",
+            "fetch",
+            "--no-tags",
+            "origin"
+        ]
+    );
+    assert_eq!(cwd(&fake).as_deref(), Some(Path::new("/ws")));
+    assert_eq!(timeout(&fake), Some(Duration::from_secs(30)));
+    assert!(
+        env_entries(&fake).contains(&("GIT_TERMINAL_PROMPT".to_owned(), "0".to_owned())),
+        "{:?}",
+        env_entries(&fake)
+    );
+}
+
+#[test]
 fn packing_collapses_every_loose_ref_in_the_bare_under_a_bound() {
     // `--all` and not the default, which packs tags alone and would leave every
     // head the sweep just fetched sitting loose. The bound is there because this
@@ -1170,8 +1201,9 @@ fn nothing_here_spawns_more_than_once_per_verb() {
     git.tags_in_clone(Path::new("/ws"));
     git.tags_in_bare(Path::new("/cache/.bare"));
     git.commits_only_tags_reach(Path::new("/ws"), &[]);
+    git.fetch_origin(Path::new("/ws"), Duration::from_secs(30));
 
-    assert_eq!(fake.call_count(), 31, "one spawn per verb, 31 verbs");
+    assert_eq!(fake.call_count(), 32, "one spawn per verb, 32 verbs");
     assert!(
         fake.calls()
             .iter()
