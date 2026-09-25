@@ -160,8 +160,9 @@ fn a_devpod_that_cannot_be_run_fails_the_stage_but_one_that_refuses_does_not() {
 struct Devpod {
     fake: FakeRunner,
     processes: ProcessRunner,
-    /// Every argv a real process was captured for, git above all, so a test can
-    /// say a fetch did not happen as well as that one did.
+    /// Every argv a real process was run for, through any of the four methods,
+    /// git above all, so a test can say a fetch did not happen as well as that
+    /// one did.
     ran: std::sync::Mutex<Vec<Vec<String>>>,
     /// See [`timing::exclusive`]. Last field, so it is dropped last.
     _serialized: timing::Exclusive,
@@ -208,6 +209,13 @@ impl Devpod {
         self.fake.clear_scripts();
         self.fake
             .script(["devpod", "list"], Response::failed(1, stderr));
+    }
+
+    fn record(&self, spec: &SpawnSpec) {
+        self.ran
+            .lock()
+            .expect("the call log")
+            .push(spec.invocation.argv());
     }
 
     fn devpod_argvs(&self) -> Vec<Vec<String>> {
@@ -266,10 +274,7 @@ impl Runner for Devpod {
         if faked(&spec.invocation.program) {
             self.fake.capture(spec)
         } else {
-            self.ran
-                .lock()
-                .expect("the call log")
-                .push(spec.invocation.argv());
+            self.record(spec);
             self.processes.capture(spec)
         }
     }
@@ -278,6 +283,7 @@ impl Runner for Devpod {
         if faked(&spec.invocation.program) {
             self.fake.passthrough(spec)
         } else {
+            self.record(spec);
             self.processes.passthrough(spec)
         }
     }
@@ -286,6 +292,7 @@ impl Runner for Devpod {
         if faked(&spec.invocation.program) {
             self.fake.session(spec, on_stderr_line)
         } else {
+            self.record(spec);
             self.processes.session(spec, on_stderr_line)
         }
     }
@@ -294,6 +301,7 @@ impl Runner for Devpod {
         if faked(&spec.invocation.program) {
             self.fake.watched(spec, on_line)
         } else {
+            self.record(spec);
             self.processes.watched(spec, on_line)
         }
     }
@@ -2983,13 +2991,14 @@ fn uncommitted_work_is_refused_without_a_fetch() {
         commit_locally(&clone, unpushed);
         std::fs::write(clone.join("notes.md"), "an hour of work\n").expect("a file");
 
-        let (outcome, _) = remove(&mut world, Removal::Guarded);
+        let (outcome, notices) = remove(&mut world, Removal::Guarded);
 
         let RemoveOutcome::Refused(refusal) = outcome else {
             panic!("a dirty tree is work: {outcome:?}");
         };
         assert_eq!(refusal.remote, RemoteCheck::NotAsked);
         assert_eq!(world.devpod.git_fetches(), Vec::<Vec<String>>::new());
+        assert!(!checked_the_remote(&notices));
     }
 }
 
@@ -3004,6 +3013,7 @@ fn kill_does_not_ask_the_remote() {
 
     assert!(matches!(outcome, RemoveOutcome::Deleted { .. }));
     assert_eq!(world.devpod.git_fetches(), Vec::<Vec<String>>::new());
+    assert!(!checked_the_remote(&notices));
     let reported = notices.iter().find_map(|notice| match notice {
         LifecycleNotice::RemovingOverWork { refusal } => Some(refusal.remote.clone()),
         _ => None,
@@ -3017,10 +3027,11 @@ fn force_does_not_ask_the_remote() {
     let (mut world, clone) = a_world_ready_to_remove();
     commit_locally(&clone, 1);
 
-    let (outcome, _) = remove(&mut world, Removal::Insisted);
+    let (outcome, notices) = remove(&mut world, Removal::Insisted);
 
     assert!(matches!(outcome, RemoveOutcome::Deleted { .. }));
     assert_eq!(world.devpod.git_fetches(), Vec::<Vec<String>>::new());
+    assert!(!checked_the_remote(&notices));
 }
 
 /// The fetch the guard makes, argv and all: pinned to the clone it read, no tags,
