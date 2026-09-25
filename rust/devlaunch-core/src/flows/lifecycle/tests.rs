@@ -3064,6 +3064,73 @@ fn the_fetch_goes_to_the_clone_the_guard_read_and_prunes_nothing() {
     );
 }
 
+/// One pushed agent worktree `agent-one` inside *clone*, with `.claude/`
+/// gitignored and pushed the way a real clone has it.
+fn a_site_in(clone: &Path) -> PathBuf {
+    std::fs::write(clone.join(".gitignore"), ".claude/\n").expect("a gitignore");
+    commit(clone, "ignore the agent worktrees");
+    run_git(clone, &["push", "origin", "main"]);
+    an_agent_worktree(clone, "agent-one")
+}
+
+/// The same trap one level down: an agent worktree inside the clone pushed its
+/// branch by URL. The bare cache never saw that branch, so only the clone's
+/// fetch can show the commits are safe.
+#[test]
+fn a_site_pushed_by_url_does_not_stop_a_plain_rm() {
+    let (mut world, clone) = a_world_ready_to_remove();
+    let site = a_site_in(&clone);
+    commit_locally(&site, 2);
+    run_git(
+        &site,
+        &[
+            "push",
+            &world.origin.display().to_string(),
+            "HEAD:agent-one",
+        ],
+    );
+    as_a_host_sees_them(&clone);
+    assert!(
+        run_git(&world.bare, &["branch", "--list", "agent-one"])
+            .trim()
+            .is_empty(),
+        "the bare cache must not know the site's branch"
+    );
+    assert!(
+        losses_of(&guard_reads(&world, "r-main-aa")).contains("2 unpushed commit(s)"),
+        "the fixture has to leave the site's tracking ref stale"
+    );
+
+    let (outcome, notices) = remove(&mut world, Removal::Guarded);
+
+    assert!(
+        matches!(outcome, RemoveOutcome::Deleted { .. }),
+        "the site's commits are on the remote: {outcome:?}"
+    );
+    assert_eq!(world.devpod.git_fetches().len(), 1);
+    assert!(checked_the_remote(&notices));
+    assert!(!clone.exists());
+}
+
+/// A dirty site refuses whatever the remote says, so it is not asked.
+#[test]
+fn a_dirty_site_is_refused_without_a_fetch() {
+    let (mut world, clone) = a_world_ready_to_remove();
+    let site = a_site_in(&clone);
+    std::fs::write(site.join("notes.md"), "an hour of work\n").expect("a file");
+    as_a_host_sees_them(&clone);
+
+    let (outcome, notices) = remove(&mut world, Removal::Guarded);
+
+    let RemoveOutcome::Refused(refusal) = outcome else {
+        panic!("a dirty site is work: {outcome:?}");
+    };
+    assert_eq!(refusal.remote, RemoteCheck::NotAsked);
+    assert_eq!(world.devpod.git_fetches(), Vec::<Vec<String>>::new());
+    assert!(!checked_the_remote(&notices));
+    assert!(clone.exists());
+}
+
 // =======================================================================
 // the detached refresh child
 // =======================================================================
