@@ -388,15 +388,17 @@ aid blooop/devlaunch@fix/42 fix the flaky test
 is exactly
 
 ```bash
-dl blooop/devlaunch@fix/42 -- IS_SANDBOX=1 claude --dangerously-skip-permissions --remote-control=blooop/devlaunch@fix/42 'fix the flaky test'
+dl blooop/devlaunch@fix/42 -- IS_SANDBOX=1 claude --dangerously-skip-permissions --remote-control=devlaunch-fix-42-eshv 'fix the flaky test'
 ```
 
 Same clone, same workspace, same container. Everything after the workspace is the prompt, flags
-included, so it never needs quoting.
+included, so it never needs quoting. The Remote Control session is named after the workspace id
+(`devlaunch-fix-42-eshv`, what `dl --ls` prints), because another agent's `SendMessage` refuses
+an address with a `/` in it.
 
 A pull request link works here too, in the same three spellings, and `aid` resolves it before it
 does anything else. So the prompt banner, the terminal tab, the background boot and the agent's
-Remote Control session name all say the branch rather than the link, and the request is looked up
+Remote Control session name all follow the branch rather than the link, and the request is looked up
 once for the whole run:
 
 ```bash

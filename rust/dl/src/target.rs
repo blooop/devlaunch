@@ -214,6 +214,26 @@ fn triple(
     })
 }
 
+/// The workspace id `target` names, or `None` when none can be found.
+///
+/// [`resolve`] under [`Vetting::Unnecessary`] with a [`ColdPath`] of its own and
+/// its notices dropped: the one caller, `dl::workspace_id_of`, runs in front of a
+/// launch that resolves the same target again and says them there.
+pub(crate) fn workspace_id_of(runner: &dyn Runner, target: &str) -> Option<String> {
+    let mut context = CommandContext::new(runner);
+    let mut dropped = Vec::new();
+    let mut cold = ColdPath::new(runner, &mut dropped);
+    resolve(
+        runner,
+        &mut context,
+        &mut cold,
+        target,
+        Vetting::Unnecessary,
+    )
+    .ok()
+    .map(|addressed| addressed.workspace_id)
+}
+
 /// A bare word: devpod's own answer, with its listing as the second opinion.
 ///
 /// `status` failing is not the same as the workspace not existing, and the
@@ -335,5 +355,44 @@ mod tests {
 
         assert_eq!(bound(Vetting::Unnecessary), Some(KILL_MAY_WAIT));
         assert_eq!(bound(Vetting::ByDevpod), None);
+    }
+
+    /// The name aid gives a Remote Control session, which another agent then has
+    /// to be able to type into `SendMessage`: Claude Code refuses any `to` holding
+    /// a `/`. So a triple comes back as its id, never as the spec it was typed as.
+    #[test]
+    fn a_triple_names_its_workspace_id_and_not_its_spelling() {
+        let fake = FakeRunner::new();
+
+        let id = workspace_id_of(&fake, "blooop/bencher@feat/x").expect("a safe triple has an id");
+
+        assert_eq!(
+            id,
+            WorkspaceId::new("blooop", "bencher", "feat/x")
+                .expect("a safe triple")
+                .value()
+        );
+        assert!(!id.contains('/'), "{id}");
+    }
+
+    /// A bare id is the id, and finding that out costs nothing, as it does for
+    /// `kill`: aid asks this on every Remote Control launch.
+    #[test]
+    fn a_bare_id_names_itself_without_a_spawn() {
+        let fake = FakeRunner::new();
+
+        assert_eq!(
+            workspace_id_of(&fake, "bencher-feat-x-ab12").as_deref(),
+            Some("bencher-feat-x-ab12")
+        );
+        assert!(fake.calls().is_empty(), "{:?}", fake.argvs());
+    }
+
+    /// A spec the launch would refuse has no id to name a session after.
+    #[test]
+    fn a_spec_the_launch_refuses_names_nothing() {
+        let fake = FakeRunner::new();
+
+        assert_eq!(workspace_id_of(&fake, "../escape@main"), None);
     }
 }

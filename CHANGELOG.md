@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **An agent `aid` started can be messaged by other agents.** `aid` named each
+  Remote Control session after the spec as typed, `--remote-control=blooop/bencher@msg-b`,
+  and Claude Code's `SendMessage` refuses any address with a `/` in it: "to must be a
+  bare teammate name - there is only one team per session". Every `aid` session was in
+  every other agent's `ListAgents` and none of them could send it a word. The session
+  is now named after the workspace id, `bencher-msg-b-r49i`, which is the name
+  `dl --ls`, devpod and the hostname stage already use, so there is no new name to
+  learn. `aid` asks dl for it the way `dl <ws> kill` does, through a new
+  `dl::workspace_id_of`: a bare id costs nothing, and a triple costs one `devpod status`
+  with a five second limit before the derived id is used. Only a line with Remote
+  Control on asks.
+- **A `claude --remote-control` you start yourself is named after the workspace
+  too.** Claude Code names such a session after the hostname, and the hostname stage
+  cannot set one in most containers, so the session was named after the container
+  (`76e99b699a40-tender-snowflake`). A new `session-name` setup stage writes
+  `export CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX=<workspace id>` to the login
+  profile, on every launch and whatever `DEVLAUNCH_NO_TITLE` says, so the name starts
+  with the workspace id. Claude Code still replaces it with a title from the
+  conversation after the first message, since dl does not add flags to your command.
+||||||| ed25864
+
 ## [0.54.0] - 2026-09-25
 
 ### Fixed

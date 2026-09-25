@@ -371,6 +371,31 @@ pub fn pull_request_spec(word: &str) -> Result<String, i32> {
     commands::resolve_pull_request(&ProcessRunner, word.to_owned()).map_err(commands::Ending::code)
 }
 
+/// The workspace id `spec` names, the way `dl <spec> kill` works it out.
+///
+/// **Public for `aid`, which names Claude Code's Remote Control session with it.**
+/// The session used to be named after the spec as typed, and `blooop/bencher@fix`
+/// is a name no other agent can message: Claude Code's `SendMessage` reads a `/` in
+/// its `to` as `team/member` and refuses the address before it looks for a peer
+/// ("to must be a bare teammate name"). The id has no `/`, is unique, and is the
+/// name `dl --ls`, devpod and the container's hostname already use, so the session
+/// takes a name that exists rather than a fourth rendering of the triple.
+///
+/// Resolved through [`target::resolve`] under [`target::Vetting::Unnecessary`]
+/// rather than derived from the spec, because an `owner/repo` with no ref has no id
+/// until its default branch is known, and a workspace made under an older id
+/// scheme is called what its record says. That is the resolution `kill` uses: a
+/// bare id costs no round trip, a triple costs one bounded `devpod status`, and a
+/// devpod that does not answer in time leaves the derived id. Nothing is cloned
+/// or created, and the notices it would say are dropped, because the launch that
+/// follows says them.
+///
+/// `None` is a spec no workspace id can be found for: one `plan` refuses, or dl's
+/// records could not be opened. The launch refuses the first itself.
+pub fn workspace_id_of(spec: &str) -> Option<String> {
+    target::workspace_id_of(&ProcessRunner, spec)
+}
+
 /// What `spec` states it is called, without resolving anything.
 ///
 /// Split out from [`name_before_launch`] because it is the whole of the decision

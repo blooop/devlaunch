@@ -819,6 +819,7 @@ fn a_cold_triple_prepares_a_clone_creates_the_workspace_and_attaches() {
             // notices on one stream rather than splitting across two.
             &format!("Workspace {COLD} is ready"),
             &format!("{COLD}: the hostname setup stage did not report; it may not have run."),
+            &format!("{COLD}: the session-name setup stage did not report; it may not have run."),
             &format!("{COLD}: the title setup stage did not report; it may not have run."),
             &format!("{COLD}: the onboarding setup stage did not report; it may not have run."),
             &format!("{COLD}: the trust setup stage did not report; it may not have run."),
@@ -935,6 +936,7 @@ fn up_on_a_running_workspace_says_so_and_still_provisions_the_tools() {
             // pass that tops its tools up runs, because that is when it was found.
             &format!("Workspace {MAIN} is already running.") as &str,
             &format!("{MAIN}: the hostname setup stage did not report; it may not have run."),
+            &format!("{MAIN}: the session-name setup stage did not report; it may not have run."),
             // The title stage runs for every arm now, where it used to run only for
             // a launch that resolved a triple: the name it installs is the workspace
             // id, which every arm has. See `Placement::title`.
