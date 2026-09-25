@@ -1133,7 +1133,26 @@ a prefix and an inherited value of the same variable agree, and the prefix works
 a container that has not been re-entered yet.
 
 `DEVLAUNCH_NO_TITLE` turns this off with the rest of it, because it is one feature
-and not three. And it reaches login shells that start after it was written, so a
+and not three.
+
+### What claude names a Remote Control session
+
+A `claude --remote-control` with no name, or a `/remote-control` typed into a
+session, is named `<prefix>-<two words>` by Claude Code, and the prefix is the
+hostname unless `CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX` says otherwise. The
+hostname stage cannot set a hostname in most containers, so that name used to be
+the container's id (`76e99b699a40-tender-snowflake`), which nothing else calls the
+workspace. The session-name stage appends one line to the same profile, on every
+launch and whatever `DEVLAUNCH_NO_TITLE` says:
+
+```sh
+export CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX=bencher-msg-b-r49i
+```
+
+so the session is `bencher-msg-b-r49i-tender-snowflake`: the workspace id, which is
+the name `aid` gives its own sessions. Claude Code swaps the name for a title taken
+from the conversation after the first message unless a flag named the session, and
+a flag on your own `claude` is your command, so dl does not add one. And it reaches login shells that start after it was written, so a
 workspace that was already running when this arrived wants a re-login or a
 `dl <ws> recreate`. Same bargain the `PS1` line makes.
 

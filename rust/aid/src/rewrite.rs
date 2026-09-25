@@ -331,8 +331,9 @@ pub(crate) enum RemoteControlRequest {
 /// than by anything downstream re-checking.
 ///
 /// No session name is carried, because the name is not a second thing to decide: it
-/// is always the spec the person typed, which [`AidArgs`] already holds, and two
-/// fields that must agree are two fields that can disagree.
+/// is always the id of the workspace the spec names, which [`build_dl_args`] asks
+/// for when it builds the line, and a field holding it beside the spec would be two
+/// fields that must agree and so two fields that can disagree.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RemoteControl {
     /// Started with the agent's Remote Control flag, named after the workspace.
@@ -804,7 +805,16 @@ pub(crate) fn build_agent_command(
 /// thing to complain about ahead of the spelling that is the actual problem. The
 /// options still go *after* the spec so that a `--force` among them lands where dl
 /// reads it as the modifier rather than as the workspace's name.
-pub(crate) fn build_dl_args(parsed: &AidArgs) -> Option<Vec<String>> {
+///
+/// `workspace_id_of` answers which workspace the spec names, and is asked only
+/// for a session started with Remote Control, which is named after that id. A
+/// function rather than the answer, because the answer costs a `devpod status` for
+/// a triple and a line with Remote Control off has no use for it; `main` hands in
+/// [`dl::workspace_id_of`], and a test hands in a table.
+pub(crate) fn build_dl_args(
+    parsed: &AidArgs,
+    workspace_id_of: &dyn Fn(&str) -> Option<String>,
+) -> Option<Vec<String>> {
     let mut args = parsed.dl_options.clone();
     args.push(parsed.spec.clone());
     // Behind the spec and ahead of the verb flags, which is where dl reads them as
@@ -817,13 +827,26 @@ pub(crate) fn build_dl_args(parsed: &AidArgs) -> Option<Vec<String>> {
             remote_control,
         } => {
             args.push("--".to_owned());
-            // The session is named after the spec the person typed, so the list on
-            // claude.ai reads as the workspaces they opened.
+            // The session is named after the workspace, so the list on claude.ai
+            // reads as the workspaces they opened, and by its id rather than the
+            // spec as typed, because the id is a name another agent can message.
+            // Claude Code's `SendMessage` refuses any `to` holding a `/` ("to must
+            // be a bare teammate name"), which every `owner/repo` spec does, and
+            // the id is the name `dl --ls`, devpod and the hostname already use.
+            //
+            // The spec is the fallback only for a spec no id can be found for,
+            // which the launch below then refuses itself.
             let session = match remote_control {
-                RemoteControl::On => Some(parsed.spec.as_str()),
+                RemoteControl::On => {
+                    Some(workspace_id_of(&parsed.spec).unwrap_or_else(|| parsed.spec.clone()))
+                }
                 RemoteControl::Off => None,
             };
-            args.extend(build_agent_command(agent, prompt, session)?.iter().cloned());
+            args.extend(
+                build_agent_command(agent, prompt, session.as_deref())?
+                    .iter()
+                    .cloned(),
+            );
         }
         Task::Retired => {}
     }
@@ -837,6 +860,14 @@ mod tests {
     //! splits into, what shell command comes out, and what dl is handed.
 
     use super::*;
+
+    /// What `dl::workspace_id_of` answers for every spec in these tests, which
+    /// never ask devpod anything.
+    const WORKSPACE_ID: &str = "ws-id";
+
+    fn id_of(_spec: &str) -> Option<String> {
+        Some(WORKSPACE_ID.to_owned())
+    }
 
     fn words(argv: &[&str]) -> Vec<String> {
         argv.iter().map(|word| (*word).to_owned()).collect()
@@ -903,7 +934,12 @@ mod tests {
             .with_spec("blooop/devlaunch@pr_link".to_owned());
 
         assert_eq!(parsed.spec, "blooop/devlaunch@pr_link");
-        let launch = build_dl_args(&parsed).expect("an agent line builds");
+        // The id is asked of the spec the reference resolved to, never of the
+        // reference itself.
+        let resolved = |spec: &str| {
+            (spec == "blooop/devlaunch@pr_link").then(|| "devlaunch-pr-link-ab12".to_owned())
+        };
+        let launch = build_dl_args(&parsed, &resolved).expect("an agent line builds");
         assert_eq!(
             launch.first().map(String::as_str),
             Some("blooop/devlaunch@pr_link")
@@ -913,7 +949,7 @@ mod tests {
         assert!(
             launch
                 .iter()
-                .any(|word| word == "--remote-control=blooop/devlaunch@pr_link"),
+                .any(|word| word == "--remote-control=devlaunch-pr-link-ab12"),
             "{launch:?}"
         );
         assert_eq!(build_boot_args(&parsed), ["blooop/devlaunch@pr_link", "up"]);
@@ -1034,18 +1070,15 @@ mod tests {
             Task::Retired
         );
         assert_eq!(
-            build_dl_args(&parsed(&["owner/repo", "fix the bug", "--autorm"]))
+            build_dl_args(&parsed(&["owner/repo", "fix the bug", "--autorm"]), &id_of)
                 .expect("a retired-spelling line needs no agent"),
             ["owner/repo", "--autorm"]
         );
         assert_eq!(
-            build_dl_args(&parsed(&[
-                "--devcontainer",
-                "robot",
-                "owner/repo",
-                "hi",
-                "--stop",
-            ]))
+            build_dl_args(
+                &parsed(&["--devcontainer", "robot", "owner/repo", "hi", "--stop",]),
+                &id_of
+            )
             .expect("a retired-spelling line needs no agent"),
             ["--devcontainer", "robot", "owner/repo", "--stop"]
         );
@@ -1257,7 +1290,8 @@ mod tests {
     #[test]
     fn the_dl_command_line_is_options_then_spec_then_the_command() {
         assert_eq!(
-            build_dl_args(&parsed(&["owner/repo@branch", "fix", "it"])).expect("a known agent"),
+            build_dl_args(&parsed(&["owner/repo@branch", "fix", "it"]), &id_of)
+                .expect("a known agent"),
             [
                 "owner/repo@branch",
                 "--",
@@ -1265,12 +1299,12 @@ mod tests {
                 "IS_SANDBOX=1",
                 "claude",
                 "--dangerously-skip-permissions",
-                "--remote-control=owner/repo@branch",
+                "--remote-control=ws-id",
                 "fix it",
             ]
         );
         assert_eq!(
-            build_dl_args(&parsed(&["--devcontainer", "robot", "owner/repo"]))
+            build_dl_args(&parsed(&["--devcontainer", "robot", "owner/repo"]), &id_of)
                 .expect("a known agent"),
             [
                 "--devcontainer",
@@ -1281,7 +1315,7 @@ mod tests {
                 "IS_SANDBOX=1",
                 "claude",
                 "--dangerously-skip-permissions",
-                "--remote-control=owner/repo",
+                "--remote-control=ws-id",
             ]
         );
     }
@@ -1294,8 +1328,11 @@ mod tests {
         // property worth holding is that the prompt is *one* word of it however
         // many words were typed -- dl quotes each one on the way to the remote
         // shell, so a word that survives here survives all the way.
-        let args = build_dl_args(&parsed(&["owner/repo", "fix", "the", "flaky", "test"]))
-            .expect("a known agent");
+        let args = build_dl_args(
+            &parsed(&["owner/repo", "fix", "the", "flaky", "test"]),
+            &id_of,
+        )
+        .expect("a known agent");
         let after = args
             .iter()
             .position(|word| word == "--")
@@ -1308,7 +1345,7 @@ mod tests {
                 "IS_SANDBOX=1",
                 "claude",
                 "--dangerously-skip-permissions",
-                "--remote-control=owner/repo",
+                "--remote-control=ws-id",
                 "fix the flaky test",
             ]
         );
@@ -1347,7 +1384,7 @@ mod tests {
         // Behind the spec, because that is where dl reads a flag as a modifier
         // rather than as the workspace's name, and ahead of the `--`, because
         // everything after that belongs to the workspace's command.
-        let built = build_dl_args(&parsed(&["owner/repo", "fix it", "--rm"]))
+        let built = build_dl_args(&parsed(&["owner/repo", "fix it", "--rm"]), &id_of)
             .expect("an agent line builds");
 
         assert_eq!(
@@ -1360,7 +1397,7 @@ mod tests {
                 "IS_SANDBOX=1",
                 "claude",
                 "--dangerously-skip-permissions",
-                "--remote-control=owner/repo",
+                "--remote-control=ws-id",
                 "fix it",
             ]
         );
@@ -1370,8 +1407,8 @@ mod tests {
     fn rm_before_the_spec_is_the_same_request() {
         // An unknown leading flag is passed through to dl, which is all `--rm`
         // needs: dl accepts it in any position, unlike `--force`.
-        let built =
-            build_dl_args(&parsed(&["--rm", "owner/repo", "fix it"])).expect("an agent line");
+        let built = build_dl_args(&parsed(&["--rm", "owner/repo", "fix it"]), &id_of)
+            .expect("an agent line");
 
         assert_eq!(built[0], "--rm");
         assert_eq!(built[1], "owner/repo");
@@ -1483,7 +1520,7 @@ mod tests {
 
         assert_eq!(chosen.dl_options, ["--rm", "--force"]);
         assert_eq!(prompt(&chosen), "fix it");
-        let built = build_dl_args(&chosen).expect("an agent line");
+        let built = build_dl_args(&chosen, &id_of).expect("an agent line");
         assert_eq!(
             &built[..3],
             ["--rm", "--force", "owner/repo"],
@@ -1528,7 +1565,7 @@ mod tests {
 
         assert_eq!(typed_backwards.spec_options, ["--rm", "--force"]);
         assert_eq!(prompt(&typed_backwards), "fix it");
-        let built = build_dl_args(&typed_backwards).expect("an agent line");
+        let built = build_dl_args(&typed_backwards, &id_of).expect("an agent line");
         assert_eq!(
             built.iter().position(|word| word == "--force"),
             Some(2),
@@ -1546,7 +1583,7 @@ mod tests {
         assert_eq!(chosen.task, Task::Retired);
         assert_eq!(chosen.spec_options, ["--rm", "--autorm"]);
         assert_eq!(
-            build_dl_args(&chosen).expect("a retired-spelling line"),
+            build_dl_args(&chosen, &id_of).expect("a retired-spelling line"),
             ["owner/repo", "--rm", "--autorm"]
         );
     }
@@ -1571,13 +1608,10 @@ mod tests {
         // piece of it is load-bearing — the flag, the `=`, the unquoted command
         // substitution, and where it sits relative to the prompt.
         assert_eq!(
-            build_dl_args(&parsed(&[
-                "owner/repo@branch",
-                "fix",
-                "the",
-                "flaky",
-                "test"
-            ]))
+            build_dl_args(
+                &parsed(&["owner/repo@branch", "fix", "the", "flaky", "test"]),
+                &id_of
+            )
             .expect("a known agent"),
             [
                 "owner/repo@branch",
@@ -1586,14 +1620,14 @@ mod tests {
                 "IS_SANDBOX=1",
                 "claude",
                 "--dangerously-skip-permissions",
-                "--remote-control=owner/repo@branch",
+                "--remote-control=ws-id",
                 "fix the flaky test",
             ]
         );
         // And with no prompt, which is the launch this most often is: the flag is
         // not one of the ones that only make sense beside a prompt.
         assert_eq!(
-            build_dl_args(&parsed(&["owner/repo@branch"])).expect("a known agent"),
+            build_dl_args(&parsed(&["owner/repo@branch"]), &id_of).expect("a known agent"),
             [
                 "owner/repo@branch",
                 "--",
@@ -1601,7 +1635,7 @@ mod tests {
                 "IS_SANDBOX=1",
                 "claude",
                 "--dangerously-skip-permissions",
-                "--remote-control=owner/repo@branch",
+                "--remote-control=ws-id",
             ]
         );
     }
@@ -1617,7 +1651,8 @@ mod tests {
             assert_eq!(remote_control(&chosen), RemoteControl::Off, "{agent}");
         }
         assert_eq!(
-            build_dl_args(&parsed(&["--codex", "owner/repo", "hi"])).expect("a known agent"),
+            build_dl_args(&parsed(&["--codex", "owner/repo", "hi"]), &id_of)
+                .expect("a known agent"),
             [
                 "owner/repo",
                 "--",
@@ -1627,7 +1662,8 @@ mod tests {
             ]
         );
         assert_eq!(
-            build_dl_args(&parsed(&["--gemini", "owner/repo", "hi"])).expect("a known agent"),
+            build_dl_args(&parsed(&["--gemini", "owner/repo", "hi"]), &id_of)
+                .expect("a known agent"),
             [
                 "owner/repo",
                 "--",
@@ -1699,7 +1735,7 @@ mod tests {
         // that turned it off "mostly" would be a session on claude.ai that nobody
         // meant to publish.
         for flag in ["--no-remote-control", "--no-remote"] {
-            let built = build_dl_args(&parsed(&[flag, "owner/repo@fix/x", "fix", "it"]))
+            let built = build_dl_args(&parsed(&[flag, "owner/repo@fix/x", "fix", "it"]), &id_of)
                 .expect("a known agent");
 
             assert_eq!(
@@ -2025,7 +2061,7 @@ mod tests {
 
         assert_eq!(prompt(&chosen), "fix the bug");
         assert_eq!(
-            build_dl_args(&chosen).expect("an agent line"),
+            build_dl_args(&chosen, &id_of).expect("an agent line"),
             [
                 "owner/repo",
                 "--rm",
@@ -2034,7 +2070,7 @@ mod tests {
                 "IS_SANDBOX=1",
                 "claude",
                 "--dangerously-skip-permissions",
-                "--remote-control=owner/repo",
+                "--remote-control=ws-id",
                 "fix the bug",
             ]
         );
@@ -2047,7 +2083,7 @@ mod tests {
             .with_prompt("explain this".to_owned());
 
         assert_eq!(
-            build_dl_args(&chosen).expect("an agent line"),
+            build_dl_args(&chosen, &id_of).expect("an agent line"),
             [
                 "owner/repo",
                 "--",
@@ -2069,7 +2105,7 @@ mod tests {
 
         assert_eq!(remote_control(&on), RemoteControl::On);
         assert_eq!(
-            build_dl_args(&on).expect("an agent line"),
+            build_dl_args(&on, &id_of).expect("an agent line"),
             [
                 "owner/repo@fix/x",
                 "--",
@@ -2077,7 +2113,7 @@ mod tests {
                 "IS_SANDBOX=1",
                 "claude",
                 "--dangerously-skip-permissions",
-                "--remote-control=owner/repo@fix/x",
+                "--remote-control=ws-id",
                 "fix the bug",
             ]
         );
@@ -2087,7 +2123,7 @@ mod tests {
 
         assert_eq!(remote_control(&off), RemoteControl::Off);
         assert_eq!(
-            build_dl_args(&off).expect("an agent line"),
+            build_dl_args(&off, &id_of).expect("an agent line"),
             [
                 "owner/repo@fix/x",
                 "--",
@@ -2105,7 +2141,7 @@ mod tests {
         let chosen = parsed(&["owner/repo"]).with_prompt(String::new());
 
         assert_eq!(
-            build_dl_args(&chosen).expect("an agent line"),
+            build_dl_args(&chosen, &id_of).expect("an agent line"),
             [
                 "owner/repo",
                 "--",
@@ -2113,8 +2149,72 @@ mod tests {
                 "IS_SANDBOX=1",
                 "claude",
                 "--dangerously-skip-permissions",
-                "--remote-control=owner/repo",
+                "--remote-control=ws-id",
             ]
+        );
+    }
+
+    #[test]
+    fn a_remote_control_session_is_named_after_the_workspace_id_not_the_spec() {
+        // Claude Code's `SendMessage` refuses any `to` with a `/` in it ("to must be
+        // a bare teammate name"), so a session named `owner/repo@feat/x` showed up
+        // in every other agent's `ListAgents` and could not be messaged by any of
+        // them. The id has no `/` and is the name `dl --ls` prints.
+        let asked = std::cell::RefCell::new(Vec::new());
+        let id_of = |spec: &str| {
+            asked.borrow_mut().push(spec.to_owned());
+            Some("repo-feat-x-ab12".to_owned())
+        };
+
+        let built = build_dl_args(&parsed(&["owner/repo@feat/x", "fix it"]), &id_of)
+            .expect("an agent line");
+
+        assert!(
+            built
+                .iter()
+                .any(|word| word == "--remote-control=repo-feat-x-ab12"),
+            "{built:?}"
+        );
+        assert!(
+            !built
+                .iter()
+                .any(|word| word.starts_with("--remote-control=owner/"))
+        );
+        // The spec is still what dl is handed: the id names the session, not the
+        // launch.
+        assert_eq!(built.first().map(String::as_str), Some("owner/repo@feat/x"));
+        assert_eq!(*asked.borrow(), ["owner/repo@feat/x"]);
+    }
+
+    #[test]
+    fn a_session_with_remote_control_off_never_asks_for_the_id() {
+        // The id costs a `devpod status` for a triple, which a line that names no
+        // session has no use for.
+        let never = |spec: &str| -> Option<String> { panic!("asked for the id of {spec}") };
+
+        let built = build_dl_args(&parsed(&["owner/repo", "fix it", "--no-remote"]), &never)
+            .expect("an agent line");
+
+        assert!(
+            !built
+                .iter()
+                .any(|word| word.starts_with("--remote-control")),
+            "{built:?}"
+        );
+    }
+
+    #[test]
+    fn a_spec_with_no_id_keeps_the_spec_as_the_session_name() {
+        // Only a spec the launch refuses has no id, and the launch then says why;
+        // the session line it would have started is left as it always was.
+        let built =
+            build_dl_args(&parsed(&["owner/repo", "fix it"]), &|_| None).expect("an agent line");
+
+        assert!(
+            built
+                .iter()
+                .any(|word| word == "--remote-control=owner/repo"),
+            "{built:?}"
         );
     }
 }

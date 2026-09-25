@@ -248,6 +248,10 @@ impl StageName {
 /// hostname" detection is, and it costs nothing: the trip is the probe's.
 pub(crate) const HOSTNAME_STAGE: StageName = StageName::new("hostname");
 
+/// The stage that tells Claude Code what to call a Remote Control session it names
+/// itself, which is after the workspace id. See [`remote_control_prefix_line`].
+pub(crate) const SESSION_NAME_STAGE: StageName = StageName::new("session-name");
+
 /// The stage that puts `zellij` in the container (see [`ZELLIJ_TOOL`]). Also free
 /// of round trips: it rides the pass every entry into Running already pays.
 pub(crate) const ZELLIJ_STAGE: StageName = StageName::new("zellij");
@@ -799,6 +803,35 @@ const LOCAL_BIN_LINE: &str = r#"export PATH="$HOME/.local/bin:$PATH""#;
 /// has to reach the non-interactive login shells especially, because `bash -lc` is
 /// what every `dl <ws> -- claude ...` runs under.
 const CLAUDE_TITLE_EXPORT: &str = "export CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1";
+
+/// The export that names a Remote Control session Claude Code names itself.
+///
+/// Claude Code calls such a session `<prefix>-<two words>`, and the prefix is
+/// `$CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX` or else the hostname. The hostname
+/// stage is what would make the hostname the workspace id, and in most containers
+/// it cannot: `sudo hostname` needs CAP_SYS_ADMIN, which Docker drops. So a
+/// `claude --remote-control` somebody started in `bencher-msg-b-r49i` was
+/// `76e99b699a40-tender-snowflake`, after the container, which no other agent
+/// looking for that workspace in `ListAgents` could recognise. This gives Claude
+/// Code the id the hostname stage meant it to have, whether that stage worked or
+/// not.
+///
+/// The id and nothing new: it is the string `dl --ls` prints, devpod is addressed
+/// by and `aid` names its own sessions with, and it has no `/`, which Claude Code's
+/// `SendMessage` refuses in an address. Claude Code replaces the name with a title
+/// taken from the conversation after the first message unless the session was
+/// named explicitly, which only a flag does, and a flag on somebody's own `claude`
+/// is their command, not dl's to rewrite. An export is the environment their
+/// command inherits, as [`CLAUDE_TITLE_EXPORT`] is.
+///
+/// *workspace* is quoted as its own word, though an id is a DNS label and needs no
+/// quoting, so the line is text whatever it is handed.
+fn remote_control_prefix_line(workspace: &str) -> String {
+    format!(
+        "export CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX={}",
+        quote(workspace)
+    )
+}
 
 // ===========================================================================
 // the scripts
@@ -1912,6 +1945,29 @@ pub(crate) fn setup_stages(
             HOSTNAME_STAGE,
             format!("sudo hostname {}", quote(workspace)),
         )
+        .quieter(),
+        // Beside the hostname because it stands in for it: Claude Code names a
+        // Remote Control session after the hostname unless this says otherwise,
+        // and the stage above usually cannot set one. Gated on nothing, like the
+        // hostname and unlike the title: `DEVLAUNCH_NO_TITLE` turns off what dl
+        // puts on the terminal, and did not ask for a session other agents cannot
+        // find. A nested `bash -c` for the title stage's reason, a stage being one
+        // line and this being several.
+        Stage::new(
+            SESSION_NAME_STAGE,
+            format!(
+                "bash -c {}",
+                quote(
+                    &[
+                        profile_resolution("$HOME"),
+                        profile_prepend(&remote_control_prefix_line(workspace), None),
+                    ]
+                    .join("\n")
+                )
+            ),
+        )
+        // Quieter for the title stage's reason: a profile that cannot be written
+        // is a session with a duller name, not a launch to warn about.
         .quieter(),
     ];
     if let (ToolsSwitch::Install, ZellijSwitch::Install) = (tools, zellij) {
@@ -3363,6 +3419,18 @@ else
   echo "devlaunch-probe stage hostname failed $?"
 fi"#;
 
+    /// The session-name stage's snippet for `myws`, spelled out. Not a `PYTHON_`
+    /// golden: the stage is newer than the Python tree.
+    const SESSION_NAME_STAGE_SNIPPET: &str = r#"if bash -c 'if [ -f "$HOME/.bash_profile" ]; then PROFILE="$HOME/.bash_profile"
+elif [ -f "$HOME/.bash_login" ]; then PROFILE="$HOME/.bash_login"
+else PROFILE="$HOME/.profile"
+fi
+grep -qxF '"'"'# devlaunch: 52224b6588f3'"'"' "$PROFILE" 2>/dev/null || printf '"'"'%s\n'"'"' '"'"'# devlaunch: 52224b6588f3'"'"' '"'"'export CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX=myws'"'"' >> "$PROFILE"'; then
+  echo "devlaunch-probe stage session-name ok"
+else
+  echo "devlaunch-probe stage session-name failed $?"
+fi"#;
+
     /// The onboarding stage's snippet, spelled out. Not a `PYTHON_` golden like the
     /// two above it: this stage has no Python ancestor, it arrived after the port,
     /// and the reason it is a literal anyway is the reason those are — it carries a
@@ -4400,7 +4468,11 @@ fi
             CodexSwitch::Skip,
             None,
         );
-        let command = &stages[1].command;
+        let command = &stages
+            .iter()
+            .find(|stage| stage.name == ZELLIJ_STAGE)
+            .expect("the zellij stage")
+            .command;
         let words = shlex::split(command).expect("a stage a shell can read");
         assert_eq!(
             words,
@@ -4472,7 +4544,7 @@ fi
         assert_eq!(
             with_zellij,
             format!(
-                "{PYTHON_HOSTNAME_STAGE}\n{PYTHON_ZELLIJ_STAGE}\n{ONBOARDING_STAGE_SNIPPET}\n{TRUST_STAGE_SNIPPET}\n{}",
+                "{PYTHON_HOSTNAME_STAGE}\n{SESSION_NAME_STAGE_SNIPPET}\n{PYTHON_ZELLIJ_STAGE}\n{ONBOARDING_STAGE_SNIPPET}\n{TRUST_STAGE_SNIPPET}\n{}",
                 probe_script()
             )
         );
@@ -4486,7 +4558,7 @@ fi
         assert_eq!(
             opted_out,
             format!(
-                "{PYTHON_HOSTNAME_STAGE}\n{ONBOARDING_STAGE_SNIPPET}\n{TRUST_STAGE_SNIPPET}\n{}",
+                "{PYTHON_HOSTNAME_STAGE}\n{SESSION_NAME_STAGE_SNIPPET}\n{ONBOARDING_STAGE_SNIPPET}\n{TRUST_STAGE_SNIPPET}\n{}",
                 probe_script()
             )
         );
@@ -7501,6 +7573,65 @@ fi
     }
 
     #[test]
+    fn a_real_bash_over_the_session_name_stage_names_claudes_sessions_after_the_id() {
+        // Claude Code names a Remote Control session it names itself after
+        // `$CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX`, else the hostname, and the
+        // hostname stage cannot set a hostname in most containers. So the id has to
+        // reach the environment of whoever starts claude, which a login shell reads
+        // from the profile. Read back through `bash -lc`, as the title export is,
+        // because a line in a profile bash does not source looks like success.
+        //
+        // With the title turned off, too: that switch is about the terminal, and
+        // did not ask for a session other agents cannot find.
+        let scratch = scratch();
+        let home = scratch.path();
+        let stages = setup_stages(
+            "bencher-msg-b-r49i",
+            ToolsSwitch::Skip,
+            ZellijSwitch::Skip,
+            CodexSwitch::Skip,
+            None,
+        );
+        let stage = stages
+            .iter()
+            .find(|stage| stage.name == SESSION_NAME_STAGE)
+            .expect("the session-name stage, title or not");
+
+        for _ in 0..2 {
+            let install = std::process::Command::new("bash")
+                .args(["-c", &stage.command])
+                .env("HOME", home)
+                .output()
+                .expect("bash to run the stage");
+            assert!(install.status.success(), "{install:?}");
+        }
+
+        let read_back = std::process::Command::new("bash")
+            .args([
+                "-lc",
+                r#"printf '%s' "$CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX""#,
+            ])
+            .env("HOME", home)
+            .env_remove("CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX")
+            .output()
+            .expect("bash to read the profile back");
+        assert_eq!(
+            String::from_utf8_lossy(&read_back.stdout),
+            "bencher-msg-b-r49i",
+            "{read_back:?}"
+        );
+        // Twice through the pass, once in the profile.
+        let profile = std::fs::read_to_string(home.join(".profile")).expect("the profile");
+        assert_eq!(
+            profile
+                .matches("CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX=")
+                .count(),
+            1,
+            "{profile:?}"
+        );
+    }
+
+    #[test]
     fn the_title_switch_takes_claudes_suppression_with_it() {
         // Three pieces under one variable now: dl's own escape, the `PS1` line, and
         // claude's titling. Somebody who turned dl's naming off did not ask for
@@ -8372,6 +8503,8 @@ fi
             levels,
             vec![
                 (HOSTNAME_STAGE, FailureLevel::Info),
+                // A profile that cannot be written is a duller session name.
+                (SESSION_NAME_STAGE, FailureLevel::Info),
                 // A zellij that would not install is a real, invisible and permanent
                 // degradation of a container, so it takes the default rather than
                 // declaring an exception.
@@ -8928,7 +9061,10 @@ fi
             })
         );
         assert!(!calls.contains("pixi"), "{calls}");
-        assert!(!home.join(".profile").exists());
+        // No PATH line either. The profile itself may exist, because the
+        // session-name stage on the same pass writes one.
+        let profile = std::fs::read_to_string(home.join(".profile")).unwrap_or_default();
+        assert!(!profile.contains(".devlaunch/pixi"), "{profile:?}");
     }
 
     #[test]

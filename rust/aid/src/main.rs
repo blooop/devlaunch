@@ -11,7 +11,7 @@
 //!
 //! ```text
 //! dl owner/repo@branch -- claude --dangerously-skip-permissions \
-//!     --remote-control=owner/repo@branch 'fix the flaky test'
+//!     --remote-control=repo-branch-5uoe 'fix the flaky test'
 //! ```
 //!
 //! Everything that decides how a workspace is obtained — the bare repo cache, the
@@ -159,7 +159,7 @@ fn run(argv: &[String]) -> i32 {
         Err(code) => return code,
     };
     let (parsed, boot) = interactive::collect_prompt(parsed);
-    let Some(dl_args) = rewrite::build_dl_args(&parsed) else {
+    let Some(dl_args) = rewrite::build_dl_args(&parsed, &dl::workspace_id_of) else {
         // Unreachable by a command line: the parse only ever answers with an agent
         // from the table, and a line that starts no agent cannot fail to build one.
         // Reported rather than panicked on, in the words the refusal for an invented
@@ -315,7 +315,7 @@ Options:
     --no-remote-control, --no-remote
                                      Start a plain local session. Remote Control is
                                      on by default: claude is started under the
-                                     workspace you typed as the session name, so the
+                                     workspace id as the session name, so the
                                      session in this terminal is also readable and
                                      steerable from claude.ai/code and the Claude
                                      app. It is claude only, and it needs a
