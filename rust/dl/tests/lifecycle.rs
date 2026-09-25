@@ -1130,6 +1130,14 @@ fn a_remote_rm_cannot_reach_leaves_the_refusal_and_says_so() {
         "git's words are cut to their first line, so the refusal stays one line: {}",
         run.err
     );
+    let (reason, _) = refusal
+        .split_once("), so ")
+        .unwrap_or_else(|| panic!("{}", run.err));
+    assert!(
+        reason.contains("does not appear to be a git repository"),
+        "the reason quoted is git's line that names the cause: {}",
+        run.err
+    );
     assert!(
         refusal.ends_with(
             "), so the unpushed count is as of the clone's last fetch. Push or commit it, or \

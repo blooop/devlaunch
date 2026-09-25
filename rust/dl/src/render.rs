@@ -6080,6 +6080,55 @@ mod tests {
         );
     }
 
+    fn refused_over_unpushed(remote: RemoteCheck) -> RemovalRefused {
+        RemovalRefused {
+            workspace_id: "devlaunch-main".to_owned(),
+            because: RemovalGrounds::WouldLose("1 unpushed commit(s)".to_owned()),
+            remote,
+        }
+    }
+
+    #[test]
+    fn a_remote_asked_or_never_asked_leaves_the_refusal_as_it_was() {
+        for remote in [RemoteCheck::NotAsked, RemoteCheck::Fetched] {
+            assert_eq!(
+                removal_refusal(&refused_over_unpushed(remote), "devlaunch-main", "rm"),
+                "devlaunch-main holds 1 unpushed commit(s). Push or commit it, or run: dl \
+                 devlaunch-main rm --force"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unreachable_remote_is_quoted_by_the_first_line_git_wrote() {
+        let refusal = removal_refusal(
+            &refused_over_unpushed(RemoteCheck::Unreachable {
+                reason: "\n  \nfatal: x\nmore".to_owned(),
+            }),
+            "devlaunch-main",
+            "rm",
+        );
+        assert!(
+            refusal.contains(" could not reach the remote to check (fatal: x), so "),
+            "{refusal}"
+        );
+    }
+
+    #[test]
+    fn an_unreachable_remote_git_said_nothing_about_says_so() {
+        let refusal = removal_refusal(
+            &refused_over_unpushed(RemoteCheck::Unreachable {
+                reason: String::new(),
+            }),
+            "devlaunch-main",
+            "rm",
+        );
+        assert!(
+            refusal.contains(" could not reach the remote to check (no reason given), so "),
+            "{refusal}"
+        );
+    }
+
     // ---------------------------------------------------------- dl <ws> kill
 
     fn held_by(pid: u32, command: &str) -> HostProcess {
