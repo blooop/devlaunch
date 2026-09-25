@@ -191,6 +191,10 @@ workspaces or destroys work.
 - `dl <ws> rm` deletes one now. It refuses if the clone holds uncommitted or unpushed
   work, or if git could not be read to find out. `--force` overrides, and an agent
   should reach for it only against a workspace whose `unsaved` it has already read.
+  Before it refuses over unpushed commits alone, `rm` fetches the clone's `origin`
+  once, bounded at 30 seconds, so commits pushed by URL rather than through `origin`
+  do not block it. `--ls --json` does not fetch, so `unsaved` there can still count
+  those commits. A fetch that fails leaves the refusal standing and says so.
 - `dl <ws> kill` is for a workspace that is wedged rather than merely unwanted. It
   reports what it destroys instead of refusing, so it is not a louder `rm`.
 

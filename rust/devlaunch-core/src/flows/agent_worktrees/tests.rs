@@ -605,7 +605,7 @@ fn a_detached_head_that_is_ahead_stands_and_one_the_cache_reaches_goes() {
 
 #[test]
 fn work_pushed_after_the_clone_was_cut_is_found_in_the_cache() {
-    // The stale-ref trap: the clone is never fetched into, so asking it alone
+    // The stale-ref trap: `--prune` never fetches into the clone, so asking it alone
     // reports pushed-and-merged branches as unpushed forever. The bare next
     // door is the thing that gets fetched, and it is asked first.
     let world = Clone::new();

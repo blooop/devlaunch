@@ -143,6 +143,8 @@ pub devlaunch_core::api::LifecycleNotice::AddressingRecordedWorkspace::owner: al
 pub devlaunch_core::api::LifecycleNotice::AddressingRecordedWorkspace::recorded: alloc::string::String
 pub devlaunch_core::api::LifecycleNotice::AddressingRecordedWorkspace::repo: alloc::string::String
 pub devlaunch_core::api::LifecycleNotice::Cache(devlaunch_core::flows::repo_manager::CacheNotice)
+pub devlaunch_core::api::LifecycleNotice::CheckingRemote
+pub devlaunch_core::api::LifecycleNotice::CheckingRemote::workspace_id: alloc::string::String
 pub devlaunch_core::api::LifecycleNotice::CloneNotRemoved
 pub devlaunch_core::api::LifecycleNotice::CloneNotRemoved::refusal: devlaunch_core::flows::workspace_clone::RemoveWorkspaceError
 pub devlaunch_core::api::LifecycleNotice::CloneNotRemoved::workspace_id: alloc::string::String
@@ -209,6 +211,19 @@ pub fn devlaunch_core::flows::records::RecordsNotice::eq(&self, &devlaunch_core:
 impl core::fmt::Debug for devlaunch_core::flows::records::RecordsNotice
 pub fn devlaunch_core::flows::records::RecordsNotice::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::records::RecordsNotice
+pub enum devlaunch_core::api::RemoteCheck
+pub devlaunch_core::api::RemoteCheck::Fetched
+pub devlaunch_core::api::RemoteCheck::NotAsked
+pub devlaunch_core::api::RemoteCheck::Unreachable
+pub devlaunch_core::api::RemoteCheck::Unreachable::reason: alloc::string::String
+impl core::clone::Clone for devlaunch_core::flows::lifecycle::RemoteCheck
+pub fn devlaunch_core::flows::lifecycle::RemoteCheck::clone(&self) -> devlaunch_core::flows::lifecycle::RemoteCheck
+impl core::cmp::Eq for devlaunch_core::flows::lifecycle::RemoteCheck
+impl core::cmp::PartialEq for devlaunch_core::flows::lifecycle::RemoteCheck
+pub fn devlaunch_core::flows::lifecycle::RemoteCheck::eq(&self, &devlaunch_core::flows::lifecycle::RemoteCheck) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::lifecycle::RemoteCheck
+pub fn devlaunch_core::flows::lifecycle::RemoteCheck::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::lifecycle::RemoteCheck
 pub enum devlaunch_core::api::Removal
 pub devlaunch_core::api::Removal::Guarded
 pub devlaunch_core::api::Removal::Insisted
@@ -392,6 +407,7 @@ pub fn devlaunch_core::flows::lifecycle::Refresh<'a>::rearm(&mut self)
 pub fn devlaunch_core::flows::lifecycle::Refresh<'a>::spawned(&self) -> bool
 pub struct devlaunch_core::api::RemovalRefused
 pub devlaunch_core::api::RemovalRefused::because: devlaunch_core::flows::lifecycle::RemovalGrounds
+pub devlaunch_core::api::RemovalRefused::remote: devlaunch_core::flows::lifecycle::RemoteCheck
 pub devlaunch_core::api::RemovalRefused::workspace_id: alloc::string::String
 impl core::clone::Clone for devlaunch_core::flows::lifecycle::RemovalRefused
 pub fn devlaunch_core::flows::lifecycle::RemovalRefused::clone(&self) -> devlaunch_core::flows::lifecycle::RemovalRefused
@@ -738,6 +754,8 @@ pub devlaunch_core::flows::lifecycle::LifecycleNotice::AddressingRecordedWorkspa
 pub devlaunch_core::flows::lifecycle::LifecycleNotice::AddressingRecordedWorkspace::recorded: alloc::string::String
 pub devlaunch_core::flows::lifecycle::LifecycleNotice::AddressingRecordedWorkspace::repo: alloc::string::String
 pub devlaunch_core::flows::lifecycle::LifecycleNotice::Cache(devlaunch_core::flows::repo_manager::CacheNotice)
+pub devlaunch_core::flows::lifecycle::LifecycleNotice::CheckingRemote
+pub devlaunch_core::flows::lifecycle::LifecycleNotice::CheckingRemote::workspace_id: alloc::string::String
 pub devlaunch_core::flows::lifecycle::LifecycleNotice::CloneNotRemoved
 pub devlaunch_core::flows::lifecycle::LifecycleNotice::CloneNotRemoved::refusal: devlaunch_core::flows::workspace_clone::RemoveWorkspaceError
 pub devlaunch_core::flows::lifecycle::LifecycleNotice::CloneNotRemoved::workspace_id: alloc::string::String
@@ -762,6 +780,19 @@ pub fn devlaunch_core::flows::lifecycle::LifecycleNotice::eq(&self, &devlaunch_c
 impl core::fmt::Debug for devlaunch_core::flows::lifecycle::LifecycleNotice
 pub fn devlaunch_core::flows::lifecycle::LifecycleNotice::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::lifecycle::LifecycleNotice
+pub enum devlaunch_core::flows::lifecycle::RemoteCheck
+pub devlaunch_core::flows::lifecycle::RemoteCheck::Fetched
+pub devlaunch_core::flows::lifecycle::RemoteCheck::NotAsked
+pub devlaunch_core::flows::lifecycle::RemoteCheck::Unreachable
+pub devlaunch_core::flows::lifecycle::RemoteCheck::Unreachable::reason: alloc::string::String
+impl core::clone::Clone for devlaunch_core::flows::lifecycle::RemoteCheck
+pub fn devlaunch_core::flows::lifecycle::RemoteCheck::clone(&self) -> devlaunch_core::flows::lifecycle::RemoteCheck
+impl core::cmp::Eq for devlaunch_core::flows::lifecycle::RemoteCheck
+impl core::cmp::PartialEq for devlaunch_core::flows::lifecycle::RemoteCheck
+pub fn devlaunch_core::flows::lifecycle::RemoteCheck::eq(&self, &devlaunch_core::flows::lifecycle::RemoteCheck) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::lifecycle::RemoteCheck
+pub fn devlaunch_core::flows::lifecycle::RemoteCheck::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::lifecycle::RemoteCheck
 pub enum devlaunch_core::flows::lifecycle::Removal
 pub devlaunch_core::flows::lifecycle::Removal::Guarded
 pub devlaunch_core::flows::lifecycle::Removal::Insisted
@@ -814,6 +845,7 @@ pub fn devlaunch_core::flows::lifecycle::Refresh<'a>::rearm(&mut self)
 pub fn devlaunch_core::flows::lifecycle::Refresh<'a>::spawned(&self) -> bool
 pub struct devlaunch_core::flows::lifecycle::RemovalRefused
 pub devlaunch_core::flows::lifecycle::RemovalRefused::because: devlaunch_core::flows::lifecycle::RemovalGrounds
+pub devlaunch_core::flows::lifecycle::RemovalRefused::remote: devlaunch_core::flows::lifecycle::RemoteCheck
 pub devlaunch_core::flows::lifecycle::RemovalRefused::workspace_id: alloc::string::String
 impl core::clone::Clone for devlaunch_core::flows::lifecycle::RemovalRefused
 pub fn devlaunch_core::flows::lifecycle::RemovalRefused::clone(&self) -> devlaunch_core::flows::lifecycle::RemovalRefused

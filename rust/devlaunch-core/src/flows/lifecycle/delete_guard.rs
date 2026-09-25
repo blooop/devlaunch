@@ -2,10 +2,11 @@
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use super::delete::Persistence;
-use super::notices::{LifecycleNotice, extend_with_cache};
-use crate::clients::git::Git;
+use super::notices::{LifecycleNotice, as_cache, extend_with_cache};
+use crate::clients::git::{Git, GitAnswer};
 use crate::domain::metadata::MetadataStorage;
 use crate::domain::model::WorktreeInfo;
 use crate::flows::agent_worktrees::{Standing, Verdict};
@@ -186,6 +187,31 @@ impl Insisted {
 pub struct RemovalRefused {
     pub workspace_id: String,
     pub because: RemovalGrounds,
+    /// Whether the remote was asked before this refusal was made, which is what
+    /// says how current an unpushed count in [`RemovalRefused::because`] is.
+    pub remote: RemoteCheck,
+}
+
+/// Whether the clone's remote was asked before a refusal, and what came of it.
+///
+/// Its own type rather than a clause appended to [`RemovalGrounds`]' words,
+/// because the reader acts on it differently: a count the remote has just
+/// confirmed means "push it", and a count the remote could not be asked about
+/// means "it may already be pushed, and dl could not check" (devlaunch#638).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RemoteCheck {
+    /// Nothing was fetched. The refusal was not one a fetch could clear
+    /// (uncommitted work, or a question git would not answer), or the removal was
+    /// `kill`, which does not wait. Any unpushed count is as of the clone's last
+    /// fetch.
+    NotAsked,
+    /// The clone's `origin` was fetched just before the guard asked again, so the
+    /// unpushed count is what the remote does not have now.
+    Fetched,
+    /// The fetch failed or ran out of time, so the unpushed count is as of the
+    /// clone's last fetch and some of it may already be on the remote. `reason` is
+    /// git's words, or the deadline.
+    Unreachable { reason: String },
 }
 
 /// What a refusal has to say, in the words it will be said in.
@@ -256,6 +282,7 @@ pub(crate) enum Guarded {
 pub(crate) fn guard_removal(
     workspace_id: &str,
     verdict: Verdict,
+    remote: RemoteCheck,
     insistence: Insistence,
 ) -> Guarded {
     let refusal = match verdict {
@@ -263,6 +290,7 @@ pub(crate) fn guard_removal(
         Verdict::Stands(standing) => RemovalRefused {
             workspace_id: workspace_id.to_owned(),
             because: refusal_from(&standing),
+            remote,
         },
     };
     match insistence {
@@ -337,4 +365,92 @@ pub(crate) fn unsaved_work_in(
     let unsaved = listing::unsaved_work_in(git, &view, workspace_id);
     extend_with_cache(notices, directories.take_notices());
     unsaved
+}
+
+/// How long `dl <ws> rm` waits on the remote before it refuses on what the clone
+/// last knew.
+///
+/// Thirty seconds, because a person is waiting on the answer and a fetch that
+/// has new objects to bring is seconds on an ordinary link. Past it the fetch is
+/// killed and the refusal stands as it was, saying the remote could not be
+/// reached. No repo lock is held across it, so this is the whole of the wait.
+pub(crate) const REMOTE_CHECK_DEADLINE: Duration = Duration::from_secs(30);
+
+/// Ask the remote, then the guard again, when a fetch could turn a refusal into
+/// permission (devlaunch#638).
+///
+/// A workspace clone's `refs/remotes/origin/*` moves only when something in the
+/// workspace fetches, or pushes *through* `origin`. A push to a URL moves
+/// nothing, so a clone whose work is on the forge still reads `ahead 4`, and the
+/// guard counted those four as unpushed. Before this, the only ways past were a
+/// manual fetch in the clone or `--force`, and `--force` skips the guard
+/// entirely, which is the wrong habit to teach for a workspace that might really
+/// hold work.
+///
+/// **Only a standing made of unpushed commits alone is fetched for.** A clean
+/// clone is permission already and stays offline. A dirty tree, or a question
+/// git would not answer, refuses whatever the remote says, so a fetch there is a
+/// wait that cannot change the answer. See [`Standing::only_unpushed`].
+///
+/// **The clone's own `origin` is fetched, not the bare cache**, and the choice
+/// was between those two:
+///
+/// - The clone route asks the *same* question afterwards: the guard runs again
+///   unchanged, against refs that are now current. The bare route would need a
+///   second reachability rule beside the guard, one `rev-list` per commit, as
+///   `--prune` does, and two rules for "is this commit elsewhere" can come to
+///   disagree.
+/// - The clone route needs no repo lock. A fetch of the bare writes refs every
+///   sibling workspace reads and so runs under the lock, and a background sweep
+///   can hold that lock for up to five minutes. With the clone,
+///   [`REMOTE_CHECK_DEADLINE`] is the whole of the wait.
+/// - It also fixes the `ahead N` the person and the agent see in `git status`,
+///   which the bare route leaves as it was.
+///
+/// What the bare route had, and this gives up: a refreshed cache for every
+/// sibling. The detached sweep still does that on its own interval.
+///
+/// **Every failure keeps the clone.** A fetch that is refused, times out, or
+/// cannot authenticate leaves the first verdict exactly as it was, and says so in
+/// [`RemoteCheck::Unreachable`]. It never becomes "nothing to lose".
+pub(crate) fn asking_the_remote(
+    clones: &WorkspaceCloneManager<'_>,
+    storage: &MetadataStorage,
+    git: &Git<'_>,
+    cache_dir: &Path,
+    workspace_id: &str,
+    verdict: Verdict,
+    notices: &mut dyn Notices<LifecycleNotice>,
+) -> (Verdict, RemoteCheck) {
+    let Verdict::Stands(standing) = &verdict else {
+        return (verdict, RemoteCheck::NotAsked);
+    };
+    if !standing.only_unpushed() {
+        return (verdict, RemoteCheck::NotAsked);
+    }
+    // The same resolver the verdict was read through, so the fetch goes to the
+    // directory the guard was talking about (devlaunch#174). A record that names
+    // no directory was a could-not-prove above and never reaches here, so the
+    // `None` arms are the honest fallback rather than a path anyone takes.
+    let Some(clone) = storage
+        .get_worktree_by_workspace_id(workspace_id)
+        .and_then(|record| clones.resolve_clone_path(record, &mut as_cache(notices)))
+    else {
+        return (verdict, RemoteCheck::NotAsked);
+    };
+    notices.say(LifecycleNotice::CheckingRemote {
+        workspace_id: workspace_id.to_owned(),
+    });
+    match git.fetch_origin(&clone, REMOTE_CHECK_DEADLINE) {
+        GitAnswer::Said(_) => (
+            unsaved_work_in(clones, storage, git, cache_dir, workspace_id, notices),
+            RemoteCheck::Fetched,
+        ),
+        GitAnswer::Refused(refused) => (
+            verdict,
+            RemoteCheck::Unreachable {
+                reason: refused.reason().to_owned(),
+            },
+        ),
+    }
 }

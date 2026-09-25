@@ -28,6 +28,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   profile, on every launch and whatever `DEVLAUNCH_NO_TITLE` says, so the name starts
   with the workspace id. Claude Code still replaces it with a title from the
   conversation after the first message, since dl does not add flags to your command.
+||||||| ed25864
+
+## [0.54.0] - 2026-09-25
+
+### Fixed
+
+- **`dl <ws> rm` asks the remote before it refuses over unpushed commits**
+  (#638). A workspace clone's `refs/remotes/origin/*` moves only when something
+  in the workspace fetches or pushes through `origin`, so commits pushed to the
+  URL instead (what an agent falls back to when SSH fails in the container) left
+  the clone reading `ahead 4` and `rm` refusing over work the forge already had.
+  The only ways past were a manual fetch in the clone or `--force`, which skips
+  the guard entirely.
+
+  When unpushed commits are the only thing standing, `rm` now runs one
+  `git fetch --no-tags --no-prune origin` in the clone under a 30 second deadline
+  and asks again. Commits the remote has drop out of the count; the rest still
+  refuse. A clean clone, a dirty tree, `kill` and `rm --force` never fetch. The
+  fetch never prunes, whatever the host's `fetch.prune` says, so a merged and
+  deleted branch keeps counting as pushed. A fetch that fails, times out or cannot
+  authenticate keeps the refusal and says the remote could not be reached.
+
+  `RemovalRefused` in `devlaunch_core::api` gained a `remote: RemoteCheck` field
+  saying whether the remote was asked, and `LifecycleNotice` a `CheckingRemote`
+  arm said before the fetch.
 
 ## [0.53.0] - 2026-09-18
 

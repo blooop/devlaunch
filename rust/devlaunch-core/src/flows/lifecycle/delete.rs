@@ -4,7 +4,8 @@ use std::path::Path;
 use std::time::Duration;
 
 use super::delete_guard::{
-    Finding, Guarded, Insistence, Probe, Removal, RemovalRefused, guard_removal, unsaved_work_in,
+    Finding, Guarded, Insistence, Probe, RemoteCheck, Removal, RemovalRefused, asking_the_remote,
+    guard_removal, unsaved_work_in,
 };
 use super::notices::{LifecycleNotice, as_cache};
 use super::refresh::{Refresh, RefreshReason};
@@ -140,12 +141,16 @@ pub enum RemoveOutcome {
 ///
 /// 1. **Probe**, but only for a [`Removal`] that will act on the answer — see
 ///    [`Removal::probe`]. It is a `git status` and a `git log` per clone.
-/// 2. **Guard**, always asked with [`Insistence::NotInsisted`] whatever this
+/// 2. **Ask the remote**, but only for [`Removal::Guarded`] and only when the
+///    probe found unpushed commits and nothing else: one fetch of the clone's
+///    `origin`, bounded, then the probe again. See [`asking_the_remote`] for why
+///    that and nothing wider.
+/// 3. **Guard**, always asked with [`Insistence::NotInsisted`] whatever this
 ///    removal insists, because what is wanted from it is the *finding* rather than
 ///    the verdict: [`Removal::Wedged`] acts on the same finding differently, and
 ///    passing its own insistence would collapse the finding to
 ///    [`Guarded::MayRemove`] before it could.
-/// 3. **Name the volumes, then delete, then remove the clone**, which is
+/// 4. **Name the volumes, then delete, then remove the clone**, which is
 ///    [`workspace_delete`] and where the rest of the ordering lives.
 ///
 /// `git` is not a parameter: inside core it is [`CommandContext::git`], so the
@@ -182,8 +187,23 @@ pub fn workspace_remove(
             workspace_id,
             notices,
         );
+        // Only the removal that refuses asks the remote. `kill` acts on the same
+        // finding without stopping, and promises not to wait, so a fetch there
+        // would be a wait that changes nothing it does.
+        let (unsaved, remote) = match finding {
+            Finding::Refuses => asking_the_remote(
+                clones,
+                storage,
+                &context.git(),
+                cache_dir,
+                workspace_id,
+                unsaved,
+                notices,
+            ),
+            Finding::Says => (unsaved, RemoteCheck::NotAsked),
+        };
         if let Guarded::Refused(refusal) =
-            guard_removal(workspace_id, unsaved, Insistence::NotInsisted)
+            guard_removal(workspace_id, unsaved, remote, Insistence::NotInsisted)
         {
             match finding {
                 // The one thing dl refuses on its own account. Nothing below this
