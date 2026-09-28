@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790626846839,
+  "lastUpdate": 1790631073895,
   "repoUrl": "https://github.com/blooop/devlaunch",
   "entries": {
     "devlaunch launch stages": [
@@ -16955,6 +16955,93 @@ window.BENCHMARK_DATA = {
             "range": "± 0.387065",
             "unit": "s",
             "extra": "runs=5/5 wall=9.818356s v0.26.1, Linux-X64"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "blooop@gmail.com",
+            "name": "Austin Gregg-Smith",
+            "username": "blooop"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6d3e268b65585ba9c96064456c5d733f941f8474",
+          "message": "Merge pull request #647 from blooop/fix/picker-term-unset\n\nfix: the picker panicked when TERM named no usable terminal",
+          "timestamp": "2026-09-28T22:28:28+01:00",
+          "tree_id": "bc2b42299487937c946bb2e18bce8e7633c3b653",
+          "url": "https://github.com/blooop/devlaunch/commit/6d3e268b65585ba9c96064456c5d733f941f8474"
+        },
+        "date": 1790631072718,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "warm / attach",
+            "value": 1.038055,
+            "range": "± 0.058635",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / devpod-up",
+            "value": 0.280455,
+            "range": "± 0.006512",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / host-prep",
+            "value": 0.000043,
+            "range": "± 0.000002",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / total",
+            "value": 1.324861,
+            "range": "± 0.05784",
+            "unit": "s",
+            "extra": "runs=5/5 wall=1.326398s v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / attach",
+            "value": 1.025493,
+            "range": "± 0.039502",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / devpod-up",
+            "value": 3.08028,
+            "range": "± 0.042333",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / host-prep",
+            "value": 0.355728,
+            "range": "± 0.007757",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / tools",
+            "value": 3.024399,
+            "range": "± 0.197308",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / total",
+            "value": 7.499019,
+            "range": "± 0.238526",
+            "unit": "s",
+            "extra": "runs=5/5 wall=7.500863s v0.26.1, Linux-X64"
           }
         ]
       }
