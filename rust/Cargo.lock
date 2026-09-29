@@ -452,7 +452,6 @@ dependencies = [
  "shlex 2.0.1",
  "tempfile",
  "toml",
- "toml_edit",
 ]
 
 [[package]]
@@ -521,6 +520,7 @@ dependencies = [
  "skim",
  "tempfile",
  "term",
+ "toml_edit",
 ]
 
 [[package]]

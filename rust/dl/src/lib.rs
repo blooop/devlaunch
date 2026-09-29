@@ -28,6 +28,7 @@ mod commands;
 mod hangup;
 mod herdr_editor;
 mod herdr_environment;
+mod herdr_kit;
 mod launch;
 mod pane_shell;
 mod render;
@@ -655,6 +656,16 @@ fn command_line(argv: &[String]) -> Result<cli::Command, i32> {
             return Err(usage.exit_code());
         }
     };
+    if let Some(flag) = parsed.misplaced_setup_modifier() {
+        // A usage error in clap's own words and with clap's exit 2, because it is
+        // the refusal `requires` was meant to make (see the method).
+        let usage = <cli::Cli as clap::CommandFactory>::command().error(
+            clap::error::ErrorKind::MissingRequiredArgument,
+            format!("{flag} can only be used with --herdr-setup"),
+        );
+        let _ = usage.print();
+        return Err(usage.exit_code());
+    }
     cli::resolve(parsed, argv).map_err(|grammar| {
         eprintln!("{}", grammar_refusal(&grammar));
         // Python's `logging.error(...); return 1` for every shape it refused after

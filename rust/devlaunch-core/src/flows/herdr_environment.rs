@@ -298,22 +298,9 @@ impl Store {
     }
 }
 
-// The two writers below take opposite mode policies on purpose, and which one a caller wants
-// follows from who owns the file: a config belongs to the user, so its mode is theirs to choose,
-// while the state file is ours and holds whatever secrets were set as overrides.
-fn replace_preserving_mode(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let temporary = staged(path, bytes)?;
-    match fs::metadata(path) {
-        Ok(existing) => temporary
-            .as_file()
-            .set_permissions(existing.permissions())?,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error),
-    }
-    temporary.persist(path).map_err(|e| e.error)?;
-    Ok(())
-}
-
+// The state file is ours and holds whatever secrets were set as overrides, so it is
+// always private. (The Herdr config writer that kept the user's mode moved to
+// `dl --herdr-setup`, in `rust/dl/src/herdr_kit/mod.rs`.)
 fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let temporary = staged(path, bytes)?;
     temporary
@@ -327,61 +314,6 @@ fn staged(path: &Path, bytes: &[u8]) -> io::Result<tempfile::NamedTempFile> {
     let mut temporary = tempfile::NamedTempFile::new_in(path.parent().expect("file has a parent"))?;
     temporary.write_all(bytes)?;
     Ok(temporary)
-}
-
-/// Change only Herdr's pane launcher. Unknown launchers require an explicit manual edit.
-pub fn configure(config: &Path, script: &Path, home: &Path) -> io::Result<bool> {
-    let resolved;
-    let config = match fs::symlink_metadata(config) {
-        Ok(metadata) if metadata.file_type().is_symlink() => {
-            resolved = fs::canonicalize(config)?;
-            resolved.as_path()
-        }
-        Ok(_) => config,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => config,
-        Err(error) => return Err(error),
-    };
-    let original = match fs::read_to_string(config) {
-        Ok(text) => text,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
-        Err(error) => return Err(error),
-    };
-    let mut document = original
-        .parse::<toml_edit::DocumentMut>()
-        .map_err(|e| invalid(format!("invalid Herdr config: {e}")))?;
-    let script = script
-        .to_str()
-        .ok_or_else(|| invalid("pane shell path is not UTF-8"))?;
-    let terminal = document
-        .entry("terminal")
-        .or_insert(toml_edit::Item::Table(toml_edit::Table::new()));
-    let table = terminal
-        .as_table_like_mut()
-        .ok_or_else(|| invalid("Herdr terminal config is not a table"))?;
-    if let Some(current) = table.get("default_shell") {
-        let current = current
-            .as_str()
-            .ok_or_else(|| invalid("Herdr default_shell is not a string"))?;
-        if current == script {
-            return Ok(false);
-        }
-        let prototype = home.join(".local/bin/herdr-workspace-shell");
-        if !current.is_empty()
-            && current != "dl-herdr-shell"
-            && current != prototype.to_string_lossy()
-        {
-            return Err(invalid(format!(
-                "Herdr uses a custom default_shell ({current}); set terminal.default_shell to {script} manually to replace it"
-            )));
-        }
-    }
-    table.insert("default_shell", toml_edit::value(script));
-    let directory = config
-        .parent()
-        .ok_or_else(|| invalid("config path has no parent"))?;
-    fs::create_dir_all(directory)?;
-    replace_preserving_mode(config, document.to_string().as_bytes())?;
-    Ok(true)
 }
 
 #[cfg(test)]
@@ -549,124 +481,6 @@ mod tests {
         );
         store.clear().unwrap();
         assert_eq!(*store.read().unwrap().claude(), ClaudeConfig::Inherited);
-    }
-
-    #[test]
-    fn installer_preserves_comments_settings_and_is_idempotent() {
-        let root = tempfile::tempdir().unwrap();
-        let config = root.path().join("config.toml");
-        let original =
-            "# My config\n[terminal]\nfont_size = 14 # keep me\n[theme]\nname = 'dark'\n";
-        fs::write(&config, original).unwrap();
-        let script = root.path().join("bin/dl-herdr-shell");
-        assert!(configure(&config, &script, root.path()).unwrap());
-        let once = fs::read_to_string(&config).unwrap();
-        assert!(once.contains("# My config"));
-        assert!(once.contains("font_size = 14 # keep me"));
-        assert!(once.contains("name = 'dark'"));
-        assert!(!configure(&config, &script, root.path()).unwrap());
-        assert_eq!(fs::read_to_string(&config).unwrap(), once);
-    }
-
-    #[test]
-    fn installer_keeps_the_mode_the_config_already_had() {
-        let root = tempfile::tempdir().unwrap();
-        let script = root.path().join("bin/dl-herdr-shell");
-        for mode in [0o644, 0o600] {
-            let config = root.path().join(format!("config-{mode:o}.toml"));
-            fs::write(&config, "[terminal]\nfont_size = 14\n").unwrap();
-            fs::set_permissions(&config, fs::Permissions::from_mode(mode)).unwrap();
-            assert!(configure(&config, &script, root.path()).unwrap());
-            assert_eq!(
-                fs::metadata(&config).unwrap().permissions().mode() & 0o777,
-                mode,
-                "{mode:o}"
-            );
-        }
-        let fresh = root.path().join("fresh.toml");
-        assert!(configure(&fresh, &script, root.path()).unwrap());
-        assert_eq!(
-            fs::metadata(&fresh).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
-    }
-
-    #[test]
-    fn installer_keeps_the_mode_of_a_symlink_target() {
-        let root = tempfile::tempdir().unwrap();
-        let config = root.path().join("linked.toml");
-        let source = root.path().join("linked-source.toml");
-        fs::write(&source, "[terminal]\nfont_size = 14\n").unwrap();
-        fs::set_permissions(&source, fs::Permissions::from_mode(0o644)).unwrap();
-        std::os::unix::fs::symlink("linked-source.toml", &config).unwrap();
-        let script = root.path().join("bin/dl-herdr-shell");
-
-        assert!(configure(&config, &script, root.path()).unwrap());
-        assert_eq!(
-            fs::metadata(&source).unwrap().permissions().mode() & 0o777,
-            0o644
-        );
-    }
-
-    #[test]
-    fn installer_updates_symlink_target_and_preserves_link() {
-        let root = tempfile::tempdir().unwrap();
-        let config = root.path().join("config.toml");
-        let source = root.path().join("source.toml");
-        fs::write(&source, "# My config\n[terminal]\nfont_size = 14\n").unwrap();
-        std::os::unix::fs::symlink("source.toml", &config).unwrap();
-        let script = root.path().join("bin/dl-herdr-shell");
-
-        assert!(configure(&config, &script, root.path()).unwrap());
-        assert_eq!(fs::read_link(&config).unwrap(), Path::new("source.toml"));
-        let updated = fs::read_to_string(&source).unwrap();
-        let document = updated.parse::<toml_edit::DocumentMut>().unwrap();
-        assert_eq!(
-            document["terminal"]["default_shell"].as_str(),
-            script.to_str()
-        );
-        assert_eq!(document["terminal"]["font_size"].as_integer(), Some(14));
-        assert!(updated.contains("# My config"));
-        assert!(!configure(&config, &script, root.path()).unwrap());
-    }
-
-    #[test]
-    fn installer_refuses_dangling_symlink_without_replacing_it() {
-        let root = tempfile::tempdir().unwrap();
-        let config = root.path().join("config.toml");
-        std::os::unix::fs::symlink("missing.toml", &config).unwrap();
-        let script = root.path().join("bin/dl-herdr-shell");
-
-        assert_eq!(
-            configure(&config, &script, root.path()).unwrap_err().kind(),
-            io::ErrorKind::NotFound
-        );
-        assert_eq!(fs::read_link(&config).unwrap(), Path::new("missing.toml"));
-        assert!(!root.path().join("missing.toml").exists());
-    }
-
-    #[test]
-    fn installer_refuses_custom_launchers_and_migrates_only_the_known_prototype() {
-        let root = tempfile::tempdir().unwrap();
-        let config = root.path().join("config.toml");
-        let script = root.path().join("bin/dl-herdr-shell");
-        for original in [
-            "[terminal]\ndefault_shell = '/custom/launcher'\n",
-            "invalid toml = [",
-        ] {
-            fs::write(&config, original).unwrap();
-            assert!(configure(&config, &script, root.path()).is_err());
-            assert_eq!(fs::read_to_string(&config).unwrap(), original);
-        }
-        fs::write(
-            &config,
-            format!(
-                "[terminal]\ndefault_shell = {:?}\n",
-                root.path().join(".local/bin/herdr-workspace-shell")
-            ),
-        )
-        .unwrap();
-        assert!(configure(&config, &script, root.path()).unwrap());
     }
 
     #[test]

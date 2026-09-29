@@ -1487,7 +1487,6 @@ pub fn devlaunch_core::flows::herdr_environment::Store::clear(&self) -> core::io
 pub fn devlaunch_core::flows::herdr_environment::Store::new(&std::path::Path, &std::path::Path, &str) -> core::io::error::Result<Self>
 pub fn devlaunch_core::flows::herdr_environment::Store::read(&self) -> core::io::error::Result<devlaunch_core::flows::herdr_environment::Environment>
 pub fn devlaunch_core::flows::herdr_environment::Store::update(&self, impl core::ops::function::FnOnce(&mut devlaunch_core::flows::herdr_environment::Environment) -> core::io::error::Result<()>) -> core::io::error::Result<()>
-pub fn devlaunch_core::flows::herdr_environment::configure(&std::path::Path, &std::path::Path, &std::path::Path) -> core::io::error::Result<bool>
 pub fn devlaunch_core::flows::herdr_environment::profile_directory(&devlaunch_core::clients::ProfileName, &std::path::Path) -> core::io::error::Result<std::path::PathBuf>
 pub mod devlaunch_core::flows::kept_copies
 pub mod devlaunch_core::flows::kill

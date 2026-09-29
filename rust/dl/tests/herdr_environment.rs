@@ -9,15 +9,36 @@ fn executable(path: &Path, body: &str) {
     fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
 }
 
+/// A herdr that records every call in `$HOME/herdr.log` and keeps what
+/// `plugin link` and `integration install` did in files beside it, so a second
+/// run sees the first one's effect. Anything else answers `{}`, which is what
+/// `workspace get` needs.
+const HERDR_STUB: &str = r#"#!/bin/sh
+printf '%s\n' "$*" >> "$HOME/herdr.log"
+case "$1 $2" in
+  "plugin list")
+    if [ -f "$HOME/linked" ]; then
+      printf '{"result":{"plugins":[{"plugin_id":"local.agent-queue","plugin_root":"%s"}]}}\n' "$(cat "$HOME/linked")"
+    else
+      printf '{"result":{"plugins":[]}}\n'
+    fi ;;
+  "plugin link") printf '%s' "$3" > "$HOME/linked" ;;
+  "integration status")
+    if [ -f "$HOME/integrated" ]; then echo 'claude: current (v10) (x)'; else echo 'claude: not installed (x)'; fi ;;
+  "integration install") touch "$HOME/integrated" ;;
+  "--skill ")
+    if [ -f "$HOME/skill-fails" ]; then echo 'usage: herdr' ; exit 2; fi
+    echo '# herdr skill' ;;
+  *) printf '%s\n' '{}' ;;
+esac
+"#;
+
 struct Host(tempfile::TempDir);
 
 impl Host {
     fn new() -> Self {
         let host = Self(tempfile::tempdir().unwrap());
-        executable(
-            &host.0.path().join("herdr"),
-            "#!/bin/sh\nprintf '%s\\n' '{}'\n",
-        );
+        executable(&host.0.path().join("herdr"), HERDR_STUB);
         executable(
             &host.0.path().join("shell"),
             "#!/bin/sh\nprintf '%s\\n' \"${MESSAGE-unset}\" \"${CLAUDE_CONFIG_DIR-unset}\" \"${CLAUDE_CODE_OAUTH_TOKEN-unset}\" \"${ANTHROPIC_API_KEY-unset}\"\n",
@@ -229,7 +250,7 @@ fn setup_honors_the_herdr_config_override() {
 }
 
 #[test]
-fn setup_refuses_to_drift_a_chezmoi_managed_regular_config() {
+fn setup_leaves_a_chezmoi_managed_config_alone_and_installs_the_rest() {
     let host = Host::new();
     let config = host.0.path().join(".config/herdr/config.toml");
     let source = host.0.path().join("dotfiles/config.toml.tmpl");
@@ -248,14 +269,16 @@ fn setup_refuses_to_drift_a_chezmoi_managed_regular_config() {
         .output()
         .unwrap();
 
-    assert!(!output.status.success(), "{output:?}");
+    assert!(output.status.success(), "{output:?}");
     assert_eq!(
         fs::read_to_string(&config).unwrap(),
         "[terminal]\nfont_size = 17\n"
     );
-    assert!(!host.0.path().join(".local/bin/dl-herdr-shell").exists());
+    assert!(host.0.path().join(".local/bin/dl-herdr-shell").exists());
     let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(stderr.contains(source.to_str().unwrap()), "{stderr}");
+    assert!(stderr.contains("skipped  herdr config"), "{stderr}");
+    // Paths under HOME are reported as `~/...`.
+    assert!(stderr.contains("~/dotfiles/config.toml.tmpl"), "{stderr}");
 }
 
 #[test]
@@ -304,8 +327,8 @@ fn setup_refuses_when_the_chezmoi_probe_cannot_answer() {
         fs::read_to_string(&config).unwrap(),
         "[terminal]\nfont_size = 17\n"
     );
-    assert!(!host.0.path().join(".local/bin/dl-herdr-shell").exists());
     let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("failed   herdr config"), "{stderr}");
     assert!(stderr.contains("invalid config"), "{stderr}");
 }
 
@@ -479,5 +502,348 @@ fn a_bad_workspace_id_is_reported_on_the_flag_and_swallowed_on_the_variable() {
         String::from_utf8(opened.stdout)
             .unwrap()
             .starts_with("inherited\n")
+    );
+}
+
+/// Every file and link under `root`, with its content (or target) and mode, minus
+/// the herdr stub's own bookkeeping. Two equal snapshots are two runs that wrote
+/// nothing between them.
+fn snapshot(root: &Path) -> std::collections::BTreeMap<String, String> {
+    fn walk(root: &Path, directory: &Path, into: &mut std::collections::BTreeMap<String, String>) {
+        for entry in fs::read_dir(directory).unwrap() {
+            let path = entry.unwrap().path();
+            let name = path.strip_prefix(root).unwrap().display().to_string();
+            if ["herdr.log", "linked", "integrated", "skill-fails"].contains(&name.as_str()) {
+                continue;
+            }
+            let metadata = fs::symlink_metadata(&path).unwrap();
+            if metadata.file_type().is_symlink() {
+                into.insert(
+                    name,
+                    format!("-> {}", fs::read_link(&path).unwrap().display()),
+                );
+            } else if metadata.is_dir() {
+                walk(root, &path, into);
+            } else {
+                let mode = metadata.permissions().mode() & 0o777;
+                let content = String::from_utf8_lossy(&fs::read(&path).unwrap()).into_owned();
+                into.insert(name, format!("{mode:o} {content}"));
+            }
+        }
+    }
+    let mut files = std::collections::BTreeMap::new();
+    walk(root, root, &mut files);
+    files
+}
+
+impl Host {
+    /// A home a new machine would have: Claude Code and kitty configured, herdr
+    /// from pixi, and nothing of devlaunch's.
+    fn new_machine() -> Self {
+        let host = Self::new();
+        fs::create_dir_all(host.0.path().join(".claude")).unwrap();
+        fs::create_dir_all(host.0.path().join(".config/kitty")).unwrap();
+        fs::create_dir_all(host.0.path().join(".pixi/bin")).unwrap();
+        executable(&host.0.path().join(".pixi/bin/herdr"), HERDR_STUB);
+        host
+    }
+
+    fn setup(&self, extra: &[&str]) -> Output {
+        let mut args = vec!["--herdr-setup"];
+        args.extend_from_slice(extra);
+        self.command(&args)
+            .env_remove("HERDR_ENV")
+            .output()
+            .unwrap()
+    }
+
+    fn path(&self, relative: &str) -> std::path::PathBuf {
+        self.0.path().join(relative)
+    }
+
+    fn herdr_calls(&self) -> String {
+        fs::read_to_string(self.path("herdr.log")).unwrap_or_default()
+    }
+}
+
+fn stderr_of(output: &Output) -> String {
+    assert!(output.status.success(), "{output:?}");
+    String::from_utf8(output.stderr.clone()).unwrap()
+}
+
+#[test]
+fn setup_installs_the_whole_kit_on_a_new_machine_and_a_second_run_changes_nothing() {
+    let host = Host::new_machine();
+    let first = stderr_of(&host.setup(&[]));
+    assert!(!first.contains("failed"), "{first}");
+
+    let kit = host.path(".local/share/devlaunch/herdr");
+    for (file, mode) in [
+        ("status.sh", 0o755),
+        ("plugins/agent-queue/view.sh", 0o755),
+        ("plugins/agent-queue/herdr-plugin.toml", 0o644),
+    ] {
+        let metadata = fs::metadata(kit.join(file)).unwrap();
+        assert_eq!(metadata.permissions().mode() & 0o777, mode, "{file}");
+    }
+    let calls = host.herdr_calls();
+    assert!(
+        calls.contains(&format!(
+            "plugin link {}",
+            kit.join("plugins/agent-queue").display()
+        )),
+        "{calls}"
+    );
+    assert!(calls.contains("integration install claude"), "{calls}");
+    // The startup hook ran by hand: with no server it says so and exits 0.
+    assert!(first.contains("agent-queue: no herdr socket"), "{first}");
+
+    let config = fs::read_to_string(host.path(".config/herdr/config.toml")).unwrap();
+    let shell = host.path(".local/bin/dl-herdr-shell");
+    assert!(
+        config.contains(&format!("default_shell = \"{}\"", shell.display())),
+        "{config}"
+    );
+    assert!(
+        config.contains(&kit.join("status.sh").display().to_string()),
+        "{config}"
+    );
+    assert!(config.contains("local.agent-queue.toggle"), "{config}");
+    assert!(first.contains("herdr server reload-config"), "{first}");
+    assert!(first.contains("DEVLAUNCH_HERDR=1"), "{first}");
+
+    let hook = host.path(".claude/hooks/devlaunch-herdr-tab-title.sh");
+    assert_eq!(
+        fs::metadata(&hook).unwrap().permissions().mode() & 0o777,
+        0o755
+    );
+    let settings: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(host.path(".claude/settings.json")).unwrap())
+            .unwrap();
+    assert!(
+        settings["hooks"]["Stop"][0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap()
+            .contains(hook.to_str().unwrap())
+    );
+    assert_eq!(
+        fs::read_to_string(host.path(".claude/skills/herdr/SKILL.md")).unwrap(),
+        "# herdr skill\n"
+    );
+    assert!(
+        fs::read_to_string(host.path(".config/kitty/devlaunch-herdr.conf"))
+            .unwrap()
+            .contains("map f2 send_text all \\x1bOQ")
+    );
+    assert!(
+        fs::read_to_string(host.path(".config/kitty/kitty.conf"))
+            .unwrap()
+            .contains("include devlaunch-herdr.conf")
+    );
+    assert_eq!(
+        fs::read_link(host.path(".local/bin/herdr")).unwrap(),
+        host.path(".pixi/bin/herdr")
+    );
+
+    let before = snapshot(host.0.path());
+    fs::remove_file(host.path("herdr.log")).unwrap();
+    let second = stderr_of(&host.setup(&[]));
+    assert_eq!(snapshot(host.0.path()), before);
+    assert!(!second.contains("changed"), "{second}");
+    assert!(!second.contains("reload-config"), "{second}");
+    let calls = host.herdr_calls();
+    assert!(
+        !calls.contains("plugin link") && !calls.contains("integration install"),
+        "{calls}"
+    );
+}
+
+#[test]
+fn a_dry_run_reports_the_plan_and_writes_nothing() {
+    let host = Host::new_machine();
+    let before = snapshot(host.0.path());
+    let plan = stderr_of(&host.setup(&["--dry-run"]));
+    assert_eq!(snapshot(host.0.path()), before);
+    for step in [
+        "planned  pane shell",
+        "planned  status segment",
+        "planned  plugin link",
+        "planned  herdr config",
+        "planned  claude integration",
+        "planned  claude settings",
+        "planned  claude herdr skill",
+        "planned  kitty.conf include",
+        "planned  herdr on ~/.local/bin",
+    ] {
+        assert!(plan.contains(step), "{step}: {plan}");
+    }
+    assert!(
+        plan.contains("add: every key in the packaged config"),
+        "{plan}"
+    );
+    let calls = host.herdr_calls();
+    assert!(
+        !calls.contains("plugin link") && !calls.contains("integration install"),
+        "{calls}"
+    );
+}
+
+#[test]
+fn no_claude_and_no_kitty_leave_those_homes_untouched() {
+    let host = Host::new_machine();
+    let claude = snapshot(&host.path(".claude"));
+    let kitty = snapshot(&host.path(".config/kitty"));
+    let output = stderr_of(&host.setup(&["--no-claude", "--no-kitty"]));
+    assert_eq!(snapshot(&host.path(".claude")), claude);
+    assert_eq!(snapshot(&host.path(".config/kitty")), kitty);
+    assert!(output.contains("skipped  claude: --no-claude"), "{output}");
+    assert!(output.contains("skipped  kitty: --no-kitty"), "{output}");
+    assert!(!host.herdr_calls().contains("integration"));
+}
+
+#[test]
+fn settings_keep_every_foreign_key_and_hook_and_are_backed_up_once() {
+    let host = Host::new_machine();
+    let settings = host.path(".claude/settings.json");
+    let original = "{\n  \"model\": \"opus\",\n  \"hooks\": {\n    \"Stop\": [\n      {\n        \"matcher\": \"\",\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"telemetry.sh\"\n          }\n        ]\n      }\n    ]\n  },\n  \"theme\": \"dark\"\n}\n";
+    fs::write(&settings, original).unwrap();
+    stderr_of(&host.setup(&[]));
+    let merged: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&settings).unwrap()).unwrap();
+    assert_eq!(merged["model"], "opus");
+    assert_eq!(merged["theme"], "dark");
+    assert_eq!(
+        merged["hooks"]["Stop"][0]["hooks"][0]["command"],
+        "telemetry.sh"
+    );
+    assert_eq!(merged["hooks"]["Stop"].as_array().unwrap().len(), 2);
+    let backup = host.path(".claude/settings.json.devlaunch-backup");
+    assert_eq!(fs::read_to_string(&backup).unwrap(), original);
+
+    // A later change is not backed up over the first backup.
+    let mut changed = merged.clone();
+    changed["hooks"]["Stop"].as_array_mut().unwrap().pop();
+    fs::write(&settings, serde_json::to_string_pretty(&changed).unwrap()).unwrap();
+    stderr_of(&host.setup(&[]));
+    assert_eq!(fs::read_to_string(&backup).unwrap(), original);
+}
+
+#[test]
+fn a_failing_skill_dump_keeps_the_old_skill_and_a_linked_skill_dir_stays_linked() {
+    let host = Host::new_machine();
+    let shared = host.path(".claude/shared-skills/herdr");
+    fs::create_dir_all(&shared).unwrap();
+    fs::create_dir_all(host.path(".claude/skills")).unwrap();
+    symlink("../shared-skills/herdr", host.path(".claude/skills/herdr")).unwrap();
+    fs::write(shared.join("SKILL.md"), "old skill\n").unwrap();
+
+    fs::write(host.path("skill-fails"), "").unwrap();
+    let output = stderr_of(&host.setup(&[]));
+    assert!(output.contains("the existing skill is kept"), "{output}");
+    assert_eq!(
+        fs::read_to_string(shared.join("SKILL.md")).unwrap(),
+        "old skill\n"
+    );
+
+    fs::remove_file(host.path("skill-fails")).unwrap();
+    stderr_of(&host.setup(&[]));
+    assert_eq!(
+        fs::read_to_string(shared.join("SKILL.md")).unwrap(),
+        "# herdr skill\n"
+    );
+    assert_eq!(
+        fs::read_link(host.path(".claude/skills/herdr")).unwrap(),
+        Path::new("../shared-skills/herdr")
+    );
+}
+
+#[test]
+fn a_plugin_linked_from_elsewhere_is_not_linked_again() {
+    let host = Host::new_machine();
+    fs::write(host.path("linked"), "/somewhere/else/agent-queue").unwrap();
+    let output = stderr_of(&host.setup(&[]));
+    assert!(
+        output.contains("already linked from /somewhere/else/agent-queue"),
+        "{output}"
+    );
+    assert!(!host.herdr_calls().contains("plugin link"));
+}
+
+#[test]
+fn chezmoi_managed_kitty_and_settings_get_the_line_to_add_instead() {
+    let host = Host::new_machine();
+    let source = host.path("dotfiles/source");
+    fs::create_dir_all(source.parent().unwrap()).unwrap();
+    fs::write(host.path(".config/kitty/kitty.conf"), "font_size 12\n").unwrap();
+    fs::write(host.path(".claude/settings.json"), "{}\n").unwrap();
+    executable(
+        &host.path("chezmoi"),
+        &format!("#!/bin/sh\nprintf '%s\\n' '{}'\n", source.display()),
+    );
+    let output = stderr_of(&host.setup(&[]));
+    assert_eq!(
+        fs::read_to_string(host.path(".config/kitty/kitty.conf")).unwrap(),
+        "font_size 12\n"
+    );
+    assert_eq!(
+        fs::read_to_string(host.path(".claude/settings.json")).unwrap(),
+        "{}\n"
+    );
+    assert!(
+        output.contains("add the line `include devlaunch-herdr.conf`"),
+        "{output}"
+    );
+    assert!(output.contains("skipped  claude settings"), "{output}");
+    // The file kitty.conf would include is devlaunch's own, so it is still written.
+    assert!(host.path(".config/kitty/devlaunch-herdr.conf").exists());
+}
+
+#[test]
+fn a_missing_herdr_skips_what_needs_it_and_installs_the_rest() {
+    let host = Host::new_machine();
+    let output = host
+        .command(&["--herdr-setup"])
+        .env_remove("HERDR_ENV")
+        .env_remove("HERDR_BIN_PATH")
+        .env("PATH", "/usr/bin:/bin")
+        .output()
+        .unwrap();
+    let output = stderr_of(&output);
+    assert!(
+        output.contains("skipped  plugin link: herdr is not installed"),
+        "{output}"
+    );
+    assert!(output.contains("skipped  claude integration"), "{output}");
+    assert!(output.contains("skipped  claude herdr skill"), "{output}");
+    assert!(host.path(".config/herdr/config.toml").exists());
+    assert!(
+        host.path(".claude/hooks/devlaunch-herdr-tab-title.sh")
+            .exists()
+    );
+}
+
+#[test]
+fn a_dotfiles_tab_title_hook_keeps_devlaunchs_script_out_even_under_chezmoi() {
+    let host = Host::new_machine();
+    let settings = r#"{"hooks":{"Stop":[{"matcher":"","hooks":[{"type":"command","command":"$HOME/.claude/hooks/herdr-tab-title.sh"}]}]}}"#;
+    fs::write(host.path(".claude/settings.json"), settings).unwrap();
+    let source = host.path("dotfiles/modify_settings.json");
+    executable(
+        &host.path("chezmoi"),
+        &format!("#!/bin/sh\nprintf '%s\\n' '{}'\n", source.display()),
+    );
+    let output = stderr_of(&host.setup(&[]));
+    assert!(
+        output.contains("herdr-tab-title.sh Stop hook is already registered"),
+        "{output}"
+    );
+    assert!(
+        !host
+            .path(".claude/hooks/devlaunch-herdr-tab-title.sh")
+            .exists()
+    );
+    assert_eq!(
+        fs::read_to_string(host.path(".claude/settings.json")).unwrap(),
+        settings
     );
 }
