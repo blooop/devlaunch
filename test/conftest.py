@@ -80,6 +80,10 @@ def isolated_devlaunch_cache(tmp_path_factory, monkeypatch):
     root = tmp_path_factory.mktemp("xdg")
     monkeypatch.setenv("XDG_CACHE_HOME", str(root / "cache"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(root / "config"))
+    # The lifecycle event log appends under the state home, so the suite's
+    # launches and removals stay out of the developer's real one.
+    monkeypatch.setenv("XDG_STATE_HOME", str(root / "state"))
+    monkeypatch.delenv("DEVLAUNCH_EVENTS_PATH", raising=False)
 
 
 @pytest.fixture(autouse=True)

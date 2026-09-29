@@ -45,7 +45,8 @@ term = "0.7"
 # fcntl.flock. fd-lock 4 gets its semantics from the same rustix call, but its
 # guard borrows the RwLock and unlocks on drop, so an owned guard would have to
 # leak it; calling flock directly is the same syscall without the trick.
-rustix = { version = "1", features = ["fs"] }
+# `system` for `uname`, the hostname the event log stamps on every line.
+rustix = { version = "1", features = ["fs", "system"] }
 # Local civil time in Python's `datetime.now().isoformat()` spelling.
 jiff = "0.2"
 shlex = "2"

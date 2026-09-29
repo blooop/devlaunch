@@ -73,6 +73,21 @@ pub use render::python_repr;
 /// spelled correctly outside `devlaunch_core::osext`.
 pub use devlaunch_core::osext::env_str;
 
+/// The lifecycle event log, for the entry point that writes lines of its own:
+/// `aid` logs `aid_start` and `aid_end` around the `dl::run` it hands its line to,
+/// into the same file, through the same switch.
+pub use devlaunch_core::events;
+
+/// The workspace `spec` states it names, for an `aid` line written before dl has
+/// resolved anything. See [`events::Subject::of_spec`]; the cache directory is
+/// resolved here, where [`name_before_launch`] resolves it.
+pub fn event_subject(spec: &str) -> events::Subject {
+    match session::cache_dir() {
+        Ok(cache) => events::Subject::of_spec(&cache, spec),
+        Err(_) => events::Subject::none(),
+    }
+}
+
 /// The version both binaries print, single-sourced from `Cargo.toml`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -590,6 +605,9 @@ pub fn run(argv: &[String]) -> i32 {
     // Timing is per-command: begin() here so a second run in the same process
     // starts a fresh summary, and the report is written however the command ended.
     timing::begin();
+    // The lifecycle event log, per command for the same reason: its clock is this
+    // command's, and a launch line's `seconds` is measured from here.
+    devlaunch_core::events::begin();
     let ending = one_command(argv);
     report_timing();
     ending

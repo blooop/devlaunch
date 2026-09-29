@@ -15,16 +15,18 @@ use devlaunch_core::domain::config;
 use devlaunch_core::domain::spec::DevcontainerPath;
 use devlaunch_core::domain::workspace_id::WorkspaceId;
 use devlaunch_core::domain::xdg;
+use devlaunch_core::events::{self, Event, Subject};
 use devlaunch_core::flows::claude_profiles;
 use devlaunch_core::flows::completion::{self, FileState, InstallError, Installed, RcChange};
 use devlaunch_core::flows::completion_cache::{self, Refreshed};
+use devlaunch_core::flows::disk_usage::DiskUsage;
 use devlaunch_core::flows::kept_copies::KeptCopies;
 use devlaunch_core::flows::kill;
 use devlaunch_core::flows::launch::{ColdPath, LaunchNotice};
 use devlaunch_core::flows::launch_locks::LaunchLocks;
 use devlaunch_core::flows::lifecycle::{
     self, ChildWork, DeleteStalled, Insisted, Insistence, LifecycleNotice, PruneError,
-    PruneOutcome, Refresh, RefreshReason, Removal, RemoveOutcome, StopOutcome,
+    PruneOutcome, PruneReport, Refresh, RefreshReason, Removal, RemoveOutcome, StopOutcome,
 };
 use devlaunch_core::flows::listing::{self, CommandContext, DlView, Sizes};
 use devlaunch_core::flows::pull_request;
@@ -776,7 +778,7 @@ fn render_workspace<'r>(
         Family::Stop => {
             devcontainer_ignored(devcontainer.is_some(), word);
             claude_profile_ignored(claude_profile.is_some(), word);
-            render_stop(runner, context, refresh, &mut cold, target)
+            render_stop(runner, context, cache, refresh, &mut cold, target)
         }
         Family::Kill => {
             devcontainer_ignored(devcontainer.is_some(), word);
@@ -958,6 +960,7 @@ fn devcontainer_ignored(given: bool, verb: &str) {
 fn render_stop<'r>(
     runner: &'r dyn Runner,
     context: &mut CommandContext<'r>,
+    cache: &Path,
     refresh: &mut Refresh<'_>,
     cold: &mut ColdPath<'r, '_>,
     target: &str,
@@ -973,7 +976,13 @@ fn render_stop<'r>(
         Err(not_run) => refuse_devpod("stop", &not_run),
         // devpod's own diagnostics are already on this process's stderr — the call
         // inherits the streams — so a refusal has nothing to add but the status.
-        Ok(StopOutcome::Stopped) => Ending::Done,
+        Ok(StopOutcome::Stopped) => {
+            events::record(
+                || Subject::recorded(cache, &addressed.workspace_id),
+                Event::Stop,
+            );
+            Ending::Done
+        }
         Ok(StopOutcome::DevpodRefused { exit }) => Ending::Child(exit),
     }
 }
@@ -1131,6 +1140,8 @@ fn remove_addressed<'r>(
     let Records {
         storage, clones, ..
     } = records;
+    // Read before the removal, which deletes the record it is read from.
+    let subject = events::on().then(|| Subject::recorded(cache, workspace_id));
     // Said as they happen rather than collected, because the removal's own lines are
     // interleaved with the guard's and the clone's and the order *is* the report:
     // what was found, which workspace is going, and what became of its clone. A
@@ -1191,6 +1202,12 @@ fn remove_addressed<'r>(
             // it was. The insistence is passed because it decides what this exit code
             // established — see [`render::removed`].
             eprintln!("{}", render::removed(workspace_id, removal.insistence()));
+            // `Wedged` is the removal `kill` hands over to, and nothing else does.
+            let event = match removal {
+                Removal::Wedged => Event::Kill,
+                Removal::Guarded | Removal::Insisted => Event::Remove,
+            };
+            events::record(|| subject.unwrap_or_default(), event);
             Ending::Done
         }
     }
@@ -1456,6 +1473,7 @@ fn prune_clone_directories(
         }
         Ok(PruneOutcome::Acted(report)) => {
             print(&render::prune_report_lines(&report));
+            events::record(Subject::none, prune_event(&report));
             Cleanup::Ended(if report.finished() {
                 Ending::Done
             } else {
@@ -1465,6 +1483,18 @@ fn prune_clone_directories(
                 Ending::Refused
             })
         }
+    }
+}
+
+/// The event log's line for a prune that acted: how many clone directories went,
+/// and what they freed if every one of them could be measured.
+fn prune_event(report: &PruneReport) -> Event {
+    Event::Prune {
+        removed: report.removed.len(),
+        bytes_freed: match report.clones_freed() {
+            DiskUsage::Measured { exclusive_bytes } => Some(exclusive_bytes),
+            DiskUsage::PartlyUnreadable { .. } => None,
+        },
     }
 }
 

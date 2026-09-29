@@ -528,15 +528,19 @@ Images are yours: `docker system df` is what shows those.
 | `NVIM_SPLIT=1` | In Herdr, open `$VISUAL`, then `$EDITOR`, or `nvim` in a vertical split beside an agent launched with `aid` or `dl`. Off by default. The agent pane keeps focus. Requires the pane shell installed by `dl --herdr-setup`. See [docs/workspace-tools.md](docs/workspace-tools.md) |
 | `HERDR_AGENT=<agent>` | Written, not read: an `aid` launch that starts an agent, or a `dl <ws> -- <agent>` whose command is one, names it here so a session manager can see it. See [docs/workspace-tools.md](docs/workspace-tools.md) |
 | `DEVLAUNCH_TIMING=1\|json` | Write a timing summary to stderr. See [docs/performance.md](docs/performance.md) |
+| `DEVLAUNCH_EVENTS=0` | Stop appending lifecycle events (launch, session end, stop, kill, remove, prune, and `aid`'s start and end) to `$XDG_STATE_HOME/devlaunch/events.jsonl`. On by default. See [docs/cli.md](docs/cli.md#the-lifecycle-event-log) |
+| `DEVLAUNCH_EVENTS_PATH=<path>` | Write the lifecycle event log here instead |
 | `DEVPOD_SSH_CONFIG=<path>` | devpod's own, honoured rather than set: it is where `devpod up` publishes host aliases, so it is where `dl` looks for them. See [docs/cli.md](docs/cli.md) |
 | `CLAUDE_CONFIG_DIR=<path>` | Claude Code's own, honoured rather than set: it is where the host keeps its Claude configuration, so it is where `dl` reads the login to forward. It replaces `~/.claude` rather than being tried before it, exactly as Claude Code treats it. See [docs/workspace-tools.md](docs/workspace-tools.md) |
 | `DEVLAUNCH_CLAUDE_PROFILES_DIR=<path>` | Where `--claude-profile` looks, and it wins over the row below. For scoping a scratch run away from real credentials |
 | `CLAUDE_PROFILES_DIR=<path>` | Honoured rather than set: the profile directory `claude-as` manages. Defaults to `~/.claude-profiles`. Nothing `dl` deletes reaches it |
 
 Every switch here reads the same values: anything but empty, `0`, `false` or `no` counts as
-set. On a "no" variable that means turn it off; on an opt-in one it means turn it on. Eight
+set. On a "no" variable that means turn it off; on an opt-in one it means turn it on.
+`DEVLAUNCH_EVENTS` is the one on by default, so `0`, `false` or `no` turn it off. Nine
 rows are not switches and do not follow it: `DEVLAUNCH_AID_AGENT`, `DEVPOD_SSH_CONFIG`,
-`CLAUDE_CONFIG_DIR`, `DEVLAUNCH_CLAUDE_PROFILES_DIR` and `CLAUDE_PROFILES_DIR` take a value, `DEVLAUNCH_TIMING` counts only empty and `0` as off, so `false` and `no`
+`CLAUDE_CONFIG_DIR`, `DEVLAUNCH_CLAUDE_PROFILES_DIR`, `CLAUDE_PROFILES_DIR` and
+`DEVLAUNCH_EVENTS_PATH` take a value, `DEVLAUNCH_TIMING` counts only empty and `0` as off, so `false` and `no`
 turn it on, `DEVLAUNCH_AID_REMOTE_CONTROL` takes `1`/`true`/`on`/`yes` or
 `0`/`false`/`off`/`no` and refuses anything else rather than guessing, and `HERDR_AGENT` is
 the one written rather than read, so a value of your own survives only a line that starts

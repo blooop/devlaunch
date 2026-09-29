@@ -61,7 +61,7 @@ use std::borrow::Cow;
 use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use crate::clients::claude;
 use crate::clients::codex;
@@ -81,6 +81,7 @@ use crate::domain::workspace_id::{
     NamePart, UnsafeName, WorkspaceId, identity_of, validate_ref_name,
 };
 use crate::domain::workspace_state::NonEmpty;
+use crate::events::{self, Event, Subject};
 use crate::flows::kept_copies::KeptCopies;
 use crate::flows::kill;
 use crate::flows::launch_locks::LaunchLocks;
@@ -4649,6 +4650,10 @@ pub struct Launch<'a, 'r, 'l> {
     /// What the caller already knows this workspace is, for a launch that names it
     /// by id. See [`Self::recognised_as`].
     recognised: Option<WorkspaceId>,
+    /// This launch asked devpod to bring the workspace up, rather than attaching
+    /// to one already running: the event log's `cold` ([`crate::events`]). Set by
+    /// [`Self::bring_up`], which every arm that starts a container goes through.
+    came_up: bool,
 }
 
 impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
@@ -4672,6 +4677,7 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
             claude_seen: ClaudeSeen::new(),
             notices,
             recognised: None,
+            came_up: false,
         }
     }
 
@@ -5138,6 +5144,7 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
         devcontainer: Option<&DevcontainerPath>,
         placement: &Placement,
     ) -> Result<Option<LaunchRefusal>, LaunchAborted> {
+        self.came_up = true;
         let request = UpRequest::new(placement.source(), placement.naming())
             .with_ide(verb.ide())
             .with_rebuild(verb.rebuild())
@@ -5251,6 +5258,18 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
             &self.token,
             &self.claude_seen,
         );
+        // The launch line goes down before the session takes the terminal, so a
+        // session still running is in the log, and its `seconds` is the wait. The
+        // subject is read once, here: a session can outlive its own record.
+        let subject = if events::on() {
+            Subject::recorded(&self.host.cache_dir, placement.workspace_id())
+        } else {
+            Subject::none()
+        };
+        if let Some(launch) = events::launch(self.came_up) {
+            events::record(|| subject.clone(), launch);
+        }
+        let session_began = Instant::now();
         let session = attach_workspace(
             &context,
             placement.workspace_id(),
@@ -5260,6 +5279,15 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
             self.forward,
             &mut *self.notices,
         );
+        if let Ok(session) = &session {
+            events::record(
+                || subject,
+                Event::SessionEnd {
+                    seconds: session_began.elapsed().as_secs_f64(),
+                    exit: session.exit_status(),
+                },
+            );
+        }
         match session {
             Ok(session) => Ok(Launched::Session(session)),
             Err(SessionRefused::Devpod(not_run)) => Err(LaunchAborted::DevpodNotRun(not_run)),

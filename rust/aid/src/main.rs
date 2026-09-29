@@ -30,6 +30,9 @@ mod interactive;
 mod rewrite;
 
 use std::io::Write as _;
+use std::time::Instant;
+
+use dl::events::{self, Event};
 
 use rewrite::UsageError;
 
@@ -126,6 +129,13 @@ fn run(argv: &[String]) -> i32 {
         return 0;
     }
 
+    // The event log's clock, from here: everything above is an answer aid gives
+    // without starting anything. `dl::run` begins the log again for its own
+    // command, which restarts dl's clock and leaves this one alone.
+    events::begin();
+    let started = Instant::now();
+    let mut stages = Stages::default();
+
     // `dl::env_str`, not `std::env::var(..).ok()`: that call reports a value which
     // is not valid UTF-8 as *unset*, so `DEVLAUNCH_AID_AGENT=$'\xff'` used to name
     // no agent at all and quietly start the default one instead of being refused
@@ -146,7 +156,7 @@ fn run(argv: &[String]) -> i32 {
         // `aid resume` with no workspace. The pick comes before everything below,
         // which is all about one named workspace, so from here on this line is an
         // `aid resume <id>` like any other.
-        Ok(rewrite::Line::Unpicked(unpicked)) => match dl::pick_workspace() {
+        Ok(rewrite::Line::Unpicked(unpicked)) => match stages.time("pick", dl::pick_workspace) {
             Ok(workspace_id) => unpicked.picked(workspace_id),
             Err(code) => return code,
         },
@@ -164,11 +174,16 @@ fn run(argv: &[String]) -> i32 {
     // names it, `name_before_launch` names the tab after it, and
     // `build_boot_args` puts it in a `dl::run` of its own. One lookup in front of
     // them is what keeps them naming one workspace -- see `dl::pull_request_spec`.
-    let parsed = match dl::pull_request_spec(&parsed.spec) {
+    let parsed = match stages.time("pr_lookup", || dl::pull_request_spec(&parsed.spec)) {
         Ok(spec) => parsed.with_spec(spec),
         Err(code) => return code,
     };
-    let (parsed, boot) = interactive::collect_prompt(parsed);
+    let (parsed, boot) = stages.time("prompt", || interactive::collect_prompt(parsed));
+    // No editor opened, so no prompt was typed: the step did not happen, and a
+    // near-zero stage would read as one that did.
+    if boot.is_none() {
+        stages.forget("prompt");
+    }
     let Some(dl_args) = rewrite::build_dl_args(&parsed, &dl::workspace_id_of) else {
         // Unreachable by a command line: the parse only ever answers with an agent
         // from the table, and a line that starts no agent cannot fail to build one.
@@ -193,10 +208,58 @@ fn run(argv: &[String]) -> i32 {
     // what will run, with its parked output replayed as it lands — so by the time
     // dl runs, the workspace is up and the launch is the fast attach.
     if let Some(boot) = boot {
-        boot.finish();
+        stages.time("boot_wait", || boot.finish());
     }
     name_agent_for_session_manager(parsed.agent());
-    dl::run(&dl_args)
+    let subject = if events::on() {
+        dl::event_subject(&parsed.spec)
+    } else {
+        events::Subject::none()
+    };
+    if let Some(agent) = parsed.agent() {
+        events::record(
+            || subject.clone(),
+            Event::AidStart {
+                agent: agent.to_owned(),
+                seconds: started.elapsed().as_secs_f64(),
+                stages: stages.0,
+                resume: matches!(parsed.task, rewrite::Task::Resume { .. }),
+            },
+        );
+    }
+    let ending = dl::run(&dl_args);
+    if parsed.agent().is_some() {
+        events::record(
+            || subject,
+            Event::AidEnd {
+                seconds: started.elapsed().as_secs_f64(),
+                exit: ending,
+            },
+        );
+    }
+    ending
+}
+
+/// aid's own steps before the hand-off, timed for the event log's `aid_start`.
+///
+/// Named after what they wait on: `pick` is the `aid resume` picker, `pr_lookup`
+/// the pull request reference resolved through gh, `prompt` the editor (a person
+/// typing, with the boot running behind it), and `boot_wait` whatever of that boot
+/// was still to finish once the prompt was in.
+#[derive(Default)]
+struct Stages(Vec<(&'static str, f64)>);
+
+impl Stages {
+    fn time<T>(&mut self, name: &'static str, step: impl FnOnce() -> T) -> T {
+        let began = Instant::now();
+        let answer = step();
+        self.0.push((name, began.elapsed().as_secs_f64()));
+        answer
+    }
+
+    fn forget(&mut self, name: &str) {
+        self.0.retain(|(named, _)| *named != name);
+    }
 }
 
 /// Put the agent's name in the environment dl's ssh child will inherit.
