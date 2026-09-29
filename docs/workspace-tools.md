@@ -1461,6 +1461,94 @@ host-side half, and it is also why the mechanism is `pane report-agent` rather t
 already has an agent and does not establish one, so a container sending only those
 stays invisible.
 
+## Setting up Herdr on a new machine
+
+```bash
+dl --herdr-setup --dry-run   # see every change first
+dl --herdr-setup
+herdr server reload-config   # only if a Herdr session is already running
+```
+
+One command gives a machine the whole Herdr setup devlaunch is built around, with
+no dotfiles. devlaunch ships as a conda package and a wheel that hold its binaries
+and nothing else, so every file below is compiled into `dl` and written out by
+setup. Each step reports `changed`, `current`, `skipped` or `failed`, with the
+reason. A step writes a file only when its content differs, so a second run
+reports every step `current` and writes nothing. A failed step makes the command
+exit non-zero; the other steps still run.
+
+| Step | What it writes |
+|---|---|
+| pane shell | `~/.local/bin/dl-herdr-shell`, [below](#opening-a-new-pane-in-the-workspace-its-tab-already-holds) |
+| status segment | `$XDG_DATA_HOME/devlaunch/herdr/status.sh`: CPU, memory and disk for the tab bar |
+| agent-queue plugin | `$XDG_DATA_HOME/devlaunch/herdr/plugins/agent-queue/`, then `herdr plugin link` and the plugin's startup hook, which linking does not fire |
+| herdr config | a merge into Herdr's config, described next |
+| herdr on `~/.local/bin` | a link to `~/.pixi/bin/herdr`, only when that exists and `~/.local/bin/herdr` does not, so `herdr machine add` does not push a stale copy |
+| claude integration | `herdr integration install claude`, only when `herdr integration status` says it is missing or outdated |
+| claude settings | a Stop hook entry in Claude Code's `settings.json` |
+| claude tab-title hook | `hooks/devlaunch-herdr-tab-title.sh`, which names a one-pane tab after Claude's session title and stops once a person renames the tab |
+| claude herdr skill | `skills/herdr/SKILL.md`, from `herdr --skill` |
+| kitty F-key fix | `devlaunch-herdr.conf` in kitty's config directory, and an `include` line for it in `kitty.conf` |
+
+`$XDG_DATA_HOME` is `~/.local/share` when it is unset. The Claude steps use
+`$CLAUDE_CONFIG_DIR` when it is set, otherwise `~/.claude`, which is the directory
+herdr's own installer uses. They are skipped when that directory does not exist,
+or with `--no-claude`. The kitty steps use `$KITTY_CONFIG_DIRECTORY`, otherwise
+`$XDG_CONFIG_HOME/kitty`, and are skipped when it does not exist, or with
+`--no-kitty`. Setup never starts, stops or reloads a Herdr server.
+
+### What the config merge changes, and what it never does
+
+A missing or empty config gets devlaunch's packaged config: a keymap with bare
+F-keys and Ctrl chords beside Herdr's prefix layer, `ctrl+space` as the prefix, a
+white text theme, the agent queue on F7 and `prefix+a`, and desktop toasts.
+
+An existing config is merged, with comments and order kept. Two kinds of key:
+
+- **Managed keys** point at files setup installs, so they are set on every run:
+  `terminal.default_shell`, the `prefix+a` binding to `local.agent-queue.toggle`,
+  the `status.sh` segment in `ui.tab_bar_right`, and the ` · herdr` end of
+  `ui.window_title`. Each stops at a value that is plainly yours. A custom
+  `default_shell` fails the step. A `status.sh` of your own keeps its segment. A
+  `prefix+a` bound to another command stays bound, and the toggle gets no key.
+- **Default keys** are everything else in the packaged config. Each is added only
+  when the key is absent. A value you set is never changed, even one that matches
+  Herdr's own default.
+
+Tables that setup adds go after your own. The file is written by a rename from a
+temporary file in the same directory, and keeps its mode.
+
+### Claude Code's settings.json
+
+Claude Code rewrites `settings.json` itself, and other tools add hooks to it, so
+the merge owns two things. It keeps exactly one Stop hook that runs
+`devlaunch-herdr-tab-title.sh`. It also keeps one copy of herdr's SessionStart hook
+(`herdr-agent-state.sh`), because older herdr releases appended another copy on
+every install. Every other key, event and hook is left as it is, in its order. A
+file that needs no change is not rewritten. Before its first change, setup copies
+the file to `settings.json.devlaunch-backup`, and it never replaces that copy.
+
+When a `herdr-tab-title.sh` Stop hook is already registered, for example from
+dotfiles, setup adds neither its entry nor its script, so two hooks do not rename
+the same tab.
+
+The skill is written only when `herdr --skill` succeeds and prints something, so a
+herdr that dropped the flag cannot replace a working skill with an error message.
+A `skills/herdr` that is a symlink stays one, and the file is written through it.
+
+### Files chezmoi manages
+
+Before it edits Herdr's config, `settings.json` or `kitty.conf`, setup asks chezmoi
+whether it manages the file. A managed file is left alone, and the step prints the
+line to add to its chezmoi source instead. Files that only devlaunch writes, such as
+the plugin and `devlaunch-herdr.conf`, are written either way.
+
+### DEVLAUNCH_HERDR stays off
+
+Setup ends by naming [`DEVLAUNCH_HERDR`](#reporting-an-agent-started-inside-the-workspace),
+and does not set it. It lends herdr into every container and opens a second ssh
+connection per launch, so it stays a choice you make.
+
 ## Opening a new pane in the workspace its tab already holds
 
 The two sections above are about *watching* a pane. This one is about working in
@@ -1557,8 +1645,9 @@ existence rather than its container.
 `dl --install` writes the script and leaves the config alone. `dl --herdr-setup`
 uses `$HERDR_CONFIG_PATH` when set, otherwise `$XDG_CONFIG_HOME/herdr/config.toml`, or
 `~/.config/herdr/config.toml` when XDG_CONFIG_HOME is unset. If chezmoi manages a
-regular config file, setup refuses the edit and names the source file. Change
-`terminal.default_shell` in that source, apply it, and run `dl --install` to install
+regular config file, setup leaves it alone, reports the config step as skipped and
+names the source file, and goes on with the other steps. Change
+`terminal.default_shell` in that source and apply it; setup has already installed
 the launcher. A symlink is different: setup preserves the link and updates its
 target.
 
@@ -1573,8 +1662,8 @@ itself report every file as not managed, and nothing downstream can tell that ap
 from the truth.
 
 Re-running setup preserves an already current file. A custom `default_shell`
-is refused with the manual replacement instruction, rather than silently replacing
-the user's launcher.
+fails the config step with the manual replacement instruction, rather than silently
+replacing the user's launcher, and the config is left as it was.
 
 ### Workspace environments and Claude logins
 

@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`dl --herdr-setup` sets up a whole machine for Herdr, with no dotfiles.** Besides the
+  pane shell, it now installs a CPU, memory and disk segment for the tab bar and the
+  agent-queue plugin (linked, with its startup hook run once), merges devlaunch's keymap,
+  theme and sidebar into Herdr's config, installs herdr's Claude Code integration when it
+  is missing or outdated, adds a Stop hook that names a one-pane tab after Claude's
+  session title, writes herdr's skill, writes kitty's F-key fix, and links
+  `~/.local/bin/herdr` to `~/.pixi/bin/herdr`. Every file is compiled into `dl`, so the
+  conda package and the wheel carry it. Each step prints `changed`, `current`, `skipped`
+  or `failed`, and a second run writes nothing. `--dry-run` prints the plan and writes
+  nothing; `--no-claude` and `--no-kitty` leave those two alone.
+
+### Changed
+
+- **The Herdr config is merged, not only pointed at the pane shell.** A key you set is
+  never changed. Four keys that point at files setup installs are kept current:
+  `terminal.default_shell`, the `prefix+a` agent-queue binding, the `status.sh` tab-bar
+  segment, and the ` · herdr` end of `ui.window_title`. A missing or empty config gets
+  devlaunch's packaged config.
+- **A Herdr config that chezmoi manages no longer stops `dl --herdr-setup`.** The config
+  step is skipped with the source file named, and the other steps run. A chezmoi that
+  cannot answer still fails the command.
+
 ## [0.57.1] - 2026-09-29
 
 ### Fixed

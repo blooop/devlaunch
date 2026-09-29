@@ -316,7 +316,8 @@ instead. [docs/cli.md](docs/cli.md) has the full `--rm` contract, including whic
 | `dl --reconcile` | Re-point workspaces whose recorded source folder went missing. Deletes nothing |
 | `dl --purge` | Remove devlaunch's own workspaces and caches |
 | `dl --install` | Install shell completions, and the `dl-herdr-shell` name a herdr pane opens through |
-| `dl --herdr-setup` | Install and configure the Herdr pane shell |
+| `dl --herdr-setup` | Set up Herdr for devlaunch on this machine: the pane shell, a merged Herdr config, the agent-queue plugin, the status segment, Claude Code's tab-title hook and herdr skill, and kitty's F-key fix. Safe to re-run |
+| `dl --herdr-setup --dry-run` | Print every change setup would make, and write nothing. `--no-claude` and `--no-kitty` leave those two alone |
 | `dl --herdr-env set KEY=VALUE` | Save a variable for new host shells in this Herdr workspace |
 | `dl --herdr-env profile NAME` | Choose an existing Claude login for new panes |
 | `dl --herdr-env show` | Show saved overrides; `unset KEY` removes an inherited variable and `clear` resets overrides |
@@ -329,9 +330,10 @@ instead. [docs/cli.md](docs/cli.md) has the full `--rm` contract, including whic
 
 `--herdr-shell` is not a command to type. It is what herdr's `[terminal] default_shell` points at,
 so that splitting a pane in an `aid` tab opens a terminal in that workspace's container instead of
-on this host. `dl --herdr-setup` writes the script and updates Herdr config;
-`dl --install` writes the script and prints the config line for a manual setup.
-[docs/workspace-tools.md](docs/workspace-tools.md) has the rest.
+on this host. `dl --herdr-setup` writes the script and points Herdr's config at it, along with the
+rest of the Herdr kit. `dl --install` writes the script and prints the config line for a manual
+setup. [docs/workspace-tools.md](docs/workspace-tools.md) has the rest, including what setup
+changes and what it never touches.
 
 `--prune`, `--reconcile` and `--purge` print their plan and ask first. `-y` skips the question,
 and for `--prune` and `rm`, `--force` goes ahead despite work that is nowhere else.
