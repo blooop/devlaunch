@@ -46,8 +46,8 @@ esac
 BOOKKEEPING = {"herdr.log", "linked", "integrated"}
 
 
-@pytest.fixture
-def new_machine(tmp_path: Path) -> dict:
+@pytest.fixture(name="new_machine")
+def fixture_new_machine(tmp_path: Path) -> dict:
     home = tmp_path / "home"
     (home / ".claude").mkdir(parents=True)
     (home / ".config" / "kitty").mkdir(parents=True)
