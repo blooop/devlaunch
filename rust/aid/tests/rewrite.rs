@@ -767,6 +767,63 @@ fn resume_reopens_a_session_in_the_named_workspace_through_dls_own_launch() {
     );
 }
 
+/// The event log's lines, where the default path puts them under this world's
+/// `HOME` (the harness clears `XDG_STATE_HOME`).
+fn events(world: &World) -> Vec<serde_json::Value> {
+    std::fs::read_to_string(world.root.join("home/.local/state/devlaunch/events.jsonl"))
+        .unwrap_or_default()
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("each line is one JSON object"))
+        .collect()
+}
+
+#[test]
+fn an_aid_launch_logs_its_start_and_end_around_dls_own_lines() {
+    let world = World::with(&["--warm"]);
+    world.aid(&[MAIN, "fix", "the", "bug"]).exited(0);
+    let events = events(&world);
+    let kinds: Vec<&str> = events.iter().map(|e| e["ev"].as_str().unwrap()).collect();
+    assert_eq!(kinds, ["aid_start", "launch", "session_end", "aid_end"]);
+    let start = &events[0];
+    assert_eq!(start["ws"], MAIN);
+    assert_eq!(start["repo"], "blooop/devlaunch");
+    assert_eq!(start["branch"], "main");
+    assert_eq!(start["agent"], "claude");
+    assert_eq!(start["resume"], false);
+    assert!(start["seconds"].as_f64().is_some(), "{start}");
+    // An inline prompt opens no editor and boots nothing, so the one step this
+    // line took is the pull request check.
+    let stages: Vec<&String> = start["stages"]
+        .as_object()
+        .expect("stages")
+        .keys()
+        .collect();
+    assert_eq!(stages, ["pr_lookup"]);
+    let end = &events[3];
+    assert_eq!(end["ws"], MAIN);
+    assert_eq!(end["exit"], 0);
+}
+
+#[test]
+fn an_aid_resume_is_logged_as_one_and_a_failed_agent_ends_with_its_status() {
+    let world = World::with(&["--warm"]);
+    world.aid(&["resume", MAIN]).exited(0);
+    assert_eq!(events(&world)[0]["resume"], true);
+
+    let failed = World::with(&["--warm", "--remote-exit"]);
+    failed.aid(&[MAIN, "boom"]).exited(130);
+    let events = events(&failed);
+    assert_eq!(events.last().expect("an aid_end")["ev"], "aid_end");
+    assert_eq!(events.last().expect("an aid_end")["exit"], 130);
+}
+
+#[test]
+fn a_line_aid_refuses_logs_nothing() {
+    let world = World::with(&["--warm"]);
+    world.aid(&[]).exited(1);
+    assert!(events(&world).is_empty(), "{:?}", events(&world));
+}
+
 #[test]
 fn resume_with_no_terminal_says_why_nothing_was_picked_and_what_to_type() {
     let world = World::with(&["--warm"]);

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A lifecycle event log.** Each launch, session end, `stop`, `kill`, `rm` and `--prune`
+  appends one JSON line to `$XDG_STATE_HOME/devlaunch/events.jsonl`, with the workspace id,
+  repository, branch and host, and per-event facts: whether a launch was cold, how long it
+  took, the herdr pane it ran in, how long a session lasted and its exit code, and what a
+  prune freed. `aid` adds `aid_start` (the agent, how long aid took to hand off and on
+  which steps, and whether it is a resume) and `aid_end`. It is on by default. `DEVLAUNCH_EVENTS=0` turns it off and
+  `DEVLAUNCH_EVENTS_PATH` moves it. A line that cannot be written is dropped and the
+  command carries on. See "The lifecycle event log" in docs/cli.md.
+
 ## [0.57.1] - 2026-09-29
 
 ### Fixed

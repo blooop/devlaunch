@@ -974,3 +974,48 @@ docker cp "$(command -v devpod)" <container>:/usr/local/bin/devpod
 
 Not `restart` or `recreate`: a recreate wipes it. Renaming the branch is the only
 fix that lasts until the upstream match is anchored on `uname -m`.
+
+## The lifecycle event log
+
+Every `dl` command that launches a session, ends one, stops, kills or removes a
+workspace, or prunes clone directories appends one JSON line to
+`$XDG_STATE_HOME/devlaunch/events.jsonl` (`~/.local/state/devlaunch/events.jsonl`
+when the variable is unset). It is for looking back at how you use `dl`: a weekly
+review joins it with herdr's and Claude Code's own logs on the workspace id and the
+herdr pane.
+
+```json
+{"ts":"2026-09-29T10:15:02.123Z","ev":"launch","ws":"devlaunch-main-3j1t","repo":"blooop/devlaunch","branch":"main","host":"box","cold":false,"seconds":4.8,"stages":null,"herdr":true,"herdr_pane":"w1:p2"}
+{"ts":"2026-09-29T11:02:40.410Z","ev":"session_end","ws":"devlaunch-main-3j1t","repo":"blooop/devlaunch","branch":"main","host":"box","seconds":2857.9,"exit":0}
+```
+
+Every line carries `ts` (UTC, to the millisecond), `ev`, `ws`, `repo` and `branch`
+(from `dl`'s records, `null` for a workspace it has none for, such as a path source)
+and `host`. The rest depends on `ev`:
+
+| `ev` | Fields |
+|---|---|
+| `launch` | `cold` (this launch created or started the container), `seconds` (from the top of the command to the session), `stages` (the stage seconds `DEVLAUNCH_TIMING` measures, `null` without it), `herdr` (`DEVLAUNCH_HERDR` on), `herdr_pane` (`HERDR_PANE_ID`, or `null`) |
+| `session_end` | `seconds` (how long the session ran), `exit` (its exit code) |
+| `stop`, `kill`, `remove` | nothing more. Written only when the verb succeeded |
+| `prune` | `removed` (clone directories), `bytes_freed` (`null` when one of them could not be measured) |
+| `aid_start` | `agent`, `seconds` (from the top of `aid` to the hand-off to dl), `stages` (aid's own steps, in order: `pick` for the `aid resume` picker, `pr_lookup`, `prompt` for the editor, `boot_wait` for the boot still running once the prompt is in; a step the line did not take is absent), `resume` |
+| `aid_end` | `seconds` (the whole `aid` run), `exit` |
+
+An `aid` line is `aid_start`, then dl's own `launch` and `session_end`, then
+`aid_end`. The `launch` line's `seconds` starts at the hand-off, so the two
+`seconds` add up to the time from typing `aid` to the agent starting. Every line
+is flat apart from `stages`, and names what it is in `ev`. A field another kind
+of line carries is simply absent, so a reader that unions lines by field name
+needs no change when a field or a kind is added.
+
+A `launch` line is written just before the session takes the terminal, so a
+session still running has a `launch` and no `session_end` yet. `dl <ws> up` and
+`code` hand over no session and write no line. `--rm` writes a `remove` after the
+`session_end`.
+
+`DEVLAUNCH_EVENTS=0` turns the log off, and `DEVLAUNCH_EVENTS_PATH` writes it
+somewhere else. The log never stops a command: a line that cannot be written is
+dropped without a word, and each line goes down in one append, so two `dl`
+processes writing at once do not interleave within a line. Nothing rotates the
+file.

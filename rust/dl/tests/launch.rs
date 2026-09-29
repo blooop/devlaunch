@@ -1947,6 +1947,121 @@ fn the_prose_timing_summary_names_a_launchs_round_trips() {
 }
 
 // ===========================================================================
+// the lifecycle event log
+// ===========================================================================
+
+impl World {
+    /// The event log's lines, where the default path puts them under this
+    /// world's `HOME` (the harness clears `XDG_STATE_HOME`).
+    fn events(&self) -> Vec<serde_json::Value> {
+        events_at(&self.path("home/.local/state/devlaunch/events.jsonl"))
+    }
+}
+
+fn events_at(path: &Path) -> Vec<serde_json::Value> {
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("each line is one JSON object"))
+        .collect()
+}
+
+#[test]
+fn a_warm_attach_logs_a_launch_that_was_not_cold_and_the_session_it_ended() {
+    let world = World::with(&["--warm"]);
+    let run = world.dl(&[MAIN]);
+    run.exited(0);
+    let events = world.events();
+    let kinds: Vec<&str> = events.iter().map(|e| e["ev"].as_str().unwrap()).collect();
+    assert_eq!(kinds, ["launch", "session_end"]);
+    let (launch, ended) = (&events[0], &events[1]);
+    assert_eq!(launch["ws"], MAIN);
+    assert_eq!(launch["repo"], "blooop/devlaunch");
+    assert_eq!(launch["branch"], "main");
+    assert_eq!(launch["cold"], false);
+    assert!(launch["seconds"].as_f64().is_some(), "{launch}");
+    // No `DEVLAUNCH_TIMING`, so no stages were measured.
+    assert_eq!(launch["stages"], serde_json::Value::Null);
+    assert_eq!(launch["herdr"], false);
+    assert_eq!(launch["herdr_pane"], serde_json::Value::Null);
+    assert_eq!(ended["ws"], MAIN);
+    assert_eq!(ended["exit"], 0);
+    assert!(ended["seconds"].as_f64().is_some(), "{ended}");
+}
+
+#[test]
+fn a_cold_launch_logs_cold_with_the_stages_timing_measured() {
+    let world = World::with(&[]);
+    let run = world.dl_with(
+        &["blooop/devlaunch@cold"],
+        &[
+            ("DEVLAUNCH_TIMING", "json"),
+            ("DEVLAUNCH_HERDR", "1"),
+            ("HERDR_PANE_ID", "w1:p3"),
+        ],
+    );
+    run.exited(0);
+    let events = world.events();
+    let launch = &events[0];
+    assert_eq!(launch["ev"], "launch");
+    assert_eq!(launch["ws"], COLD);
+    assert_eq!(launch["repo"], "blooop/devlaunch");
+    assert_eq!(launch["branch"], "cold");
+    assert_eq!(launch["cold"], true);
+    assert!(
+        launch["stages"]["devpod-up"].as_f64().is_some(),
+        "the stages timing closed before the session: {launch}"
+    );
+    assert_eq!(launch["herdr"], true);
+    assert_eq!(launch["herdr_pane"], "w1:p3");
+    assert_eq!(events[1]["ev"], "session_end");
+}
+
+#[test]
+fn the_event_log_goes_where_its_path_variable_says_and_nowhere_when_off() {
+    let world = World::with(&["--warm"]);
+    let elsewhere = world.path("elsewhere/log.jsonl");
+    world
+        .dl_with(
+            &[MAIN],
+            &[("DEVLAUNCH_EVENTS_PATH", &elsewhere.display().to_string())],
+        )
+        .exited(0);
+    assert_eq!(events_at(&elsewhere).len(), 2);
+    assert!(
+        world.events().is_empty(),
+        "the default path was written too"
+    );
+
+    let off = World::with(&["--warm"]);
+    off.dl_with(&[MAIN], &[("DEVLAUNCH_EVENTS", "0")]).exited(0);
+    assert!(
+        !off.path("home/.local/state/devlaunch").exists(),
+        "DEVLAUNCH_EVENTS=0 still wrote the log"
+    );
+}
+
+#[test]
+fn an_event_log_that_cannot_be_written_changes_nothing_about_the_launch() {
+    let world = World::with(&["--warm"]);
+    // A path under a regular file: no directory can be made there.
+    std::fs::write(world.path("not-a-directory"), "").expect("a file");
+    let blocked = world.path("not-a-directory/events.jsonl");
+    let run = world.dl_with(
+        &[MAIN],
+        &[("DEVLAUNCH_EVENTS_PATH", &blocked.display().to_string())],
+    );
+    run.exited(0);
+    assert_eq!(
+        run.stderr_lines(),
+        [
+            &format!("Workspace {MAIN} is already running, attaching...") as &str,
+            &format!("SSH command: devpod ssh {MAIN}"),
+        ]
+    );
+}
+
+// ===========================================================================
 // --rm: the workspace, once the session it was opened for has ended
 // ===========================================================================
 

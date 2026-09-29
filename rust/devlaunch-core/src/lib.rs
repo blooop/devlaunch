@@ -129,6 +129,13 @@ pub mod osext;
 pub mod json;
 pub mod timing;
 
+// Beside `timing`, and switched the same way: the lifecycle event log the launch
+// flow, the `dl` binary's lifecycle verbs and `aid` append to. Not a leaf: it
+// reads the records and the launch's spec parse to name a line's workspace.
+//
+// binary surface — not part of the frozen wf API (#251 §7)
+pub mod events;
+
 // Also a leaf, and for the same reason: the sink every flow reports its notices
 // through. It depends on none of them, and all of them name it in their
 // signatures.

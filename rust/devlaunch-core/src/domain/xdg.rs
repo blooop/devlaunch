@@ -51,6 +51,19 @@ pub(crate) fn cache_home() -> Result<PathBuf, NoHomeDirectory> {
     )
 }
 
+/// `$XDG_STATE_HOME`, or the `~/.local/state` the spec falls back to.
+///
+/// Where the lifecycle event log lives ([`crate::events`]): state that outlives a
+/// cache clear, which is why it is not under [`devlaunch_cache`] and a
+/// `dl --purge` does not take it.
+pub(crate) fn state_home() -> Result<PathBuf, NoHomeDirectory> {
+    resolve(
+        std::env::var_os("XDG_STATE_HOME"),
+        crate::osext::home_dir(),
+        ".local/state",
+    )
+}
+
 /// Everything devlaunch stores on this machine, under one directory.
 ///
 /// The bare repo clones, the workspace clones, the completion caches and

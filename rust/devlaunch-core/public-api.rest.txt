@@ -828,6 +828,56 @@ pub fn devlaunch_core::domain::xdg::claude_profiles_root() -> core::result::Resu
 pub fn devlaunch_core::domain::xdg::clone_root_in(&std::path::Path) -> std::path::PathBuf
 pub fn devlaunch_core::domain::xdg::config_home() -> core::result::Result<std::path::PathBuf, devlaunch_core::domain::xdg::NoHomeDirectory>
 pub fn devlaunch_core::domain::xdg::devlaunch_cache() -> core::result::Result<std::path::PathBuf, devlaunch_core::domain::xdg::NoHomeDirectory>
+pub mod devlaunch_core::events
+pub enum devlaunch_core::events::Event
+pub devlaunch_core::events::Event::AidEnd
+pub devlaunch_core::events::Event::AidEnd::exit: i32
+pub devlaunch_core::events::Event::AidEnd::seconds: f64
+pub devlaunch_core::events::Event::AidStart
+pub devlaunch_core::events::Event::AidStart::agent: alloc::string::String
+pub devlaunch_core::events::Event::AidStart::resume: bool
+pub devlaunch_core::events::Event::AidStart::seconds: f64
+pub devlaunch_core::events::Event::AidStart::stages: alloc::vec::Vec<(&'static str, f64)>
+pub devlaunch_core::events::Event::Kill
+pub devlaunch_core::events::Event::Launch
+pub devlaunch_core::events::Event::Launch::cold: bool
+pub devlaunch_core::events::Event::Launch::herdr: bool
+pub devlaunch_core::events::Event::Launch::herdr_pane: core::option::Option<alloc::string::String>
+pub devlaunch_core::events::Event::Launch::seconds: f64
+pub devlaunch_core::events::Event::Launch::stages: core::option::Option<alloc::vec::Vec<(&'static str, f64)>>
+pub devlaunch_core::events::Event::Prune
+pub devlaunch_core::events::Event::Prune::bytes_freed: core::option::Option<u64>
+pub devlaunch_core::events::Event::Prune::removed: usize
+pub devlaunch_core::events::Event::Remove
+pub devlaunch_core::events::Event::SessionEnd
+pub devlaunch_core::events::Event::SessionEnd::exit: i32
+pub devlaunch_core::events::Event::SessionEnd::seconds: f64
+pub devlaunch_core::events::Event::Stop
+impl core::clone::Clone for devlaunch_core::events::Event
+pub fn devlaunch_core::events::Event::clone(&self) -> devlaunch_core::events::Event
+impl core::cmp::PartialEq for devlaunch_core::events::Event
+pub fn devlaunch_core::events::Event::eq(&self, &devlaunch_core::events::Event) -> bool
+impl core::fmt::Debug for devlaunch_core::events::Event
+pub fn devlaunch_core::events::Event::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::events::Event
+pub struct devlaunch_core::events::Subject
+impl devlaunch_core::events::Subject
+pub fn devlaunch_core::events::Subject::none() -> Self
+pub fn devlaunch_core::events::Subject::of_spec(&std::path::Path, &str) -> Self
+pub fn devlaunch_core::events::Subject::recorded(&std::path::Path, &str) -> Self
+impl core::clone::Clone for devlaunch_core::events::Subject
+pub fn devlaunch_core::events::Subject::clone(&self) -> devlaunch_core::events::Subject
+impl core::cmp::Eq for devlaunch_core::events::Subject
+impl core::cmp::PartialEq for devlaunch_core::events::Subject
+pub fn devlaunch_core::events::Subject::eq(&self, &devlaunch_core::events::Subject) -> bool
+impl core::default::Default for devlaunch_core::events::Subject
+pub fn devlaunch_core::events::Subject::default() -> devlaunch_core::events::Subject
+impl core::fmt::Debug for devlaunch_core::events::Subject
+pub fn devlaunch_core::events::Subject::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::events::Subject
+pub fn devlaunch_core::events::begin()
+pub fn devlaunch_core::events::on() -> bool
+pub fn devlaunch_core::events::record(impl core::ops::function::FnOnce() -> devlaunch_core::events::Subject, devlaunch_core::events::Event)
 pub mod devlaunch_core::flows
 pub mod devlaunch_core::flows::agent_worktrees
 pub enum devlaunch_core::flows::agent_worktrees::Blank

@@ -769,6 +769,20 @@ pub fn emit() -> Option<Report> {
     registry().take().map(Registry::finish)
 }
 
+/// The stages closed so far, by name and in seconds, or `None` if timing is off.
+///
+/// For the event log's launch line ([`crate::events`]), which is written while
+/// the command is still running and so cannot wait for [`emit`].
+pub(crate) fn stage_seconds() -> Option<Vec<(&'static str, f64)>> {
+    with_registry(|registry| {
+        registry
+            .stages
+            .iter()
+            .map(|stage| (stage.stage.name(), round6(stage.seconds)))
+            .collect()
+    })
+}
+
 /// Record a measurement somebody else took, under `label`.
 ///
 /// For the one span that cannot be a guard: a lock acquisition that blocked

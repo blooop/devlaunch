@@ -644,6 +644,99 @@ impl Hung {
 }
 
 // ===========================================================================
+// the lifecycle event log
+// ===========================================================================
+
+impl World {
+    /// The event log's lines, where the default path puts them under this
+    /// world's `HOME` (the harness clears `XDG_STATE_HOME`).
+    fn events(&self) -> Vec<serde_json::Value> {
+        std::fs::read_to_string(self.path("home/.local/state/devlaunch/events.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("each line is one JSON object"))
+            .collect()
+    }
+}
+
+#[test]
+fn a_stop_is_logged_against_the_workspace_it_reached() {
+    let world = World::base();
+    world.dl(&["blooop/devlaunch@main", "stop"]).exited(0);
+    let events = world.events();
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0]["ev"], "stop");
+    assert_eq!(events[0]["ws"], "devlaunch-main-legacy");
+    assert_eq!(events[0]["repo"], "blooop/devlaunch");
+    assert_eq!(events[0]["branch"], "main");
+    assert!(
+        events[0]["host"]
+            .as_str()
+            .is_some_and(|host| !host.is_empty())
+    );
+}
+
+#[test]
+fn a_stop_devpod_refused_is_not_logged() {
+    let world = World::base();
+    world.devpod_answers(&["stop"], 1, "boom\n");
+    world.dl(&["someones-project", "stop"]);
+    assert!(world.events().is_empty(), "{:?}", world.events());
+}
+
+#[test]
+fn a_removal_is_logged_with_the_record_it_took_away() {
+    let world = World::base();
+    world.dl(&["devlaunch-main-legacy", "rm"]).exited(0);
+    let events = world.events();
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0]["ev"], "remove");
+    assert_eq!(events[0]["ws"], "devlaunch-main-legacy");
+    // Read before the delete took the record with it.
+    assert_eq!(events[0]["repo"], "blooop/devlaunch");
+    assert_eq!(events[0]["branch"], "main");
+}
+
+#[test]
+fn a_refused_removal_is_not_logged() {
+    let world = World::base();
+    world.dl(&["devlaunch-dirty-fqta", "rm"]).exited(1);
+    assert!(world.events().is_empty(), "{:?}", world.events());
+}
+
+#[test]
+fn a_kill_is_logged_as_a_kill_and_not_as_a_removal() {
+    let world = World::base();
+    world.dl(&["devlaunch-main-legacy", "kill"]).exited(0);
+    let kinds: Vec<serde_json::Value> = world.events().iter().map(|e| e["ev"].clone()).collect();
+    assert_eq!(kinds, ["kill"]);
+}
+
+#[test]
+fn a_prune_is_logged_with_how_many_clones_went_and_what_they_freed() {
+    let world = World::with(&["--prunable", "--stale-record"]);
+    world.dl(&["--prune", "-y"]).exited(0);
+    let events = world.events();
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0]["ev"], "prune");
+    assert_eq!(events[0]["ws"], serde_json::Value::Null);
+    assert_eq!(events[0]["removed"], 1);
+    assert!(
+        events[0]["bytes_freed"]
+            .as_u64()
+            .is_some_and(|bytes| bytes > 0),
+        "{events:?}"
+    );
+}
+
+#[test]
+fn a_prune_answered_no_is_not_logged() {
+    let world = World::with(&["--prunable"]);
+    world.answering("n\n", &["--prune"]).exited(0);
+    assert!(world.events().is_empty(), "{:?}", world.events());
+}
+
+// ===========================================================================
 // dl <ws> stop
 // ===========================================================================
 
