@@ -898,3 +898,18 @@ fn a_status_segment_that_failed_to_install_is_not_written_into_the_config() {
     );
     assert!(!host.path(".config/herdr/config.toml").exists());
 }
+
+#[test]
+fn a_dry_run_over_existing_files_writes_no_settings_backup() {
+    let host = Host::new_machine();
+    fs::write(host.path(".claude/settings.json"), "{}").unwrap();
+    let config = host.path(".config/herdr/config.toml");
+    fs::create_dir_all(config.parent().unwrap()).unwrap();
+    fs::write(&config, "[terminal]\nfont_size=17").unwrap();
+    fs::write(host.path(".config/kitty/kitty.conf"), "font_size 12\n").unwrap();
+    let before = snapshot(host.0.path());
+    let plan = stderr_of(&host.setup(&["--dry-run"]));
+    assert!(plan.contains("would back up the original to"), "{plan}");
+    assert_eq!(snapshot(host.0.path()), before);
+    assert!(!host.path(".claude/settings.json.devlaunch-backup").exists());
+}
