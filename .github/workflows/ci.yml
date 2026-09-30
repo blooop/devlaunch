@@ -446,6 +446,7 @@ jobs:
             "-p dl --test lifecycle" \
             "-p dl --test launch" \
             "-p dl --test migration" \
+            "-p dl --test herdr_environment" \
           ; do
             echo "::group::cargo llvm-cov $suite"
             timeout 900 cargo llvm-cov --no-report --locked $suite -- --test-threads=1
