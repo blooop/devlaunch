@@ -1555,7 +1555,8 @@ or with `--no-claude`. The kitty steps use `$KITTY_CONFIG_DIRECTORY`, otherwise
 
 A missing or empty config gets devlaunch's packaged config: a keymap with bare
 F-keys and Ctrl chords beside Herdr's prefix layer, `ctrl+space` as the prefix, a
-white text theme, the agent queue on F7 and `prefix+a`, and desktop toasts.
+white text theme, the agent queue on F7 and `prefix+a`, desktop toasts, and
+[agents resumed on restore](#coming-back-after-herdr-restarts).
 
 An existing config is merged, with comments and order kept. Two kinds of key:
 

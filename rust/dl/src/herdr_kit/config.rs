@@ -576,6 +576,35 @@ mod tests {
         assert!(!merged.added.iter().any(|path| path == "keys.prefix"));
     }
 
+    #[test]
+    fn a_new_config_resumes_agents_and_a_users_choice_is_kept() {
+        let fresh = parse(&merge("", &targets()).unwrap().text);
+        assert_eq!(
+            fresh["session"]["resume_agents_on_restore"].as_bool(),
+            Some(true)
+        );
+        assert!(fresh["session"]["startup_per_agent_delay_ms"].as_integer() <= Some(500));
+
+        let original = "[session]\nresume_agents_on_restore = false\n";
+        let merged = merge(original, &targets()).unwrap();
+        let document = parse(&merged.text);
+        assert_eq!(
+            document["session"]["resume_agents_on_restore"].as_bool(),
+            Some(false)
+        );
+        assert!(
+            !merged
+                .managed
+                .iter()
+                .any(|path| path.starts_with("session."))
+        );
+        assert!(
+            merged
+                .added
+                .contains(&"session.startup_per_agent_delay_ms".to_owned())
+        );
+    }
+
     fn keys_of(document: &DocumentMut, action: &str) -> Vec<String> {
         match document["keys"].get(action) {
             None => Vec::new(),

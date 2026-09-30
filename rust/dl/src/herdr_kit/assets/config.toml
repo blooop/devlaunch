@@ -13,6 +13,15 @@ onboarding = false
 [terminal]
 default_shell = "dl-herdr-shell"
 
+# On restore, herdr types each agent pane's saved `dl <ws> -- claude --resume`
+# line into a fresh host shell, one agent every startup_per_agent_delay_ms. At
+# 1000 or more, a second pane in the same tab has time to enter its workspace
+# through dl-herdr-shell first, so `dl` runs inside the container and fails.
+# Keep the delay at 500 or below.
+[session]
+resume_agents_on_restore = true
+startup_per_agent_delay_ms = 100
+
 # Catppuccin Mocha with the text ramp lifted to white, so every label passes
 # WCAG AA on the dark base. Herdr accepts only a subset of the Catppuccin token
 # names and drops the rest with "unknown config key".
