@@ -632,8 +632,7 @@ fn claude_steps(setup: &mut Setup) {
         );
     }
     integration(setup);
-    let other_tab_title = settings(setup);
-    if !other_tab_title {
+    if settings(setup) == TabTitle::Ours {
         let hook = setup.paths.hook_script();
         setup.install_file("claude tab-title hook", &hook, claude::HOOK_SCRIPT, 0o755);
     }
@@ -695,9 +694,19 @@ fn integration(setup: &mut Setup) {
     setup.report(step, outcome);
 }
 
-/// Merge the Stop hook into settings.json. True when another tab-title hook is
-/// already registered, so devlaunch's script is not installed either.
-fn settings(setup: &mut Setup) -> bool {
+/// Whose Stop hook sets the tab title, as settings.json says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TabTitle {
+    /// devlaunch's, so its script is installed.
+    Ours,
+    /// A herdr-tab-title.sh from elsewhere, so devlaunch's script is not installed.
+    Other,
+    /// settings.json could not be read, so no script is installed that nothing runs.
+    Unknown,
+}
+
+/// Merge the Stop hook into settings.json, and say whose tab-title hook it holds.
+fn settings(setup: &mut Setup) -> TabTitle {
     let step = "claude settings";
     let path = setup.paths.claude.join("settings.json");
     let hook = setup.paths.hook_script();
@@ -712,9 +721,12 @@ fn settings(setup: &mut Setup) -> bool {
                 .map(|merged| (original, merged))
                 .map_err(|reason| format!("{}: {reason}", path.display()))
         });
-    let other_tab_title = read
-        .as_ref()
-        .is_ok_and(|(_, merged)| merged.other_tab_title);
+    let tab_title = match &read {
+        Ok((_, merged)) if merged.other_tab_title => TabTitle::Other,
+        Ok(_) => TabTitle::Ours,
+        Err(_) => TabTitle::Unknown,
+    };
+    let other_tab_title = tab_title == TabTitle::Other;
     if other_tab_title {
         setup.report(
             "claude tab-title hook",
@@ -733,18 +745,18 @@ fn settings(setup: &mut Setup) -> bool {
             outcome => outcome,
         };
         setup.report(step, outcome);
-        return other_tab_title;
+        return tab_title;
     }
     let (original, merged) = match read {
         Ok(read) => read,
         Err(reason) => {
             setup.report(step, Outcome::Failed(reason));
-            return false;
+            return tab_title;
         }
     };
     let Some(text) = merged.text else {
         setup.report(step, Outcome::Current(path.display().to_string()));
-        return merged.other_tab_title;
+        return tab_title;
     };
     let mut changes = Vec::new();
     if merged.registered {
@@ -777,7 +789,7 @@ fn settings(setup: &mut Setup) -> bool {
         Err(error) => Outcome::Failed(format!("{}: {error}", path.display())),
     };
     setup.report(step, outcome);
-    merged.other_tab_title
+    tab_title
 }
 
 /// Copy settings.json aside the first time devlaunch changes it, and never again.

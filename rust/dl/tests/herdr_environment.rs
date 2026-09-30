@@ -1000,3 +1000,19 @@ fn the_kitty_include_is_appended_to_a_kitty_conf_without_a_final_newline() {
         "{second}"
     );
 }
+
+#[test]
+fn unreadable_settings_fail_the_step_and_install_no_orphan_hook_script() {
+    let host = Host::new_machine();
+    fs::write(host.path(".claude/settings.json"), "{not json").unwrap();
+    let output = host.setup(&[]);
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("failed   claude settings"), "{stderr}");
+    assert!(
+        !host
+            .path(".claude/hooks/devlaunch-herdr-tab-title.sh")
+            .exists(),
+        "{stderr}"
+    );
+}
