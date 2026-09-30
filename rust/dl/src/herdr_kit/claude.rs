@@ -7,7 +7,7 @@
 //!   Added when absent, corrected when it drifted, and kept to one copy.
 //! - **Duplicates of herdr's SessionStart hook** (`herdr-agent-state.sh`), which
 //!   older herdr releases appended once per `herdr integration install`. The
-//!   first copy stays; the rest go.
+//!   last copy stays, because herdr appends its current form; the rest go.
 //!
 //! Every other key, event and hook passes through untouched, in its order. A
 //! file the merge does not change is not rewritten, so its formatting is kept
@@ -145,14 +145,19 @@ pub(crate) fn merge(original: Option<&str>, command: &str) -> Result<Merged, Str
         }
     }
 
-    // herdr's hook: the first copy in SessionStart stays.
+    // herdr's hook: the last copy in SessionStart, the one herdr wrote most recently, stays.
     if let Some(groups) = hooks.get_mut("SessionStart").and_then(Value::as_array_mut) {
-        let mut seen = false;
+        let is_herdrs = |hook: &Value| command_of(hook).contains(HERDR_HOOK);
+        let mut stale = hooks_in(&Value::Array(groups.clone()))
+            .filter(|hook| is_herdrs(hook))
+            .count()
+            .saturating_sub(1);
         merged.removed += remove_hooks(groups, |hook| {
-            if !command_of(hook).contains(HERDR_HOOK) {
+            if !is_herdrs(hook) || stale == 0 {
                 return false;
             }
-            std::mem::replace(&mut seen, true)
+            stale -= 1;
+            true
         });
     }
 
@@ -252,9 +257,20 @@ mod tests {
         assert_eq!(settings["hooks"]["Stop"].as_array().unwrap().len(), 1);
         let start = settings["hooks"]["SessionStart"].as_array().unwrap();
         assert_eq!(start.len(), 2);
-        assert_eq!(start[0], herdr_hook("*"));
+        assert_eq!(start[0], herdr_hook("^(startup|resume)$"));
         assert_eq!(start[1]["hooks"][0]["command"], "resource-check.sh");
         assert_eq!(settings["hooks"]["Notification"], json!([]));
+    }
+
+    #[test]
+    fn the_herdr_hook_written_last_survives_the_dedupe() {
+        let stale = json!({"matcher": "*", "hooks": [{"type": "command", "command": "bash /h/.claude/hooks/herdr-agent-state.sh session", "timeout": 10}]});
+        let current = herdr_hook("^(startup|resume|clear|compact|fork)$");
+        let original = json!({"hooks": {"SessionStart": [stale, current.clone()]}});
+        let merged = merge(Some(&original.to_string()), COMMAND).unwrap();
+        assert_eq!(merged.removed, 1);
+        let settings = parse(merged.text.as_deref().unwrap());
+        assert_eq!(settings["hooks"]["SessionStart"], json!([current]));
     }
 
     #[test]
