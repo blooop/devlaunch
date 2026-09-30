@@ -302,8 +302,9 @@ jobs:
       # fence as the two above. `|| ec=$?` rather than `; ec=$?` because the
       # `run:` block is `bash -e` and a bare `;` exits at the failing line, so
       # the `cat` never runs and a timeout reports with an empty log -- see the
-      # backstop's comment below. `herdr_environment` spawns nothing and takes
-      # the plain form.
+      # backstop's comment below. `herdr_environment` runs a stub herdr and the
+      # agent-queue view.sh, but each exits before the test ends and nothing
+      # detaches, so it takes the plain form.
       - name: Test dl herdr_editor
         working-directory: rust
         run: |
