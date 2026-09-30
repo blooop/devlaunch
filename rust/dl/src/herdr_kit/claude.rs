@@ -216,7 +216,8 @@ mod tests {
             "model": "opus",
             "hooks": {
                 "Stop": [{"matcher": "", "hooks": [{"type": "command", "command": "telemetry.sh"}]}],
-                "Notification": [{"matcher": "", "hooks": [{"type": "command", "command": "notify"}]}]
+                "Notification": [{"matcher": "", "hooks": [{"type": "command", "command": "notify"}]}],
+                "PreToolUse": [{"matcher": "Bash", "hooks": []}]
             },
             "theme": "dark"
         });
@@ -228,6 +229,10 @@ mod tests {
         assert_eq!(
             settings["hooks"]["Notification"],
             original["hooks"]["Notification"]
+        );
+        assert_eq!(
+            settings["hooks"]["PreToolUse"],
+            original["hooks"]["PreToolUse"]
         );
         let stop = settings["hooks"]["Stop"].as_array().unwrap();
         assert_eq!(stop[0], original["hooks"]["Stop"][0]);
