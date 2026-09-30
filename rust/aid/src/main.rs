@@ -169,7 +169,9 @@ fn run(argv: &[String]) -> i32 {
         Err(code) => return code,
     };
     let (parsed, boot) = interactive::collect_prompt(parsed);
-    let Some(dl_args) = rewrite::build_dl_args(&parsed, &dl::workspace_id_of) else {
+    let session = new_session_id();
+    let Some(launch) = rewrite::build_launch(&parsed, &dl::workspace_id_of, session.as_deref())
+    else {
         // Unreachable by a command line: the parse only ever answers with an agent
         // from the table, and a line that starts no agent cannot fail to build one.
         // Reported rather than panicked on, in the words the refusal for an invented
@@ -187,7 +189,7 @@ fn run(argv: &[String]) -> i32 {
     // for, and the quoting is what makes it a line they can paste.
     eprintln!(
         "aid -> dl {}",
-        dl::shell::join(dl_args.iter().map(String::as_str))
+        dl::shell::join(launch.dl_args.iter().map(String::as_str))
     );
     // The boot the interactive flow started is waited out *after* the echo names
     // what will run, with its parked output replayed as it lands — so by the time
@@ -196,7 +198,40 @@ fn run(argv: &[String]) -> i32 {
         boot.finish();
     }
     name_agent_for_session_manager(parsed.agent());
-    dl::run(&dl_args)
+    match launch.resume {
+        Some(resume) => dl::run_resumable(&launch.dl_args, resume),
+        None => dl::run(&launch.dl_args),
+    }
+}
+
+/// A fresh UUID v4, for the session aid names before it starts it.
+///
+/// From the kernel's random source rather than a crate, because sixteen bytes and
+/// two masked nibbles are the whole of v4. `None` when the source cannot be read,
+/// which costs the named session and nothing else: the restore line falls back to
+/// the agent's "most recent session".
+fn new_session_id() -> Option<String> {
+    use std::io::Read as _;
+    let mut bytes = [0_u8; 16];
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut source| source.read_exact(&mut bytes))
+        .ok()?;
+    Some(uuid_v4(bytes))
+}
+
+/// Sixteen random bytes as a v4 UUID: version nibble 4, variant bits `10`.
+fn uuid_v4(mut bytes: [u8; 16]) -> String {
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+    format!(
+        "{}-{}-{}-{}-{}",
+        &hex[..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..]
+    )
 }
 
 /// Put the agent's name in the environment dl's ssh child will inherit.
@@ -537,6 +572,14 @@ mod tests {
 
             assert!(std::env::var_os(SESSION_MANAGER_AGENT_VAR).is_none());
         });
+    }
+
+    #[test]
+    fn a_session_id_is_a_version_4_uuid() {
+        assert_eq!(uuid_v4([0xff; 16]), "ffffffff-ffff-4fff-bfff-ffffffffffff");
+        assert_eq!(uuid_v4([0; 16]), "00000000-0000-4000-8000-000000000000");
+        let minted = new_session_id().expect("this host has a random source");
+        assert_ne!(Some(minted), new_session_id(), "two sessions, two ids");
     }
 
     #[test]

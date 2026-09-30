@@ -33,6 +33,7 @@
 
 use std::path::Path;
 
+use devlaunch_core::clients::AgentResume;
 use devlaunch_core::domain::spec::DevcontainerPath;
 use devlaunch_core::domain::workspace_id::WorkspaceId;
 use devlaunch_core::flows::completion_cache;
@@ -139,6 +140,7 @@ pub(crate) fn render_launch<'r>(
     devcontainer: Option<&DevcontainerPath>,
     claude_profile: Option<&str>,
     recognised: Option<WorkspaceId>,
+    resume: Option<AgentResume>,
 ) -> Ran {
     // A path or git source whose derived id is empty — `dl /`, `//`, `/.`, `/..`,
     // all of which normalise to a leaf with no final component — would otherwise
@@ -165,7 +167,9 @@ pub(crate) fn render_launch<'r>(
     // stored with the workspace, unlike `--devcontainer`, so no workspace can
     // silently forward an account chosen weeks ago. The name is carried as typed;
     // `clients::claude` owns the check and the refusal.
-    let host = Host::from_process(cache).with_claude_profile(claude_profile.map(str::to_owned));
+    let host = Host::from_process(cache)
+        .with_claude_profile(claude_profile.map(str::to_owned))
+        .with_agent_resume(resume);
     // The pass's events stream through a sink of their own, and it is the same
     // printer as the launch's notices: one line on stderr at the moment core makes
     // the event, which is Python's order. A cold install streams hundreds of

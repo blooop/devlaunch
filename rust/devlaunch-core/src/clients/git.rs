@@ -105,6 +105,40 @@ const TAG_REFS_QUERY: [&str; 3] = [
 /// See [`Git::unpushed_commits`] for why each is here.
 const NOT_WORK: [&str; 2] = ["--exclude=refs/tags/*", "--exclude=refs/original/*"];
 
+/// The top-level options that make `merge-tree` merge every path as plain text.
+///
+/// A merge driver decides what a clean merge is: the built-in `union` keeps
+/// both sides' lines, and a configured `merge.<name>.driver` of `true` keeps
+/// one side whole. Either makes a merge clean that drops a side, and the two
+/// rules that read `merge-tree` would take a dropped change for one the remote
+/// holds. `--attr-source` names the empty tree ([`empty_tree_of`]), so no
+/// `.gitattributes` in the work tree or the index is read, `core.attributesFile` takes the global file
+/// away, and `merge.default` is the driver a path with no attribute gets. A git
+/// older than 2.41 has no `--attr-source` and refuses, which clears nothing.
+/// `GIT_ATTR_NOSYSTEM` takes the system file away, and [`Git::text_merge`]
+/// finds a clone unable to merge when `info/attributes` holds anything, since no option
+/// switches that file off.
+const AS_TEXT: [&str; 4] = [
+    "-c",
+    "core.attributesFile=/dev/null",
+    "-c",
+    "merge.default=text",
+];
+
+/// The empty tree's id in a repository whose objects `rev-parse
+/// --show-object-format` names *format*, or `None` for a format this does not
+/// know.
+///
+/// git resolves `--attr-source` only when a merge first reads an attribute,
+/// which a content merge does, and an id of the other format is refused there.
+fn empty_tree_of(format: &str) -> Option<&'static str> {
+    match format {
+        "sha1" => Some("4b825dc642cb6eb9a060e54bf8d69288fbee4904"),
+        "sha256" => Some("6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321"),
+        _ => None,
+    }
+}
+
 /// What git answered, or that it did not.
 ///
 /// `Said` carries the output shaped the way the verb that asked for it needs —
@@ -859,11 +893,11 @@ impl<'r> Git<'r> {
     fn replays_as(&self, clone: &Path, commit: &str, copy: &str) -> GitAnswer<bool> {
         let base = format!("--merge-base={commit}^");
         let onto = format!("{copy}^");
-        let replayed =
-            match self.about(clone, &["merge-tree", "--write-tree", &base, &onto, commit]) {
-                GitAnswer::Said(replayed) => replayed,
-                GitAnswer::Refused(refused) => return GitAnswer::Refused(refused),
-            };
+        let replayed = match self.merged_as_text(clone, &["--write-tree", &base, &onto, commit]) {
+            GitAnswer::Said(Some(replayed)) => replayed,
+            GitAnswer::Said(None) => return GitAnswer::Said(false),
+            GitAnswer::Refused(refused) => return GitAnswer::Refused(refused),
+        };
         let tree = format!("{copy}^{{tree}}");
         self.about(clone, &["rev-parse", "--verify", &tree])
             .map(|copy_tree| !copy_tree.is_empty() && replayed == copy_tree)
@@ -913,6 +947,287 @@ impl<'r> Git<'r> {
         args.extend(["--not", "--remotes"]);
         self.about(clone, &args)
             .map(|stdout| merges_without_a_diff_in(&stdout))
+    }
+
+    /// The commits reachable from *rev* that no remote-tracking ref contains,
+    /// as full hashes.
+    ///
+    /// [`Git::unpushed_commits_from`] with hashes a set can be built from: the
+    /// squash rule adds and takes away whole branches' worth of these.
+    pub(crate) fn unpushed_hashes_from(&self, clone: &Path, rev: &str) -> GitAnswer<Vec<String>> {
+        self.about(clone, &["rev-list", rev, "--not", "--remotes"])
+            .map(|stdout| stdout.lines().map(str::to_owned).collect())
+    }
+
+    /// The commits on *tip*'s first-parent line that no remote-tracking ref
+    /// contains, the tip first, and no more than *limit* of them when it says.
+    ///
+    /// The points the squash rule tries, in the order it tries them: the tip
+    /// is where a branch squashed whole is found in one merge, and the commits
+    /// under it are where a branch that carried on after its squash is found.
+    /// With no limit, the commits a passing point clears: the squash holds the
+    /// change of that line, and says nothing of what a merge's second parent
+    /// brought in.
+    pub(crate) fn unpushed_first_parents(
+        &self,
+        clone: &Path,
+        tip: &str,
+        limit: Option<usize>,
+    ) -> GitAnswer<Vec<String>> {
+        let most = limit.map(|limit| format!("--max-count={limit}"));
+        let mut args = vec!["rev-list", "--first-parent"];
+        args.extend(most.as_deref());
+        args.extend([tip, "--not", "--remotes"]);
+        self.about(clone, &args)
+            .map(|stdout| stdout.lines().map(str::to_owned).collect())
+    }
+
+    /// Whether the remote ref *other* already holds the whole change *point*
+    /// makes since it left *other*.
+    ///
+    /// The one test that finds a squash of several commits, which no single
+    /// commit's patch matches (kinisi_ros#12035). `merge-tree --write-tree`
+    /// merges *point* into *other* in the object store, so the work tree and
+    /// the index are never touched. The merge takes *point*'s change since
+    /// their merge base and applies it to *other*. When that changes nothing,
+    /// *other* holds the change already. When *other* reverted it, the merge
+    /// puts it back, and the tree differs.
+    ///
+    /// Three answers are `false` before any merge is made:
+    ///
+    /// - More than one merge base. git would merge the bases first, and a
+    ///   change measured from a merge git made up is not one to clear work by.
+    /// - *point* changes nothing since the base: a commit and its revert, or an
+    ///   empty commit. Any merge of an empty change gives *other*'s tree, so it
+    ///   proves nothing.
+    /// - *other* changes nothing since the base. Then it holds nothing *point*
+    ///   could be in, and the merge is not worth its time.
+    ///
+    /// A conflict exits 1, which is a refusal, and so is a merge git gives up
+    /// on. `rev-parse` names the three trees in one spawn, each a full hash on
+    /// its own line.
+    pub(crate) fn holds_the_change_of(
+        &self,
+        clone: &Path,
+        merge: &TextMerge,
+        point: &str,
+        other: &RemoteRef,
+    ) -> GitAnswer<bool> {
+        let bases = match self.about(clone, &["merge-base", "--all", point, other.as_str()]) {
+            GitAnswer::Said(bases) => bases,
+            GitAnswer::Refused(refused) => return GitAnswer::Refused(refused),
+        };
+        let mut bases = bases.lines();
+        let (Some(base), None) = (bases.next(), bases.next()) else {
+            return GitAnswer::Said(false);
+        };
+        let trees = [
+            format!("{point}^{{tree}}"),
+            format!("{base}^{{tree}}"),
+            format!("{}^{{tree}}", other.as_str()),
+        ];
+        let trees = match self.about(clone, &["rev-parse", &trees[0], &trees[1], &trees[2]]) {
+            GitAnswer::Said(trees) => trees,
+            GitAnswer::Refused(refused) => return GitAnswer::Refused(refused),
+        };
+        let [point_tree, base_tree, other_tree] = trees.lines().collect::<Vec<_>>()[..] else {
+            return GitAnswer::Said(false);
+        };
+        if point_tree == base_tree || other_tree == base_tree {
+            return GitAnswer::Said(false);
+        }
+        let base = format!("--merge-base={base}");
+        self.merge_tree(
+            clone,
+            merge,
+            &["--write-tree", &base, other.as_str(), point],
+            None,
+        )
+        .map(|merged| merged.trim_end_matches('\n') == other_tree)
+    }
+
+    /// The tree each clean merge of a *pairs* point into its remote ref gives,
+    /// `None` for a conflict, in the order of *pairs*.
+    ///
+    /// What lets the squash rule skip [`Git::holds_the_change_of`] for the
+    /// pairs that cannot pass. One `merge-tree --stdin` makes every merge, where
+    /// the full question spawns git three times for each. Each line is `<ref>
+    /// <point>` with no base, so git finds the merge base itself. A pair with one
+    /// merge base gets the merge [`Git::holds_the_change_of`] makes, so a pair
+    /// whose tree here is not its ref's tree does not pass there.
+    ///
+    /// With `-z`, `--name-only` and `--no-messages`, each merge prints its
+    /// status (`1` clean, `0` a conflict), its tree, a path per conflicted file
+    /// and an empty field, each ended by a NUL. `--allow-unrelated-histories`
+    /// because one pair with no common commit would stop the whole run. A ref
+    /// the clone has not got stops it too, so the caller leaves those out.
+    /// Output in any other shape reads as a conflict for every pair.
+    pub(crate) fn trees_of_clean_merges(
+        &self,
+        clone: &Path,
+        merge: &TextMerge,
+        pairs: &[(&str, &RemoteRef)],
+    ) -> GitAnswer<Vec<Option<String>>> {
+        if pairs.is_empty() {
+            return GitAnswer::Said(Vec::new());
+        }
+        let lines: String = pairs
+            .iter()
+            .map(|(point, other)| format!("{} {point}\n", other.as_str()))
+            .collect();
+        let Some(input) = tempfile::NamedTempFile::new()
+            .ok()
+            .filter(|file| std::fs::write(file.path(), &lines).is_ok())
+        else {
+            return GitAnswer::Said(vec![None; pairs.len()]);
+        };
+        let args = [
+            "--stdin",
+            "-z",
+            "--name-only",
+            "--no-messages",
+            "--allow-unrelated-histories",
+        ];
+        self.merge_tree(clone, merge, &args, Some(input.path()))
+            .map(|stdout| {
+                clean_merge_trees_in(&stdout, pairs.len())
+                    .unwrap_or_else(|| vec![None; pairs.len()])
+            })
+    }
+
+    /// How *clone* merges as text, or `None` when it cannot: an
+    /// `info/attributes` that could name a merge driver, or objects named in a
+    /// format [`empty_tree_of`] does not know.
+    ///
+    /// `None` is an answer rather than a refusal because git was not asked.
+    /// Both rules read it as they read a conflict: the change is not held. An
+    /// `info/attributes` that is there and empty names nothing, so it merges.
+    pub(crate) fn text_merge(&self, clone: &Path) -> GitAnswer<Option<TextMerge>> {
+        let asked = self.about(
+            clone,
+            &[
+                "rev-parse",
+                "--git-path",
+                "info/attributes",
+                "--show-object-format",
+            ],
+        );
+        let answer = match asked {
+            GitAnswer::Said(answer) => answer,
+            GitAnswer::Refused(refused) => return GitAnswer::Refused(refused),
+        };
+        let mut lines = answer.lines();
+        let (Some(info), Some(empty_tree)) = (lines.next(), lines.next().and_then(empty_tree_of))
+        else {
+            return GitAnswer::Said(None);
+        };
+        let info = clone.join(info);
+        let holds_none = match std::fs::metadata(&info) {
+            Ok(file) => file.len() == 0,
+            Err(missing) => missing.kind() == std::io::ErrorKind::NotFound,
+        };
+        GitAnswer::Said(holds_none.then(|| TextMerge {
+            attr_source: format!("--attr-source={empty_tree}"),
+        }))
+    }
+
+    /// `git merge-tree` with *args*, every path merged as plain text
+    /// ([`AS_TEXT`]), after [`Git::text_merge`] said *clone* can.
+    fn merged_as_text(&self, clone: &Path, args: &[&str]) -> GitAnswer<Option<String>> {
+        let merge = match self.text_merge(clone) {
+            GitAnswer::Said(Some(merge)) => merge,
+            GitAnswer::Said(None) => return GitAnswer::Said(None),
+            GitAnswer::Refused(refused) => return GitAnswer::Refused(refused),
+        };
+        self.merge_tree(clone, &merge, args, None)
+            .map(|stdout| Some(stdout.trim_end_matches('\n').to_owned()))
+    }
+
+    /// `git merge-tree` with *args* as *merge* says, reading *stdin* when
+    /// there is one, and its whole stdout.
+    fn merge_tree(
+        &self,
+        clone: &Path,
+        merge: &TextMerge,
+        args: &[&str],
+        stdin: Option<&Path>,
+    ) -> GitAnswer<String> {
+        let mut argv: Vec<&str> = AS_TEXT.to_vec();
+        argv.push(&merge.attr_source);
+        argv.push("merge-tree");
+        argv.extend(args);
+        let invocation =
+            pinned(clone, &argv).with_env(EnvSpec::inherited().and("GIT_ATTR_NOSYSTEM", "1"));
+        let spec = SpawnSpec::new(invocation).with_timeout(ABOUT_ONE_REPO);
+        let spec = match stdin {
+            Some(path) => spec.with_stdin_file(path),
+            None => spec,
+        };
+        self.captured(&argv.join(" "), &spec)
+    }
+
+    /// The tree of each of *refs* that the clone has, by refname.
+    ///
+    /// One `for-each-ref` for all of them. A ref the clone has not got, or
+    /// whose target is gone, is not listed, and a refname that also matches
+    /// refs under it (`refs/remotes/origin/a` and `refs/remotes/origin/a/b`)
+    /// lists only the ones asked for.
+    pub(crate) fn remote_ref_trees(
+        &self,
+        clone: &Path,
+        refs: &[RemoteRef],
+    ) -> GitAnswer<HashMap<String, String>> {
+        if refs.is_empty() {
+            return GitAnswer::Said(HashMap::new());
+        }
+        let mut args = vec!["for-each-ref", "--format=%(refname)%00%(tree)"];
+        args.extend(refs.iter().map(RemoteRef::as_str));
+        self.about(clone, &args).map(|stdout| {
+            stdout
+                .lines()
+                .filter_map(|line| line.split_once('\0'))
+                .filter(|(name, tree)| {
+                    !tree.is_empty() && refs.iter().any(|asked| asked.as_str() == *name)
+                })
+                .map(|(name, tree)| (name.to_owned(), tree.to_owned()))
+                .collect()
+        })
+    }
+
+    /// The commits no remote-tracking ref contains that a ref other than a
+    /// local branch reaches, as full hashes: the stash, a local tag, a
+    /// detached HEAD, and any other ref [`Git::unpushed_commits`] counts from.
+    ///
+    /// What the squash rule may not clear: it vouches for branches, and only
+    /// for the ones that pass. `--glob=*` is every ref under `refs/` that
+    /// `--all` reads, the per-worktree ones of this worktree included, without
+    /// the HEADs `--all` adds, because a HEAD on a branch is that branch.
+    /// Neither reads a linked worktree's `refs/worktree/*` or `refs/bisect/*`,
+    /// so the count and this rule leave out the same refs. The
+    /// detached HEADs come back by hash from the worktree listing. The tags
+    /// are [`NOT_WORK`]'s, with the local ones named again, as the count names
+    /// them.
+    pub(crate) fn unpushed_off_every_branch(
+        &self,
+        clone: &Path,
+        local_tags: &[String],
+    ) -> GitAnswer<Vec<String>> {
+        let detached = match self.worktree_listing(clone) {
+            GitAnswer::Said(listing) => detached_heads_in(&listing),
+            GitAnswer::Refused(refused) => return GitAnswer::Refused(refused),
+        };
+        let mut args: Vec<&str> = vec![
+            "rev-list",
+            "--exclude=refs/heads/*",
+            "--exclude=refs/remotes/*",
+        ];
+        args.extend(NOT_WORK);
+        args.push("--glob=*");
+        args.extend(local_tags.iter().map(String::as_str));
+        args.extend(detached.iter().map(String::as_str));
+        args.extend(["--not", "--remotes"]);
+        self.about(clone, &args)
+            .map(|stdout| stdout.lines().map(str::to_owned).collect())
     }
 
     /// Every tag in the bare cache at *bare*, with the object each one names.
@@ -1884,6 +2199,51 @@ impl RemoteRef {
     pub(crate) fn as_str(&self) -> &str {
         &self.0
     }
+}
+
+/// What [`Git::text_merge`] found a clone can merge with: the `--attr-source`
+/// that names the empty tree in the clone's object format.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TextMerge {
+    attr_source: String,
+}
+
+/// The tree of each of *merges* records in `merge-tree --stdin -z --name-only
+/// --no-messages` output, `None` for a conflict, or `None` for the whole when
+/// the output is not *merges* records.
+fn clean_merge_trees_in(output: &str, merges: usize) -> Option<Vec<Option<String>>> {
+    let mut fields = output.split('\0');
+    let mut trees = Vec::with_capacity(merges);
+    for _ in 0..merges {
+        let clean = match fields.next()? {
+            "1" => true,
+            "0" => false,
+            _ => return None,
+        };
+        let tree = fields.next().filter(|tree| !tree.is_empty())?;
+        let conflicted = fields.by_ref().take_while(|path| !path.is_empty()).count();
+        trees.push((clean && conflicted == 0).then(|| tree.to_owned()));
+    }
+    match (fields.next(), fields.next()) {
+        (Some(""), None) => Some(trees),
+        _ => None,
+    }
+}
+
+/// The commit each detached worktree HEAD names, from
+/// `worktree list --porcelain`: a paragraph per worktree, `HEAD <hash>` in each,
+/// and a bare `detached` line in the ones on no branch.
+fn detached_heads_in(listing: &str) -> Vec<String> {
+    listing
+        .split("\n\n")
+        .filter(|paragraph| paragraph.lines().any(|line| line == "detached"))
+        .filter_map(|paragraph| {
+            paragraph
+                .lines()
+                .find_map(|line| line.strip_prefix("HEAD "))
+                .map(str::to_owned)
+        })
+        .collect()
 }
 
 /// The branches in [`Git::branches_with_upstreams`] output, one per

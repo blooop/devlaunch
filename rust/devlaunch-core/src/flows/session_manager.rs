@@ -471,6 +471,115 @@ pub(crate) fn report_profile(
     );
 }
 
+/// How long a launch keeps trying to get its resume argv saved, and how often.
+///
+/// herdr refuses the argv until it has detected the agent in the pane, and it reads
+/// a pane's processes on its own schedule: the transport child is seconds old when
+/// this starts. Twenty tries a second apart is well past what that took against
+/// herdr 0.9.2, and short enough that a pane nobody will ever restore stops asking.
+pub(crate) const RESUME_TRIES: u32 = 20;
+pub(crate) const RESUME_TICK: Duration = Duration::from_secs(1);
+
+/// How many ticks a report herdr took may go unsaved before it is sent again.
+///
+/// herdr saves the session on its own debounce, a few seconds at most as measured,
+/// and drops a report it thinks is stale with exit 0: the file is the only way to
+/// tell the two apart.
+const RESUME_UNSAVED_TICKS: u32 = 3;
+
+/// How [`report_resume`] ended. Nothing reads it but the tests: every arm is a
+/// launch that goes on exactly as it would have.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ResumeReported {
+    /// herdr's saved session holds the argv.
+    Saved,
+    /// herdr took the report, and its session file could not be read to check.
+    Taken,
+    /// herdr refused it for good, or never took it in the time allowed.
+    Dropped,
+    /// The session ended first.
+    Stopped,
+    /// herdr's saved session holds another argv: a later report, which this one
+    /// must not replace.
+    Superseded,
+}
+
+/// Tell herdr how to start this pane's agent again, and check that it kept it.
+///
+/// **Off the launch's path and never its failure.** The caller runs this beside the
+/// session, and every way it can end is a launch that goes on as it would have: a
+/// herdr too old for the command, a pane it cannot find, a report it drops, a file
+/// it saves somewhere else. `seq` numbers each report (herdr drops one older than
+/// the source's last), `read` reads the session file, and `wait` sleeps between
+/// tries and answers `false` once the session has ended.
+///
+/// The first report goes at once, whatever `wait` would say: the caller joins this
+/// when the session ends, and one call bounded by [`herdr::ANSWER_WITHIN`] is the
+/// most that can cost.
+pub(crate) fn report_resume(
+    runner: &dyn Runner,
+    report: &herdr::ResumeReport,
+    seq: &dyn Fn() -> u128,
+    read: &dyn Fn(&Path) -> Option<String>,
+    wait: &dyn Fn(Duration) -> bool,
+) -> ResumeReported {
+    let mut taken = false;
+    let mut unsaved = 0;
+    for tick in 0..RESUME_TRIES {
+        if tick > 0 && !wait(RESUME_TICK) {
+            return ResumeReported::Stopped;
+        }
+        if !taken {
+            match send_report(runner, report, seq()) {
+                Sent::Taken => {
+                    taken = true;
+                    unsaved = 0;
+                }
+                Sent::NotYet => continue,
+                Sent::Refused => return ResumeReported::Dropped,
+            }
+        }
+        match read(report.session_file()).map(|json| report.saved_in(&json)) {
+            Some(herdr::Saved::Holds) => return ResumeReported::Saved,
+            None | Some(herdr::Saved::Unreadable) => return ResumeReported::Taken,
+            Some(herdr::Saved::Other) => return ResumeReported::Superseded,
+            Some(herdr::Saved::Empty) => {
+                unsaved += 1;
+                if unsaved >= RESUME_UNSAVED_TICKS {
+                    taken = false;
+                }
+            }
+        }
+    }
+    ResumeReported::Dropped
+}
+
+/// What one report came to.
+enum Sent {
+    Taken,
+    /// herdr has not detected the agent yet, or did not answer in time.
+    NotYet,
+    Refused,
+}
+
+fn send_report(runner: &dyn Runner, report: &herdr::ResumeReport, seq: u128) -> Sent {
+    // stdin is `/dev/null`, never the terminal: this runs *while* the session
+    // does, and a herdr handed the terminal the agent is reading took the session
+    // down with it (ssh exited 255 the moment the first report went, measured
+    // against herdr 0.9.2). The tab rename closes every stream for the same reason.
+    let spec = SpawnSpec::new(
+        Invocation::new(report.binary().to_owned()).with_args(report.report_argv(seq)),
+    )
+    .with_stdin_null()
+    .with_timeout(herdr::ANSWER_WITHIN);
+    match runner.capture(&spec) {
+        Outcome::Ran { exit, .. } if exit.is_success() => Sent::Taken,
+        Outcome::Ran { io, .. } if herdr::worth_retrying(&io.stderr) => Sent::NotYet,
+        Outcome::TimedOut => Sent::NotYet,
+        _ => Sent::Refused,
+    }
+}
+
 /// What is left of the time the whole question may take.
 ///
 /// A budget rather than a deadline, because the [`Runner`] seam takes a duration
@@ -1203,6 +1312,219 @@ mod tests {
         herdr::ForegroundProcess {
             argv: Some(argv(words)),
         }
+    }
+
+    // ------------------------------------------------- the resume argv
+
+    fn resume_report() -> herdr::ResumeReport {
+        herdr::ResumeReport::resolve(
+            &HostEnv {
+                in_pane: Some("1".to_owned()),
+                pane_id: Some("w1:p1".to_owned()),
+                socket: Some("/s/herdr.sock".to_owned()),
+                ..HostEnv::default()
+            },
+            Some("herdr"),
+            Some("claude"),
+            Some(argv(&["dl", "ws", "--", "claude", "--resume", "u"])),
+        )
+        .expect("a pane")
+    }
+
+    /// herdr 0.9.2's session file, holding `argv` for pane `w1:p1` or nothing.
+    fn saved(argv: Option<&str>) -> String {
+        let resume = argv.map_or(String::new(), |argv| {
+            format!(
+                r#","agent_resume":{{"source":"devlaunch:claude","agent":"claude","argv":{argv}}}"#
+            )
+        });
+        format!(
+            r#"{{"workspaces":[{{"id":"w1","public_pane_numbers":{{"1":1}},"tabs":[{{"panes":{{"1":{{"cwd":"/"{resume}}}}}}}]}}]}}"#
+        )
+    }
+
+    const HELD: &str = r#"["dl","ws","--","claude","--resume","u"]"#;
+    const NOT_YET: &str =
+        r#"{"error":{"code":"resume_not_accepted","message":"report its state first"}}"#;
+
+    fn reports(runner: &ScriptedRunner) -> Vec<Vec<String>> {
+        runner.args_to("herdr")
+    }
+
+    #[test]
+    fn a_report_herdr_saved_is_sent_once() {
+        let runner = ScriptedRunner::new().with_script(["herdr"], Response::ok());
+        let ended = report_resume(
+            &runner,
+            &resume_report(),
+            &|| 7,
+            &|path| {
+                assert_eq!(path, Path::new("/s/session.json"));
+                Some(saved(Some(HELD)))
+            },
+            &|_| panic!("nothing to wait for"),
+        );
+        assert_eq!(ended, ResumeReported::Saved);
+        let sent = reports(&runner);
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        // Beside a live session, so never the terminal the agent is reading.
+        let call = runner.calls_to("herdr").remove(0);
+        assert_eq!(
+            call.spec().map(|spec| spec.stdin.clone()),
+            Some(crate::runner::StdinPlan::Null)
+        );
+        assert_eq!(sent[0][..2], ["pane", "report-agent-session"]);
+        assert_eq!(sent[0][7..9], ["--seq", "7"]);
+    }
+
+    /// The transport child is seconds old: herdr refuses until it sees the agent.
+    #[test]
+    fn a_report_sent_before_herdr_sees_the_agent_is_sent_again() {
+        let runner = ScriptedRunner::new().with_script(["herdr"], Response::failed(1, NOT_YET));
+        let waits = std::cell::Cell::new(0);
+        let ended = report_resume(
+            &runner,
+            &resume_report(),
+            &|| 1,
+            &|_| Some(saved(Some(HELD))),
+            &|tick| {
+                assert_eq!(tick, RESUME_TICK);
+                waits.set(waits.get() + 1);
+                if waits.get() == 2 {
+                    runner.clear_scripts().script(["herdr"], Response::ok());
+                }
+                true
+            },
+        );
+        assert_eq!(ended, ResumeReported::Saved);
+        assert_eq!(reports(&runner).len(), 3);
+    }
+
+    /// A herdr that did not answer in time is asked again, not given up on.
+    #[test]
+    fn a_report_herdr_did_not_answer_in_time_is_sent_again() {
+        let runner = ScriptedRunner::new().with_script(["herdr"], Response::TimedOut);
+        let ended = report_resume(
+            &runner,
+            &resume_report(),
+            &|| 1,
+            &|_| Some(saved(Some(HELD))),
+            &|_| {
+                runner.clear_scripts().script(["herdr"], Response::ok());
+                true
+            },
+        );
+        assert_eq!(ended, ResumeReported::Saved);
+        assert_eq!(reports(&runner).len(), 2);
+    }
+
+    /// herdr answers 0 to a report it drops as stale, so the file is the check.
+    #[test]
+    fn a_report_herdr_took_and_never_saved_is_sent_again() {
+        let runner = ScriptedRunner::new().with_script(["herdr"], Response::ok());
+        let reads = std::cell::Cell::new(0);
+        let ended = report_resume(
+            &runner,
+            &resume_report(),
+            &|| 1,
+            &|_| {
+                reads.set(reads.get() + 1);
+                Some(if reads.get() > RESUME_UNSAVED_TICKS as usize {
+                    saved(Some(HELD))
+                } else {
+                    saved(None)
+                })
+            },
+            &|_| true,
+        );
+        assert_eq!(ended, ResumeReported::Saved);
+        assert_eq!(
+            reports(&runner).len(),
+            2,
+            "sent, unsaved three times, sent again"
+        );
+    }
+
+    #[test]
+    fn a_report_for_a_pane_the_file_does_not_hold_yet_is_sent_again() {
+        let runner = ScriptedRunner::new().with_script(["herdr"], Response::ok());
+        let reads = std::cell::Cell::new(0);
+        let ended = report_resume(
+            &runner,
+            &resume_report(),
+            &|| 1,
+            &|_| {
+                reads.set(reads.get() + 1);
+                Some(if reads.get() > RESUME_UNSAVED_TICKS as usize {
+                    saved(Some(HELD))
+                } else {
+                    r#"{"workspaces":[]}"#.to_owned()
+                })
+            },
+            &|_| true,
+        );
+        assert_eq!(ended, ResumeReported::Saved);
+        assert_eq!(reports(&runner).len(), 2);
+    }
+
+    /// The hook reports the session claude really opened, after the host's
+    /// guess: sending the guess again would restore the wrong session.
+    #[test]
+    fn a_newer_argv_in_the_file_is_never_replaced() {
+        let runner = ScriptedRunner::new().with_script(["herdr"], Response::ok());
+        let ended = report_resume(
+            &runner,
+            &resume_report(),
+            &|| 1,
+            &|_| {
+                Some(saved(Some(
+                    r#"["dl","ws","--","claude","--resume","picked"]"#,
+                )))
+            },
+            &|_| true,
+        );
+        assert_eq!(ended, ResumeReported::Superseded);
+        assert_eq!(reports(&runner).len(), 1);
+    }
+
+    #[test]
+    fn a_refusal_that_will_not_change_ends_the_asking() {
+        for runner in [
+            ScriptedRunner::new().with_script(["herdr"], Response::failed(1, "pane_not_found")),
+            ScriptedRunner::new().with_missing("herdr"),
+        ] {
+            let ended = report_resume(&runner, &resume_report(), &|| 1, &|_| None, &|_| {
+                panic!("a refusal is not waited out")
+            });
+            assert_eq!(ended, ResumeReported::Dropped);
+            assert_eq!(reports(&runner).len(), 1);
+        }
+    }
+
+    /// A file that is not herdr's shape cannot confirm, and is not a reason to spam.
+    #[test]
+    fn a_session_file_that_cannot_be_read_takes_herdrs_word() {
+        let runner = ScriptedRunner::new().with_script(["herdr"], Response::ok());
+        let ended = report_resume(&runner, &resume_report(), &|| 1, &|_| None, &|_| true);
+        assert_eq!(ended, ResumeReported::Taken);
+        assert_eq!(reports(&runner).len(), 1);
+    }
+
+    #[test]
+    fn the_asking_is_bounded_and_stops_with_the_session() {
+        let runner = ScriptedRunner::new().with_script(["herdr"], Response::failed(1, NOT_YET));
+        let ended = report_resume(&runner, &resume_report(), &|| 1, &|_| None, &|_| true);
+        assert_eq!(ended, ResumeReported::Dropped);
+        assert_eq!(reports(&runner).len(), RESUME_TRIES as usize);
+
+        let runner = ScriptedRunner::new().with_script(["herdr"], Response::failed(1, NOT_YET));
+        let ended = report_resume(&runner, &resume_report(), &|| 1, &|_| None, &|_| false);
+        assert_eq!(ended, ResumeReported::Stopped);
+        assert_eq!(
+            reports(&runner).len(),
+            1,
+            "the first report goes regardless"
+        );
     }
 
     #[test]

@@ -9,6 +9,7 @@
 use std::io::Write as _;
 use std::path::Path;
 
+use devlaunch_core::clients::AgentResume;
 use devlaunch_core::clients::devpod::{ListingUnreadable, NotRun};
 use devlaunch_core::clients::devpod_home::DevpodHome;
 use devlaunch_core::domain::config;
@@ -106,6 +107,7 @@ pub(crate) fn dispatch(
     cache: &Path,
     refresh: &mut Refresh<'_>,
     command: Command,
+    resume: Option<AgentResume>,
 ) -> Ending {
     let mut context = CommandContext::new(runner);
     match command {
@@ -164,6 +166,7 @@ pub(crate) fn dispatch(
                         // which is the one way this feature could mislead quietly.
                         claude_profile: profile.or(claude_profile),
                     },
+                    None,
                 );
                 if pane_shell::no_session_ran(ending) {
                     become_the_host_shell()
@@ -227,6 +230,7 @@ pub(crate) fn dispatch(
                 // A target named on the command line is resolved by the launch
                 // itself; only the picker arrives knowing more than it says.
                 None,
+                resume,
             );
             hangup::after_the_command(after, ending)
         }
@@ -761,6 +765,7 @@ fn render_workspace<'r>(
     devcontainer: Option<&DevcontainerPath>,
     claude_profile: Option<&str>,
     recognised: Option<WorkspaceId>,
+    resume: Option<AgentResume>,
 ) -> Ending {
     // The open's own notices are said where they happen, by the same printer every
     // other notice goes through: a damaged `metadata.json` has something to say
@@ -810,6 +815,7 @@ fn render_workspace<'r>(
                 devcontainer,
                 claude_profile,
                 recognised,
+                resume,
             );
             after_the_session(runner, context, cache, refresh, &mut cold, target, rm, ran)
         }
@@ -1657,6 +1663,7 @@ fn render_select<'r>(
                     // this triple, and the launch it is about to start knows only
                     // the id. See `Launch::recognised_as`.
                     pick.triple.clone(),
+                    None,
                 );
                 if matches!(ending, Ending::Done) {
                     ending = ran;

@@ -318,6 +318,17 @@ impl<'a> core::fmt::Debug for devlaunch_core::domain::spec::WorkspaceSpec<'a>
 pub fn devlaunch_core::domain::spec::WorkspaceSpec<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl<'a> core::marker::Copy for devlaunch_core::domain::spec::WorkspaceSpec<'a>
 impl<'a> core::marker::StructuralPartialEq for devlaunch_core::domain::spec::WorkspaceSpec<'a>
+pub struct devlaunch_core::api::AgentResume
+impl devlaunch_core::clients::AgentResume
+pub fn devlaunch_core::clients::AgentResume::new(alloc::vec::Vec<alloc::string::String>, core::option::Option<alloc::vec::Vec<alloc::string::String>>) -> core::option::Option<Self>
+impl core::clone::Clone for devlaunch_core::clients::AgentResume
+pub fn devlaunch_core::clients::AgentResume::clone(&self) -> devlaunch_core::clients::AgentResume
+impl core::cmp::Eq for devlaunch_core::clients::AgentResume
+impl core::cmp::PartialEq for devlaunch_core::clients::AgentResume
+pub fn devlaunch_core::clients::AgentResume::eq(&self, &devlaunch_core::clients::AgentResume) -> bool
+impl core::fmt::Debug for devlaunch_core::clients::AgentResume
+pub fn devlaunch_core::clients::AgentResume::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::clients::AgentResume
 pub struct devlaunch_core::api::Cold<'a, 'r>
 pub devlaunch_core::api::Cold::clones: &'a devlaunch_core::flows::workspace_clone::WorkspaceCloneManager<'r>
 pub devlaunch_core::api::Cold::storage: &'a mut devlaunch_core::domain::metadata::MetadataStorage
@@ -360,6 +371,7 @@ impl core::marker::StructuralPartialEq for devlaunch_core::clients::devpod_home:
 pub struct devlaunch_core::api::Host
 impl devlaunch_core::flows::launch::Host
 pub fn devlaunch_core::flows::launch::Host::from_process(impl core::convert::Into<std::path::PathBuf>) -> Self
+pub fn devlaunch_core::flows::launch::Host::with_agent_resume(self, core::option::Option<devlaunch_core::clients::AgentResume>) -> Self
 pub fn devlaunch_core::flows::launch::Host::with_claude_profile(self, core::option::Option<alloc::string::String>) -> Self
 impl core::clone::Clone for devlaunch_core::flows::launch::Host
 pub fn devlaunch_core::flows::launch::Host::clone(&self) -> devlaunch_core::flows::launch::Host
@@ -485,6 +497,17 @@ pub fn devlaunch_core::clients::devpod_home::DevpodHome::eq(&self, &devlaunch_co
 impl core::fmt::Debug for devlaunch_core::clients::devpod_home::DevpodHome
 pub fn devlaunch_core::clients::devpod_home::DevpodHome::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::clients::devpod_home::DevpodHome
+pub struct devlaunch_core::clients::AgentResume
+impl devlaunch_core::clients::AgentResume
+pub fn devlaunch_core::clients::AgentResume::new(alloc::vec::Vec<alloc::string::String>, core::option::Option<alloc::vec::Vec<alloc::string::String>>) -> core::option::Option<Self>
+impl core::clone::Clone for devlaunch_core::clients::AgentResume
+pub fn devlaunch_core::clients::AgentResume::clone(&self) -> devlaunch_core::clients::AgentResume
+impl core::cmp::Eq for devlaunch_core::clients::AgentResume
+impl core::cmp::PartialEq for devlaunch_core::clients::AgentResume
+pub fn devlaunch_core::clients::AgentResume::eq(&self, &devlaunch_core::clients::AgentResume) -> bool
+impl core::fmt::Debug for devlaunch_core::clients::AgentResume
+pub fn devlaunch_core::clients::AgentResume::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::clients::AgentResume
 impl core::convert::From<devlaunch_core::domain::config::ConfigError> for devlaunch_core::flows::records::StartupError
 pub fn devlaunch_core::flows::records::StartupError::from(devlaunch_core::domain::config::ConfigError) -> Self
 impl core::convert::From<devlaunch_core::domain::metadata::MetadataError> for devlaunch_core::flows::records::StartupError
@@ -682,6 +705,7 @@ pub fn devlaunch_core::flows::launch::ColdPath<'r, '_>::recorded(&mut self) -> c
 pub struct devlaunch_core::flows::launch::Host
 impl devlaunch_core::flows::launch::Host
 pub fn devlaunch_core::flows::launch::Host::from_process(impl core::convert::Into<std::path::PathBuf>) -> Self
+pub fn devlaunch_core::flows::launch::Host::with_agent_resume(self, core::option::Option<devlaunch_core::clients::AgentResume>) -> Self
 pub fn devlaunch_core::flows::launch::Host::with_claude_profile(self, core::option::Option<alloc::string::String>) -> Self
 impl core::clone::Clone for devlaunch_core::flows::launch::Host
 pub fn devlaunch_core::flows::launch::Host::clone(&self) -> devlaunch_core::flows::launch::Host

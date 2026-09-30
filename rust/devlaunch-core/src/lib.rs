@@ -177,6 +177,9 @@ pub mod api {
     pub use crate::flows::launch::{
         Cold, ColdMachinery, ColdPath, ColdRefused, Host, LaunchNotice, Provision, ToolProvisioning,
     };
+    // What `Host::with_agent_resume` takes: how the agent a launch starts is
+    // started again after herdr restarts.
+    pub use crate::clients::AgentResume;
     pub use crate::flows::lifecycle::{Refresh, SelfInvocation};
     pub use crate::flows::provision::ProvisionEvent;
     pub use crate::flows::records::{RecordsNotice, StartupError};

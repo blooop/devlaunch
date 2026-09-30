@@ -147,9 +147,39 @@ impl World {
                     .collect::<Vec<String>>()
             })
             .filter(|argv| argv.first().map(String::as_str) != Some("list"))
-            .map(|argv| format!("devpod {}", argv.join(" ")))
+            .map(|argv| without_session_ids(&format!("devpod {}", argv.join(" "))))
             .collect()
     }
+
+    /// [`Self::devpod_calls`] as devpod saw them, session ids and all.
+    fn devpod_calls_as_made(&self) -> Vec<String> {
+        std::fs::read_to_string(self.root.join("shim-log.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+}
+
+/// Text with every `--session-id <uuid>` aid adds taken out.
+///
+/// The id is random per launch, so a byte-for-byte assertion cannot hold it; every
+/// other byte of the line is still the assertion. `a_fresh_claude_session_is_named`
+/// is the test that the id is there at all.
+fn without_session_ids(text: &str) -> String {
+    const FLAG: &str = " --session-id ";
+    let mut rest = text;
+    let mut kept = String::new();
+    while let Some(at) = rest.find(FLAG) {
+        kept.push_str(&rest[..at]);
+        let after = &rest[at + FLAG.len()..];
+        let id_len = after
+            .find(|c: char| !(c.is_ascii_hexdigit() || c == '-'))
+            .unwrap_or(after.len());
+        rest = &after[id_len..];
+    }
+    kept.push_str(rest);
+    kept
 }
 
 struct Run {
@@ -165,7 +195,7 @@ impl Run {
         };
         Run {
             out: template(&output.stdout),
-            err: template(&output.stderr),
+            err: without_session_ids(&template(&output.stderr)),
             code: output.status.code(),
         }
     }
@@ -309,6 +339,25 @@ fn an_agent_name_that_does_not_decode_is_refused_rather_than_read_as_unset() {
 // ===========================================================================
 // the command line it hands dl
 // ===========================================================================
+
+#[test]
+fn a_fresh_claude_session_is_named() {
+    // The name is what lets herdr bring the session back after a restart: the line
+    // that reopens it is `--resume <the same id>`, known before the session exists.
+    let world = World::with(&["--warm"]);
+    let run = world.aid(&[MAIN, "hi"]);
+    run.exited(0);
+    let calls = world.devpod_calls_as_made();
+    let session = calls.last().expect("a session");
+    let at = session
+        .find("--session-id ")
+        .expect("aid named the session")
+        + "--session-id ".len();
+    let id = &session[at..at + 36];
+    assert_eq!(id.len(), 36, "{session}");
+    assert_eq!(id.matches('-').count(), 4, "not a uuid: {id}");
+    assert_eq!(&id[14..15], "4", "not a v4 uuid: {id}");
+}
 
 #[test]
 fn a_prompt_reaches_the_agent_as_one_argument_through_dls_own_launch() {

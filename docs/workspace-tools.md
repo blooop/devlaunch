@@ -1459,7 +1459,61 @@ shell because a status indicator could not be wired up.
 host-side half, and it is also why the mechanism is `pane report-agent` rather than
 `pane report-agent-session`: the second reports a session id for a pane that
 already has an agent and does not establish one, so a container sending only those
-stays invisible.
+stays invisible. The hook still sends one, on `SessionStart` and after the lifecycle
+report, to keep [the restore line](#coming-back-after-herdr-restarts) current.
+
+## Coming back after herdr restarts
+
+herdr can save each pane's agent and start it again when the session is restored:
+
+```toml
+[session]
+resume_agents_on_restore = true
+```
+
+It saves one command line per pane and, on restore, types it into a new shell in the
+pane's saved directory. `dl` is what tells it the line, for an agent `aid` started:
+
+```bash
+dl <workspace id> -- CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 IS_SANDBOX=1 claude --dangerously-skip-permissions --remote-control=<workspace id> --resume <session id>
+```
+
+So after a herdr server restart, or a reboot, every such pane comes back into its own
+conversation with no `aid resume` and no pickers. The workspace starts if it is stopped.
+Measured against herdr 0.9.2: about 20 seconds from the server start to the claude
+prompt with the container stopped, and about 5 seconds with it running.
+[docs/cli.md](cli.md#in-a-herdr-pane-the-restart-needs-no-command-at-all) has the line per
+agent.
+
+**Nothing has to be turned on in `dl`.** The report is one `herdr pane
+report-agent-session` from this host, under the source `devlaunch:<agent>`, sent while
+the session runs. herdr takes it only after it has seen the agent in the pane, so `dl`
+tries once a second for up to 20 seconds and reads herdr's saved session to check that
+the line was kept, since herdr drops a stale report with exit status 0. None of that is
+on the launch's path. A herdr older than 0.9.2, a line herdr would refuse, or any other
+failure costs the restore and never the session. The report carries no state, so herdr
+goes on reading idle, working and blocked off the screen.
+
+**`/clear` needs `DEVLAUNCH_HERDR=1`.** claude starts a new session id on `/clear` and on
+an in-agent `/resume`, and the saved line still names the old one. With
+[container-side reporting](#reporting-an-agent-started-inside-the-workspace) on, the hook
+reads the new id on every `SessionStart` and sends the line again with it. `dl` hands the
+hook that line without the id, in `DEVLAUNCH_HERDR_RESUME`, and only when no word of it
+holds a space or an apostrophe. Without the hook, a restore after `/clear` reopens the
+session the pane was launched with.
+
+**Keep `startup_per_agent_delay_ms` at 500 or less.** The default is 100. herdr types
+the line while `dl-herdr-shell` is still deciding where the new pane belongs, and the
+typed text waits for the shell. With a delay of 1000 or more, a second pane in the same
+tab was seen to open inside the container first, where there is no `dl`, and the line
+failed with `bash: dl: command not found`.
+
+**What it does not cover.** herdr clears the line the moment the agent exits, which is
+right for `/exit` and for a closed pane, and also happens when the container stops under
+the agent. So a shutdown that stops the container before herdr has saved the session,
+as some reboot orders do, leaves nothing to restore, and `aid resume` is still the way
+back. A `dl <ws> -- claude ...` typed by hand tells herdr nothing, because only `aid`
+knows which session its line opens.
 
 ## Setting up Herdr on a new machine
 

@@ -772,6 +772,35 @@ The picker is asked for before the line is built, not handed to `dl -- <command>
 open. The line names the Remote Control session after the workspace id, and the id is
 not known until the pick is made.
 
+### In a herdr pane, the restart needs no command at all
+
+A fresh claude launch carries `--session-id <uuid>`, a UUID v4 that `aid` makes up, so
+the line that reopens that session is known before the session exists. `aid` hands it to
+`dl`, and `dl` tells the herdr pane it runs in:
+
+```bash
+dl <workspace id> -- CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 IS_SANDBOX=1 claude --dangerously-skip-permissions --remote-control=<workspace id> --resume <uuid>
+```
+
+That is the fresh line with the prompt taken out and `--resume <uuid>` in its place, so a
+restore does not send the prompt again. herdr saves it with the pane and types it into
+the pane when it restores the session. When the id is not `aid`'s to know, the line asks
+for the latest session instead:
+
+| Line | What herdr is told |
+|---|---|
+| `aid <ws> ...` with claude | `claude ... --resume <uuid>` |
+| `aid resume <ws>` with claude | `claude ... --continue` |
+| codex, either line | `codex ... resume --last` |
+| gemini, either line | `gemini ... --resume` |
+
+`claude --continue` and `codex resume --last` were checked against their `--help`
+(claude 2.1.284, codex 0.159.0). gemini's is its documented spelling. A line with `--rm`
+tells herdr nothing, because its workspace goes when the session does. Outside herdr the
+only difference is the `--session-id` on the line.
+[docs/workspace-tools.md](workspace-tools.md#coming-back-after-herdr-restarts) has what
+herdr needs and what it does not cover.
+
 ## `kill`: the workspace that will not answer
 
 `dl <ws> stop` asks devpod to stop a workspace, and it is the right thing to type

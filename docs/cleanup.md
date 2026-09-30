@@ -984,7 +984,7 @@ cherry-pick and a squash merge all put the same change on the remote under a new
 hash, so by hash the old commit is on no remote ref. A kinisi_ros workspace refused
 `rm` over 23 commits that way, and none of them was lost: its remote branch had
 been rebased, a merged PR had been squashed into `main`, and five of the commits
-were merges of `origin/main`. Two more rules now run after the count:
+were merges of `origin/main`. Three more rules now run after the count:
 
 - A commit drops out when a remote ref holds a copy of it: a commit that makes
   the same change in the same place. The candidates come from the patch id,
@@ -1011,11 +1011,44 @@ were merges of `origin/main`. Two more rules now run after the count:
   resolved by hand is work of the merge's own, and it stays counted. So does the
   stash, which git writes as a merge, and so does each merge's parent that has no
   copy.
+- A branch drops out when a remote ref already holds its whole change. This is
+  the rule for a squash of several commits, which has no patch that matches any
+  one of them: a kinisi_ros workspace refused `rm` over the 3 commits of a PR
+  squashed into `main`. For each branch that still holds counted commits,
+  `git merge-tree` merges the branch into each remote ref the first rule
+  compares with. When the merge is clean and gives the remote ref's own tree,
+  the remote ref already holds what the branch changes since it left it, and
+  every unpushed commit on the branch's first-parent line drops out. A commit
+  that a merge on the branch brought in through its second parent is not one of
+  them: the merge can drop that commit's change, as `git merge -s ours` does,
+  and then the squash holds none of it. Inside a branch that passes, a
+  commit and its later revert drop out with the rest, as a squash merge drops
+  them. The merge runs with merge attributes switched off, so a `merge=union`
+  or a custom merge driver cannot make a merge clean that drops the branch's
+  side: every file merges as plain text, and a clone whose
+  `info/attributes` file holds anything clears nothing. When the remote reverted the
+  squash, the merge puts the change back, the tree differs, and nothing drops
+  out. The tip is tried first, then up to seven commits under it on the
+  branch's first-parent line, so work added after the squash stays counted and
+  the squashed commits under it do not. A branch that changes nothing since it
+  left the remote ref proves nothing, because any merge of it gives the remote
+  ref's tree, so a commit and its revert on their own still count. A commit
+  drops out only when every ref that reaches it is a branch that passed: a
+  second branch that grew from it and does not pass holds it back, and so do
+  the stash, a local tag and a detached HEAD.
 
-Both rules can only take commits out of the count, and only when git answers. A
-question git refuses clears nothing. A squash of several commits has no patch
-that matches any one of them, so those commits still count, and the refusal is
-yours to judge.
+All three rules can only take commits out of the count, and only when git
+answers. A question git refuses clears nothing, and so does a merge with a
+conflict. That is the limit of the third rule: when the remote edited the lines
+the squash wrote, the merge conflicts, and the squashed commits still count,
+although the change is in the remote's history. A branch whose squashed commits
+are more than seven commits under its tip also still counts, and so does a
+squash that holds only part of the branch. The rule makes at most 4,096 merges
+in one clone, which a clone with 23 or more branches of unpushed work can reach,
+and a branch whose merges do not fit still counts. A commit that reached a passing
+branch only through a merge's second parent still counts unless another rule
+clears it, even when the squash does hold its change. In each case the refusal is yours to
+judge.
 
 Tags are the one ref kind the answer has to think about, and both directions of
 getting it wrong have a ticket. A tag your remote carries, but which no remote

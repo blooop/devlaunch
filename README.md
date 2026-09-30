@@ -19,7 +19,7 @@ one argument instead of a clone, a config file and a build command.
 [![GitHub pull-requests merged](https://badgen.net/github/merged-prs/blooop/devlaunch)](https://github.com/blooop/devlaunch/pulls?q=is%3Amerged)
 [![GitHub release](https://img.shields.io/github/release/blooop/devlaunch.svg)](https://GitHub.com/blooop/devlaunch/releases/)
 [![PyPI](https://img.shields.io/pypi/v/devlaunch)](https://pypi.org/project/devlaunch/)
-[![Conda](https://img.shields.io/badge/conda-v0.57.1-brightgreen?logo=anaconda)](https://prefix.dev/channels/blooop/packages/devlaunch)
+[![Conda](https://img.shields.io/badge/conda-v0.58.0-brightgreen?logo=anaconda)](https://prefix.dev/channels/blooop/packages/devlaunch)
 [![License](https://img.shields.io/github/license/blooop/devlaunch)](https://opensource.org/license/mit/)
 [![Platform](https://img.shields.io/badge/platform-linux--64-blue)](https://github.com/blooop/devlaunch/releases)
 [![Pixi Badge](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/prefix-dev/pixi/main/assets/badge/v0.json)](https://pixi.sh)
@@ -343,7 +343,7 @@ clone, and [docs/cleanup.md](docs/cleanup.md) says what it carries one past and 
 
 ```bash
 $ dl --version
-dl 0.57.1
+dl 0.58.0
 ```
 
 `--devcontainer <variant|path>` picks a non-default `devcontainer.json`. A bare name means
@@ -392,7 +392,7 @@ aid blooop/devlaunch@fix/42 fix the flaky test
 is exactly
 
 ```bash
-dl blooop/devlaunch@fix/42 -- IS_SANDBOX=1 claude --dangerously-skip-permissions --remote-control=devlaunch-fix-42-eshv 'fix the flaky test'
+dl blooop/devlaunch@fix/42 -- IS_SANDBOX=1 claude --dangerously-skip-permissions --remote-control=devlaunch-fix-42-eshv --session-id <new uuid> 'fix the flaky test'
 ```
 
 Same clone, same workspace, same container. Everything after the workspace is the prompt, flags
@@ -447,7 +447,10 @@ After a restart, `aid resume` is the way back into an agent session in one comma
 opens `dl`'s picker, starts the workspace you pick, and starts the agent with its own
 resume picker, Remote Control and full auto included. `aid resume <workspace>` skips the
 first picker. [docs/cli.md](docs/cli.md#aid-resume-back-into-a-session-after-a-restart)
-has the words per agent.
+has the words per agent. In a [herdr](https://herdr.dev) pane you need neither: `aid` tells
+herdr how to reopen the session, and a herdr restart or a reboot brings the pane back into
+its own conversation. See
+[docs/workspace-tools.md](docs/workspace-tools.md#coming-back-after-herdr-restarts).
 
 ## What every workspace gets
 

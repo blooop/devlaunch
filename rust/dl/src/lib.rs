@@ -588,16 +588,35 @@ fn stdin_readable_now() -> bool {
 /// copy of it. The timing summary begins and ends inside this call, as Python's
 /// `main()` does, so a second command in the same process gets a summary of its own.
 pub fn run(argv: &[String]) -> i32 {
+    run_with(argv, None)
+}
+
+/// [`run`], for a caller that also knows how the agent it asked for is started
+/// again after herdr restarts.
+///
+/// `aid` is that caller: it wrote the agent's line, so it is what can say which
+/// session the line opens. A typed value beside the command line rather than words
+/// in it, because a `dl` that read a resume line back out of a command tail would be
+/// guessing at another program's flags.
+pub fn run_resumable(argv: &[String], resume: AgentResume) -> i32 {
+    run_with(argv, Some(resume))
+}
+
+fn run_with(argv: &[String], resume: Option<AgentResume>) -> i32 {
     // Timing is per-command: begin() here so a second run in the same process
     // starts a fresh summary, and the report is written however the command ended.
     timing::begin();
-    let ending = one_command(argv);
+    let ending = one_command(argv, resume);
     report_timing();
     ending
 }
 
+/// How the agent `aid` starts is started again after herdr restarts, re-exported
+/// for [`run_resumable`]'s one caller.
+pub use devlaunch_core::clients::AgentResume;
+
 /// The command itself, between the timing summary's two ends.
-fn one_command(argv: &[String]) -> i32 {
+fn one_command(argv: &[String], resume: Option<AgentResume>) -> i32 {
     // Before the command runs and before anything is parsed into: `dl --help` must
     // not pay for a refresh it has no use for, and the predicate is a pure
     // function of argv for exactly that reason. Asked here rather than after the
@@ -625,7 +644,7 @@ fn one_command(argv: &[String]) -> i32 {
             match command_line(argv) {
                 Err(ending) => ending,
                 Ok(command) => {
-                    commands::dispatch(&ProcessRunner, &cache, &mut refresh, command).code()
+                    commands::dispatch(&ProcessRunner, &cache, &mut refresh, command, resume).code()
                 }
             }
         }
