@@ -736,13 +736,27 @@ fn settings(setup: &mut Setup) -> TabTitle {
             ),
         );
     }
-    let instruction = format!("add a Stop hook with the command {command}");
-    if let Some(outcome) = chezmoi_refusal(&path, &instruction) {
-        let outcome = match outcome {
-            Outcome::Skipped(_) if other_tab_title => {
-                Outcome::Skipped("chezmoi manages it, and it needs no change".to_owned())
+    let add = format!("add a Stop hook with the command {command}");
+    let instruction = match &read {
+        Ok((_, merged)) if merged.text.is_none() => None,
+        Ok((_, merged)) => {
+            let mut steps = Vec::new();
+            if merged.registered {
+                steps.push(add);
             }
-            outcome => outcome,
+            if merged.removed > 0 {
+                steps.push(format!("remove {} duplicate hook(s)", merged.removed));
+            }
+            Some(steps.join(" and "))
+        }
+        Err(_) => Some(add),
+    };
+    if let Some(outcome) = chezmoi_refusal(&path, instruction.as_deref().unwrap_or_default()) {
+        let outcome = match (outcome, instruction) {
+            (Outcome::Skipped(_), None) => {
+                Outcome::Current("chezmoi manages it, and it needs no change".to_owned())
+            }
+            (outcome, _) => outcome,
         };
         setup.report(step, outcome);
         return tab_title;
