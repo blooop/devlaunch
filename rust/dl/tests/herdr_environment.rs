@@ -983,3 +983,20 @@ fn a_second_run_over_a_users_own_files_changes_nothing() {
         assert!(second.contains(step), "{step}: {second}");
     }
 }
+
+#[test]
+fn the_kitty_include_is_appended_to_a_kitty_conf_without_a_final_newline() {
+    let host = Host::new_machine();
+    let conf = host.path(".config/kitty/kitty.conf");
+    fs::write(&conf, "font_size 12").unwrap();
+    stderr_of(&host.setup(&[]));
+    assert_eq!(
+        fs::read_to_string(&conf).unwrap(),
+        "font_size 12\n\n# The F-key fix for herdr, written by `dl --herdr-setup`.\ninclude devlaunch-herdr.conf\n"
+    );
+    let second = stderr_of(&host.setup(&[]));
+    assert!(
+        second.contains("current  kitty.conf include: ~/.config/kitty/kitty.conf has `include devlaunch-herdr.conf`"),
+        "{second}"
+    );
+}
