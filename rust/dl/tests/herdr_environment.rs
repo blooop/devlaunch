@@ -929,3 +929,26 @@ fn a_herdr_file_already_on_local_bin_is_left_alone() {
         "{output}"
     );
 }
+
+#[test]
+fn duplicate_herdr_session_hooks_are_removed_once_with_a_backup() {
+    let host = Host::new_machine();
+    let settings = host.path(".claude/settings.json");
+    let herdr = r#"{"matcher":"","hooks":[{"type":"command","command":"bash '/h/.claude/hooks/herdr-agent-state.sh' session","timeout":10}]}"#;
+    let original = format!(r#"{{"hooks":{{"SessionStart":[{herdr},{herdr}]}}}}"#);
+    fs::write(&settings, &original).unwrap();
+    let first = stderr_of(&host.setup(&[]));
+    assert!(first.contains("removed 1 duplicate hook(s)"), "{first}");
+    assert_eq!(
+        fs::read_to_string(host.path(".claude/settings.json.devlaunch-backup")).unwrap(),
+        original
+    );
+    let merged: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&settings).unwrap()).unwrap();
+    assert_eq!(merged["hooks"]["SessionStart"].as_array().unwrap().len(), 1);
+
+    let before = snapshot(host.0.path());
+    let second = stderr_of(&host.setup(&[]));
+    assert_eq!(snapshot(host.0.path()), before);
+    assert!(second.contains("current  claude settings"), "{second}");
+}
