@@ -70,10 +70,12 @@ pub(crate) fn merge(original: &str, targets: &Targets) -> Result<Merged, String>
             .parse::<DocumentMut>()
             .map_err(|e| format!("invalid Herdr config: {e}"))?;
         let mut next = last_position(document.as_table()) + 1;
+        let bound = bound_keys(document.as_table());
         fill_defaults(
             document.as_table_mut(),
             packaged.as_table(),
             "",
+            &bound,
             &mut next,
             &mut merged.added,
         );
@@ -137,28 +139,89 @@ fn renumber_table(table: &mut Table, next: &mut isize) {
     }
 }
 
+/// Every key string the user's `[keys]` binds, to an action or a `[[keys.command]]`.
+fn bound_keys(root: &Table) -> Vec<String> {
+    let Some(keys) = root.get("keys").and_then(Item::as_table_like) else {
+        return Vec::new();
+    };
+    let mut bound = Vec::new();
+    for (_, item) in keys.iter() {
+        match item {
+            Item::Value(Value::String(key)) => bound.push(key.value().to_owned()),
+            Item::Value(Value::Array(array)) => {
+                bound.extend(array.iter().filter_map(Value::as_str).map(str::to_owned));
+            }
+            Item::ArrayOfTables(commands) => bound.extend(
+                commands
+                    .iter()
+                    .filter_map(|entry| entry.get("key").and_then(Item::as_str))
+                    .map(str::to_owned),
+            ),
+            _ => {}
+        }
+    }
+    bound
+}
+
+/// `default` without the keys in `bound`, or `None` when it keeps no key at all.
+fn unclaimed(default: &Item, bound: &[String]) -> Option<Item> {
+    let free = |key: &str| !bound.iter().any(|mine| mine == key);
+    match default {
+        Item::Value(Value::String(key)) => free(key.value()).then(|| default.clone()),
+        Item::Value(Value::Array(array)) => {
+            let mut array = array.clone();
+            array.retain(|key| key.as_str().is_none_or(free));
+            (!array.is_empty()).then(|| Item::Value(Value::Array(array)))
+        }
+        Item::ArrayOfTables(commands) => {
+            let mut kept = ArrayOfTables::new();
+            for entry in commands.iter() {
+                if entry.get("key").and_then(Item::as_str).is_none_or(free) {
+                    kept.push(entry.clone());
+                }
+            }
+            (!kept.is_empty()).then_some(Item::ArrayOfTables(kept))
+        }
+        _ => Some(default.clone()),
+    }
+}
+
 fn fill_defaults(
     user: &mut Table,
     defaults: &Table,
     prefix: &str,
+    bound: &[String],
     next: &mut isize,
     added: &mut Vec<String>,
 ) {
+    let keymap = prefix == "keys.";
     for (key, default) in defaults.iter() {
         let path = format!("{prefix}{key}");
         match (user.get_mut(key), default) {
             (None, _) => {
-                let mut item = default.clone();
+                let item = if keymap {
+                    unclaimed(default, bound)
+                } else {
+                    Some(default.clone())
+                };
+                let Some(mut item) = item else {
+                    continue;
+                };
                 renumber(&mut item, next);
                 user.insert(key, item);
                 added.push(path);
             }
             (Some(Item::Table(existing)), Item::Table(default)) => {
-                fill_defaults(existing, default, &format!("{path}."), next, added);
+                fill_defaults(existing, default, &format!("{path}."), bound, next, added);
             }
             (Some(Item::ArrayOfTables(existing)), Item::ArrayOfTables(default)) => {
                 for entry in default.iter() {
-                    if !existing.iter().any(|mine| same_binding(mine, entry)) {
+                    let claimed = keymap
+                        && entry
+                            .get("key")
+                            .and_then(Item::as_str)
+                            .is_some_and(|key| bound.iter().any(|mine| mine == key));
+                    if !claimed && !existing.iter().any(|mine| same_binding(mine, entry)) {
                         push_entry(existing, entry.clone(), next);
                         added.push(format!("{path} {}", describe_binding(entry)));
                     }
@@ -513,6 +576,53 @@ mod tests {
         );
         assert!(merged.added.contains(&"theme.custom.surface1".to_owned()));
         assert!(!merged.added.iter().any(|path| path == "keys.prefix"));
+    }
+
+    fn keys_of(document: &DocumentMut, action: &str) -> Vec<String> {
+        match document["keys"].get(action) {
+            None => Vec::new(),
+            Some(item) => match item.as_str() {
+                Some(key) => vec![key.to_owned()],
+                None => item
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|key| key.as_str().unwrap().to_owned())
+                    .collect(),
+            },
+        }
+    }
+
+    #[test]
+    fn a_default_action_never_takes_a_key_the_user_already_bound() {
+        let merged = merge("[keys]\nzoom = \"f6\"\n", &targets()).unwrap();
+        let document = parse(&merged.text);
+        assert_eq!(keys_of(&document, "zoom"), ["f6"]);
+        assert_eq!(keys_of(&document, "rename_tab"), ["prefix+shift+t"]);
+
+        let original =
+            "[[keys.command]]\nkey = \"f7\"\ntype = \"shell\"\ncommand = \"echo mine\"\n";
+        let merged = merge(original, &targets()).unwrap();
+        let document = parse(&merged.text);
+        assert_eq!(
+            keys_of(&document, "next_agent"),
+            ["prefix+period", "ctrl+period"]
+        );
+        assert!(
+            commands(&document)
+                .iter()
+                .all(|(key, command)| key != "f7" || command == "echo mine")
+        );
+
+        let merged = merge(
+            "[keys]\nsplit_vertical = [\"prefix+g\", \"shift+f1\"]\nhelp = \"prefix+t\"\n",
+            &targets(),
+        )
+        .unwrap();
+        let document = parse(&merged.text);
+        assert!(keys_of(&document, "goto").is_empty(), "{}", merged.text);
+        assert!(!merged.added.iter().any(|path| path == "keys.goto"));
+        assert!(!commands(&document).iter().any(|(key, _)| key == "prefix+t"));
     }
 
     #[test]
