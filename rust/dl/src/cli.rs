@@ -423,7 +423,8 @@ pub(crate) enum Command {
         profile: Option<String>,
     },
     HerdrEditorReady,
-    HerdrSetup,
+    /// `dl --herdr-setup [--dry-run] [--no-claude] [--no-kitty]`
+    HerdrSetup(HerdrSetupOptions),
     HerdrEnv {
         action: HerdrEnvAction,
         workspace: Option<String>,
@@ -442,6 +443,18 @@ pub(crate) enum Command {
         devcontainer: Option<DevcontainerPath>,
         claude_profile: Option<String>,
     },
+}
+
+/// What a `--herdr-setup` line asks for: which parts of the kit to install, and
+/// whether to write anything at all.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct HerdrSetupOptions {
+    /// Report every planned change and write nothing.
+    pub(crate) dry_run: bool,
+    /// Install the Claude Code pieces (`--no-claude` turns them off).
+    pub(crate) claude: bool,
+    /// Install the kitty F-key fix (`--no-kitty` turns it off).
+    pub(crate) kitty: bool,
 }
 
 /// What a `--herdr-env` line asks for, resolved from its words here so that the
@@ -638,9 +651,19 @@ pub(crate) struct Cli {
     /// workspace its tab already holds, or on this host when the tab holds none.
     #[arg(long = "herdr-shell", group = "what")]
     herdr_shell: bool,
-    /// Install the Herdr pane shell and configure new tabs and splits.
+    /// Install the Herdr kit: the pane shell, config, agent-queue plugin, status
+    /// segment, Claude Code hooks and skill, and the kitty F-key fix.
     #[arg(long, group = "what")]
     herdr_setup: bool,
+    /// With `--herdr-setup`: print every planned change and write nothing.
+    #[arg(long, requires = "herdr_setup")]
+    dry_run: bool,
+    /// With `--herdr-setup`: leave Claude Code's hooks, settings and skill alone.
+    #[arg(long, requires = "herdr_setup")]
+    no_claude: bool,
+    /// With `--herdr-setup`: leave kitty's config alone.
+    #[arg(long, requires = "herdr_setup")]
+    no_kitty: bool,
     /// Manage saved workspace variables: set KEY=VALUE, unset KEY, profile NAME, show, clear.
     #[arg(long, group = "what")]
     herdr_env: bool,
@@ -894,6 +917,25 @@ impl Cli {
         .find_map(|(given, chosen)| given.then_some(chosen))
     }
 
+    /// A `--herdr-setup` modifier given to some other command, if one was.
+    ///
+    /// clap's `requires = "herdr_setup"` does not catch this: a requirement on a
+    /// member of the `what` group is met by *any* member being present, so
+    /// `dl --prune --dry-run` parses. A dry run the command then ignores is the
+    /// one misreading that deletes something, so it is refused by name.
+    pub(crate) fn misplaced_setup_modifier(&self) -> Option<&'static str> {
+        if self.herdr_setup {
+            return None;
+        }
+        [
+            (self.dry_run, "--dry-run"),
+            (self.no_claude, "--no-claude"),
+            (self.no_kitty, "--no-kitty"),
+        ]
+        .into_iter()
+        .find_map(|(given, flag)| given.then_some(flag))
+    }
+
     /// The retired spelling this line used, if it used one.
     fn retired_flag(&self) -> Option<RetiredFlag> {
         [
@@ -1063,7 +1105,11 @@ fn global_command(cli: &Cli, chosen: Chosen) -> Result<Command, GrammarError> {
             profile: cli.claude_profile.clone(),
         },
         Chosen::HerdrEditorReady => Command::HerdrEditorReady,
-        Chosen::HerdrSetup => Command::HerdrSetup,
+        Chosen::HerdrSetup => Command::HerdrSetup(HerdrSetupOptions {
+            dry_run: cli.dry_run,
+            claude: !cli.no_claude,
+            kitty: !cli.no_kitty,
+        }),
         Chosen::HerdrEnv => Command::HerdrEnv {
             action: HerdrEnvAction::of(&cli.words).ok_or(GrammarError::HerdrEnvUsage)?,
             workspace: cli.herdr_workspace.clone(),
@@ -1331,6 +1377,34 @@ mod tests {
     /// The command a line resolves to, for a line clap accepts.
     fn parse(argv: &[&str]) -> Result<Command, GrammarError> {
         resolved(argv).unwrap_or_else(|| panic!("clap refused {argv:?}"))
+    }
+
+    #[test]
+    fn setup_modifiers_belong_to_herdr_setup_alone() {
+        let cli = |argv: &[&str]| {
+            Cli::try_parse_from(std::iter::once("dl").chain(argv.iter().copied())).unwrap()
+        };
+        assert_eq!(
+            cli(&["--prune", "--dry-run"]).misplaced_setup_modifier(),
+            Some("--dry-run")
+        );
+        assert_eq!(
+            cli(&["--ls", "--no-kitty"]).misplaced_setup_modifier(),
+            Some("--no-kitty")
+        );
+        assert_eq!(
+            parse(&["--herdr-setup", "--dry-run", "--no-claude"]),
+            Ok(Command::HerdrSetup(HerdrSetupOptions {
+                dry_run: true,
+                claude: false,
+                kitty: true,
+            }))
+        );
+        assert_eq!(
+            cli(&["--herdr-setup", "--dry-run", "--no-claude", "--no-kitty"])
+                .misplaced_setup_modifier(),
+            None
+        );
     }
 
     /// The same, or `None` for a line clap itself refuses.

@@ -10,7 +10,6 @@ use devlaunch_core::osext;
 
 use crate::cli::HerdrEnvAction;
 use crate::commands::Ending;
-use crate::pane_shell;
 
 fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message)
@@ -156,7 +155,8 @@ pub(crate) fn open_pane() -> Ending {
     report(result)
 }
 
-enum ConfigOwner {
+/// Who owns a config file `dl --herdr-setup` would edit.
+pub(crate) enum ConfigOwner {
     Chezmoi(PathBuf),
     Unmanaged,
     ProbeFailed(String),
@@ -169,7 +169,7 @@ enum ConfigOwner {
 /// case the refusal exists for. A bare `chezmoi source-path` separates them
 /// without reading English out of stderr: it prints the source directory when
 /// chezmoi is healthy, and fails with the same complaint when it is not.
-fn chezmoi_source(config: &Path) -> io::Result<ConfigOwner> {
+pub(crate) fn chezmoi_source(config: &Path) -> io::Result<ConfigOwner> {
     if fs::symlink_metadata(config).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
         return Ok(ConfigOwner::Unmanaged);
     }
@@ -212,50 +212,4 @@ fn chezmoi_source(config: &Path) -> io::Result<ConfigOwner> {
         return Err(invalid("chezmoi returned an empty source path"));
     }
     Ok(ConfigOwner::Chezmoi(PathBuf::from(source)))
-}
-
-pub(crate) fn setup() -> Ending {
-    report((|| {
-        let home = home()?;
-        let script = pane_shell::install_path(Some(&home)).expect("home supplied");
-        let fallback_config = std::env::var_os("XDG_CONFIG_HOME")
-            .filter(|s| !s.is_empty())
-            .map(PathBuf::from)
-            .unwrap_or_else(|| home.join(".config"))
-            .join("herdr/config.toml");
-        let config = std::env::var_os("HERDR_CONFIG_PATH")
-            .filter(|s| !s.is_empty())
-            .map(PathBuf::from)
-            .unwrap_or(fallback_config);
-        match chezmoi_source(&config)? {
-            ConfigOwner::Chezmoi(source) => {
-                return Err(invalid(&format!(
-                    "Herdr config is managed by chezmoi from {}; set terminal.default_shell to {} there, apply it, then run `dl --install`",
-                    source.display(),
-                    script.display()
-                )));
-            }
-            ConfigOwner::ProbeFailed(complaint) => {
-                return Err(invalid(&format!(
-                    "chezmoi could not say whether it manages {}, so it was left alone -- fix chezmoi, or unset it from PATH, and run setup again. chezmoi said: {complaint}",
-                    config.display()
-                )));
-            }
-            ConfigOwner::Unmanaged => {}
-        }
-        // Validate and write the config only after the executable is available.
-        if let pane_shell::Installed::Refused { reason, .. } = pane_shell::install(&script) {
-            return Err(io::Error::other(reason));
-        }
-        let changed = herdr_environment::configure(&config, &script, &home)?;
-        eprintln!(
-            "Herdr pane shell configured in {}{}",
-            config.display(),
-            if changed { "" } else { " (already current)" }
-        );
-        eprintln!(
-            "Run `herdr server reload-config` for the session to use it. Select a login with `dl --herdr-env profile NAME` in each workspace."
-        );
-        Ok(())
-    })())
 }

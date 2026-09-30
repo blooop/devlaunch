@@ -136,7 +136,7 @@ pub(crate) fn dispatch(
         // workspace is a `dl <ws>`, and the whole point is that it is
         // indistinguishable from one typed by hand -- same launch, same terminal
         // title, same agent reporting, same everything a manager reads.
-        Command::HerdrSetup => crate::herdr_environment::setup(),
+        Command::HerdrSetup(options) => crate::herdr_kit::setup(options),
         Command::HerdrEnv { action, workspace } => {
             crate::herdr_environment::manage(&action, workspace.as_deref())
         }

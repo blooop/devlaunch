@@ -130,7 +130,7 @@ struct Flag {
     /// The group exists because its members are mutually exclusive for exactly
     /// that reason, which is what makes it the original this fact is copied from.
     names_a_command: bool,
-    requires_herdr_env: bool,
+    requires_a_herdr_command: bool,
 }
 
 /// Every flag the `Cli` struct declares, in declaration order.
@@ -178,7 +178,11 @@ fn grammar_flags(grammar: &str) -> Vec<Flag> {
             hidden: parts.contains(&"hide = true"),
             takes_value: ty.trim().trim_end_matches(',') != "bool",
             names_a_command: parts.contains(&"group = \"what\""),
-            requires_herdr_env: parts.contains(&"requires = \"herdr_env\""),
+            // `--herdr-workspace` modifies `--herdr-env`, and `--dry-run`,
+            // `--no-claude` and `--no-kitty` modify `--herdr-setup`: none is a
+            // launch modifier, so no workspace spec follows any of them.
+            requires_a_herdr_command: parts.contains(&"requires = \"herdr_env\"")
+                || parts.contains(&"requires = \"herdr_setup\""),
         });
     }
     assert!(
@@ -460,7 +464,7 @@ fn the_flags_a_value_follows_are_the_grammars_value_taking_flags() {
     assert_eq!(assigned(&script, "local value_opts="), expected);
     let launch_values: BTreeSet<String> = grammar_flags(&grammar)
         .iter()
-        .filter(|flag| flag.takes_value && !flag.hidden && !flag.requires_herdr_env)
+        .filter(|flag| flag.takes_value && !flag.hidden && !flag.requires_a_herdr_command)
         .map(|flag| flag.long.clone())
         .collect();
     assert_eq!(aid_flag_list(&rewrite, "DL_VALUE_OPTIONS"), launch_values);
@@ -503,7 +507,7 @@ fn the_flags_a_spec_may_follow_are_the_launch_modifiers_the_grammar_leaves_over(
         .filter(|flag| {
             !flag.names_a_command
                 && !flag.hidden
-                && !flag.requires_herdr_env
+                && !flag.requires_a_herdr_command
                 && !withheld.contains(flag.long.as_str())
         })
         .map(|flag| flag.long.clone())
@@ -535,7 +539,7 @@ fn every_flag_whose_value_is_completed_is_one_a_spec_may_follow() {
 
     let management_values: BTreeSet<String> = grammar_flags(&argument_grammar())
         .iter()
-        .filter(|flag| flag.takes_value && flag.requires_herdr_env)
+        .filter(|flag| flag.takes_value && flag.requires_a_herdr_command)
         .map(|flag| flag.long.clone())
         .collect();
     let values: BTreeSet<String> = assigned(&script, "local value_opts=")

@@ -19,6 +19,12 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 skim = { workspace = true }
 term = { workspace = true }
+# `dl --herdr-setup` merges into a Herdr config somebody else wrote, so comments
+# and key order have to survive it. Already core's, for the same edit.
+toml_edit = { workspace = true }
+# Same-directory temporary files, so every file `dl --herdr-setup` writes is
+# replaced by a rename and a reader never sees half of one.
+tempfile = { workspace = true }
 
 # The released package ships two binaries, and a maturin bin-wheel ships the bin
 # targets of exactly *one* cargo package (maturin 1.14 asks cargo metadata for
@@ -57,7 +63,6 @@ required-features = ["wheel"]
 
 [dev-dependencies]
 devlaunch-test-support = { workspace = true }
-tempfile = { workspace = true }
 # `tests/picker.rs` opens a terminal and reads back what the picker drew on it.
 # Already a workspace dependency -- `aid` runs its session on one of these -- so
 # this adds a name to a dev-dependency list and nothing to the dependency tree.

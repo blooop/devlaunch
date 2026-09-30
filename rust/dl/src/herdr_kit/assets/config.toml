@@ -1,0 +1,153 @@
+# Herdr config written by `dl --herdr-setup`.
+#
+# Yours to edit. A later `dl --herdr-setup` adds keys that are missing and never
+# changes a value you set, except these four, which point at files devlaunch
+# installs: terminal.default_shell, the prefix+a agent-queue binding, the
+# status.sh segment in ui.tab_bar_right, and the " · herdr" end of
+# ui.window_title. Run `herdr server reload-config` after an edit.
+
+onboarding = false
+
+# New tabs and splits open through devlaunch's pane shell: inside the workspace
+# the tab holds, or as your ordinary shell when it holds none.
+[terminal]
+default_shell = "dl-herdr-shell"
+
+# On restore, herdr types each agent pane's saved `dl <ws> -- claude --resume`
+# line into a fresh host shell, one agent every startup_per_agent_delay_ms. At
+# 1000 or more, a second pane in the same tab has time to enter its workspace
+# through dl-herdr-shell first, so `dl` runs inside the container and fails.
+# Keep the delay at 500 or below.
+[session]
+resume_agents_on_restore = true
+startup_per_agent_delay_ms = 100
+
+# Catppuccin Mocha with the text ramp lifted to white, so every label passes
+# WCAG AA on the dark base. Herdr accepts only a subset of the Catppuccin token
+# names and drops the rest with "unknown config key".
+[theme.custom]
+text = "#ffffff"
+subtext0 = "#ffffff"
+overlay1 = "#ffffff"
+overlay0 = "#ffffff"
+# Borders stay a step below the text, so frames do not compete with words.
+surface1 = "#9aa0b6"
+surface0 = "#5f6379"
+# The current row in the sidebar: 3.6:1 against sidebar_bg, 4.9:1 under white.
+active_row_bg = "#6c7086"
+
+# Herdr's prefix layer is kept. Bare F-keys and a few Ctrl chords are added on
+# the same actions, so almost every value is an array. In kitty, F2 and F4 need
+# the fix `dl --herdr-setup` writes to devlaunch-herdr.conf.
+[keys]
+# `prefix` takes one string, not an array.
+prefix = "ctrl+space"
+
+new_tab = ["prefix+c", "f2", "ctrl+alt+c"]
+previous_tab = ["prefix+p", "f3", "ctrl+alt+p"]
+next_tab = ["prefix+n", "f4", "ctrl+alt+n"]
+switch_tab = "prefix+1..9"
+close_tab = "prefix+shift+x"
+rename_tab = ["prefix+shift+t", "f6"]
+move_tab_previous = "prefix+shift+comma"
+move_tab_next = "prefix+shift+period"
+goto = ["prefix+g", "shift+f1"]
+
+split_vertical = "prefix+v"
+split_horizontal = "prefix+minus"
+close_pane = ["prefix+x", "f10"]
+zoom = "prefix+z"
+focus_pane_left = "prefix+h"
+focus_pane_down = "prefix+j"
+focus_pane_up = "prefix+k"
+focus_pane_right = "prefix+l"
+swap_pane_left = "prefix+shift+h"
+swap_pane_down = "prefix+shift+j"
+swap_pane_up = "prefix+shift+k"
+swap_pane_right = "prefix+shift+l"
+rename_pane = "prefix+shift+p"
+resize_mode = "prefix+r"
+# Keyboard selection with vim motions, `/` and `?` search, `v` and `y`.
+copy_mode = "prefix+["
+
+new_workspace = "prefix+shift+n"
+rename_workspace = "prefix+shift+w"
+close_workspace = "prefix+shift+d"
+workspace_picker = ["prefix+w", "shift+f5"]
+new_worktree = "prefix+shift+g"
+toggle_sidebar = "prefix+b"
+
+edit_scrollback = ["prefix+e", "f5"]
+detach = "prefix+q"
+settings = "prefix+s"
+help = "prefix+?"
+reload_config = "prefix+shift+r"
+
+# The agent queue. With ui.agent_panel_sort = "priority" and the agent-queue
+# plugin's filter on, next_agent walks only the agents that need you.
+next_agent = ["prefix+period", "ctrl+period", "f7"]
+previous_agent = ["prefix+comma", "ctrl+comma", "shift+f7"]
+focus_agent = "prefix+alt+1..9"
+open_notification_target = ["prefix+o", "ctrl+o"]
+
+# A popup does not receive HERDR_PANE_ID; HERDR_ACTIVE_PANE_ID names the tiled
+# pane under it.
+[[keys.command]]
+key = "prefix+t"
+type = "popup"
+command = "exec \"${SHELL:-sh}\""
+description = "scratch terminal"
+width = "80%"
+height = "80%"
+
+[[keys.command]]
+key = "prefix+shift+b"
+type = "shell"
+command = "\"$HERDR_BIN_PATH\" pane move \"$HERDR_ACTIVE_PANE_ID\" --new-tab"
+description = "break pane into a new tab"
+
+# Agents panel: "needs me" (blocked, done, idle) or "all". The action is the
+# agent-queue plugin `dl --herdr-setup` links.
+[[keys.command]]
+key = "prefix+a"
+type = "plugin_action"
+command = "local.agent-queue.toggle"
+description = "agents panel: needs me / all"
+
+[ui]
+prompt_new_tab_name = false
+
+# CPU, memory and root disk at the right end of the tab row. A `command`
+# segment runs on the Herdr server, so on a remote machine the figures are that
+# machine's, and `hostname` says which one.
+tab_bar_right = [
+  { type = "command", command = "~/.local/share/devlaunch/herdr/status.sh", interval_seconds = 5, timeout_seconds = 3 },
+  { type = "hostname" },
+]
+
+agent_panel_sort = "priority"
+# A glyph per state, so the state does not rest on hue alone.
+status_indicators = "symbols"
+window_title = "{hostname}: {workspace} · herdr"
+show_agent_labels_on_pane_borders = true
+
+# Herdr's default sidebar rows, restated so each token can carry `dim = false`.
+# Herdr dims secondary tokens with an attribute that no palette entry reaches.
+[ui.sidebar.agents]
+rows = [
+  [
+    { token = "state_icon" },
+    { token = "machine", dim = false },
+    { token = "workspace", dim = false },
+    { token = "tab", dim = false },
+  ],
+  [
+    { token = "agent", dim = false, fg = "#ffffff" },
+  ],
+]
+
+[ui.toast]
+# Desktop notifications, for work in a tab you are not looking at.
+delivery = "system"
+# Notify only if the pane is still in the same state after the delay.
+delay_seconds = 2
