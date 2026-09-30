@@ -799,6 +799,25 @@ fn chezmoi_managed_kitty_and_settings_get_the_line_to_add_instead() {
 }
 
 #[test]
+fn a_chezmoi_managed_settings_file_is_not_rewritten_by_herdrs_integration_install() {
+    let host = Host::new_machine();
+    let source = host.path("dotfiles/source");
+    fs::write(host.path(".claude/settings.json"), "{}\n").unwrap();
+    executable(
+        &host.path("chezmoi"),
+        &format!("#!/bin/sh\nprintf '%s\\n' '{}'\n", source.display()),
+    );
+    let output = stderr_of(&host.setup(&[]));
+    let calls = host.herdr_calls();
+    assert!(!calls.contains("integration install"), "{calls}");
+    assert!(output.contains("skipped  claude integration"), "{output}");
+    assert!(
+        output.contains("herdr integration install claude"),
+        "{output}"
+    );
+}
+
+#[test]
 fn a_missing_herdr_skips_what_needs_it_and_installs_the_rest() {
     let host = Host::new_machine();
     let output = host

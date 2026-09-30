@@ -22,7 +22,7 @@ pub(crate) const HOOK_NAME: &str = "devlaunch-herdr-tab-title.sh";
 /// The script itself.
 pub(crate) const HOOK_SCRIPT: &str = include_str!("assets/devlaunch-herdr-tab-title.sh");
 /// herdr's own Claude hook, as `herdr integration install claude` writes it.
-const HERDR_HOOK: &str = "herdr-agent-state.sh";
+pub(crate) const HERDR_HOOK: &str = "herdr-agent-state.sh";
 /// A tab-title hook installed some other way, such as from dotfiles.
 const OTHER_TAB_TITLE_HOOK: &str = "herdr-tab-title.sh";
 const TIMEOUT_SECONDS: u64 = 10;

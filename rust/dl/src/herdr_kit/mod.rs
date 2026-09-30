@@ -666,6 +666,14 @@ fn integration(setup: &mut Setup) {
     if state.starts_with("current") {
         return setup.report(step, Outcome::Current(state));
     }
+    let settings = setup.paths.claude.join("settings.json");
+    let instruction = format!(
+        "add the {} hooks that `herdr integration install claude` writes",
+        claude::HERDR_HOOK
+    );
+    if let Some(outcome) = chezmoi_refusal(&settings, &instruction) {
+        return setup.report(step, outcome);
+    }
     if setup.options.dry_run {
         return setup.report(
             step,
