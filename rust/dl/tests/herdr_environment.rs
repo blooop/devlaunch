@@ -913,3 +913,19 @@ fn a_dry_run_over_existing_files_writes_no_settings_backup() {
     assert_eq!(snapshot(host.0.path()), before);
     assert!(!host.path(".claude/settings.json.devlaunch-backup").exists());
 }
+
+#[test]
+fn a_herdr_file_already_on_local_bin_is_left_alone() {
+    let host = Host::new_machine();
+    let local = host.path(".local/bin/herdr");
+    fs::create_dir_all(local.parent().unwrap()).unwrap();
+    fs::write(&local, "mine").unwrap();
+    let output = stderr_of(&host.setup(&[]));
+    assert_eq!(fs::read_to_string(&local).unwrap(), "mine");
+    assert!(
+        output.contains(
+            "skipped  herdr on ~/.local/bin: ~/.local/bin/herdr already exists and is left alone"
+        ),
+        "{output}"
+    );
+}
