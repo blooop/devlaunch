@@ -952,3 +952,34 @@ fn duplicate_herdr_session_hooks_are_removed_once_with_a_backup() {
     assert_eq!(snapshot(host.0.path()), before);
     assert!(second.contains("current  claude settings"), "{second}");
 }
+
+#[test]
+fn a_second_run_over_a_users_own_files_changes_nothing() {
+    let host = Host::new_machine();
+    fs::write(
+        host.path(".claude/settings.json"),
+        r#"{"model":"opus","hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"guard.sh"}]}]}}"#,
+    )
+    .unwrap();
+    let config = host.path(".config/herdr/config.toml");
+    fs::create_dir_all(config.parent().unwrap()).unwrap();
+    fs::write(
+        &config,
+        "[terminal]\nfont_size = 17\n\n[ui]\ntheme = \"mine\"\n",
+    )
+    .unwrap();
+    fs::write(host.path(".config/kitty/kitty.conf"), "font_size 12\n").unwrap();
+    stderr_of(&host.setup(&[]));
+
+    let before = snapshot(host.0.path());
+    let second = stderr_of(&host.setup(&[]));
+    assert_eq!(snapshot(host.0.path()), before);
+    assert!(!second.contains("changed"), "{second}");
+    for step in [
+        "current  herdr config",
+        "current  claude settings",
+        "current  kitty.conf include",
+    ] {
+        assert!(second.contains(step), "{step}: {second}");
+    }
+}
