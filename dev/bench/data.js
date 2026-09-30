@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790784528828,
+  "lastUpdate": 1790791841619,
   "repoUrl": "https://github.com/blooop/devlaunch",
   "entries": {
     "devlaunch launch stages": [
@@ -17303,6 +17303,93 @@ window.BENCHMARK_DATA = {
             "range": "± 0.476897",
             "unit": "s",
             "extra": "runs=5/5 wall=7.738276s v0.26.1, Linux-X64"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "blooop@gmail.com",
+            "name": "Austin Gregg-Smith",
+            "username": "blooop"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "75fa0533c600ca315172e9ce1038981b6277adeb",
+          "message": "Merge pull request #657 from blooop/feat/herdr-auto-resume\n\nfeat: herdr reopens aid's agents after a restart",
+          "timestamp": "2026-09-30T19:08:06+01:00",
+          "tree_id": "1bed4fdc4b9d577f6445e161a3bbab15fe9470f0",
+          "url": "https://github.com/blooop/devlaunch/commit/75fa0533c600ca315172e9ce1038981b6277adeb"
+        },
+        "date": 1790791840460,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "warm / attach",
+            "value": 0.833379,
+            "range": "± 0.036322",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / devpod-up",
+            "value": 0.209016,
+            "range": "± 0.007476",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / host-prep",
+            "value": 0.000041,
+            "range": "± 0.000006",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / total",
+            "value": 1.047881,
+            "range": "± 0.036318",
+            "unit": "s",
+            "extra": "runs=5/5 wall=1.049706s v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / attach",
+            "value": 0.839588,
+            "range": "± 0.048951",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / devpod-up",
+            "value": 2.765371,
+            "range": "± 0.076309",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / host-prep",
+            "value": 0.303065,
+            "range": "± 0.082612",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / tools",
+            "value": 2.58926,
+            "range": "± 0.121499",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / total",
+            "value": 6.43742,
+            "range": "± 0.106389",
+            "unit": "s",
+            "extra": "runs=5/5 wall=6.439329s v0.26.1, Linux-X64"
           }
         ]
       }
