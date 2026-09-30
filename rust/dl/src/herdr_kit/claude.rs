@@ -44,6 +44,8 @@ pub(crate) struct Merged {
     pub(crate) removed: usize,
     /// devlaunch's Stop hook was added or corrected.
     pub(crate) registered: bool,
+    /// A Stop hook already runs devlaunch's command, whatever else it says.
+    pub(crate) runs_ours: bool,
 }
 
 fn command_of(hook: &Value) -> &str {
@@ -133,6 +135,7 @@ pub(crate) fn merge(original: Option<&str>, command: &str) -> Result<Merged, Str
             .find(|hook| is_ours(hook));
         match existing {
             Some(hook) => {
+                merged.runs_ours = command_of(hook) == command;
                 if *hook != desired {
                     *hook = desired;
                     merged.registered = true;
@@ -245,7 +248,13 @@ mod tests {
             .unwrap()
             .text
             .unwrap();
-        assert_eq!(merge(Some(&once), COMMAND).unwrap(), Merged::default());
+        assert_eq!(
+            merge(Some(&once), COMMAND).unwrap(),
+            Merged {
+                runs_ours: true,
+                ..Merged::default()
+            }
+        );
     }
 
     #[test]

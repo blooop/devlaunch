@@ -154,12 +154,26 @@ impl Setup {
     }
 
     /// `detail` with the home directory spelled `~`, so a line fits a terminal.
+    /// Text in backticks is left as it is: it is what the user pastes, and a
+    /// `~` there is not what a later run expects.
     fn tilde(&self, detail: &str) -> String {
         let home = self.paths.home.to_string_lossy();
         if home.len() < 2 {
             return detail.to_owned();
         }
-        detail.replace(&format!("{home}/"), "~/")
+        let home = format!("{home}/");
+        detail
+            .split('`')
+            .enumerate()
+            .map(|(index, part)| {
+                if index % 2 == 0 {
+                    part.replace(&home, "~/")
+                } else {
+                    part.to_owned()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("`")
     }
 
     /// "wrote" or "would write", for the message of a change.
@@ -518,7 +532,7 @@ fn herdr_config(setup: &mut Setup, shell: Option<PathBuf>, status: Option<PathBu
     if let Some(outcome) = chezmoi_refusal(
         &path,
         &format!(
-            "set terminal.default_shell to {} (and take what you want from `dl --herdr-setup`'s packaged config)",
+            "set terminal.default_shell to `{}` (and take what you want from `dl --herdr-setup`'s packaged config)",
             targets.shell
         ),
     ) {
@@ -736,18 +750,17 @@ fn settings(setup: &mut Setup) -> TabTitle {
             ),
         );
     }
-    let add = format!("add a Stop hook with the command {command}");
+    let add = format!("add a Stop hook with the command `{command}`");
     let instruction = match &read {
-        Ok((_, merged)) if merged.text.is_none() => None,
         Ok((_, merged)) => {
             let mut steps = Vec::new();
-            if merged.registered {
+            if merged.registered && !merged.runs_ours {
                 steps.push(add);
             }
             if merged.removed > 0 {
                 steps.push(format!("remove {} duplicate hook(s)", merged.removed));
             }
-            Some(steps.join(" and "))
+            (!steps.is_empty()).then(|| steps.join(" and "))
         }
         Err(_) => Some(add),
     };

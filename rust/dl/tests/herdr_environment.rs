@@ -1030,6 +1030,64 @@ fn chezmoi_managed_settings_that_the_merge_would_change_are_not_reported_as_need
 }
 
 #[test]
+fn chezmoi_instructions_name_the_absolute_paths_to_paste() {
+    let host = Host::new_machine();
+    fs::create_dir_all(host.path(".config/herdr")).unwrap();
+    fs::write(host.path(".config/herdr/config.toml"), "").unwrap();
+    fs::write(host.path(".claude/settings.json"), "{}\n").unwrap();
+    let source = host.path("dotfiles/source");
+    executable(
+        &host.path("chezmoi"),
+        &format!("#!/bin/sh\nprintf '%s\\n' '{}'\n", source.display()),
+    );
+    let output = stderr_of(&host.setup(&[]));
+    let shell = host.path(".local/bin/dl-herdr-shell");
+    assert!(
+        output.contains(&format!(
+            "set terminal.default_shell to `{}`",
+            shell.display()
+        )),
+        "{output}"
+    );
+    let hook = host.path(".claude/hooks/devlaunch-herdr-tab-title.sh");
+    assert!(
+        output.contains(&format!(
+            "add a Stop hook with the command `[ -x {0} ] && {0} || true`",
+            hook.display()
+        )),
+        "{output}"
+    );
+}
+
+#[test]
+fn a_chezmoi_managed_stop_hook_the_user_added_is_not_asked_for_again() {
+    let host = Host::new_machine();
+    let hook = host.path(".claude/hooks/devlaunch-herdr-tab-title.sh");
+    let settings = format!(
+        r#"{{"hooks":{{"Stop":[{{"matcher":"","hooks":[{{"type":"command","command":"[ -x {0} ] && {0} || true"}}]}}]}}}}"#,
+        hook.display()
+    );
+    fs::write(host.path(".claude/settings.json"), &settings).unwrap();
+    let source = host.path("dotfiles/modify_settings.json");
+    executable(
+        &host.path("chezmoi"),
+        &format!("#!/bin/sh\nprintf '%s\\n' '{}'\n", source.display()),
+    );
+    let output = stderr_of(&host.setup(&[]));
+    let line = output
+        .lines()
+        .find(|line| line.contains("claude settings:"))
+        .unwrap();
+    assert!(!line.contains("add a Stop hook"), "{output}");
+    assert!(line.contains("current"), "{output}");
+    assert!(hook.exists(), "{output}");
+    assert_eq!(
+        fs::read_to_string(host.path(".claude/settings.json")).unwrap(),
+        settings
+    );
+}
+
+#[test]
 fn unreadable_settings_fail_the_step_and_install_no_orphan_hook_script() {
     let host = Host::new_machine();
     fs::write(host.path(".claude/settings.json"), "{not json").unwrap();

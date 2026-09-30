@@ -304,7 +304,7 @@ fn set_default_shell(
                 && current != targets.prototype_shell
             {
                 return Err(format!(
-                    "Herdr uses a custom default_shell ({current}); set terminal.default_shell to {} manually to replace it",
+                    "Herdr uses a custom default_shell ({current}); set terminal.default_shell to `{}` manually to replace it",
                     targets.shell
                 ));
             }
