@@ -1,3 +1,4 @@
+use devlaunch_test_support::KeepingCoverage;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::fs::symlink;
@@ -54,6 +55,7 @@ impl Host {
         let mut command = Command::new(env!("CARGO_BIN_EXE_dl"));
         command
             .env_clear()
+            .keeping_coverage()
             .env("HOME", self.0.path())
             .env("PATH", format!("{}:/usr/bin:/bin", self.0.path().display()))
             .env("SHELL", self.0.path().join("shell"))
