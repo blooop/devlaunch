@@ -847,3 +847,35 @@ fn a_dotfiles_tab_title_hook_keeps_devlaunchs_script_out_even_under_chezmoi() {
         settings
     );
 }
+
+#[test]
+fn a_pane_shell_that_failed_to_install_is_not_written_into_the_config() {
+    let host = Host::new_machine();
+    fs::create_dir_all(host.path(".local")).unwrap();
+    fs::write(host.path(".local/bin"), "not a directory").unwrap();
+    let output = host.setup(&[]);
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("failed   pane shell"), "{stderr}");
+    assert!(
+        stderr.contains("skipped  herdr config: the pane shell is not installed"),
+        "{stderr}"
+    );
+    assert!(!host.path(".config/herdr/config.toml").exists());
+}
+
+#[test]
+fn a_status_segment_that_failed_to_install_is_not_written_into_the_config() {
+    let host = Host::new_machine();
+    fs::create_dir_all(host.path(".local/share/devlaunch")).unwrap();
+    fs::write(host.path(".local/share/devlaunch/herdr"), "not a directory").unwrap();
+    let output = host.setup(&[]);
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("failed   status segment"), "{stderr}");
+    assert!(
+        stderr.contains("skipped  herdr config: the status segment is not installed"),
+        "{stderr}"
+    );
+    assert!(!host.path(".config/herdr/config.toml").exists());
+}

@@ -175,18 +175,26 @@ impl Setup {
         write_if_changed(path, bytes, mode, self.options.dry_run)
     }
 
-    /// Report a whole-file install of one of devlaunch's own files.
-    fn install_file(&mut self, step: &str, path: &Path, bytes: &str, mode: u32) {
-        let outcome = match self.write(path, bytes.as_bytes(), Mode::Fixed(mode)) {
-            Ok(Written::Current) => Outcome::Current(path.display().to_string()),
-            Ok(Written::Changed) => Outcome::Changed(format!(
-                "{} {}",
-                self.did("wrote", "would write"),
-                path.display()
-            )),
-            Err(error) => Outcome::Failed(format!("{}: {error}", path.display())),
+    /// Report a whole-file install of one of devlaunch's own files, and give back
+    /// its path when it is in place (or, in a dry run, would be).
+    fn install_file(&mut self, step: &str, path: &Path, bytes: &str, mode: u32) -> Option<PathBuf> {
+        let (outcome, installed) = match self.write(path, bytes.as_bytes(), Mode::Fixed(mode)) {
+            Ok(Written::Current) => (Outcome::Current(path.display().to_string()), true),
+            Ok(Written::Changed) => (
+                Outcome::Changed(format!(
+                    "{} {}",
+                    self.did("wrote", "would write"),
+                    path.display()
+                )),
+                true,
+            ),
+            Err(error) => (
+                Outcome::Failed(format!("{}: {error}", path.display())),
+                false,
+            ),
         };
         self.report(step, outcome);
+        installed.then(|| path.to_owned())
     }
 
     fn herdr(&self, args: &[&str]) -> io::Result<Output> {
@@ -298,10 +306,10 @@ pub(crate) fn setup(options: HerdrSetupOptions) -> Ending {
             ""
         }
     );
-    pane_shell_step(&mut setup);
-    kit_files(&mut setup);
+    let shell = pane_shell_step(&mut setup);
+    let status = kit_files(&mut setup);
     plugin_link(&mut setup);
-    herdr_config(&mut setup);
+    herdr_config(&mut setup, shell, status);
     local_bin_link(&mut setup);
     claude_steps(&mut setup);
     kitty_steps(&mut setup);
@@ -324,7 +332,8 @@ pub(crate) fn setup(options: HerdrSetupOptions) -> Ending {
     }
 }
 
-fn pane_shell_step(setup: &mut Setup) {
+/// The installed pane shell, or `None` when this run could not put it in place.
+fn pane_shell_step(setup: &mut Setup) -> Option<PathBuf> {
     let path = setup.paths.pane_shell.clone();
     if setup.options.dry_run {
         let current = fs::read_to_string(&path).ok().as_deref() == Some(pane_shell::SCRIPT);
@@ -334,25 +343,29 @@ fn pane_shell_step(setup: &mut Setup) {
             Outcome::Changed(format!("would write {}", path.display()))
         };
         setup.report("pane shell", outcome);
-        return;
+        return Some(path);
     }
-    let outcome = match pane_shell::install(&path) {
+    let (outcome, installed) = match pane_shell::install(&path) {
         pane_shell::Installed::AlreadyCurrent { path } => {
-            Outcome::Current(path.display().to_string())
+            (Outcome::Current(path.display().to_string()), Some(path))
         }
-        pane_shell::Installed::Written { path } | pane_shell::Installed::Refreshed { path } => {
-            Outcome::Changed(format!("wrote {}", path.display()))
-        }
-        pane_shell::Installed::Refused { path, reason } => {
-            Outcome::Failed(format!("{}: {reason}", path.display()))
-        }
+        pane_shell::Installed::Written { path } | pane_shell::Installed::Refreshed { path } => (
+            Outcome::Changed(format!("wrote {}", path.display())),
+            Some(path),
+        ),
+        pane_shell::Installed::Refused { path, reason } => (
+            Outcome::Failed(format!("{}: {reason}", path.display())),
+            None,
+        ),
     };
     setup.report("pane shell", outcome);
+    installed
 }
 
-fn kit_files(setup: &mut Setup) {
+/// The installed `status.sh`, or `None` when this run could not put it in place.
+fn kit_files(setup: &mut Setup) -> Option<PathBuf> {
     let status = setup.paths.status_script();
-    setup.install_file("status segment", &status, STATUS_SCRIPT, 0o755);
+    let status = setup.install_file("status segment", &status, STATUS_SCRIPT, 0o755);
     let plugin = setup.paths.plugin();
     setup.install_file(
         "agent-queue plugin",
@@ -366,6 +379,7 @@ fn kit_files(setup: &mut Setup) {
         PLUGIN_VIEW,
         0o755,
     );
+    status
 }
 
 /// The root a plugin id is linked from, out of `herdr plugin list --json`.
@@ -477,18 +491,29 @@ fn link_plugin(setup: &Setup, plugin: &Path) -> Outcome {
     Outcome::Changed(format!("linked {}; startup hook: {said}", plugin.display()))
 }
 
-fn herdr_config(setup: &mut Setup) {
+fn herdr_config(setup: &mut Setup, shell: Option<PathBuf>, status: Option<PathBuf>) {
     let step = "herdr config";
+    let (shell, status) = match (shell, status) {
+        (Some(shell), Some(status)) => (shell, status),
+        (None, _) => {
+            let outcome = Outcome::Skipped("the pane shell is not installed".to_owned());
+            return setup.report(step, outcome);
+        }
+        (_, None) => {
+            let outcome = Outcome::Skipped("the status segment is not installed".to_owned());
+            return setup.report(step, outcome);
+        }
+    };
     let path = setup.paths.herdr_config.clone();
     let targets = config::Targets {
-        shell: setup.paths.pane_shell.to_string_lossy().into_owned(),
+        shell: shell.to_string_lossy().into_owned(),
         prototype_shell: setup
             .paths
             .home
             .join(".local/bin/herdr-workspace-shell")
             .to_string_lossy()
             .into_owned(),
-        status: shell_quote(&setup.paths.status_script().to_string_lossy()),
+        status: shell_quote(&status.to_string_lossy()),
     };
     if let Some(outcome) = chezmoi_refusal(
         &path,
