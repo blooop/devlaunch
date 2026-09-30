@@ -1510,7 +1510,7 @@ An existing config is merged, with comments and order kept. Two kinds of key:
   the `status.sh` segment in `ui.tab_bar_right`, and the ` · herdr` end of
   `ui.window_title`. Each stops at a value that is plainly yours. A custom
   `default_shell` fails the step. A `status.sh` of your own keeps its segment. A
-  `prefix+a` bound to another command stays bound, and the toggle gets no key.
+  `prefix+a` bound to another action or command stays bound, and the toggle gets no key.
 - **Default keys** are everything else in the packaged config. Each is added only
   when the key is absent. A value you set is never changed, even one that matches
   Herdr's own default.

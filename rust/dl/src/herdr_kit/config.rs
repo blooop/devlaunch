@@ -395,6 +395,7 @@ fn set_agent_queue_binding(
         })
         .expect("assets/config.toml binds the agent-queue toggle")
         .clone();
+    let bound = bound_keys(document.as_table());
     let Some(keys) = document
         .entry("keys")
         .or_insert(Item::Table(Table::new()))
@@ -432,12 +433,9 @@ fn set_agent_queue_binding(
         .and_then(Item::as_str)
         .unwrap_or_default()
         .to_owned();
-    if commands
-        .iter()
-        .any(|entry| entry.get("key").and_then(Item::as_str) == Some(key.as_str()))
-    {
+    if bound.contains(&key) {
         merged.kept.push(format!(
-            "{key} is bound to another command, so the agent-queue toggle ({AGENT_QUEUE_ACTION}) has no key"
+            "{key} is bound to something else, so the agent-queue toggle ({AGENT_QUEUE_ACTION}) has no key"
         ));
         return;
     }
@@ -675,6 +673,19 @@ mod tests {
                 .iter()
                 .any(|note| note.contains("status.sh of your own"))
         );
+    }
+
+    #[test]
+    fn prefix_a_bound_to_a_plain_action_gets_no_toggle() {
+        let merged = merge("[keys]\nzoom = \"prefix+a\"\n", &targets()).unwrap();
+        let document = parse(&merged.text);
+        assert_eq!(keys_of(&document, "zoom"), ["prefix+a"]);
+        assert!(
+            !commands(&document).iter().any(|(key, _)| key == "prefix+a"),
+            "{}",
+            merged.text
+        );
+        assert!(merged.kept.iter().any(|note| note.contains("prefix+a")));
     }
 
     #[test]
