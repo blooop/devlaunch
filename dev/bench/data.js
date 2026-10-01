@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790851197266,
+  "lastUpdate": 1790851593287,
   "repoUrl": "https://github.com/blooop/devlaunch",
   "entries": {
     "devlaunch launch stages": [
@@ -17738,6 +17738,93 @@ window.BENCHMARK_DATA = {
             "range": "± 0.793727",
             "unit": "s",
             "extra": "runs=5/5 wall=9.94393s v0.26.1, Linux-X64"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "blooop@gmail.com",
+            "name": "Austin Gregg-Smith",
+            "username": "blooop"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "db5fec160ae283a6f393c0a5d6cf82249e657a9f",
+          "message": "Merge pull request #666 from blooop/fix/aid-pickers-bare-only\n\nfix: aid <workspace> goes straight to the prompt editor again",
+          "timestamp": "2026-10-01T11:43:32+01:00",
+          "tree_id": "2fe00ee45419668d9dedbe924eda2b9b0d277978",
+          "url": "https://github.com/blooop/devlaunch/commit/db5fec160ae283a6f393c0a5d6cf82249e657a9f"
+        },
+        "date": 1790851592282,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "warm / attach",
+            "value": 1.160166,
+            "range": "± 0.039322",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / devpod-up",
+            "value": 0.290092,
+            "range": "± 0.005587",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / host-prep",
+            "value": 0.000041,
+            "range": "± 0.000016",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / total",
+            "value": 1.449626,
+            "range": "± 0.037059",
+            "unit": "s",
+            "extra": "runs=5/5 wall=1.451467s v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / attach",
+            "value": 1.117804,
+            "range": "± 0.081709",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / devpod-up",
+            "value": 3.489666,
+            "range": "± 0.14383",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / host-prep",
+            "value": 0.304183,
+            "range": "± 0.034736",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / tools",
+            "value": 3.428288,
+            "range": "± 0.117117",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / total",
+            "value": 8.239465,
+            "range": "± 0.237549",
+            "unit": "s",
+            "extra": "runs=5/5 wall=8.2414s v0.26.1, Linux-X64"
           }
         ]
       }
