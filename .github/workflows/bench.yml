@@ -271,7 +271,7 @@ jobs:
             --note "$(pixi run -q devpod version | tr -d '\r\n'), ${{ runner.os }}-${{ runner.arch }}"
 
       - name: Publish the point and alert on a regression
-        uses: benchmark-action/github-action-benchmark@v1.22.1
+        uses: benchmark-action/github-action-benchmark@v1.22.2
         with:
           name: devlaunch launch stages
           tool: customSmallerIsBetter
