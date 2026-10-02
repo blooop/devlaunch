@@ -3711,6 +3711,14 @@ fn prepare_cold_failure(refused: &PrepareColdError) -> String {
         PrepareColdError::Clone(error) => clone_failure(error),
         PrepareColdError::Branch(EnsureBranchError::WrongRepoLock(wrong)) => wrong_repo_lock(wrong),
         PrepareColdError::Branch(EnsureBranchError::Branch(error)) => branch_failure(error),
+        PrepareColdError::Branch(EnsureBranchError::BranchAlreadyExists { branch }) => format!(
+            "--from means nothing for '{branch}': it already exists, so there is no branch \
+             left to cut."
+        ),
+        PrepareColdError::Branch(EnsureBranchError::BaseNotResolved { base }) => format!(
+            "--from {base}: could not fetch '{base}' from the remote, so there is nothing to \
+             cut the new branch from."
+        ),
         PrepareColdError::Workspace(error) => workspace_failure(error),
     }
 }

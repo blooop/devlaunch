@@ -703,6 +703,9 @@ fn grammar_refusal(refused: &cli::GrammarError) -> String {
         cli::GrammarError::ClaudeProfileNotAllowed { command } => {
             format!("--claude-profile means nothing for {command}: it forwards no Claude login.")
         }
+        cli::GrammarError::FromNotAllowed { command } => {
+            format!("--from means nothing for {command}: it opens no workspace.")
+        }
         // The two forms it *does* apply to are named, and so is what to type to
         // delete a workspace now: somebody who reached for `--rm` on another verb
         // wants the workspace gone at some point, and this sentence is where they

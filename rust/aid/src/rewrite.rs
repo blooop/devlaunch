@@ -329,7 +329,13 @@ const REMOTE_CONTROL_NO: &[&str] = &["0", "false", "off", "no"];
 /// `aid --claude-profile work` still lists its session under whichever account the
 /// container is signed in to. Two credentials, and this one is the token forwarded
 /// into the session.
-const DL_VALUE_OPTIONS: &[&str] = &["--devcontainer", "--claude-profile"];
+///
+/// **`--from` is listed for the same reason and no other: `aid` has no `--from`
+/// of its own** (that is a separate change), but a line typed as `aid --from
+/// develop owner/repo fix it` still has to read "develop" as the base rather
+/// than as the first word of the prompt, so dl's own grammar is recognised here
+/// exactly as `--claude-profile`'s is.
+const DL_VALUE_OPTIONS: &[&str] = &["--devcontainer", "--claude-profile", "--from"];
 
 /// The modifier the suffix options take, peeled only in their company.
 ///

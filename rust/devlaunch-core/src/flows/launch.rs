@@ -4473,14 +4473,16 @@ pub(crate) fn prepare(
     cold: &mut dyn ColdMachinery<'_>,
     workspace: &WorkspaceId,
     remote_url: &str,
+    from: Option<&str>,
     notices: &mut dyn Notices<LaunchNotice>,
 ) -> Result<Placement, NotPrepared> {
     let opened = cold.open().map_err(NotPrepared::Cold)?;
-    let prepared = opened.clones.prepare_cold(
+    let prepared = opened.clones.prepare_cold_from(
         opened.storage,
         workspace.owner(),
         workspace.repo(),
         workspace.git_ref(),
+        from,
         remote_url,
         &mut as_cache(notices),
     );
@@ -4749,6 +4751,8 @@ pub struct Launch<'a, 'r, 'l> {
     /// What the caller already knows this workspace is, for a launch that names it
     /// by id. See [`Self::recognised_as`].
     recognised: Option<WorkspaceId>,
+    /// `--from <base>`, for this launch and no other. See [`Self::from_ref`].
+    from: Option<String>,
 }
 
 impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
@@ -4772,6 +4776,7 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
             claude_seen: ClaudeSeen::new(),
             notices,
             recognised: None,
+            from: None,
         }
     }
 
@@ -4802,6 +4807,21 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
     #[must_use]
     pub fn recognised_as(mut self, workspace: Option<WorkspaceId>) -> Self {
         self.recognised = workspace;
+        self
+    }
+
+    /// `--from <base>`: cut a new branch from `base` instead of the default
+    /// branch.
+    ///
+    /// Per launch, like [`Host::with_claude_profile`] and unlike
+    /// `--devcontainer`: a base describes an event that happened once, not what
+    /// the workspace *is*, so it rides this one call and is never read back off
+    /// a record. Reaches only [`Launch::place_triple`]'s cold arm -- a launch
+    /// that resolves warm, or a bare workspace name, has no branch left to cut
+    /// and this is not consulted.
+    #[must_use]
+    pub fn from_ref(mut self, base: Option<String>) -> Self {
+        self.from = base;
         self
     }
 
@@ -4938,7 +4958,13 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
                 Ok(Ok(placement))
             }
             Resolution::Cold { workspace } => {
-                match prepare(self.cold, &workspace, &remote_url, &mut *self.notices) {
+                match prepare(
+                    self.cold,
+                    &workspace,
+                    &remote_url,
+                    self.from.as_deref(),
+                    &mut *self.notices,
+                ) {
                     Ok(placement) => Ok(Ok(placement)),
                     Err(error) => Ok(Err(LaunchRefusal::NotPrepared {
                         owner,
@@ -10911,6 +10937,7 @@ mod tests {
             &mut MetadataWillNotOpen,
             &workspace,
             "git@github.com:blooop/devlaunch.git",
+            None,
             &mut no_notices(),
         );
 
