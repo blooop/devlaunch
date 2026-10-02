@@ -371,8 +371,15 @@ impl Host {
     /// Under the cache dir like the control sockets, so `XDG_CACHE_HOME` scopes it
     /// and `--purge` clears it. One per host rather than one per workspace: it
     /// carries no state and every launch that needs it needs the same thing.
+    ///
+    /// Inside its own [`AGENT_SOCKET_DIR_NAME`] subdirectory rather than sitting
+    /// directly in the cache root: see the doc on the free function
+    /// `absent_agent_socket` for why that directory, and not the socket, is what
+    /// this fix is actually about.
     pub(crate) fn absent_agent_socket(&self) -> PathBuf {
-        self.cache_dir.join("no-agent.sock")
+        self.cache_dir
+            .join(AGENT_SOCKET_DIR_NAME)
+            .join(AGENT_SOCKET_FILE_NAME)
     }
 
     /// Where the answer to `devpod context options` is remembered between runs.
@@ -1998,6 +2005,24 @@ impl HostAgent {
     }
 }
 
+/// The subdirectory (under [`Host::cache_dir`], or under the fallback's own
+/// per-uid directory: see `absent_agent_socket`) that holds nothing but the
+/// placeholder agent socket, and never anything else.
+///
+/// Devpod's `ChownAgentSock` (`pkg/devcontainer/setup/setup.go`) runs
+/// unconditionally after every `devpod up` and recursively
+/// `Lchown`s everything under `filepath.Dir(SSH_AUTH_SOCK)` to the container's
+/// remote user. Before this existed, that directory was the cache root itself,
+/// so a placeholder socket at `<cache_dir>/no-agent.sock` made devpod walk and
+/// chown the *entire cache* -- every clone, every control socket, the lot. A
+/// dedicated directory containing only the placeholder is what keeps that walk
+/// to the one file it was always meant to be about. See [`Host::absent_agent_socket`]
+/// and the free function `absent_agent_socket` below for the full account.
+const AGENT_SOCKET_DIR_NAME: &str = "no-agent-sock";
+
+/// The placeholder agent socket's filename, inside [`AGENT_SOCKET_DIR_NAME`].
+const AGENT_SOCKET_FILE_NAME: &str = "no-agent.sock";
+
 /// A path `${localEnv:SSH_AUTH_SOCK}` can resolve to on a host with no agent.
 ///
 /// The mount, not the agent. A devcontainer.json that binds that variable gets an
@@ -2023,6 +2048,47 @@ impl HostAgent {
 /// syscall. Rust does not unlink a `UnixListener`'s path on drop, which is what
 /// leaves the file behind for the mount to find.
 ///
+/// That account was verified as far as `docker create`'s argv and no further, and
+/// it stopped one step short of where the real failure was. On a host with no
+/// agent, `dl <ws> up` measured:
+///
+/// ```text
+/// warn SSH agent forwarding failed (continuing without agent): dial unix \
+///   /home/kinisi/.cache/devlaunch/no-agent.sock: connect: connection refused
+/// info container user UID/GID already match local user, skipping update
+/// info setting up container
+/// warn SSH agent forwarding failed (continuing without agent): dial unix ... \
+///   connection refused
+/// fatal run agent command failed: exit status 1: Process exited with status 1
+/// chown ssh agent sock file: open /proc/1/fdinfo: permission denied
+/// ```
+///
+/// and, on another host, the same bug wearing a different name:
+/// `chown ssh agent sock file: lchown /home/vscode/.ssh/known_hosts: read-only
+/// file system`. Neither warning is fatal by itself -- forwarding failing and
+/// continuing without an agent is the whole point of this placeholder -- but
+/// `SetupContainer` in devpod's `pkg/devcontainer/setup/setup.go` calls
+/// `ChownAgentSock` unconditionally afterwards regardless of whether forwarding
+/// worked, and that function does:
+///
+/// ```text
+/// agentSockFile := os.Getenv("SSH_AUTH_SOCK")
+/// copy2.ChownR(filepath.Dir(agentSockFile), user)
+/// ```
+///
+/// `ChownR` (`pkg/copy/copy.go`) is a recursive `filepath.WalkDir` that `Lchown`s
+/// every entry it finds. A live agent never hits this: devpod builds its own
+/// relay directory holding exactly one socket before forwarding, so the walk is
+/// trivial by construction. This placeholder used to sit directly in
+/// [`Host::cache_dir`], which made `filepath.Dir` the *whole cache* -- every
+/// clone, every control socket -- and the walk failed the moment it reached
+/// something the container's remote user cannot `chown` (`/proc/1/fdinfo` when
+/// something is bind-mounted from procfs, a read-only mount for `known_hosts`).
+/// So the socket's *liveness* was never the defect this needed fixing a second
+/// time for; the directory it sits in is, and [`AGENT_SOCKET_DIR_NAME`] (and its
+/// per-uid equivalent on the fallback below) is what confines that walk to the
+/// one file it was always meant to be about.
+///
 /// Reused when it is already there: the file carries no state, and re-binding over
 /// a live workspace's mount source is worth avoiding.
 ///
@@ -2041,6 +2107,25 @@ impl HostAgent {
 /// no bytes and no secret -- it is a socket nothing listens on -- so a file left in
 /// the temp directory is the cheapest thing dl can leave anywhere.
 ///
+/// The fallback needs the same dedicated directory the cache path gets, and for
+/// the same `ChownAgentSock` reason documented above -- a socket dropped straight
+/// into the temp directory would make `filepath.Dir(SSH_AUTH_SOCK)` *the temp
+/// directory itself*, which on the common case of `/tmp` is every other program's
+/// scratch files on the host, worse than the bug this whole function exists to
+/// fix. So the directory now carries the uid-keying the filename alone used to
+/// carry before this change -- `devlaunch-<uid>-agent-sock/no-agent.sock`, with
+/// the filename itself fixed rather than uid-keyed -- which still means two
+/// users on one host cannot collide on either the directory or the file inside
+/// it.
+///
+/// That directory component has to stay inside the 104-byte budget
+/// [`bind_placeholder`] enforces, same as everything else here. Worst case, with a
+/// uid at the 32-bit maximum (10 digits) and `/tmp` itself (devpod's own fallback
+/// when `TMPDIR` is unset, and the shortest of the temp candidates
+/// `osext::temp_dir` tries): `/tmp/devlaunch-4294967295-agent-sock/no-agent.sock`
+/// is 5 + 10 + 10 + 11 + 1 + 13 = 50 bytes, plus the NUL `SUN_PATH` already counts
+/// -- well clear of 104 even before `osext::temp_dir` picks something shorter.
+///
 /// `None` only when neither can be bound, and then the launch proceeds exactly as
 /// it did before this existed.
 fn absent_agent_socket(host: &Host) -> Option<PathBuf> {
@@ -2050,29 +2135,43 @@ fn absent_agent_socket(host: &Host) -> Option<PathBuf> {
     // SAFETY: `getuid` reads the calling process's real uid. It cannot fail, takes
     // no pointer and touches no memory this process owns.
     let uid = unsafe { libc::getuid() };
-    let name = format!("devlaunch-{uid}-no-agent.sock");
+    let dir_name = format!("devlaunch-{uid}-agent-sock");
     // `/tmp` by name when the resolved temp directory is itself too deep, which
     // `osext::temp_dir` allows: it honours `TMPDIR` and falls back as far as the
     // *current directory*. A fallback that exists only because a path was too long
     // must not inherit another long path -- that is this fix degrading back into
     // the bug, which is the whole reason there are two candidates.
-    let temp = crate::osext::temp_dir().join(&name);
-    bind_placeholder(&temp).or_else(|| bind_placeholder(&PathBuf::from("/tmp").join(&name)))
+    let temp = crate::osext::temp_dir()
+        .join(&dir_name)
+        .join(AGENT_SOCKET_FILE_NAME);
+    bind_placeholder(&temp).or_else(|| {
+        bind_placeholder(
+            &PathBuf::from("/tmp")
+                .join(&dir_name)
+                .join(AGENT_SOCKET_FILE_NAME),
+        )
+    })
 }
 
 /// One candidate: the socket that is already there, or a newly bound one.
 ///
 /// Three things this does not do, each of which was a defect before it did not.
 ///
-/// **It does not trust a path it did not make.** The reuse check is
-/// `symlink_metadata` and an owner test, not `metadata`: the latter follows
-/// symlinks, so on a shared host another user could leave a symlink to *their*
-/// live agent where the fallback looks, and dl would hand devpod a path that
-/// bind-mounts the attacker's agent into the workspace -- where an `ssh-add` loads
-/// the user's key into it and a `git push` asks it to authenticate. `/tmp` is
-/// world-writable and its sticky bit stops deletion, not creation, so uid-keying
-/// the name prevents an accident and nothing else. Anything at the path that is
-/// not a socket this user owns is replaced.
+/// **It does not trust a path it did not make, and that now covers the directory
+/// as well as the socket.** The reuse check is `symlink_metadata` and an owner
+/// test, not `metadata`: the latter follows symlinks, so on a shared host another
+/// user could leave a symlink to *their* live agent where the fallback looks, and
+/// dl would hand devpod a path that bind-mounts the attacker's agent into the
+/// workspace -- where an `ssh-add` loads the user's key into it and a `git push`
+/// asks it to authenticate. `/tmp` is world-writable and its sticky bit stops
+/// deletion, not creation, so uid-keying the name prevents an accident and
+/// nothing else. Anything at the path that is not a socket this user owns is
+/// replaced, and the same is true one level up: [`ensure_our_dir`] refuses a
+/// parent that already exists as a symlink or as a directory somebody else owns,
+/// rather than writing into it, because that directory is exactly what devpod's
+/// `ChownAgentSock` walks (see the doc on the free function `absent_agent_socket`)
+/// and handing it a path this process does not exclusively own would let another
+/// user's files be `chown`d by this launch, or vice versa.
 ///
 /// **It does not accept a path that cannot hold a socket.** A `sockaddr_un` holds
 /// 104 bytes at the smaller of dl's two platforms ([`crate::clients::ssh`] measures
@@ -2091,10 +2190,23 @@ fn bind_placeholder(path: &Path) -> Option<PathBuf> {
     if path.as_os_str().len() >= SUN_PATH {
         return None;
     }
+    // The directory is settled BEFORE the socket is, and the order is the whole
+    // guarantee rather than a tidy-up. `is_our_socket` decides with
+    // `symlink_metadata`, which refuses to follow a symlink at the FINAL
+    // component and follows every component above it -- so a parent replaced by
+    // a symlink leaves a perfectly genuine socket of this user's reachable
+    // through it, and a reuse that returned here first would hand devpod a path
+    // whose directory is somebody else's. devpod `Lchown`s the whole of
+    // `filepath.Dir(SSH_AUTH_SOCK)`, so that is the tree it would walk.
+    //
+    // Reported by review on #648. The doc above already claimed the parent was
+    // refused "the same" as the socket; only the no-socket path actually did it.
+    if !ensure_our_dir(path.parent()?) {
+        return None;
+    }
     if is_our_socket(path) {
         return Some(path.to_owned());
     }
-    std::fs::create_dir_all(path.parent()?).ok()?;
     // SAFETY: as above.
     let staging = path.with_extension(format!("{}.tmp", std::process::id()));
     let _ = std::fs::remove_file(&staging);
@@ -2105,6 +2217,33 @@ fn bind_placeholder(path: &Path) -> Option<PathBuf> {
         return None;
     }
     Some(path.to_owned())
+}
+
+/// Makes sure `dir` exists and is a plain directory only this user could have
+/// put there, without ever trusting one it did not make itself.
+///
+/// Mirrors [`is_our_socket`]'s refusal to follow a symlink: deciding with
+/// `symlink_metadata`, never `metadata`, because a symlinked directory could
+/// alias a path another user controls, and this directory is exactly what
+/// devpod's `ChownAgentSock` recursively walks and `Lchown`s (see the doc on the
+/// free function `absent_agent_socket`). A directory this process did not create
+/// and does not own is refused the same way [`bind_placeholder`] refuses a socket
+/// it did not make -- left alone, with `false` reported rather than written into
+/// or removed. Creating a directory nobody else can then race into is not
+/// something this needs to defend beyond the owner check: unlike `/tmp` itself,
+/// the parent this is joined under is either dl's own cache dir or a per-uid name
+/// under the temp dir, so nothing else is expected to contend for this exact
+/// path.
+fn ensure_our_dir(dir: &Path) -> bool {
+    match std::fs::symlink_metadata(dir) {
+        Ok(meta) => {
+            use std::os::unix::fs::MetadataExt;
+            // SAFETY: as above.
+            let uid = unsafe { libc::getuid() };
+            meta.is_dir() && meta.uid() == uid
+        }
+        Err(_) => std::fs::create_dir_all(dir).is_ok(),
+    }
 }
 
 /// Whether `path` is a socket this user owns, without following a symlink to
@@ -7088,6 +7227,28 @@ mod tests {
             std::os::unix::net::UnixStream::connect(&path).is_err(),
             "something is accepting on the placeholder"
         );
+        // The regression this whole change exists to fix: devpod's
+        // `ChownAgentSock` recursively `Lchown`s `filepath.Dir(SSH_AUTH_SOCK)`,
+        // unconditionally, after every `devpod up`. Before the socket got its own
+        // directory, that walk was rooted at the cache dir itself -- every clone,
+        // every control socket. It must not be, and the directory it *is* rooted
+        // at must hold nothing devpod did not put there and nothing else either.
+        let dir = path.parent().expect("the socket has a parent");
+        assert_ne!(
+            dir,
+            scene.cache_dir(),
+            "the placeholder's directory is the cache root -- devpod would chown the whole cache"
+        );
+        let siblings: Vec<_> = std::fs::read_dir(dir)
+            .expect("the placeholder's directory is readable")
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name())
+            .collect();
+        assert_eq!(
+            siblings,
+            vec![std::ffi::OsString::from(AGENT_SOCKET_FILE_NAME)],
+            "the placeholder's directory holds something devpod would also chown: {siblings:?}"
+        );
     }
 
     /// A host that has an agent is left exactly as it is: devpod inherits the
@@ -7192,6 +7353,70 @@ mod tests {
         assert!(theirs.exists(), "the other user's socket was destroyed");
     }
 
+    /// A symlinked directory where the placeholder's own directory should be is
+    /// refused rather than written into, the same way a symlinked socket is: the
+    /// directory is what devpod recursively chowns, so trusting one this process
+    /// did not make would let another user's tree be walked, or vice versa.
+    #[test]
+    fn a_directory_this_user_does_not_own_is_not_written_into() {
+        let dir = tempfile::tempdir().expect("a scratch dir");
+        let elsewhere = dir.path().join("elsewhere");
+        std::fs::create_dir(&elsewhere).expect("their directory");
+        let aliased = dir.path().join(AGENT_SOCKET_DIR_NAME);
+        std::os::unix::fs::symlink(&elsewhere, &aliased).expect("a symlinked directory");
+
+        assert!(
+            !ensure_our_dir(&aliased),
+            "a symlinked directory was accepted as ours"
+        );
+        assert_eq!(
+            bind_placeholder(&aliased.join(AGENT_SOCKET_FILE_NAME)),
+            None
+        );
+        assert!(
+            std::fs::read_dir(&elsewhere)
+                .expect("readable")
+                .next()
+                .is_none(),
+            "something was written into a directory this process does not own"
+        );
+    }
+
+    /// The same refusal when the socket is already there to be REUSED, which the
+    /// check above it used to return before.
+    ///
+    /// This is the case that makes the ordering load-bearing rather than tidy.
+    /// `is_our_socket` only declines to follow a symlink at the last component,
+    /// so a genuine socket of this user's, reached through a symlinked parent,
+    /// passes it: the reuse returns a path whose DIRECTORY belongs to whoever
+    /// made the link, and devpod recursively chowns exactly that directory.
+    #[test]
+    fn an_existing_socket_under_a_directory_this_user_does_not_own_is_not_reused() {
+        let dir = tempfile::tempdir().expect("a scratch dir");
+        let elsewhere = dir.path().join("elsewhere");
+        std::fs::create_dir(&elsewhere).expect("their directory");
+
+        // A real socket, bound by this process, so it is ours by every test
+        // `is_our_socket` makes -- the point being that the socket is fine and
+        // the directory is not.
+        let theirs = elsewhere.join(AGENT_SOCKET_FILE_NAME);
+        drop(std::os::unix::net::UnixListener::bind(&theirs).expect("a socket"));
+
+        let aliased = dir.path().join(AGENT_SOCKET_DIR_NAME);
+        std::os::unix::fs::symlink(&elsewhere, &aliased).expect("a symlinked directory");
+        let through_the_link = aliased.join(AGENT_SOCKET_FILE_NAME);
+        assert!(
+            is_our_socket(&through_the_link),
+            "the socket itself is this user's, which is what makes this a trap"
+        );
+
+        assert_eq!(
+            bind_placeholder(&through_the_link),
+            None,
+            "a socket under a directory this process does not own was handed to devpod"
+        );
+    }
+
     /// A path too long to hold a socket is refused before anything at it is
     /// removed, rather than after the bind fails.
     #[test]
@@ -7267,6 +7492,43 @@ mod tests {
         assert!(
             !path.starts_with(&scene.host.cache_dir),
             "the fallback is still inside the cache it could not bind in"
+        );
+        // The same regression as the cache path's: the fallback's directory must
+        // be its own, not the whole of the temp directory devpod would otherwise
+        // recursively chown.
+        let dir = path.parent().expect("the socket has a parent");
+        assert_ne!(
+            dir,
+            crate::osext::temp_dir(),
+            "the fallback's directory is the temp directory itself"
+        );
+        assert_ne!(
+            dir,
+            std::path::Path::new("/tmp"),
+            "the fallback's directory is /tmp itself"
+        );
+        let siblings: Vec<_> = std::fs::read_dir(dir)
+            .expect("the fallback's directory is readable")
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name())
+            .collect();
+        assert_eq!(
+            siblings,
+            vec![std::ffi::OsString::from(AGENT_SOCKET_FILE_NAME)],
+            "the fallback's directory holds something devpod would also chown: {siblings:?}"
+        );
+        // The arithmetic the doc on `absent_agent_socket` claims: uid-keyed
+        // directory plus filename still clears `SUN_PATH` even at `/tmp`, the
+        // shortest candidate `osext::temp_dir` tries.
+        // SAFETY: `getuid` reads the calling process's real uid. It cannot fail.
+        let uid = unsafe { libc::getuid() };
+        let worst_case = PathBuf::from("/tmp")
+            .join(format!("devlaunch-{uid}-agent-sock"))
+            .join(AGENT_SOCKET_FILE_NAME);
+        assert!(
+            worst_case.as_os_str().len() < SUN_PATH,
+            "{} does not fit sun_path even for this host's uid",
+            worst_case.display()
         );
     }
 
