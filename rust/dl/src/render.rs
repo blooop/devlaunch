@@ -4066,6 +4066,7 @@ mod tests {
             state,
             account,
             shares_account_with: shares_with.iter().map(|n| (*n).to_owned()).collect(),
+            usage_snapshot: None,
         }
     }
 
@@ -4297,6 +4298,119 @@ mod tests {
         // a listing that found nothing, which is a different claim.
         assert!(claude_profile_lines(&[]).is_empty());
         assert!(no_claude_profiles().contains("no profiles to list"));
+    }
+
+    // ---------------------------------------------------------- --json's document
+
+    /// The table's three account-column readings, agreed with `--json`'s.
+    ///
+    /// `claude_profiles::json_document` and `claude_profile_lines` both read
+    /// `ProfileSummary` and neither re-derives the other's answer, but the *words*
+    /// each picks (`"not logged in"` here, `"not-logged-in"` there; `"unknown"`
+    /// here, `account: null` there) are a second hand-maintained copy of the same
+    /// three facts, per this repo's standing rule about those. This is the diff
+    /// that keeps them from drifting: for every `(state, account)` pair the table
+    /// distinguishes, the JSON row is asserted to say the same thing in its own
+    /// words.
+    #[test]
+    fn the_json_document_agrees_with_the_table_on_every_state_the_columns_distinguish() {
+        let cases = [
+            // authed, with an account the state file names
+            (
+                profile(
+                    "work",
+                    claude_profiles::ProfileState::Authed,
+                    Some(account(Some("me@example.com"), None, None)),
+                    &[],
+                ),
+                "authed",
+                true,
+            ),
+            // authed, but the state file named nobody -- the table's "unknown"
+            (
+                profile("odd", claude_profiles::ProfileState::Authed, None, &[]),
+                "authed",
+                false,
+            ),
+            // never logged in -- the table's "-"
+            (
+                profile(
+                    "fresh",
+                    claude_profiles::ProfileState::NoCredential,
+                    None,
+                    &[],
+                ),
+                "not-logged-in",
+                false,
+            ),
+        ];
+        for (row, expected_state, has_account) in cases {
+            let table = claude_profile_lines(std::slice::from_ref(&row));
+            let json = claude_profiles::json_document(std::slice::from_ref(&row));
+            let wire_state = json[0]["state"].as_str().expect("a state string");
+            assert_eq!(wire_state, expected_state, "{}: {table:#?}", row.name);
+            assert_eq!(
+                json[0]["account"].is_null(),
+                !has_account,
+                "{}: {table:#?}",
+                row.name
+            );
+            match (wire_state, has_account) {
+                ("authed", true) => assert!(table[1].contains("authed") && !table[1].contains('-')),
+                ("authed", false) => assert!(table[1].contains("unknown"), "{table:#?}"),
+                ("not-logged-in", false) => {
+                    assert!(table[1].contains("not logged in"), "{table:#?}")
+                }
+                other => panic!("an untested combination: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn the_json_document_names_the_account_and_the_shared_group() {
+        let json = claude_profiles::json_document(&[profile(
+            "work",
+            claude_profiles::ProfileState::Authed,
+            Some(account(Some("me@example.com"), Some("Acme"), Some("max"))),
+            &["spare"],
+        )]);
+        let row = &json[0];
+        assert_eq!(row["name"], "work");
+        assert_eq!(row["default"], false);
+        assert_eq!(row["account"]["email"], "me@example.com");
+        assert_eq!(row["account"]["organization"], "Acme");
+        assert_eq!(row["account"]["seatTier"], "max");
+        assert_eq!(row["sharesAccountWith"], serde_json::json!(["spare"]));
+        // No accountUuid on the wire: `shares_account_with` already carries what a
+        // caller would use it for.
+        assert!(row["account"].get("accountUuid").is_none());
+    }
+
+    #[test]
+    fn the_default_row_says_so_in_json_without_a_directory_of_its_own() {
+        // `default` is pushed into the listing whether or not its directory
+        // exists (see `claude_profiles::summarise`), so a JSON consumer needs a
+        // way to tell it apart from a name `read_dir` actually found -- rather
+        // than hard-coding the string `"default"` a second time.
+        let json = claude_profiles::json_document(&[
+            profile(
+                claude_profiles::DEFAULT_PROFILE,
+                claude_profiles::ProfileState::NoCredential,
+                None,
+                &[],
+            ),
+            profile("work", claude_profiles::ProfileState::Authed, None, &[]),
+        ]);
+        assert_eq!(json[0]["default"], true);
+        assert_eq!(json[1]["default"], false);
+    }
+
+    #[test]
+    fn an_empty_listing_is_an_empty_json_array() {
+        // Unlike the table, which says why on stderr and prints nothing: a parser
+        // reading stdout wants a value every time, and `[]` already says "no
+        // profiles" without a sentinel to special-case.
+        assert_eq!(claude_profiles::json_document(&[]), serde_json::json!([]));
     }
 
     /// The three sentences a refused `--claude-profile` produces.

@@ -389,8 +389,11 @@ pub(crate) enum Command {
     },
     /// `dl --repos` — the known `owner/repo` strings, for completion.
     Repos,
-    /// `dl --claude-profiles` — the Claude logins `--claude-profile` can name.
-    ClaudeProfiles,
+    /// `dl --claude-profiles [--json]` — the Claude logins `--claude-profile`
+    /// can name.
+    ClaudeProfiles {
+        output: ListOutput,
+    },
     /// `dl --completion-data` — the whole completion cache, as one JSON line.
     CompletionData,
     /// `dl --update-cache [--force]` — the silent background refresh.
@@ -603,11 +606,21 @@ pub(crate) struct Cli {
     command: Vec<String>,
 
     /// List every workspace on this machine.
-    #[arg(long, group = "what")]
+    #[arg(long, group = "what", group = "json_capable")]
     ls: bool,
-    /// With `--ls`: the machine-readable listing, for tools that decide which
-    /// workspaces to clean up.
-    #[arg(long, requires = "ls")]
+    /// With `--ls` or `--claude-profiles`: the machine-readable listing — the
+    /// workspaces to clean up, or the logins `--claude-profile` can actually
+    /// name, for a caller (corral) that would otherwise have to trust its own
+    /// copy of that list.
+    ///
+    /// `requires = "json_capable"` rather than `requires = "ls"`: `json_capable`
+    /// is the group `ls` and `claude_profiles` both carry below, and a group in
+    /// `requires` is satisfied by *any* member being present — clap's own
+    /// resolution, not a rule this file re-implements. So `--json` alone is
+    /// still refused (`json_and_size_are_only_meaningful_with_ls`), and so is
+    /// `--json` on every other command in `global_command`'s `what` group,
+    /// exactly as it was when the requirement named `ls` alone.
+    #[arg(long, requires = "json_capable")]
     json: bool,
     /// With `--ls`: what deleting each workspace's clone would free. Off by
     /// default — it walks every file in the clone.
@@ -663,8 +676,9 @@ pub(crate) struct Cli {
     autorm: bool,
 
     /// List the Claude logins `--claude-profile` can name, and the account each is
-    /// signed in as. Reads them; never writes.
-    #[arg(long = "claude-profiles", group = "what")]
+    /// signed in as. Reads them; never writes. `--json` names the same rows
+    /// machine-readably.
+    #[arg(long = "claude-profiles", group = "what", group = "json_capable")]
     claude_profiles: bool,
 
     /// The known `owner/repo` strings, one per line (for shell completion).
@@ -1055,7 +1069,13 @@ fn global_command(cli: &Cli, chosen: Chosen) -> Result<Command, GrammarError> {
         Chosen::Purge => Command::Purge { yes: cli.yes },
         Chosen::Version => Command::Version,
         Chosen::Repos => Command::Repos,
-        Chosen::ClaudeProfiles => Command::ClaudeProfiles,
+        Chosen::ClaudeProfiles => Command::ClaudeProfiles {
+            output: if cli.json {
+                ListOutput::Json
+            } else {
+                ListOutput::Table
+            },
+        },
         Chosen::CompletionData => Command::CompletionData,
         Chosen::UpdateCache => Command::UpdateCache { force: cli.force },
         Chosen::HerdrShell => Command::HerdrShell,
@@ -1993,7 +2013,12 @@ mod tests {
         // A global command, so it takes no workspace and no modifier: the two flags
         // read alike and mean opposite things, one naming a login to use and one
         // asking which exist.
-        assert_eq!(parse(&["--claude-profiles"]), Ok(Command::ClaudeProfiles));
+        assert_eq!(
+            parse(&["--claude-profiles"]),
+            Ok(Command::ClaudeProfiles {
+                output: ListOutput::Table
+            })
+        );
         assert_eq!(
             parse(&["--claude-profiles", "--claude-profile", "work"]),
             Err(GrammarError::ClaudeProfileNotAllowed {
@@ -2004,6 +2029,21 @@ mod tests {
             parse(&["--claude-profiles", "ws"]),
             Err(GrammarError::TargetNotAllowed { .. })
         ));
+    }
+
+    #[test]
+    fn claude_profiles_takes_json_the_way_ls_does() {
+        // `--json` used to require `--ls` by name; it now requires either half
+        // of the `json_capable` group, and this is the other half. Refused
+        // combinations (`--json` alone, `--json` on an unrelated command) are
+        // `json_and_size_are_only_meaningful_with_ls` and
+        // `json_still_requires_ls_or_claude_profiles_and_nothing_else`.
+        assert_eq!(
+            parse(&["--claude-profiles", "--json"]),
+            Ok(Command::ClaudeProfiles {
+                output: ListOutput::Json
+            })
+        );
     }
 
     #[test]
@@ -2138,6 +2178,25 @@ mod tests {
         assert_eq!(
             refused(&["--size"]),
             clap::error::ErrorKind::MissingRequiredArgument
+        );
+    }
+
+    /// `--json` now accepts either half of the `json_capable` group, but that is
+    /// an *or* between two named flags, not a widening to every command: a command
+    /// outside `json_capable` altogether still refuses `--json` at the same clap
+    /// level, `MissingRequiredArgument`, because neither `ls` nor `claude_profiles`
+    /// is on the line. `--size` is untouched by this change and keeps naming `ls`
+    /// alone; it is not asked here because `ls` and `claude_profiles` are already
+    /// mutually exclusive (clap's `what` group), and clap treats a required arg
+    /// that a *present* one conflicts with as satisfied-by-conflict rather than
+    /// missing -- `--claude-profiles --size` was accepted before this change too,
+    /// for that reason, and still is.
+    #[test]
+    fn json_still_requires_ls_or_claude_profiles_and_nothing_else() {
+        assert_eq!(
+            refused(&["--repos", "--json"]),
+            clap::error::ErrorKind::MissingRequiredArgument,
+            "--repos is not in json_capable, so --json is still unmet"
         );
     }
 

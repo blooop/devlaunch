@@ -1314,6 +1314,7 @@ pub devlaunch_core::flows::claude_profiles::ProfileSummary::name: alloc::string:
 pub devlaunch_core::flows::claude_profiles::ProfileSummary::path: std::path::PathBuf
 pub devlaunch_core::flows::claude_profiles::ProfileSummary::shares_account_with: alloc::vec::Vec<alloc::string::String>
 pub devlaunch_core::flows::claude_profiles::ProfileSummary::state: devlaunch_core::flows::claude_profiles::ProfileState
+pub devlaunch_core::flows::claude_profiles::ProfileSummary::usage_snapshot: core::option::Option<alloc::string::String>
 impl core::clone::Clone for devlaunch_core::flows::claude_profiles::ProfileSummary
 pub fn devlaunch_core::flows::claude_profiles::ProfileSummary::clone(&self) -> devlaunch_core::flows::claude_profiles::ProfileSummary
 impl core::cmp::Eq for devlaunch_core::flows::claude_profiles::ProfileSummary
@@ -1324,6 +1325,7 @@ pub fn devlaunch_core::flows::claude_profiles::ProfileSummary::fmt(&self, &mut c
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::claude_profiles::ProfileSummary
 pub const devlaunch_core::flows::claude_profiles::DEFAULT_PROFILE: &str
 pub fn devlaunch_core::flows::claude_profiles::from_process() -> alloc::vec::Vec<devlaunch_core::flows::claude_profiles::ProfileSummary>
+pub fn devlaunch_core::flows::claude_profiles::json_document(&[devlaunch_core::flows::claude_profiles::ProfileSummary]) -> serde_json::value::Value
 pub fn devlaunch_core::flows::claude_profiles::summarise(core::option::Option<&std::path::Path>, core::option::Option<&std::path::Path>) -> alloc::vec::Vec<devlaunch_core::flows::claude_profiles::ProfileSummary>
 pub mod devlaunch_core::flows::completion
 pub enum devlaunch_core::flows::completion::FileState
