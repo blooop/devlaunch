@@ -287,7 +287,7 @@ fn taking_a_row_acts_on_the_workspace_that_rows_label_names() {
     // after this names, and an id carries no owner, so neither half stands in for the
     // other.
     assert!(
-        said.contains("Picked blooop | blooop-wayfinder -> blooop-wayfinder"),
+        said.contains("Picked - | blooop-wayfinder -> blooop-wayfinder"),
         "a pick that named nothing: {said:?}"
     );
     assert!(
@@ -476,8 +476,8 @@ fn a_batch_of_marked_rows_is_named_and_counted_before_the_first_one_goes() {
     // of the first line dl writes afterwards.
     assert!(
         said.contains(
-            "Picked 2 workspaces for rm:\r\n  blooop | blooop-devlaunch -> \
-             blooop-devlaunch\r\n  blooop | blooop-wayfinder -> blooop-wayfinder\r\n"
+            "Picked 2 workspaces for rm:\r\n  - | blooop-devlaunch -> \
+             blooop-devlaunch\r\n  - | blooop-wayfinder -> blooop-wayfinder\r\n"
         ),
         "the batch was not named: {said:?}\nfrom this screen:\n{screen}"
     );
@@ -857,7 +857,7 @@ impl std::fmt::Display for Screen {
     }
 }
 
-/// A scratch world with a `devpod` that lists three workspaces.
+/// A scratch world with a `devpod` that lists three workspaces of dl's.
 struct World {
     root: std::path::PathBuf,
     _scratch: tempfile::TempDir,
@@ -890,17 +890,7 @@ if [ "$1" != "list" ]; then
   fi
 fi
 if [ "$1" = "list" ]; then
-  cat <<'JSON'
-[{"id": "blooop-devlaunch", "source": {"gitRepository": "https://github.com/blooop/devlaunch.git"},
-  "lastUsed": "2026-08-22T10:00:00Z", "provider": {"name": "docker"},
-  "ide": {"name": "none"}, "context": "default"},
- {"id": "blooop-wayfinder", "source": {"gitRepository": "https://github.com/blooop/wayfinder.git"},
-  "lastUsed": "2026-08-21T10:00:00Z", "provider": {"name": "docker"},
-  "ide": {"name": "none"}, "context": "default"},
- {"id": "myproject", "source": {"localFolder": "/home/dev/myproject"},
-  "lastUsed": "2026-08-20T10:00:00Z", "provider": {"name": "docker"},
-  "ide": {"name": "none"}, "context": "default"}]
-JSON
+  cat "$DL_TEST_DEVPOD_LISTING"
   exit 0
 fi
 exit 0
@@ -912,6 +902,25 @@ exit 0
             .permissions();
         std::os::unix::fs::PermissionsExt::set_mode(&mut mode, 0o755);
         std::fs::set_permissions(&devpod, mode).expect("an executable fake devpod");
+        // All three under dl's cache, because the picker offers only workspaces
+        // dl created. Not at the `<owner>/<repo>/<id>` layout, so each is drawn as
+        // its id, which is what these tests find rows by.
+        let cache = root.join("cache/devlaunch/scratch");
+        let listing = LISTED
+            .iter()
+            .zip(["2026-08-22", "2026-08-21", "2026-08-20"])
+            .map(|(id, day)| {
+                format!(
+                    r#"{{"id": "{id}", "source": {{"localFolder": "{cache}/{id}"}},
+  "lastUsed": "{day}T10:00:00Z", "provider": {{"name": "docker"}},
+  "ide": {{"name": "none"}}, "context": "default"}}"#,
+                    cache = cache.display(),
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",\n ");
+        std::fs::write(root.join("devpod-listing.json"), format!("[{listing}]\n"))
+            .expect("a listing");
 
         World {
             root,
@@ -974,6 +983,10 @@ exit 0
         command.env(
             "DL_TEST_DEVPOD_LOG",
             self.devpod_log().display().to_string(),
+        );
+        command.env(
+            "DL_TEST_DEVPOD_LISTING",
+            self.root.join("devpod-listing.json").display().to_string(),
         );
         command.env(
             "DL_TEST_DEVPOD_TERM_LOG",

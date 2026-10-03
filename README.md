@@ -221,15 +221,16 @@ OWNER           | REPO       | BRANCH
 blooop          | devlaunch  | main
 blooop          | devlaunch  | picker-columns
 kinisi-robotics | kinisi_ros | ags-devcontainer-tooling-support
--               | myproject
+kinisi-robotics | kinisi_ros | -
 ```
 
 The search bar is the top line and the matches read downward from it, so the first match is the
 row nearest what you are typing. Every cell is padded to its column, so a column starts in the
 same place on every row, and the headings sit above them in the picker's header rather than among
-the rows. A workspace `dl` did not clone has no owner or repo to read, so it keeps devpod's name
-for it in the repo column and takes a dash where the owner would go. The branch is the one
-checked out in the clone right now, spelled in full. Pick the row rather than copying it; the row
+the rows. Only workspaces `dl` created are rows; one
+devpod lists for somebody else is not offered. The branch is the one checked out in the clone
+right now, spelled in full, or a dash when `HEAD` names no branch (a rebase in progress shows
+the branch being rebased). Pick the row rather than copying it; the row
 carries the real id underneath. Where two rows would read alike, both gain a fourth column
 holding their whole id, so that picking one cannot delete the other.
 

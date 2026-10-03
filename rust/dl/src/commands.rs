@@ -1680,7 +1680,7 @@ fn render_select<'r>(
         // read the invitation on the way past.
         select::Pick::Quit => no_pick(),
         select::Pick::NoWorkspaces => {
-            eprintln!("No workspaces found. Create one with: dl owner/repo or dl ./path");
+            eprintln!("{}", select::NOTHING_TO_PICK);
             no_pick()
         }
         // The one run that needs the invitation on stdout. No terminal means no
@@ -1734,7 +1734,7 @@ pub(crate) fn pick_one(runner: &dyn Runner) -> Result<String, Ending> {
         }
         select::Pick::Quit => Err(Ending::Refused),
         select::Pick::NoWorkspaces => {
-            eprintln!("No workspaces found. Create one with: dl owner/repo or dl ./path");
+            eprintln!("{}", select::NOTHING_TO_PICK);
             Err(Ending::Refused)
         }
         select::Pick::NoTerminal => {

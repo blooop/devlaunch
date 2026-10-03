@@ -32,14 +32,17 @@
 //! over the cells it names. The heading is drawn in skim's header beside the
 //! [`invitation`] rather than offered as a row, which is what keeps it from being
 //! filtered away, marked with TAB, or picked. A column is named exactly when some
-//! row has something in it: a listing of nothing dl cloned is headed `OWNER | REPO`
-//! and stops.
+//! row has something in it: a listing of nothing at dl's clone layout is headed
+//! `OWNER | REPO` and stops.
 //!
-//! A workspace dl did not clone sits in that grid too — its devpod name in the repo
-//! column, and the row ends there rather than drawing an empty branch cell. The name
-//! used to run on through the space a repo and a branch would have taken, exempt
-//! from the column and from the width it is measured for; it pays that width now,
-//! which is the price of every row being on one grid.
+//! **Only workspaces dl created are rows.** dl is responsible only for those, and
+//! this picker is where its verbs, `rm` among them, choose what to act on; a
+//! workspace devpod lists for somebody else is left to whoever made it
+//! ([`offered`]). A clone whose `HEAD` names no branch keeps its columns and draws a
+//! dash for the branch. A workspace of dl's whose clone is not at the layout (the
+//! id-scheme migration leaves these) has no repo to read, so it sits in the grid
+//! as its devpod name in the repo column, and the row ends there rather than
+//! drawing an empty branch cell.
 //!
 //! The owner is what an id cannot carry at all, so a fork and its upstream used to
 //! be two rows spelled the same. The suffix is what an id carries that nobody reads:
@@ -105,7 +108,7 @@ use std::sync::Arc;
 use devlaunch_core::clients::devpod::Workspace;
 use devlaunch_core::domain::workspace_id::WorkspaceId;
 use devlaunch_core::domain::workspace_state::NonEmpty;
-use devlaunch_core::flows::listing::{head_branch_of, owner_of, repo_of};
+use devlaunch_core::flows::listing::{head_branch_of, is_devlaunch_clone, owner_of, repo_of};
 use skim::prelude::*;
 use term::terminfo::TermInfo;
 
@@ -148,21 +151,25 @@ pub(crate) struct Offer {
     /// cleared `metadata.json` is still drawn as a row, still opened from it, and
     /// has nothing else that knows what it is.
     ///
-    /// `None` where the row is not one of dl's clones, and **also** where the
-    /// recovered triple derives some *other* id: `HEAD` is the branch checked out
-    /// now, so a `git switch` inside the container leaves a triple that is no
-    /// longer this workspace's. Core makes that check itself
+    /// `None` where the row is not at dl's clone layout or names no branch, and
+    /// **also** where the recovered triple derives some *other* id: `HEAD` is the
+    /// branch checked out now, so a `git switch` inside the container leaves a
+    /// triple that is no longer this workspace's. Core makes that check itself
     /// (`flows::launch::label_if_derived`); this carries the evidence, not the
     /// verdict.
     pub(crate) triple: Option<WorkspaceId>,
 }
 
-/// What the owner column says for a workspace whose source names no owner: one
-/// opened from a path or a URL that is not GitHub's.
+/// What the owner column says for a workspace of dl's whose clone is not at the
+/// `<owner>/<repo>/<id>` layout, so there is no owner to read out of it.
 ///
 /// A dash rather than an empty cell, because the column is padded — a blank there
 /// reads as a column that failed to draw, where a dash reads as an answer.
 const NO_OWNER: &str = "-";
+
+/// What the branch column says for a clone whose `HEAD` names no branch: a
+/// detached one that is not a rebase. A dash for [`NO_OWNER`]'s reason.
+const NO_BRANCH: &str = "-";
 
 /// One row's naming, before padding turns it into a label.
 struct Naming {
@@ -186,12 +193,12 @@ struct Naming {
 
 /// What a row says after its owner.
 ///
-/// A sum and not a repo beside an optional ref, because the two are not
-/// independently absent: dl's own layout names both halves or neither, and a row
-/// holding one of them would be a column with the wrong thing under it.
+/// A sum and not a repo beside an optional ref, because a row with a repo always
+/// draws a branch cell: [`NO_BRANCH`] when `HEAD` names none, so the columns after
+/// it still line up.
 enum Tail {
     /// dl's own clone: the repo out of the cache layout, and the branch out of the
-    /// clone's `HEAD`.
+    /// clone's `HEAD`, or [`NO_BRANCH`].
     Split {
         repo: String,
         git_ref: String,
@@ -204,8 +211,10 @@ enum Tail {
         /// is a fact about the whole list, so only [`named`] may set it.
         distinguished_by: Option<String>,
     },
-    /// devpod's workspace name, whole — for a workspace dl did not clone, which
-    /// has no layout to read a repo and no clone to read a `HEAD` from.
+    /// devpod's workspace name, whole — for a workspace of dl's whose clone is not
+    /// at the layout, so there is no repo to read out of its path. The id-scheme
+    /// migration leaves these: a container still carrying an id its clone's
+    /// directory no longer has.
     Whole(String),
 }
 
@@ -226,10 +235,15 @@ pub(crate) struct Offering {
     pub(crate) offers: Vec<Offer>,
 }
 
-/// Every workspace devpod listed, in devpod's order, as the picker shows it.
+/// Every workspace dl created, in devpod's order, as the picker shows it.
 ///
-/// No filtering of any kind: the picker is a view of `dl --ls`, so a workspace
-/// devlaunch did not create and one whose source it cannot read are both offered.
+/// **Only dl's own.** dl is responsible only for workspaces dl created, and this
+/// picker is where `up`, `stop`, `rm` and the rest choose what to act on, so a
+/// workspace devpod lists for somebody else (a `devpod up` by hand, another tool,
+/// a path dl did not clone) is not a row. "dl's own" is [`is_devlaunch_clone`],
+/// the predicate `--purge` deletes by, so the picker and the purge cannot disagree
+/// about which workspaces dl answers for. `dl --ls` still lists everything devpod
+/// does; it acts on nothing.
 ///
 /// Every column is padded to the widest entry *in this list*, which is why the
 /// labels are built here in one pass over all of them rather than one workspace at
@@ -240,6 +254,11 @@ pub(crate) struct Offering {
 /// `--purge` decides ownership by, so they cannot disagree about which workspaces
 /// are dl's.
 pub(crate) fn offered(workspaces: &[Workspace], cache_dir: &Path) -> Offering {
+    let workspaces: Vec<Workspace> = workspaces
+        .iter()
+        .filter(|workspace| is_devlaunch_clone(workspace, cache_dir))
+        .cloned()
+        .collect();
     // One pass, and it is [`named`]'s: a key that is the row's own unpadded text
     // sees every way two rows can be drawn alike, including the cross-shape case a
     // whole-name row makes with a split one, and de-splits only the rows that
@@ -253,7 +272,7 @@ pub(crate) fn offered(workspaces: &[Workspace], cache_dir: &Path) -> Offering {
     // per context and nothing in an `Offer` carries the context. That predates the
     // columns — `<owner> | <id>` collided the same way — and closing it means
     // addressing a workspace by more than its id.
-    let namings = named(workspaces, cache_dir);
+    let namings = named(&workspaces, cache_dir);
     let columns = Columns::of(&namings);
     Offering {
         heading: heading(&columns),
@@ -290,17 +309,18 @@ pub(crate) fn offered(workspaces: &[Workspace], cache_dir: &Path) -> Offering {
 /// [`render::table_lines`]: crate::render::table_lines
 struct Columns {
     owner: usize,
-    /// The repository — **or** the devpod name of a workspace dl did not clone,
-    /// which is drawn in this column too and therefore measured for it.
+    /// The repository — **or** the devpod name of a workspace of dl's whose clone
+    /// is not at the layout, which is drawn in this column too and therefore
+    /// measured for it.
     ///
     /// The name used to be exempt: it ran on through the space a repo and a branch
     /// would have taken, so a long one cost the rows around it nothing. It sits in
     /// the column now, which is what puts every row on the same grid, and the price
-    /// is that one long foreign name widens the column for everybody — the same
-    /// price one long repository name has always cost.
+    /// is that one long name widens the column for everybody — the same price one
+    /// long repository name has always cost.
     repo: usize,
-    /// `None` when no row in this listing has a branch: nothing dl cloned is in it,
-    /// so there is no column and no heading over it.
+    /// `None` when no row in this listing has a branch cell: no clone at dl's
+    /// layout is in it, so there is no column and no heading over it.
     git_ref: Option<usize>,
     /// Whether any row was drawn its whole id to tell it from another
     /// ([`Tail::Split::distinguished_by`]).
@@ -369,14 +389,15 @@ const WORKSPACE: &str = "WORKSPACE";
 /// The heading line, padded to the same widths the rows were drawn to.
 ///
 /// A column is named exactly when some row has something in it, so a listing of
-/// nothing but workspaces dl did not clone is headed `OWNER | REPO` and stops —
-/// there is no branch to head, and no id column, so naming either would put a word
-/// over empty air.
+/// nothing but whole-name rows is headed `OWNER | REPO` and stops — there is no
+/// branch to head, and no id column, so naming either would put a word over empty
+/// air.
 ///
-/// **`REPO` heads the devpod name of a foreign workspace too**, because that is the
+/// **`REPO` heads the devpod name of a whole-name row too**, because that is the
 /// column the name is drawn in. It is the one place the heading is looser than the
-/// cells under it: a workspace dl did not clone has no repository, and what it has
-/// instead is its own name. The alternative — a fifth shape where the name goes in
+/// cells under it: a workspace of dl's whose clone is not at the layout has no
+/// repository to read, and what it has instead is its own name. The alternative —
+/// a fifth shape where the name goes in
 /// the `WORKSPACE` column — draws two empty cells to get there and puts the only
 /// thing that row says furthest right on the line.
 fn heading(columns: &Columns) -> String {
@@ -436,24 +457,38 @@ fn named(workspaces: &[Workspace], cache_dir: &Path) -> Vec<Naming> {
         .iter()
         .map(|workspace| {
             let owner = owner_of(workspace, cache_dir).unwrap_or_else(|| NO_OWNER.to_owned());
-            let tail = match (
+            // The repo is the layout's answer and the branch is `HEAD`'s, so a clone
+            // can have the first without the second: a detached `HEAD` that is not a
+            // rebase. That row keeps its repo in its column and draws a dash for the
+            // branch, rather than giving up the columns it can still fill. Only a
+            // workspace with no layout to read, which no repo comes out of, falls back
+            // to its whole id.
+            let (tail, triple) = match (
                 repo_of(workspace, cache_dir),
                 head_branch_of(workspace, cache_dir),
             ) {
-                // Both or neither: the two are one reading of one layout, and a repo
-                // with no ref beside it would be a column with the wrong thing under
-                // it. `listing` answers them separately only so that neither has to
-                // return a pair.
-                (Some(repo), Some(git_ref)) => Tail::Split {
-                    repo,
-                    git_ref,
-                    distinguished_by: None,
-                },
-                _ => Tail::Whole(workspace.id.clone()),
-            };
-            let triple = match &tail {
-                Tail::Split { repo, git_ref, .. } => WorkspaceId::new(&owner, repo, git_ref).ok(),
-                Tail::Whole(_) => None,
+                (Some(repo), Some(git_ref)) => {
+                    let triple = WorkspaceId::new(&owner, &repo, &git_ref).ok();
+                    (
+                        Tail::Split {
+                            repo,
+                            git_ref,
+                            distinguished_by: None,
+                        },
+                        triple,
+                    )
+                }
+                // No triple: a row with no branch names no workspace a launch could
+                // derive, and the dash is a placeholder, not a ref.
+                (Some(repo), None) => (
+                    Tail::Split {
+                        repo,
+                        git_ref: NO_BRANCH.to_owned(),
+                        distinguished_by: None,
+                    },
+                    None,
+                ),
+                (None, _) => (Tail::Whole(workspace.id.clone()), None),
             };
             Naming {
                 owner,
@@ -631,6 +666,14 @@ pub(crate) struct Chosen {
     pub(crate) triple: Option<WorkspaceId>,
 }
 
+/// What a verb says when the picker has nothing to offer ([`Pick::NoWorkspaces`]).
+///
+/// It names only `dl owner/repo`, the one way to make a workspace this picker
+/// offers: a workspace opened from a path or a URL is not a clone of dl's, so
+/// pointing at one here would send the user to make a row that never appears.
+pub(crate) const NOTHING_TO_PICK: &str =
+    "No workspaces that dl created were found. Create one with: dl owner/repo";
+
 /// What the picker settled.
 ///
 /// Five arms where Python has `Optional[str]`, because its `None` covers several
@@ -648,7 +691,9 @@ pub(crate) enum Pick {
     /// The picker was opened and closed without a choice: Esc, Ctrl-C, or rows
     /// that named no workspace.
     Quit,
-    /// devpod lists nothing, so there is nothing to offer.
+    /// devpod lists nothing dl created, so there is nothing to offer: no
+    /// workspace at all, or only ones somebody else made ([`offered`]). Said with
+    /// [`NOTHING_TO_PICK`].
     NoWorkspaces,
     /// There is no terminal to draw a picker on — `dl < /dev/null`, a cron job, a
     /// pipe. Python's fzf said `inappropriate ioctl for device` and answered
@@ -1208,6 +1253,12 @@ mod tests {
         /// in [`Self::listed`], and having this return one would mean two spellings
         /// of it to keep in step.
         fn clone_at(&self, owner: &str, repo: &str, id: &str, branch: &str) {
+            self.head_at(owner, repo, id, &format!("ref: refs/heads/{branch}\n"));
+        }
+
+        /// [`Self::clone_at`] with *head* written into `HEAD` verbatim, for the
+        /// clones whose `HEAD` names no branch.
+        fn head_at(&self, owner: &str, repo: &str, id: &str, head: &str) {
             let git = self
                 .path()
                 .join("repos")
@@ -1216,8 +1267,7 @@ mod tests {
                 .join(id)
                 .join(".git");
             std::fs::create_dir_all(&git).expect("a clone");
-            std::fs::write(git.join("HEAD"), format!("ref: refs/heads/{branch}\n"))
-                .expect("a HEAD");
+            std::fs::write(git.join("HEAD"), head).expect("a HEAD");
         }
     }
 
@@ -1231,15 +1281,28 @@ mod tests {
     }
 
     #[test]
-    fn a_workspace_devlaunch_cannot_read_is_still_offered_and_selectable() {
-        // Python's own two rows: somebody's project directory, and a source
-        // devlaunch has no reading for. Neither names an owner — one is a path dl
-        // did not clone, the other is an image reference — so both take the dash,
-        // and both are still *offered*, which is the point of the test.
+    fn a_workspace_dl_did_not_create_is_not_offered() {
+        // dl is responsible only for workspaces dl created, and the picker is where
+        // a verb chooses what to act on, `dl rm` among them. So the workspaces
+        // devpod lists for somebody else are not rows: somebody's project
+        // directory, a git source devpod cloned itself, and an image. Only the
+        // clone under dl's cache is offered.
+        //
+        // This replaced Python's `TestTheFuzzyPickerOffersEverySource`, which
+        // offered every one of them, and drew each as its whole devpod name beside
+        // rows split into columns.
         let cache = Cache::new();
+        cache.clone_at("blooop", "devlaunch", "devlaunch-main-3j1t", "main");
         let workspaces = cache.listed(
             r#"[
-                {"id": "mine", "source": {"localFolder": "/home/dev/myproject"},
+                {"id": "myproject", "source": {"localFolder": "/home/dev/myproject"},
+                 "lastUsed": "x", "provider": {"name": "docker"},
+                 "ide": {"name": "none"}, "context": "default"},
+                {"id": "devlaunch-main-3j1t",
+                 "source": {"localFolder": "{CACHE}/repos/blooop/devlaunch/devlaunch-main-3j1t"},
+                 "lastUsed": "x", "provider": {"name": "docker"},
+                 "ide": {"name": "none"}, "context": "default"},
+                {"id": "wf", "source": {"gitRepository": "https://github.com/blooop/devlaunch.git"},
                  "lastUsed": "x", "provider": {"name": "docker"},
                  "ide": {"name": "none"}, "context": "default"},
                 {"id": "from-an-image", "source": {"image": "ubuntu:24.04"},
@@ -1248,17 +1311,113 @@ mod tests {
             ]"#,
         );
 
-        let offers = offered(&workspaces, cache.path()).offers;
+        let offering = offered(&workspaces, cache.path());
 
         assert_eq!(
-            offers.iter().map(|offer| &offer.label).collect::<Vec<_>>(),
-            ["-     | mine", "-     | from-an-image"]
+            offering
+                .offers
+                .iter()
+                .map(|offer| offer.label.as_str())
+                .collect::<Vec<_>>(),
+            ["blooop | devlaunch | main"]
         );
-        // Picking the row maps back to the workspace, which is what makes it an
-        // offer rather than a line of text.
+        assert_eq!(offering.heading, "OWNER  | REPO      | BRANCH");
+    }
+
+    #[test]
+    fn a_listing_of_nothing_dl_created_is_no_picker() {
+        // The same rule at its edge: devpod lists workspaces, none of them dl's,
+        // and there is nothing to choose between. That is answered before anything
+        // is drawn, the way an empty listing is.
+        let cache = Cache::new();
+        let foreign = cache.listed(&one(
+            "myproject",
+            r#"{"localFolder": "/home/dev/myproject"}"#,
+        ));
+
+        assert!(offered(&foreign, cache.path()).offers.is_empty());
+        assert_eq!(pick(&foreign, Arity::One, cache.path()), Pick::NoWorkspaces);
+    }
+
+    #[test]
+    fn a_clone_whose_head_names_no_branch_keeps_its_repo_in_its_column() {
+        // A detached `HEAD` in one of dl's clones: an agent that checked out a
+        // commit, or a bisect. The owner and the repo still come off the layout, so
+        // the row keeps its columns and says it has no branch with a dash, the
+        // same answer the owner column gives. It used to fall back to the whole
+        // workspace id, drawn in the repo column with the branch column empty,
+        // which was the one row in the table that did not read as one.
+        //
+        // No triple: a row with no branch is no workspace a launch could derive.
+        let cache = Cache::new();
+        cache.clone_at("blooop", "devlaunch", "devlaunch-main-3j1t", "main");
+        cache.head_at(
+            "kinisi-robotics",
+            "kinisi_ros",
+            "kinisi-ros-fix-2l4x",
+            "9f2c1ab4e5d6079813254768a9bcdef012345678\n",
+        );
+        let workspaces = cache.listed(
+            r#"[
+                {"id": "devlaunch-main-3j1t",
+                 "source": {"localFolder": "{CACHE}/repos/blooop/devlaunch/devlaunch-main-3j1t"},
+                 "lastUsed": "x", "provider": {"name": "docker"},
+                 "ide": {"name": "none"}, "context": "default"},
+                {"id": "kinisi-ros-fix-2l4x",
+                 "source": {"localFolder": "{CACHE}/repos/kinisi-robotics/kinisi_ros/kinisi-ros-fix-2l4x"},
+                 "lastUsed": "x", "provider": {"name": "docker"},
+                 "ide": {"name": "none"}, "context": "default"}
+            ]"#,
+        );
+
+        let offering = offered(&workspaces, cache.path());
+
+        let mut drawn = vec![offering.heading.clone()];
+        drawn.extend(offering.offers.iter().map(|offer| offer.label.clone()));
         assert_eq!(
-            chosen(&offers, vec![offers[1].label.clone()]),
-            Pick::Chose(one_id("- | from-an-image", "from-an-image"))
+            drawn,
+            [
+                "OWNER           | REPO       | BRANCH",
+                "blooop          | devlaunch  | main",
+                "kinisi-robotics | kinisi_ros | -",
+            ]
+        );
+        assert_eq!(offering.offers[1].triple, None);
+        assert_eq!(
+            chosen(&offering.offers, vec![offering.offers[1].label.clone()]),
+            Pick::Chose(one_pick(
+                "kinisi-robotics | kinisi_ros | -",
+                "kinisi-ros-fix-2l4x",
+                None,
+            ))
+        );
+    }
+
+    #[test]
+    fn a_clone_mid_rebase_is_drawn_on_the_branch_being_rebased() {
+        // git detaches `HEAD` for a rebase and keeps the branch in `head-name`, so
+        // an agent left with a rebase stopped on a conflict is still on its branch,
+        // and the row says so.
+        let cache = Cache::new();
+        cache.head_at(
+            "blooop",
+            "devlaunch",
+            "devlaunch-fix-42-mrg0",
+            "9f2c1ab4e5d6079813254768a9bcdef012345678\n",
+        );
+        let state = cache
+            .path()
+            .join("repos/blooop/devlaunch/devlaunch-fix-42-mrg0/.git/rebase-merge");
+        std::fs::create_dir_all(&state).expect("a rebase in progress");
+        std::fs::write(state.join("head-name"), "refs/heads/fix/42\n").expect("a head-name");
+        let workspaces = cache.listed(&one(
+            "devlaunch-fix-42-mrg0",
+            r#"{"localFolder": "{CACHE}/repos/blooop/devlaunch/devlaunch-fix-42-mrg0"}"#,
+        ));
+
+        assert_eq!(
+            offered(&workspaces, cache.path()).offers[0].label,
+            "blooop | devlaunch | fix/42"
         );
     }
 
@@ -1368,7 +1527,7 @@ mod tests {
     }
 
     /// A pick of one row, for a workspace whose triple the picker could not
-    /// recover: a foreign one, or one whose clone is gone.
+    /// recover: one not at the clone layout, or one whose `HEAD` names no branch.
     fn one_id(row: &str, named: &str) -> NonEmpty<Chosen> {
         one_pick(row, named, None)
     }
@@ -1404,13 +1563,13 @@ mod tests {
         let offers = offered(
             &cache.listed(
                 r#"[
-                {"id": "first", "source": {"localFolder": "/a"}, "lastUsed": "x",
+                {"id": "first", "source": {"localFolder": "{CACHE}/a"}, "lastUsed": "x",
                  "provider": {"name": "docker"}, "ide": {"name": "none"},
                  "context": "default"},
-                {"id": "second", "source": {"localFolder": "/b"}, "lastUsed": "x",
+                {"id": "second", "source": {"localFolder": "{CACHE}/b"}, "lastUsed": "x",
                  "provider": {"name": "docker"}, "ide": {"name": "none"},
                  "context": "default"},
-                {"id": "third", "source": {"localFolder": "/c"}, "lastUsed": "x",
+                {"id": "third", "source": {"localFolder": "{CACHE}/c"}, "lastUsed": "x",
                  "provider": {"name": "docker"}, "ide": {"name": "none"},
                  "context": "default"}
             ]"#,
@@ -1436,13 +1595,13 @@ mod tests {
         let offers = offered(
             &cache.listed(
                 r#"[
-                {"id": "first", "source": {"localFolder": "/a"}, "lastUsed": "x",
+                {"id": "first", "source": {"localFolder": "{CACHE}/a"}, "lastUsed": "x",
                  "provider": {"name": "docker"}, "ide": {"name": "none"},
                  "context": "default"},
-                {"id": "second", "source": {"localFolder": "/b"}, "lastUsed": "x",
+                {"id": "second", "source": {"localFolder": "{CACHE}/b"}, "lastUsed": "x",
                  "provider": {"name": "docker"}, "ide": {"name": "none"},
                  "context": "default"},
-                {"id": "third", "source": {"localFolder": "/c"}, "lastUsed": "x",
+                {"id": "third", "source": {"localFolder": "{CACHE}/c"}, "lastUsed": "x",
                  "provider": {"name": "docker"}, "ide": {"name": "none"},
                  "context": "default"}
             ]"#,
@@ -1466,20 +1625,6 @@ mod tests {
                 vec!["something else".to_owned(), offers[1].label.clone()]
             ),
             ids(&[("- | second", "second")])
-        );
-    }
-
-    #[test]
-    fn a_git_source_is_offered_under_the_owner_its_url_names() {
-        let cache = Cache::new();
-        let workspaces = cache.listed(&one(
-            "wf",
-            r#"{"gitRepository": "https://github.com/blooop/devlaunch.git"}"#,
-        ));
-
-        assert_eq!(
-            offered(&workspaces, cache.path()).offers[0].label,
-            "blooop | wf"
         );
     }
 
@@ -1598,23 +1743,28 @@ mod tests {
     #[test]
     fn a_split_row_cannot_be_drawn_the_same_as_a_whole_name_row() {
         // The cross-shape collision the two-column and three-column rows can make
-        // between them: a workspace dl did not clone keeps whatever name devpod has
-        // for it, and if that name is the middle and right columns of some *other*
-        // row, the two rows are the same text. `chosen` then maps both to whichever
-        // came first, so picking the second one acts on the first -- and `dl rm` is
-        // one of the verbs this picker opens for.
+        // between them: a workspace of dl's whose clone is not at the layout keeps
+        // whatever name devpod has for it, and if that name is the middle and right
+        // columns of some *other* row, the two rows are the same text. `chosen`
+        // then maps both to whichever came first, so picking the second one acts on
+        // the first -- and `dl rm` is one of the verbs this picker opens for.
         //
         // The collision key cannot see this one: the two rows have different key
         // shapes, so counting keys finds no duplicate.
+        //
+        // The split row's owner is `-` because that is the owner a whole-name row
+        // draws, now that only dl's own workspaces are offered: an owner directory
+        // spelled like the placeholder is the one way left for the shapes to meet.
         let cache = Cache::new();
+        cache.clone_at("-", "devlaunch", "devlaunch-main-3j1t", "main");
         let workspaces = cache.listed(
             r#"[
                 {"id": "devlaunch-main-3j1t",
-                 "source": {"localFolder": "{CACHE}/repos/blooop/devlaunch/devlaunch-main-3j1t"},
+                 "source": {"localFolder": "{CACHE}/repos/-/devlaunch/devlaunch-main-3j1t"},
                  "lastUsed": "x", "provider": {"name": "docker"},
                  "ide": {"name": "none"}, "context": "default"},
                 {"id": "devlaunch | main",
-                 "source": {"gitRepository": "https://github.com/blooop/devlaunch.git"},
+                 "source": {"localFolder": "{CACHE}/stray"},
                  "lastUsed": "x", "provider": {"name": "docker"},
                  "ide": {"name": "none"}, "context": "default"}
             ]"#,
@@ -1627,7 +1777,7 @@ mod tests {
         // And the property that matters: each row still reaches its own workspace.
         assert_eq!(
             chosen(&offers, vec![offers[1].label.clone()]),
-            Pick::Chose(one_id("blooop | devlaunch | main", "devlaunch | main"))
+            Pick::Chose(one_id("- | devlaunch | main", "devlaunch | main"))
         );
     }
 
@@ -1648,14 +1798,16 @@ mod tests {
         // collision the guard exists to prevent: a person cannot tell them apart,
         // and `dl rm` is one of the verbs that opens this picker.
         let cache = Cache::new();
+        cache.clone_at("-", "devlaunch", "devlaunch-main-3j1t", "main");
+        cache.clone_at("blooop", "wayfinderx", "wayfinderx-main-0ei3", "main");
         let workspaces = cache.listed(
             r#"[
                 {"id": "devlaunch-main-3j1t",
-                 "source": {"localFolder": "{CACHE}/repos/blooop/devlaunch/devlaunch-main-3j1t"},
+                 "source": {"localFolder": "{CACHE}/repos/-/devlaunch/devlaunch-main-3j1t"},
                  "lastUsed": "x", "provider": {"name": "docker"},
                  "ide": {"name": "none"}, "context": "default"},
                 {"id": "devlaunch | main",
-                 "source": {"gitRepository": "https://github.com/blooop/devlaunch.git"},
+                 "source": {"localFolder": "{CACHE}/stray"},
                  "lastUsed": "x", "provider": {"name": "docker"},
                  "ide": {"name": "none"}, "context": "default"},
                 {"id": "wayfinderx-main-0ei3",
@@ -1692,7 +1844,7 @@ mod tests {
         // listing, so one ambiguous pair put the id back on rows that were never
         // ambiguous.
         let cache = Cache::new();
-        cache.clone_at("blooop", "devlaunch", "devlaunch-main-3j1t", "main");
+        cache.clone_at("-", "devlaunch", "devlaunch-main-3j1t", "main");
         cache.clone_at(
             "blooop",
             "devlaunch",
@@ -1702,11 +1854,11 @@ mod tests {
         let workspaces = cache.listed(
             r#"[
                 {"id": "devlaunch-main-3j1t",
-                 "source": {"localFolder": "{CACHE}/repos/blooop/devlaunch/devlaunch-main-3j1t"},
+                 "source": {"localFolder": "{CACHE}/repos/-/devlaunch/devlaunch-main-3j1t"},
                  "lastUsed": "x", "provider": {"name": "docker"},
                  "ide": {"name": "none"}, "context": "default"},
                 {"id": "devlaunch | main",
-                 "source": {"gitRepository": "https://github.com/blooop/devlaunch.git"},
+                 "source": {"localFolder": "{CACHE}/stray"},
                  "lastUsed": "x", "provider": {"name": "docker"},
                  "ide": {"name": "none"}, "context": "default"},
                 {"id": "devlaunch-feature-auth-np10",
@@ -1725,10 +1877,10 @@ mod tests {
             [
                 // Collided with the whole-name row, so it says its id too -- and
                 // still says its branch, which is what the row is picked by.
-                "blooop | devlaunch        | main         | devlaunch-main-3j1t",
+                "-      | devlaunch        | main         | devlaunch-main-3j1t",
                 // The whole-name row is the widest thing in the repo column, which
                 // is what every split row above and below it is now padded to.
-                "blooop | devlaunch | main",
+                "-      | devlaunch | main",
                 // Did not collide with anything, so it keeps its columns -- and it
                 // spells the ref, where the id could only offer `feature-auth`.
                 "blooop | devlaunch        | feature/auth",
@@ -1753,23 +1905,23 @@ mod tests {
         // else is ever drawn in that shape. Appending gives that up, so the second
         // round is what buys it back.
         //
-        // The foreign ids here hold ` | `, which devpod itself would not create --
+        // The whole-name ids here hold ` | `, which devpod itself would not create --
         // the same synthetic `a_split_row_cannot_be_drawn_the_same_as_a_whole_name_row`
-        // uses, and for the same reason: this picker draws whatever devpod lists.
+        // uses, and for the same reason: this picker draws whatever id devpod lists.
         let cache = Cache::new();
-        cache.clone_at("blooop", "devlaunch", "devlaunch-main-3j1t", "main");
+        cache.clone_at("-", "devlaunch", "devlaunch-main-3j1t", "main");
         let workspaces = cache.listed(
             r#"[
                 {"id": "devlaunch-main-3j1t",
-                 "source": {"localFolder": "{CACHE}/repos/blooop/devlaunch/devlaunch-main-3j1t"},
+                 "source": {"localFolder": "{CACHE}/repos/-/devlaunch/devlaunch-main-3j1t"},
                  "lastUsed": "x", "provider": {"name": "docker"},
                  "ide": {"name": "none"}, "context": "default"},
                 {"id": "devlaunch | main",
-                 "source": {"gitRepository": "https://github.com/blooop/devlaunch.git"},
+                 "source": {"localFolder": "{CACHE}/stray"},
                  "lastUsed": "x", "provider": {"name": "docker"},
                  "ide": {"name": "none"}, "context": "default"},
                 {"id": "devlaunch | main | devlaunch-main-3j1t",
-                 "source": {"gitRepository": "https://github.com/blooop/devlaunch.git"},
+                 "source": {"localFolder": "{CACHE}/stray"},
                  "lastUsed": "x", "provider": {"name": "docker"},
                  "ide": {"name": "none"}, "context": "default"}
             ]"#,
@@ -1876,26 +2028,6 @@ mod tests {
     }
 
     #[test]
-    fn a_directory_that_is_not_a_clone_of_dls_names_no_owner() {
-        // `dl ~/dev/myproject`, and it is the case that catches a rule read off the
-        // shape alone: the path is three components deep like any clone *and* its
-        // leaf is the workspace's id, because devpod names a path workspace after
-        // its directory. Read as dl's layout it would say the owner is `dev`, which
-        // is a fabrication — nobody's repository is owned by a path component of
-        // somebody's home directory. Being outside dl's cache is what settles it.
-        let cache = Cache::new();
-        let workspaces = cache.listed(&one(
-            "myproject",
-            r#"{"localFolder": "/home/dev/myproject"}"#,
-        ));
-
-        assert_eq!(
-            offered(&workspaces, cache.path()).offers[0].label,
-            "-     | myproject"
-        );
-    }
-
-    #[test]
     fn a_directory_under_the_cache_that_is_not_shaped_like_a_clone_names_no_owner() {
         // The other half of the rule. Inside the cache, but its leaf is not this
         // workspace's id — so it is not the `<owner>/<repo>/<workspace id>` layout
@@ -1933,11 +2065,11 @@ mod tests {
     }
 
     #[test]
-    fn the_repo_column_is_measured_over_the_foreign_names_drawn_in_it_too() {
+    fn the_repo_column_is_measured_over_the_whole_names_drawn_in_it_too() {
         // Alignment across the two row shapes, and the price of putting them on one
-        // grid. A workspace dl did not clone keeps devpod's name for it, and that
-        // name is drawn in the repo column — so it is measured for the repo column,
-        // and a long one widens it for every row.
+        // grid. A workspace of dl's whose clone is not at the layout keeps devpod's
+        // name for it, and that name is drawn in the repo column — so it is measured
+        // for the repo column, and a long one widens it for every row.
         //
         // It used to be exempt: the column was measured over the split rows only and
         // the name ran on through the space a repo and a branch would have taken.
@@ -1967,7 +2099,7 @@ mod tests {
                  "lastUsed": "x", "provider": {"name": "docker"},
                  "ide": {"name": "none"}, "context": "default"},
                 {"id": "a-very-long-workspace-name-of-its-own",
-                 "source": {"localFolder": "/home/dev/myproject"},
+                 "source": {"localFolder": "{CACHE}/scratch/elsewhere"},
                  "lastUsed": "x", "provider": {"name": "docker"},
                  "ide": {"name": "none"}, "context": "default"}
             ]"#,
@@ -1988,20 +2120,22 @@ mod tests {
     }
 
     #[test]
-    fn the_owner_column_is_padded_so_the_ids_line_up() {
+    fn the_owner_column_is_padded_so_the_repos_line_up() {
         // Alignment is a fact about the list, not about one row: every owner is
-        // drawn to the width of the widest, so the ids start in the same column and
-        // the eye can run down them. The dash is padded like any other owner.
+        // drawn to the width of the widest, so the repos start in the same column
+        // and the eye can run down them. The dash is padded like any other owner.
         let cache = Cache::new();
+        cache.clone_at("blooop", "devlaunch", "one", "main");
+        cache.clone_at("kinisi-robotics", "kinisi_ros", "two", "main");
         let workspaces = cache.listed(
             r#"[
-                {"id": "one", "source": {"gitRepository": "github.com/blooop/devlaunch"},
+                {"id": "one", "source": {"localFolder": "{CACHE}/repos/blooop/devlaunch/one"},
                  "lastUsed": "x", "provider": {"name": "docker"},
                  "ide": {"name": "none"}, "context": "default"},
-                {"id": "two", "source": {"gitRepository": "github.com/kinisi-robotics/kinisi_ros"},
+                {"id": "two", "source": {"localFolder": "{CACHE}/repos/kinisi-robotics/kinisi_ros/two"},
                  "lastUsed": "x", "provider": {"name": "docker"},
                  "ide": {"name": "none"}, "context": "default"},
-                {"id": "three", "source": {"localFolder": "/home/dev/myproject"},
+                {"id": "three", "source": {"localFolder": "{CACHE}/scratch/elsewhere"},
                  "lastUsed": "x", "provider": {"name": "docker"},
                  "ide": {"name": "none"}, "context": "default"}
             ]"#,
@@ -2014,25 +2148,25 @@ mod tests {
                 .map(|offer| offer.label.clone())
                 .collect::<Vec<_>>(),
             [
-                "blooop          | one",
-                "kinisi-robotics | two",
+                "blooop          | devlaunch  | main",
+                "kinisi-robotics | kinisi_ros | main",
                 "-               | three",
             ]
         );
     }
 
     #[test]
-    fn the_order_is_devpods_and_nothing_is_left_out() {
-        // The picker is a view of the workspace list: no sorting, and no filtering
-        // by whose workspace it is. `no_sort` is what keeps skim from re-ordering
-        // what this hands it.
+    fn the_order_is_devpods_and_nothing_of_dls_is_left_out() {
+        // The picker is a view of the workspaces dl created: no sorting, and none
+        // of dl's own dropped, whichever provider or context it is in. `no_sort` is
+        // what keeps skim from re-ordering what this hands it.
         let cache = Cache::new();
         let workspaces = cache.listed(
             r#"[
-                {"id": "zebra", "source": {"localFolder": "/z"}, "lastUsed": "x",
+                {"id": "zebra", "source": {"localFolder": "{CACHE}/z"}, "lastUsed": "x",
                  "provider": {"name": "docker"}, "ide": {"name": "none"},
                  "context": "default"},
-                {"id": "alpha", "source": {"localFolder": "/a"}, "lastUsed": "x",
+                {"id": "alpha", "source": {"localFolder": "{CACHE}/a"}, "lastUsed": "x",
                  "provider": {"name": "podman"}, "ide": {"name": "none"},
                  "context": "other"}
             ]"#,
@@ -2069,7 +2203,7 @@ mod tests {
         // `None`, and `None` is the help and exit 1.
         let cache = Cache::new();
         let offers = offered(
-            &cache.listed(&one("mine", r#"{"localFolder": "/p"}"#)),
+            &cache.listed(&one("mine", r#"{"localFolder": "{CACHE}/p"}"#)),
             cache.path(),
         )
         .offers;
@@ -2089,7 +2223,7 @@ mod tests {
         //
         // Four shapes at once -- a pair that collided and says its id, a row with a
         // long branch that no other row has, a row on a short branch, and a
-        // workspace dl did not clone -- because the widths are a fact about the set
+        // workspace of dl's not at the layout -- because the widths are a fact about the set
         // and a shape that is fine alone can still be the one that does not line up
         // beside the others. Asserting the drawn text is the only way to see that:
         // a per-column assertion agrees with itself by construction.
@@ -2109,7 +2243,7 @@ mod tests {
                 {"id": "devlaunch-main-legacy", "source": {"localFolder": "{CACHE}/repos/blooop/devlaunch/devlaunch-main-legacy"}, "lastUsed": "x", "provider": {"name": "docker"}, "ide": {"name": "none"}, "context": "default"},
                 {"id": "wayfinder-wf-467-a2b3", "source": {"localFolder": "{CACHE}/repos/blooop/wayfinder/wayfinder-wf-467-a2b3"}, "lastUsed": "x", "provider": {"name": "docker"}, "ide": {"name": "none"}, "context": "default"},
                 {"id": "bencher-fix-x9q2", "source": {"localFolder": "{CACHE}/repos/myfork/bencher/bencher-fix-x9q2"}, "lastUsed": "x", "provider": {"name": "docker"}, "ide": {"name": "none"}, "context": "default"},
-                {"id": "someones-project", "source": {"localFolder": "/home/dev/someones-project"}, "lastUsed": "x", "provider": {"name": "docker"}, "ide": {"name": "none"}, "context": "default"}
+                {"id": "someones-project", "source": {"localFolder": "{CACHE}/scratch/someones-project"}, "lastUsed": "x", "provider": {"name": "docker"}, "ide": {"name": "none"}, "context": "default"}
             ]"#,
         );
         let offering = offered(&workspaces, cache.path());
@@ -2161,11 +2295,11 @@ mod tests {
         // filtered away, marked with TAB, or picked.
         //
         // Three shapes, one rule: a heading appears when a cell under it does. A
-        // listing of nothing dl cloned has no branch to head and no id column, so
-        // heading either would put a word over empty air.
+        // listing of nothing at dl's clone layout has no branch to head and no id
+        // column, so heading either would put a word over empty air.
         let cache = Cache::new();
-        let foreign = cache.listed(&one("myproject", r#"{"localFolder": "/home/dev/mine"}"#));
-        assert_eq!(offered(&foreign, cache.path()).heading, "OWNER | REPO");
+        let unshaped = cache.listed(&one("myproject", r#"{"localFolder": "{CACHE}/mine"}"#));
+        assert_eq!(offered(&unshaped, cache.path()).heading, "OWNER | REPO");
 
         let cache = Cache::new();
         cache.clone_at("blooop", "devlaunch", "devlaunch-main-3j1t", "main");
@@ -2214,10 +2348,10 @@ mod tests {
         let cache = Cache::new();
         let workspaces = cache.listed(
             r#"[
-                {"id": "a", "source": {"localFolder": "/a"}, "lastUsed": "x",
+                {"id": "a", "source": {"localFolder": "{CACHE}/a"}, "lastUsed": "x",
                  "provider": {"name": "docker"}, "ide": {"name": "none"},
                  "context": "default"},
-                {"id": "b", "source": {"localFolder": "/b"}, "lastUsed": "x",
+                {"id": "b", "source": {"localFolder": "{CACHE}/b"}, "lastUsed": "x",
                  "provider": {"name": "docker"}, "ide": {"name": "none"},
                  "context": "default"}
             ]"#,

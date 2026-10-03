@@ -20,11 +20,11 @@ It is a table. Each row is `<owner> | <repo> | <branch>`, under headings that sa
 
 ```
 Select workspaces (type to filter, TAB to mark several):
-OWNER  | REPO             | BRANCH
-blooop | devlaunch        | main
-blooop | wayfinder        | wayfinder/devlaunch-467
-myfork | bencher          | fix/thing
--      | someones-project
+OWNER  | REPO      | BRANCH
+blooop | devlaunch | main
+blooop | wayfinder | wayfinder/devlaunch-467
+myfork | bencher   | fix/thing
+myfork | bencher   | -
 ```
 
 The owner and the repo are read off the clone's place in dl's layout,
@@ -36,8 +36,16 @@ Every cell is padded to its column's widest entry, the heading counted as one of
 them, so a column starts in the same place on every line. The headings are drawn in
 the picker's header rather than offered as a row, which is what keeps them from
 being filtered away, marked with TAB or picked. A column is named exactly when some
-row has something in it, so a list of nothing dl cloned is headed `OWNER | REPO` and
-stops there.
+row has something in it.
+
+**Only the workspaces `dl` created are offered.** `dl` is responsible for those
+and no others, and the picker is where its verbs, `rm` among them, choose what to
+act on. A workspace devpod lists that `dl` did not make, from a `devpod up` by hand,
+another tool, or a path or URL `dl` did not clone, is not a row. It is the same
+test `--purge` uses, so the two cannot disagree about which workspaces are `dl`'s.
+`dl --ls` still lists every workspace devpod has; it acts on none of them. When
+nothing is left to offer, the verb says so and names `dl owner/repo` as the way to
+make one.
 
 **The branch is the one checked out now**, not the one the workspace was made for,
 so a `git switch` inside a container shows up here. The columns used to be recovered
@@ -72,12 +80,19 @@ that say `main` and carry a tiebreak, and `dl rm` is one of the verbs this opens
 Only the rows that collide grow the column. A third workspace of the same repository
 on another branch keeps its three.
 
-A row whose clone is not on disk shows its whole id in the repo column and stops
-there, since there is no `HEAD` to read and so no branch to draw. That is the honest
-answer: the workspace's source is gone. It sits in the column rather than running on
-past it, which is what puts every row on one grid, and the price is that a long name
-widens the repo column for the rows around it. `REPO` heads it either way, and that
-is the one place the heading is looser than the cells under it.
+A row whose `HEAD` names no branch keeps its owner and repo and shows a dash for
+the branch. That covers a detached `HEAD`, such as a `git checkout <sha>` or a
+bisect, and a clone that is no longer on disk. A rebase in progress is the
+exception: git detaches `HEAD` for it but keeps the branch, and the row shows that
+branch.
+
+A workspace of `dl`'s whose clone is not at the `<owner>/<repo>/<id>` layout, which
+the id-scheme migration can leave behind, has no repo to read. It shows its whole id
+in the repo column with a dash for the owner, and stops there. It sits in the column
+rather than running on past it, which is what puts every row on one grid, and the
+price is that a long name widens the repo column for the rows around it. `REPO`
+heads it either way, and that is the one place the heading is looser than the cells
+under it.
 
 Nothing here is short of room, and that is why the picker spends it differently from
 [the terminal tab](workspace-tools.md#naming-the-terminal-after-the-workspace). A row

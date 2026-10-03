@@ -886,7 +886,7 @@ fn resume_with_no_workspaces_says_how_to_make_one() {
     run.exited(1);
     assert!(
         run.err
-            .contains("No workspaces found. Create one with: dl owner/repo or dl ./path"),
+            .contains("No workspaces that dl created were found. Create one with: dl owner/repo"),
         "{:?}",
         run.err
     );
