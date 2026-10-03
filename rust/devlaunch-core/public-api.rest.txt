@@ -2638,6 +2638,7 @@ pub fn devlaunch_core::flows::listing::describe_source(&devlaunch_core::clients:
 pub fn devlaunch_core::flows::listing::discover_repos_from_workspaces(&devlaunch_core::clients::git::Git<'_>, &[devlaunch_core::clients::devpod::Workspace]) -> devlaunch_core::flows::listing::RepoDiscovery
 pub fn devlaunch_core::flows::listing::flatten_repos(&indexmap::map::IndexMap<alloc::string::String, alloc::vec::Vec<alloc::string::String>>) -> alloc::vec::Vec<alloc::string::String>
 pub fn devlaunch_core::flows::listing::head_branch_of(&devlaunch_core::clients::devpod::Workspace, &std::path::Path) -> core::option::Option<alloc::string::String>
+pub fn devlaunch_core::flows::listing::is_devlaunch_clone(&devlaunch_core::clients::devpod::Workspace, &std::path::Path) -> bool
 pub fn devlaunch_core::flows::listing::outstanding_sweep_notes(&devlaunch_core::domain::metadata::MetadataStorage) -> alloc::vec::Vec<devlaunch_core::flows::listing::SweptRepoNote>
 pub fn devlaunch_core::flows::listing::owner_of(&devlaunch_core::clients::devpod::Workspace, &std::path::Path) -> core::option::Option<alloc::string::String>
 pub fn devlaunch_core::flows::listing::repo_of(&devlaunch_core::clients::devpod::Workspace, &std::path::Path) -> core::option::Option<alloc::string::String>

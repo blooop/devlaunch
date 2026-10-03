@@ -318,9 +318,13 @@ pub fn repo_of(workspace: &Workspace, cache_dir: &Path) -> Option<String> {
 /// which branch the workspace was *created* for, but which one is checked out in it
 /// now. Nothing reconstructs a triple from an id any more.
 ///
-/// `None` for a detached HEAD, a clone that is gone, and a `HEAD` that cannot be
-/// read. All three are cases where the id would have carried a stale label, so the
-/// caller showing the whole id instead is the honest answer rather than a loss.
+/// **A rebase in progress answers the branch being rebased.** git detaches `HEAD`
+/// for the length of a rebase and keeps the branch it will return to in
+/// `head-name`, so an agent left mid-rebase reads as the branch it is still on.
+///
+/// `None` for any other detached HEAD, a clone that is gone, and a `HEAD` that
+/// cannot be read. All three are cases where the id would have carried a stale
+/// label, so the caller drawing no branch is the honest answer rather than a loss.
 ///
 /// binary surface — not part of the frozen wf API (#251 §7)
 pub fn head_branch_of(workspace: &Workspace, cache_dir: &Path) -> Option<String> {
@@ -340,10 +344,30 @@ pub fn head_branch_of(workspace: &Workspace, cache_dir: &Path) -> Option<String>
 /// symbolic ref pointing outside `refs/heads/` all answer `None` rather than
 /// guessing. Nothing here runs git: `HEAD` is one line that git maintains, and a
 /// subprocess per row is not worth paying to render a column.
+///
+/// The one detached `HEAD` that still names a branch is a rebase's, and it names
+/// it in a file of its own: [`rebased_branch`].
 fn head_branch(clone: &Path) -> Option<String> {
-    let head = std::fs::read_to_string(git_dir(clone)?.join("HEAD")).ok()?;
-    let branch = head.lines().next()?.strip_prefix("ref:")?.trim();
-    non_empty(branch.strip_prefix("refs/heads/")?)
+    let git = git_dir(clone)?;
+    let head = std::fs::read_to_string(git.join("HEAD")).ok()?;
+    match head.lines().next()?.strip_prefix("ref:") {
+        Some(named) => non_empty(named.trim().strip_prefix("refs/heads/")?),
+        None => rebased_branch(&git),
+    }
+}
+
+/// The branch a rebase in progress will return to, out of its `head-name`.
+///
+/// Both of git's backends keep one: `rebase-merge` for the default and for `-i`,
+/// `rebase-apply` for `--apply`. Asked only when `HEAD` is detached, so a leftover
+/// directory from a rebase that died cannot outvote a `HEAD` that names a branch.
+/// A rebase begun from a detached `HEAD` writes `detached HEAD` there, which is no
+/// `refs/heads/` ref and answers `None` like any other detached `HEAD`.
+fn rebased_branch(git: &Path) -> Option<String> {
+    ["rebase-merge", "rebase-apply"].iter().find_map(|backend| {
+        let named = std::fs::read_to_string(git.join(backend).join("head-name")).ok()?;
+        non_empty(named.lines().next()?.trim().strip_prefix("refs/heads/")?)
+    })
 }
 
 /// `<clone>/.git`, following a gitfile to wherever it points.
@@ -473,7 +497,12 @@ fn layout_of_clone(workspace: &Workspace, cache_dir: &Path) -> Option<(String, S
 /// Complete *for a given cache home* in the same literal way: a moved
 /// `XDG_CACHE_HOME` strands what the old one held, as it does for any tool that
 /// respects it.
-pub(crate) fn is_devlaunch_clone(workspace: &Workspace, cache_dir: &Path) -> bool {
+///
+/// The picker asks it too, and for the rule that sits under all of the above:
+/// dl is responsible only for workspaces dl created, so it offers no other.
+///
+/// binary surface — not part of the frozen wf API (#251 §7)
+pub fn is_devlaunch_clone(workspace: &Workspace, cache_dir: &Path) -> bool {
     match &workspace.source {
         // Purely lexical, so a clone whose directory has already been removed is
         // still recognisable from the source devpod kept.
@@ -3746,10 +3775,11 @@ mod tests {
     #[test]
     fn a_head_that_names_no_branch_answers_nothing_rather_than_guessing() {
         // Every one of these is a case where the id would have carried a label, and
-        // a wrong or stale one. `None` lets the caller draw the whole id, which is
-        // the honest row. A detached HEAD is the interesting arm: it is a legal
-        // state a container can be left in, and the object id it holds is not a
-        // branch however much it looks like a word.
+        // a wrong or stale one. `None` lets the caller draw no branch, which is the
+        // honest row. A detached HEAD is the interesting arm: it is a legal state a
+        // container can be left in, and the object id it holds is not a branch
+        // however much it looks like a word. (A rebase's detached HEAD is the one
+        // exception, and it is pinned above.)
         let dir = temp_dir();
         let cache = dir.path();
         for (label, head) in [
@@ -3766,6 +3796,42 @@ mod tests {
                 head,
             );
             assert_eq!(head_branch_of(&workspace, cache), None, "{label}");
+        }
+    }
+
+    #[test]
+    fn a_rebase_in_progress_reports_the_branch_being_rebased() {
+        // git detaches `HEAD` for the length of a rebase and keeps the branch it
+        // will move back to in `head-name`: `rebase-merge` for the merge backend,
+        // which is the default and what `-i` uses, `rebase-apply` for `--apply`. An
+        // agent left mid-rebase is still on its branch in every sense a person at
+        // the picker means, so that is the answer, not `None`.
+        let dir = temp_dir();
+        let cache = dir.path();
+        for (backend, id) in [
+            ("rebase-merge", "devlaunch-fix-42-mrg0"),
+            ("rebase-apply", "devlaunch-fix-42-apl0"),
+        ] {
+            let workspace = clone_with_head(
+                cache,
+                "blooop",
+                "devlaunch",
+                id,
+                "9f2c1ab4e5d6079813254768a9bcdef012345678\n",
+            );
+            let state = cache
+                .join("repos/blooop/devlaunch")
+                .join(id)
+                .join(".git")
+                .join(backend);
+            std::fs::create_dir_all(&state).expect("a rebase in progress");
+            std::fs::write(state.join("head-name"), "refs/heads/fix/42\n").expect("a head-name");
+
+            assert_eq!(
+                head_branch_of(&workspace, cache).as_deref(),
+                Some("fix/42"),
+                "{backend}"
+            );
         }
     }
 
