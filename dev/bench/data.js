@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791204200291,
+  "lastUpdate": 1791205349322,
   "repoUrl": "https://github.com/blooop/devlaunch",
   "entries": {
     "devlaunch launch stages": [
@@ -18086,6 +18086,93 @@ window.BENCHMARK_DATA = {
             "range": "± 0.300291",
             "unit": "s",
             "extra": "runs=5/5 wall=7.419203s v0.26.1, Linux-X64"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "blooop@gmail.com",
+            "name": "Austin Gregg-Smith",
+            "username": "blooop"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ff43e499c20d03939954da1553efe510a83a5782",
+          "message": "Merge pull request #670 from blooop/fix/stale-agent-lock\n\nfix: rm and --ls --json can tell a dead Claude agent's worktree lock is stale",
+          "timestamp": "2026-10-05T13:59:23+01:00",
+          "tree_id": "5f57b68352dfa7b7bf85c3f23183fe3445bec25b",
+          "url": "https://github.com/blooop/devlaunch/commit/ff43e499c20d03939954da1553efe510a83a5782"
+        },
+        "date": 1791205348333,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "warm / attach",
+            "value": 1.098835,
+            "range": "± 0.151418",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / devpod-up",
+            "value": 0.252928,
+            "range": "± 0.103888",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / host-prep",
+            "value": 0.000045,
+            "range": "± 0.000004",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / total",
+            "value": 1.358225,
+            "range": "± 0.225395",
+            "unit": "s",
+            "extra": "runs=5/5 wall=1.360299s v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / attach",
+            "value": 0.995985,
+            "range": "± 0.040021",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / devpod-up",
+            "value": 3.086119,
+            "range": "± 0.41739",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / host-prep",
+            "value": 0.246994,
+            "range": "± 0.015032",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / tools",
+            "value": 3.414197,
+            "range": "± 0.146313",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / total",
+            "value": 7.648598,
+            "range": "± 0.484111",
+            "unit": "s",
+            "extra": "runs=5/5 wall=7.650923s v0.26.1, Linux-X64"
           }
         ]
       }
