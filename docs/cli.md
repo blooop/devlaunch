@@ -949,6 +949,45 @@ recreate goes ahead:
 `reset` and `code` do none of this. A `reset` drops the volumes, and `code` keeps the
 container when nothing changed.
 
+### `--refresh-stale`: recreate the stale workspaces that are idle
+
+`dl --ls` names each workspace whose container runs an older image than its reference
+now names. `dl --refresh-stale` recreates those workspaces, but only the ones where a
+recreate ends nothing that is in progress, and starts their agents again as
+`dl <ws> recreate` does (devlaunch#673). It asks no question and attaches to nothing,
+so it can run after the daily pull:
+
+```bash
+docker pull ghcr.io/owner/image:latest && dl --refresh-stale
+```
+
+It prints one line for each stale workspace before it starts: `Refreshing <ws>`, or
+`Skipping <ws>` with the reason. Then it recreates each workspace it did not skip, with
+the recreate's own lines, and ends with a count. A recreate that fails does not stop
+the others. The exit status is 1 when a recreate failed, and 0 otherwise. A skip is not
+a failure.
+
+`dl` skips a stale workspace when any of these is true, and names the first that is:
+
+- Another `dl` holds the workspace's launch lock.
+- `dl` cannot read the processes in the container. It reads them with one
+  `docker exec` as root, so a stopped container is skipped here too.
+- A build runs in the container: a process named `bazel`, `bazelisk`, `cargo`, `rustc`,
+  `cc1`, `cc1plus`, `make`, `gmake`, `ninja`, `cmake`, `pixi`, `colcon`, `gcc`, `g++`,
+  `clang`, `clang++`, `ld`, `ld.lld`, `ld.gold` or `collect2`.
+- A Claude process has a shell as its child. Claude runs its tool calls and its
+  background tasks through a shell, and starts its MCP servers directly, so a shell
+  under Claude is work in progress and an MCP server is not.
+- Claude runs in the container and `dl` is not in a herdr pane, so it cannot see the
+  sessions to start them again. A container with no Claude process needs no herdr.
+- herdr does not answer, a pane holds a live agent and no saved line, or an agent is
+  not `idle` or `done` (it is `working`, or `blocked` on a permission prompt).
+- More Claude sessions run in the container than herdr's panes hold. A session that
+  was started from a terminal outside herdr has no line to start it again.
+
+The reading is taken a moment before the recreate. An agent that starts work in that
+moment ends with the recreate, the same as with `dl <ws> recreate`.
+
 ## `kill`: the workspace that will not answer
 
 `dl <ws> stop` asks devpod to stop a workspace, and it is the right thing to type
