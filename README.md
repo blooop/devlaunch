@@ -350,8 +350,9 @@ dl 0.59.4
 Projects with several variants, compose sidecars, or a host-side `initializeCommand` are covered
 in [docs/devcontainer-projects.md](docs/devcontainer-projects.md).
 
-`--claude-profile <name>` forwards a named Claude login instead of the default one, for
-workspaces where you want a different account than the one `claude` on your host is signed in to:
+`--claude-profile <name>` binds a Claude configuration directory into the container. For a named
+profile that replaces forwarding your host's login, for workspaces where you want a different
+account than the one `claude` on your host is signed in to:
 
 ```bash
 dl blooop/devlaunch --claude-profile work
@@ -364,13 +365,25 @@ so profiles you already have work with no re-login, and it never writes there: c
 deleting them stays with whatever made the directory. By hand it is
 `CLAUDE_CONFIG_DIR=~/.claude-profiles/work claude`, then log in.
 
+The whole directory is bound in, not just the credential: any `CLAUDE.md`, agents, skills or
+hooks living beside it reach the container too, and a token refresh in there lands back in
+the profile on disk. A bind lands only when the container is created, so switching profiles on a
+workspace that already exists needs a `recreate`; a plain `restart` keeps whichever profile the
+container was created with.
+
 `--claude-profile default` means the login you would get anyway, so a recalled line has a way to
-say "not the profile I used last time".
+say "not the profile I used last time". It still binds: your host's own Claude configuration
+directory (`$CLAUDE_CONFIG_DIR`, or `~/.claude`) is mounted read-write into the container, the
+same as a named profile's directory, so `CLAUDE.md`, agents, skills and hooks beside it reach the
+container too, and a refresh in there lands back on the host.
 
 Unlike `--devcontainer` it is **not** stored with the workspace, so it applies to the launch you
-typed it on and no workspace ever forwards an account chosen weeks ago. A name that holds no
-credential stops the launch and says so rather than falling back to your default login, which is
-the whole point of naming one. [docs/workspace-tools.md](docs/workspace-tools.md) has the
+typed it on and no workspace ever forwards an account chosen weeks ago. A named profile that holds
+no credential stops the launch and says so rather than falling back to your default login, which is
+the whole point of naming one. `default` is the one exception: a host whose Claude login is not a
+credential file in that directory falls back to forwarding the login as before, with nothing
+mounted and nothing said, since `default` names the login you would get anyway rather than an
+account you are asking `dl` to find. [docs/workspace-tools.md](docs/workspace-tools.md) has the
 precedence order and what a profile does not change.
 
 `dl --help` is the complete reference and is kept in step with the binary by a test.
