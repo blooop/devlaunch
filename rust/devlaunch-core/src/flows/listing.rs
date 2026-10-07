@@ -2753,6 +2753,13 @@ mod tests {
         let scene = Scene::build();
         let mut rows = scene.rows(Sizes::Skip);
         let stale = StaleImages::of_pairs([("someone-elses", "ghcr.io/o/img:latest")]);
+        let clean = rows
+            .iter_mut()
+            .find(|row| row.id == scene.id("clean"))
+            .expect("a clean row");
+        clean.stale_image = StaleImages::of_pairs([("clean", "ghcr.io/o/img:old")])
+            .of("clean")
+            .cloned();
 
         mark_stale_images(&mut rows, &stale);
         let document = json_document(&rows);
@@ -2760,7 +2767,9 @@ mod tests {
 
         let row = rows["someone-elses"].as_object().expect("an object");
         assert_eq!(
-            row.iter().next_back().map(|(key, value)| (key.as_str(), value)),
+            row.iter()
+                .next_back()
+                .map(|(key, value)| (key.as_str(), value)),
             Some(("staleImage", &serde_json::json!("ghcr.io/o/img:latest")))
         );
         assert!(rows[scene.id("clean")].get("staleImage").is_none());
