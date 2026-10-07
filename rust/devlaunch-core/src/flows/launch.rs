@@ -5140,7 +5140,12 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
             None
         };
         let up = self.bring_up(verb, devcontainer, placement);
-        if let Some((manager, held)) = held {
+        // `Blocked` comes only from the OS refusing to start `devpod up`, so the old
+        // container and its agents still run. `NotInstalled` is not here: it also
+        // stands for a devpod gone after an `up` that did recreate, and a refusal
+        // is a devpod that ran and may have removed the container before failing.
+        let untouched = matches!(up, Err(LaunchAborted::DevpodNotRun(NotRun::Blocked(_))));
+        if let Some((manager, held)) = held.filter(|_| !untouched) {
             self.restart_agent_sessions(&manager, &held, matches!(up, Ok(None)));
         }
         if let Some(refused) = up? {
@@ -13866,6 +13871,60 @@ mod tests {
                     pane_id: "w1:p1".to_owned(),
                     line: crate::shell::join(line.iter().map(String::as_str)),
                 }),
+            "{:?}",
+            parts.said
+        );
+    }
+
+    /// A recreate whose `devpod up` the OS would not start never touched the
+    /// container, so the agent in `w1:p1` still runs: nothing is typed and no line
+    /// is handed over to start a second one.
+    #[test]
+    fn a_recreate_whose_up_never_started_leaves_the_agents_alone() {
+        let mut scene = Scene::new().with_running("myws");
+        in_herdr_beside_claude(&mut scene);
+        let failure = crate::runner::OsFailure {
+            kind: std::io::ErrorKind::PermissionDenied,
+            errno: Some(13),
+        };
+        scene
+            .runner
+            .script(["devpod", "up"], Response::NotStarted(failure));
+        let updater = SelfInvocation::new("dl");
+        let completion = scene.cache_dir().join("completion.json");
+        let mut parts = launching(&scene.runner, &updater, &completion);
+        let mut cold = NeverCold;
+        let launched = {
+            let mut launch = Launch::new(
+                &mut parts.context,
+                &mut parts.refresh,
+                &mut cold,
+                &parts.provision,
+                &scene.host,
+                &mut parts.chatter,
+                &mut parts.said,
+            );
+            launch.run("myws", &LaunchVerb::Recreate, None)
+        };
+
+        assert_eq!(
+            launched,
+            Err(LaunchAborted::DevpodNotRun(NotRun::Blocked(failure)))
+        );
+        assert!(
+            !scene
+                .runner
+                .argvs()
+                .iter()
+                .any(|argv| argv.get(1..3) == Some(&["pane".to_owned(), "run".to_owned()])),
+            "a line was typed into a pane whose agent still runs"
+        );
+        assert!(
+            !parts.said.iter().any(|notice| matches!(
+                notice,
+                LaunchNotice::AgentSessionNotRestarted { .. }
+                    | LaunchNotice::AgentSessionInThisPane { .. }
+            )),
             "{:?}",
             parts.said
         );
