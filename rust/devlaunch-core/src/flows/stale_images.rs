@@ -262,6 +262,17 @@ mod tests {
     /// `declared` as the devcontainer's image where it declared one.
     fn home_with(workspace_id: &str, created_from: &str, declared: Option<&str>) -> ScratchHome {
         let home = devpod_home_with(&[("default", workspace_id, Some(()))]);
+        record_create(&home, workspace_id, "c1", created_from, declared);
+        home
+    }
+
+    fn record_create(
+        home: &ScratchHome,
+        workspace_id: &str,
+        container: &str,
+        created_from: &str,
+        declared: Option<&str>,
+    ) {
         let merged = match declared {
             Some(image) => serde_json::json!({ "image": image }),
             None => serde_json::json!({}),
@@ -269,13 +280,12 @@ mod tests {
         std::fs::write(
             home.result("default", workspace_id),
             serde_json::json!({
-                "ContainerDetails": { "Id": "c1", "Config": { "Image": created_from } },
+                "ContainerDetails": { "Id": container, "Config": { "Image": created_from } },
                 "MergedConfig": merged,
             })
             .to_string(),
         )
         .expect("a create result");
-        home
     }
 
     fn line(id: &str, layers: &[&str]) -> String {
@@ -385,6 +395,86 @@ mod tests {
             stale.of("ws").map(StaleImage::reference),
             Some("ghcr.io/o/img:latest")
         );
+    }
+
+    #[test]
+    fn a_derived_image_is_stale_when_the_references_layers_are_not_its_prefix() {
+        let home = home_with("ws", "devpod-abc", Some("ghcr.io/o/img:latest"));
+        let fake = FakeRunner::new();
+        inspect_container(&fake, "sha256:derived");
+        inspect_image(
+            &fake,
+            "sha256:derived",
+            line("sha256:derived", &["l1", "l2", "f1"]),
+        );
+        inspect_image(
+            &fake,
+            "ghcr.io/o/img:latest",
+            line("sha256:base2", &["l1", "f1"]),
+        );
+
+        let stale = stale_images(&fake, Some(&home), ["ws"]);
+
+        assert_eq!(
+            stale.of("ws").map(StaleImage::reference),
+            Some("ghcr.io/o/img:latest")
+        );
+    }
+
+    #[test]
+    fn each_workspace_is_judged_by_its_own_container() {
+        let home =
+            devpod_home_with(&[("default", "ws-a", Some(())), ("default", "ws-b", Some(()))]);
+        let reference = "ghcr.io/o/img:latest";
+        record_create(&home, "ws-a", "ca", reference, Some(reference));
+        record_create(&home, "ws-b", "cb", reference, Some(reference));
+        let fake = FakeRunner::new();
+        fake.script(
+            [
+                "docker",
+                "inspect",
+                "--type",
+                "container",
+                "--format",
+                CONTAINER_FORMAT,
+            ],
+            Response::stdout("ca sha256:old\ncb sha256:new\n"),
+        );
+        fake.script(
+            [
+                "docker",
+                "inspect",
+                "--type",
+                "image",
+                "--format",
+                IMAGE_FORMAT,
+                "sha256:new",
+                "sha256:old",
+            ],
+            Response::stdout(format!(
+                "{}{}",
+                line("sha256:new", &["l2"]),
+                line("sha256:old", &["l1"])
+            )),
+        );
+        inspect_image(&fake, reference, line("sha256:new", &["l2"]));
+
+        let stale = stale_images(&fake, Some(&home), ["ws-a", "ws-b"]);
+
+        assert_eq!(stale.of("ws-a").map(StaleImage::reference), Some(reference));
+        assert_eq!(stale.of("ws-b"), None);
+        let docker = fake.args_to("docker");
+        let containers: Vec<_> = docker
+            .iter()
+            .filter(|args| args.contains(&"container".to_owned()))
+            .collect();
+        assert_eq!(containers.len(), 1);
+        assert!(containers[0].ends_with(&["ca".to_owned(), "cb".to_owned()]));
+        let reference_inspects = docker
+            .iter()
+            .filter(|args| args.last().map(String::as_str) == Some(reference))
+            .count();
+        assert_eq!(reference_inspects, 1);
     }
 
     #[test]
