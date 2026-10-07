@@ -417,6 +417,8 @@ pub(crate) enum Command {
     Purge {
         yes: bool,
     },
+    /// `dl --refresh-stale` — recreate each stale workspace that is safe to.
+    RefreshStale,
     /// `dl --herdr-shell`, and the `dl-herdr-shell` name that means the same.
     HerdrShell,
     HerdrShellReady {
@@ -631,6 +633,12 @@ pub(crate) struct Cli {
     /// Remove devlaunch's workspaces and caches.
     #[arg(long, group = "what")]
     purge: bool,
+    /// Recreate each workspace that runs an older image than its reference, when
+    /// its Claude sessions are idle and nothing builds in it, and start its agents
+    /// again. Skips the others and says why. Attaches nothing, so it can run after
+    /// a pull.
+    #[arg(long = "refresh-stale", group = "what")]
+    refresh_stale: bool,
     /// Print the version.
     #[arg(long, group = "what")]
     version: bool,
@@ -723,6 +731,7 @@ const GRAMMAR: &str = "Examples:
   dl stop blooop-devlaunch-main-1a2b Stop it by workspace id
   dl blooop/devlaunch --rm           Open it, and delete it when the shell exits
   dl --ls --json                     Every workspace, machine-readable
+  dl --refresh-stale                 Recreate the stale workspaces left idle
 
 Workspace commands (dl <workspace> <verb>, or dl <verb> <workspace>):
   up                                 Start it without attaching
@@ -856,6 +865,7 @@ enum Chosen {
     Prune,
     Reconcile,
     Purge,
+    RefreshStale,
     Version,
     Repos,
     ClaudeProfiles,
@@ -879,6 +889,7 @@ impl Cli {
             (self.prune, Chosen::Prune),
             (self.reconcile, Chosen::Reconcile),
             (self.purge, Chosen::Purge),
+            (self.refresh_stale, Chosen::RefreshStale),
             (self.version, Chosen::Version),
             (self.repos, Chosen::Repos),
             (self.claude_profiles, Chosen::ClaudeProfiles),
@@ -1053,6 +1064,7 @@ fn global_command(cli: &Cli, chosen: Chosen) -> Result<Command, GrammarError> {
         },
         Chosen::Reconcile => Command::Reconcile { yes: cli.yes },
         Chosen::Purge => Command::Purge { yes: cli.yes },
+        Chosen::RefreshStale => Command::RefreshStale,
         Chosen::Version => Command::Version,
         Chosen::Repos => Command::Repos,
         Chosen::ClaudeProfiles => Command::ClaudeProfiles,
@@ -1079,6 +1091,7 @@ fn flag_of(chosen: Chosen) -> &'static str {
         Chosen::Prune => "--prune",
         Chosen::Reconcile => "--reconcile",
         Chosen::Purge => "--purge",
+        Chosen::RefreshStale => "--refresh-stale",
         Chosen::Version => "--version",
         Chosen::Repos => "--repos",
         Chosen::ClaudeProfiles => "--claude-profiles",
@@ -1843,6 +1856,35 @@ mod tests {
             parse(&["--reconcile", "--yes"]),
             Ok(Command::Reconcile { yes: true })
         );
+    }
+
+    /// devlaunch#673. Unattended, so there is no question for `-y` to answer, and
+    /// it acts on every stale workspace, so there is no workspace to name.
+    #[test]
+    fn refresh_stale_is_a_global_command_with_no_modifiers() {
+        assert_eq!(parse(&["--refresh-stale"]), Ok(Command::RefreshStale));
+        assert_eq!(
+            parse(&["--refresh-stale", "ws"]),
+            Err(GrammarError::TargetNotAllowed {
+                command: "--refresh-stale"
+            })
+        );
+        assert_eq!(
+            parse(&["--refresh-stale", "-y"]),
+            Err(GrammarError::ModifierNotAllowed {
+                modifier: "--yes",
+                command: "--refresh-stale"
+            })
+        );
+        assert_eq!(
+            parse(&["--refresh-stale", "--force"]),
+            Err(GrammarError::ModifierNotAllowed {
+                modifier: "--force",
+                command: "--refresh-stale"
+            })
+        );
+        // Its own flag, not `--refresh` with a word after it.
+        assert_eq!(parse(&["--refresh"]), Ok(Command::Refresh));
     }
 
     #[test]

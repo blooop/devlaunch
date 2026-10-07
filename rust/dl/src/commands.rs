@@ -16,12 +16,13 @@ use devlaunch_core::domain::config;
 use devlaunch_core::domain::spec::DevcontainerPath;
 use devlaunch_core::domain::workspace_id::WorkspaceId;
 use devlaunch_core::domain::xdg;
+use devlaunch_core::flows::agent_sessions;
 use devlaunch_core::flows::claude_profiles;
 use devlaunch_core::flows::completion::{self, FileState, InstallError, Installed, RcChange};
 use devlaunch_core::flows::completion_cache::{self, Refreshed};
 use devlaunch_core::flows::kept_copies::KeptCopies;
 use devlaunch_core::flows::kill;
-use devlaunch_core::flows::launch::{ColdPath, LaunchNotice};
+use devlaunch_core::flows::launch::{ColdPath, Host, LaunchNotice, LaunchVerb};
 use devlaunch_core::flows::launch_locks::LaunchLocks;
 use devlaunch_core::flows::lifecycle::{
     self, ChildWork, DeleteStalled, Insisted, Insistence, LifecycleNotice, PruneError,
@@ -30,6 +31,7 @@ use devlaunch_core::flows::lifecycle::{
 use devlaunch_core::flows::listing::{self, CommandContext, DlView, Sizes};
 use devlaunch_core::flows::pull_request;
 use devlaunch_core::flows::records::{Records, StartupError, open_records, open_storage};
+use devlaunch_core::flows::refresh_stale;
 use devlaunch_core::flows::repo_manager::CacheNotice;
 use devlaunch_core::flows::session_manager::{self, PaneDestination};
 use devlaunch_core::flows::stale_images::stale_images;
@@ -133,6 +135,7 @@ pub(crate) fn dispatch(
         ),
         Command::Reconcile { yes } => render_reconcile(runner, &mut context, refresh, yes),
         Command::Purge { yes } => render_purge(&mut context, cache, yes),
+        Command::RefreshStale => render_refresh_stale(runner, &mut context, cache, refresh),
         // Re-entered rather than special-cased: a pane that resolved to a
         // workspace is a `dl <ws>`, and the whole point is that it is
         // indistinguishable from one typed by hand -- same launch, same terminal
@@ -1263,6 +1266,86 @@ impl Cleanup {
             }
             Cleanup::Raised(ending) => ending,
         }
+    }
+}
+
+/// `dl --refresh-stale`: recreate each stale workspace that is safe to recreate,
+/// and start its agents again (devlaunch#673).
+///
+/// It runs unattended, after a pull, so it asks nothing and attaches nothing.
+/// It says the whole plan first, one line per stale workspace, so the skips are
+/// on the screen before the recreates start to scroll it away. Which workspaces
+/// are safe is core's ([`refresh_stale::plan`]); each recreate is the launch
+/// flow's own, with its own notices.
+///
+/// A recreate that fails is said by its launch and counted, and the loop goes on
+/// to the next. The exit status is 1 when any recreate failed. A skip is not a
+/// failure: leaving a busy workspace alone is what the command is for.
+fn render_refresh_stale<'r>(
+    runner: &'r dyn Runner,
+    context: &mut CommandContext<'r>,
+    cache: &Path,
+    refresh: &mut Refresh<'_>,
+) -> Ending {
+    let workspaces = match context.workspaces() {
+        Err(refused) => return refuse_listing(&refused),
+        Ok(workspaces) => workspaces,
+    };
+    let ids: Vec<&str> = workspaces
+        .iter()
+        .map(|workspace| workspace.id.as_str())
+        .collect();
+    let stale = stale_images(runner, DevpodHome::locate().as_ref(), ids.iter().copied());
+    if stale.is_empty() {
+        println!("{}", render::REFRESH_STALE_NOTHING);
+        return Ending::Done;
+    }
+    let host = Host::from_process(cache);
+    let manager = agent_sessions::Manager::from_host(&host);
+    let planned = refresh_stale::plan(
+        runner,
+        &stale,
+        ids.iter().copied(),
+        manager.as_ref(),
+        &LaunchLocks::under(cache),
+        &|path| std::fs::read_to_string(path).ok(),
+    );
+    for line in planned.iter().map(render::refresh_stale_line) {
+        println!("{line}");
+    }
+    let mut opening = render::Saying;
+    let mut cold = ColdPath::new(runner, &mut opening);
+    let mut tally = render::RefreshTally::default();
+    for planned in &planned {
+        if let refresh_stale::Verdict::Skip(_) = planned.verdict {
+            tally.skipped += 1;
+            continue;
+        }
+        let ran = launch::render_launch(
+            context,
+            cache,
+            refresh,
+            &mut cold,
+            &planned.workspace_id,
+            &LaunchVerb::RecreateUnattended,
+            None,
+            None,
+            None,
+            None,
+        );
+        // No `refresh.rearm()`: a recreate keeps the workspace's id, so the
+        // completion cache the first one refreshed holds for the rest.
+        if ran.ending == Ending::Done {
+            tally.refreshed += 1;
+        } else {
+            tally.failed += 1;
+        }
+    }
+    println!("{}", render::refresh_stale_summary(tally));
+    if tally.failed == 0 {
+        Ending::Done
+    } else {
+        Ending::Refused
     }
 }
 
