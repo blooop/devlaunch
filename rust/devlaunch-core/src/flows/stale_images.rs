@@ -62,6 +62,9 @@ use crate::runner::Runner;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StaleImage {
     reference: String,
+    /// The container devpod recorded for the workspace: the one that runs the
+    /// older image.
+    container: String,
 }
 
 impl StaleImage {
@@ -70,6 +73,11 @@ impl StaleImage {
     /// none.
     pub fn reference(&self) -> &str {
         &self.reference
+    }
+
+    /// The id of the container that runs the older image.
+    pub fn container(&self) -> &str {
+        &self.container
     }
 }
 
@@ -104,6 +112,7 @@ impl StaleImages {
                         id.to_owned(),
                         StaleImage {
                             reference: reference.to_owned(),
+                            container: id.to_owned(),
                         },
                     )
                 })
@@ -175,6 +184,7 @@ pub fn stale_images<'w>(
                     id.to_owned(),
                     StaleImage {
                         reference: created.reference,
+                        container: created.container,
                     },
                 )
             })
@@ -365,6 +375,8 @@ mod tests {
             stale.of("ws").map(StaleImage::reference),
             Some("ghcr.io/o/img:latest")
         );
+        // The container is what `dl --refresh-stale` reads the processes of.
+        assert_eq!(stale.of("ws").map(StaleImage::container), Some("c1"));
     }
 
     #[test]
