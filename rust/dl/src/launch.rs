@@ -139,6 +139,7 @@ pub(crate) fn render_launch<'r>(
     verb: &LaunchVerb,
     devcontainer: Option<&DevcontainerPath>,
     claude_profile: Option<&str>,
+    from_ref: Option<&str>,
     recognised: Option<WorkspaceId>,
     resume: Option<AgentResume>,
 ) -> Ran {
@@ -196,7 +197,8 @@ pub(crate) fn render_launch<'r>(
             &mut forward,
             &mut said,
         )
-        .recognised_as(recognised);
+        .recognised_as(recognised)
+        .from_ref(from_ref.map(str::to_owned));
         launch.run(target, verb, devcontainer)
     };
     ran(outcome, cache)

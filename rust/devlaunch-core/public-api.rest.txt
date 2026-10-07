@@ -3191,7 +3191,11 @@ impl core::marker::StructuralPartialEq for devlaunch_core::flows::session_manage
 pub fn devlaunch_core::flows::session_manager::pane_destination(&dyn devlaunch_runner::Runner) -> devlaunch_core::flows::session_manager::PaneDestination
 pub mod devlaunch_core::flows::workspace_clone
 pub enum devlaunch_core::flows::workspace_clone::EnsureBranchError
+pub devlaunch_core::flows::workspace_clone::EnsureBranchError::BaseNotResolved
+pub devlaunch_core::flows::workspace_clone::EnsureBranchError::BaseNotResolved::base: alloc::string::String
 pub devlaunch_core::flows::workspace_clone::EnsureBranchError::Branch(devlaunch_core::flows::branch_manager::BranchError)
+pub devlaunch_core::flows::workspace_clone::EnsureBranchError::BranchAlreadyExists
+pub devlaunch_core::flows::workspace_clone::EnsureBranchError::BranchAlreadyExists::branch: alloc::string::String
 pub devlaunch_core::flows::workspace_clone::EnsureBranchError::WrongRepoLock(devlaunch_core::flows::repo_manager::WrongRepoLock)
 impl core::clone::Clone for devlaunch_core::flows::workspace_clone::EnsureBranchError
 pub fn devlaunch_core::flows::workspace_clone::EnsureBranchError::clone(&self) -> devlaunch_core::flows::workspace_clone::EnsureBranchError

@@ -373,6 +373,18 @@ credential stops the launch and says so rather than falling back to your default
 the whole point of naming one. [docs/workspace-tools.md](docs/workspace-tools.md) has the
 precedence order and what a profile does not change.
 
+`--from <ref>` cuts a new branch from that ref instead of from the repository's default branch:
+
+```bash
+dl blooop/devlaunch@fix/123 --from develop
+```
+
+It only means something when the branch does not exist yet. Given a branch that is already there,
+`dl` refuses rather than ignoring the flag, since silently opening the existing branch would look
+like the base had been honoured. Like `--claude-profile`, and unlike `--devcontainer`, it is per
+launch and is **not** stored with the workspace: a base names a one-time event, not something
+every later launch should redo.
+
 `dl --help` is the complete reference and is kept in step with the binary by a test.
 
 ## aid: an agent instead of a shell

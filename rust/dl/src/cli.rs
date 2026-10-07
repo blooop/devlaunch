@@ -434,6 +434,7 @@ pub(crate) enum Command {
         verb: Verb,
         devcontainer: Option<DevcontainerPath>,
         claude_profile: Option<String>,
+        from: Option<String>,
     },
     /// A workspace, and what to do with it.
     Workspace {
@@ -441,6 +442,7 @@ pub(crate) enum Command {
         verb: Verb,
         devcontainer: Option<DevcontainerPath>,
         claude_profile: Option<String>,
+        from: Option<String>,
     },
 }
 
@@ -515,6 +517,14 @@ pub(crate) enum GrammarError {
     /// --claude-profile work` names a real workspace and a flag that does nothing to
     /// it. See `claude_profile_ignored` in `crate::commands`.
     ClaudeProfileNotAllowed { command: &'static str },
+    /// `--from` on a command that opens no workspace.
+    ///
+    /// Refused here for the same reason [`GrammarError::ClaudeProfileNotAllowed`]
+    /// is: a global command has no workspace, so it has no branch for the flag
+    /// to mean anything about. Merely *reported* for a workspace verb that cuts
+    /// no branch (`stop`, `kill`, `rm`, `rme`) -- see `from_ignored` in
+    /// `crate::commands`.
+    FromNotAllowed { command: &'static str },
     /// `--rm` on a command the flag is not defined for.
     ///
     /// Refused rather than ignored, and `code` is why. `dl <ws> code --rm`
@@ -700,6 +710,14 @@ pub(crate) struct Cli {
     /// with the workspace, so a workspace never forwards an account chosen weeks ago.
     #[arg(long = "claude-profile", value_name = "NAME")]
     claude_profile: Option<String>,
+    /// Cut a new branch from this ref instead of the default branch. Only means
+    /// something when the branch does not exist yet -- a branch that is already
+    /// there refuses rather than ignoring the flag. Per launch, like
+    /// `--claude-profile`: unlike `--devcontainer` it is not stored with the
+    /// workspace, since a base describes an event that happened once rather than
+    /// what the workspace is.
+    #[arg(long, value_name = "REF")]
+    from: Option<String>,
     /// Delete the workspace once the session ends, like `docker run --rm`. Only
     /// for the two forms that hand one over: `dl <ws>` and `dl <ws> -- <command>`.
     /// Stops at work that is nowhere else, exactly as the `rm` verb does.
@@ -992,6 +1010,9 @@ fn global_command(cli: &Cli, chosen: Chosen) -> Result<Command, GrammarError> {
     if cli.claude_profile.is_some() && !matches!(chosen, Chosen::HerdrShellReady) {
         return Err(GrammarError::ClaudeProfileNotAllowed { command: name });
     }
+    if cli.from.is_some() {
+        return Err(GrammarError::FromNotAllowed { command: name });
+    }
     if cli.rm {
         return Err(GrammarError::RmNotAllowed { command: name });
     }
@@ -1099,6 +1120,9 @@ fn workspace_command(cli: Cli, argv: &[String]) -> Result<Command, GrammarError>
     // directory component, and owns the refusal, so the grammar does not get a
     // second opinion about what a profile name may be.
     let claude_profile = cli.claude_profile.clone();
+    // Carried as typed, same as `claude_profile`: the ref is resolved against
+    // the remote at launch time, not validated as a name here.
+    let from = cli.from.clone();
     if cli.yes {
         return Err(GrammarError::ModifierNotAllowed {
             modifier: "--yes",
@@ -1146,6 +1170,7 @@ fn workspace_command(cli: Cli, argv: &[String]) -> Result<Command, GrammarError>
                     },
                     devcontainer,
                     claude_profile,
+                    from,
                 });
             }
             ForcePlace::VerbSlot { target } => {
@@ -1241,12 +1266,14 @@ fn workspace_command(cli: Cli, argv: &[String]) -> Result<Command, GrammarError>
             verb,
             devcontainer,
             claude_profile,
+            from,
         },
         Some(target) => Command::Workspace {
             target,
             verb,
             devcontainer,
             claude_profile,
+            from,
         },
     })
 }
@@ -1274,7 +1301,12 @@ fn devcontainer_of(cli: &Cli) -> Result<Option<DevcontainerPath>, GrammarError> 
 /// A second copy of a fact about [`Cli`], and `the_value_flags_are_the_ones_clap_takes_values_for`
 /// is the test that diffs it against clap's own parser rather than leaving it to be
 /// kept true by hand.
-const VALUE_FLAGS: [&str; 3] = ["--devcontainer", "--claude-profile", "--herdr-workspace"];
+const VALUE_FLAGS: [&str; 4] = [
+    "--devcontainer",
+    "--claude-profile",
+    "--herdr-workspace",
+    "--from",
+];
 
 /// The argv `wants_startup_cache_refresh` is asked about.
 ///
@@ -1404,6 +1436,7 @@ mod tests {
             verb,
             devcontainer: None,
             claude_profile: None,
+            from: None,
         }
     }
 
@@ -1421,6 +1454,7 @@ mod tests {
                     verb: Verb::Stop,
                     devcontainer: None,
                     claude_profile: None,
+                    from: None,
                 },
             ),
             (&["stop", "ws"], workspace("ws", Verb::Stop)),
@@ -1510,6 +1544,7 @@ mod tests {
                 verb: remove_and_exit(false),
                 devcontainer: None,
                 claude_profile: None,
+                from: None,
             })
         );
         assert!(remove_and_exit(false).several_at_once());
@@ -1726,6 +1761,7 @@ mod tests {
                 verb: attach(),
                 devcontainer: None,
                 claude_profile: None,
+                from: None,
             })
         );
     }
@@ -1945,6 +1981,7 @@ mod tests {
                 verb: Verb::Stop,
                 devcontainer: None,
                 claude_profile: None,
+                from: None,
             })
         );
     }
@@ -2039,6 +2076,7 @@ mod tests {
                 verb: attach(),
                 devcontainer: None,
                 claude_profile: Some("work".to_owned()),
+                from: None,
             })
         );
         assert_eq!(
@@ -2047,6 +2085,7 @@ mod tests {
                 verb: attach(),
                 devcontainer: None,
                 claude_profile: Some("work".to_owned()),
+                from: None,
             })
         );
     }
@@ -2064,6 +2103,54 @@ mod tests {
                 verb: attach(),
                 devcontainer: None,
                 claude_profile: Some("../../etc".to_owned()),
+                from: None,
+            })
+        );
+    }
+
+    // ============================================================= --from
+
+    #[test]
+    fn from_is_refused_on_a_command_that_opens_no_workspace() {
+        // The same split `--claude-profile` and `--devcontainer` draw: a global
+        // command has no workspace, so it has no branch for `--from` to mean
+        // anything about.
+        for command in [
+            "--ls",
+            "--prune",
+            "--purge",
+            "--reconcile",
+            "--install",
+            "--refresh",
+            "--version",
+        ] {
+            assert_eq!(
+                parse(&[command, "--from", "develop"]),
+                Err(GrammarError::FromNotAllowed { command }),
+                "{command}"
+            );
+        }
+    }
+
+    #[test]
+    fn from_rides_the_workspace_forms_that_open_a_session() {
+        assert_eq!(
+            parse(&["ws", "--from", "develop"]),
+            Ok(Command::Workspace {
+                target: "ws".to_owned(),
+                verb: attach(),
+                devcontainer: None,
+                claude_profile: None,
+                from: Some("develop".to_owned()),
+            })
+        );
+        assert_eq!(
+            parse(&["--from", "develop"]),
+            Ok(Command::Select {
+                verb: attach(),
+                devcontainer: None,
+                claude_profile: None,
+                from: Some("develop".to_owned()),
             })
         );
     }
@@ -2261,6 +2348,7 @@ mod tests {
                 verb: Verb::Attach { rm: RmOnExit::Yes },
                 devcontainer: None,
                 claude_profile: None,
+                from: None,
             })
         );
     }
