@@ -59,6 +59,7 @@ use devlaunch_core::flows::repo_manager::{
     CacheNotice, Cleanup, CloneError, EnsureRepoError, NotRefreshed, Refusal, RefusalReason,
     RemoveTreeError, WrongRepoLock,
 };
+use devlaunch_core::flows::stale_images::StaleImage;
 use devlaunch_core::flows::workspace_clone::{
     EnsureBranchError, PrepareColdError, PrepareWorkspaceError, RemoveWorkspaceError,
 };
@@ -300,6 +301,26 @@ fn shared_account_notes(rows: &[claude_profiles::ProfileSummary]) -> Vec<String>
         ));
     }
     lines
+}
+
+/// The lines `dl --ls` writes under its table for the workspaces whose container
+/// runs an older image than its reference now names (devlaunch#673).
+///
+/// One line per workspace, in the table's order, and each names the verb that
+/// moves it: a pull moves the reference and nothing else, so a person who reads
+/// the line has to be told that the container did not follow.
+pub(crate) fn stale_image_notes<'a>(
+    stale: impl IntoIterator<Item = (&'a str, &'a StaleImage)>,
+) -> Vec<String> {
+    stale
+        .into_iter()
+        .map(|(id, image)| {
+            format!(
+                "{id} runs an older image than {} now names. Run `dl {id} recreate` to move it.",
+                image.reference()
+            )
+        })
+        .collect()
 }
 
 /// The lines `dl --ls` writes under its table for the repositories whose last

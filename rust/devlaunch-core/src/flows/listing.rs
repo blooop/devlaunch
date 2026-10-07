@@ -68,6 +68,7 @@ use crate::domain::model::{SweepNote, WorktreeInfo};
 use crate::domain::workspace_state::{BareCache, CouldNotTell, NonEmpty};
 use crate::flows::agent_worktrees::{self, Verdict};
 use crate::flows::disk_usage::{self, DiskUsage};
+use crate::flows::stale_images::{StaleImage, StaleImages};
 use crate::runner::Runner;
 use crate::timing;
 
@@ -1002,6 +1003,28 @@ pub struct ListedWorkspace {
     /// to carry it at all. [`outstanding_sweep_notes`] is the reading that misses
     /// none of them, and is what `dl --ls` prints under the table.
     pub(crate) sweep: Option<SweepNote>,
+    /// The reference this workspace's container is behind, where it is behind
+    /// one (devlaunch#673). Filled by [`mark_stale_images`] after the rows are
+    /// built, because the answer comes from one batched docker read over every
+    /// row and not from a question each row asks alone.
+    pub(crate) stale_image: Option<StaleImage>,
+}
+
+impl ListedWorkspace {
+    /// devpod's id for the workspace this row is about.
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+}
+
+/// Fill in which rows run an older image than their reference now names.
+///
+/// Apart from [`enriched_listing`] so that its signature, which `wf` calls, does
+/// not move. A row this reads nothing about keeps `None`.
+pub fn mark_stale_images(rows: &mut [ListedWorkspace], stale: &StaleImages) {
+    for row in rows {
+        row.stale_image = stale.of(&row.id).cloned();
+    }
 }
 
 /// The enriched listing: one row per workspace devpod lists, in devpod's order.
@@ -1206,6 +1229,7 @@ fn enriched_row(
         clone,
         disk: DiskField::of(sizes, measurable.as_deref()),
         sweep,
+        stale_image: None,
     }
 }
 
@@ -1370,6 +1394,16 @@ fn json_row(row: &ListedWorkspace) -> serde_json::Value {
     // there is then one thing the key's presence means and only one.
     if let Some(note) = &row.sweep {
         insert(&mut value, "lastSweep", sweep_as_json(note));
+    }
+    // Appended, and absent unless stale, for the reason `lastSweep` is: a
+    // machine with nothing stale prints the document it printed before this key
+    // existed.
+    if let Some(stale) = &row.stale_image {
+        insert(
+            &mut value,
+            "staleImage",
+            serde_json::Value::String(stale.reference().to_owned()),
+        );
     }
     value
 }
@@ -2710,6 +2744,26 @@ mod tests {
 
         assert!(!document.to_string().contains("lastSweep"), "{document}");
         assert!(outstanding_sweep_notes(&scene.storage).is_empty());
+    }
+
+    #[test]
+    fn a_stale_row_names_its_reference_last_and_the_others_say_nothing() {
+        // devlaunch#673. Appended after every key `wf` already reads, and absent
+        // on a current row, so a machine with nothing stale prints the golden.
+        let scene = Scene::build();
+        let mut rows = scene.rows(Sizes::Skip);
+        let stale = StaleImages::of_pairs([("someone-elses", "ghcr.io/o/img:latest")]);
+
+        mark_stale_images(&mut rows, &stale);
+        let document = json_document(&rows);
+        let rows = rows_by_id(&document);
+
+        let row = rows["someone-elses"].as_object().expect("an object");
+        assert_eq!(
+            row.iter().next_back().map(|(key, value)| (key.as_str(), value)),
+            Some(("staleImage", &serde_json::json!("ghcr.io/o/img:latest")))
+        );
+        assert!(rows[scene.id("clean")].get("staleImage").is_none());
     }
 
     #[test]

@@ -32,6 +32,7 @@ use devlaunch_core::flows::pull_request;
 use devlaunch_core::flows::records::{Records, StartupError, open_records, open_storage};
 use devlaunch_core::flows::repo_manager::CacheNotice;
 use devlaunch_core::flows::session_manager::{self, PaneDestination};
+use devlaunch_core::flows::stale_images::stale_images;
 use devlaunch_core::osext;
 use devlaunch_core::runner::{Exit, Runner};
 
@@ -313,7 +314,7 @@ fn render_list(
     sizes: Sizes,
 ) -> Ending {
     match output {
-        ListOutput::Table => render_table(context, cache, sizes),
+        ListOutput::Table => render_table(runner, context, cache, sizes),
         ListOutput::Json => render_json(runner, context, cache, sizes),
     }
 }
@@ -325,13 +326,32 @@ fn render_list(
 /// under the table. That read is the point of devlaunch#480: the sweep is a
 /// detached child whose stderr is `/dev/null`, so the record is the only place a
 /// complaint of its can be left, and `--ls` is the only surface anybody reads.
-fn render_table(context: &mut CommandContext<'_>, cache: &Path, sizes: Sizes) -> Ending {
+///
+/// It also asks docker which containers run an older image than their reference
+/// names (devlaunch#673), and says so under the table rather than in a column:
+/// the column widths are a golden, and a stale image is a thing to act on, not a
+/// property to scan for.
+fn render_table(
+    runner: &dyn Runner,
+    context: &mut CommandContext<'_>,
+    cache: &Path,
+    sizes: Sizes,
+) -> Ending {
     let table = match listing::workspace_table(context, cache, sizes) {
         Err(refused) => return refuse_listing(&refused),
         Ok(table) => table,
     };
     for line in render::table_lines(&table, sizes) {
         println!("{line}");
+    }
+    if let listing::WorkspaceTable::Rows(rows) = &table {
+        let ids: Vec<&str> = rows.iter().map(|row| row.id.as_str()).collect();
+        let stale = stale_images(runner, DevpodHome::locate().as_ref(), ids.iter().copied());
+        let notes =
+            render::stale_image_notes(ids.iter().filter_map(|id| Some((*id, stale.of(id)?))));
+        for line in notes {
+            eprintln!("{line}");
+        }
     }
     say_sweep_notes();
     Ending::Done
@@ -385,7 +405,13 @@ fn render_json(
     say_cache(directories.take_notices());
     match listed {
         Err(refused) => refuse_listing(&refused),
-        Ok(rows) => {
+        Ok(mut rows) => {
+            let stale = stale_images(
+                runner,
+                DevpodHome::locate().as_ref(),
+                rows.iter().map(listing::ListedWorkspace::id),
+            );
+            listing::mark_stale_images(&mut rows, &stale);
             println!(
                 "{}",
                 render::python_json_document(&listing::json_document(&rows))

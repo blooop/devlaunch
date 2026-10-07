@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`dl --ls` says which workspaces run an older image than their reference names** (#673).
+  A pull moves an image reference and leaves every running container on the image it was
+  created from, so long-lived workspaces drifted days behind and nothing said so. `dl --ls`
+  now prints one line under the table for each such workspace, naming the reference and
+  `dl <ws> recreate`, and `dl --ls --json` appends a `staleImage` key to its row. The check
+  reads devpod's `workspace_result.json` and asks docker for the container's image and the
+  reference's current one; where devpod built a derived image on top of the declared one,
+  it compares layers. Every doubt reads as current.
+
 ## [0.59.4] - 2026-10-05
 
 ### Fixed
