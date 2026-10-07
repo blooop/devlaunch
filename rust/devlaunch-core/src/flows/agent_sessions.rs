@@ -121,10 +121,11 @@ pub struct UnresumablePane {
 /// only when it names this workspace and the words after its `--` start an agent
 /// dl knows by name.
 ///
-/// `herdr agent get` decides the two doubtful cases. A saved line in a pane whose
-/// agent herdr calls `done`, or where herdr names no agent, is a line left over
-/// from an agent the user already quit; typing it would start one nobody asked
-/// for. A pane with no saved line and a live agent is an agent this recreate ends
+/// `herdr agent get` decides the two doubtful cases. A saved line in a pane where
+/// herdr names no agent is a line left over from an agent the user already quit;
+/// typing it would start one nobody asked for. A pane whose agent herdr calls
+/// `done` still holds a live agent, because herdr's `done` is `idle` that nobody
+/// has looked at yet. A pane with no saved line and a live agent is an agent this recreate ends
 /// with no way back, which the caller says. A herdr that does not answer
 /// `agent get` is no reason to drop a line it saved.
 pub fn collect(
@@ -158,9 +159,9 @@ pub fn collect(
         let live_agent = match agent_reading(runner, manager, &pane.pane_id) {
             herdr::AgentReading::Unanswered => None,
             herdr::AgentReading::NoAgent => Some(None),
-            herdr::AgentReading::Agent(agent) => {
-                Some((agent.status != herdr::AgentStatus::Done).then_some(agent.agent))
-            }
+            // Every status, `done` included: herdr's `done` is an agent ready for
+            // input that nobody has looked at yet, not one that has exited.
+            herdr::AgentReading::Agent(agent) => Some(Some(agent.agent)),
         };
         match (line, live_agent) {
             (Some(line), Some(Some(_)) | None) => held.sessions.push(HeldSession {
@@ -395,7 +396,9 @@ mod tests {
 
     /// herdr's word on the agent decides the two doubtful panes: a line saved for
     /// an agent that has ended is not typed again, and a live agent with no line
-    /// is named so the caller can say it ends.
+    /// is named so the caller can say it ends. `done` is a live agent: herdr says
+    /// `idle` and `done` both mean ready for input, and differ only in whether
+    /// anybody has looked at the pane since.
     #[test]
     fn herdr_says_which_saved_lines_still_stand_for_a_live_agent() {
         let runner = ScriptedRunner::new();
@@ -426,10 +429,16 @@ mod tests {
         assert_eq!(
             held,
             Some(HeldSessions {
-                sessions: vec![HeldSession {
-                    pane_id: "w1:p3".to_owned(),
-                    line: words(CLAUDE_LINE),
-                }],
+                sessions: vec![
+                    HeldSession {
+                        pane_id: "w1:p1".to_owned(),
+                        line: words(CLAUDE_LINE),
+                    },
+                    HeldSession {
+                        pane_id: "w1:p3".to_owned(),
+                        line: words(CLAUDE_LINE),
+                    },
+                ],
                 unresumable: vec![UnresumablePane {
                     pane_id: "w1:p2".to_owned(),
                     agent: "claude".to_owned(),

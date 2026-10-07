@@ -923,9 +923,10 @@ to bring each agent back (devlaunch#673):
 
 1. Before the `up`, `dl` asks herdr for its panes. A pane counts when its foreground is a
    `dl` session into this workspace, and herdr saved a line for it that starts an agent.
-   A pane drops out when `herdr agent get` reports no agent in it, or reports the agent
-   `done`. A pane whose agent herdr does not report on still counts. `dl` names the
-   panes it found.
+   A pane drops out when `herdr agent get` reports no agent in it. An agent that herdr
+   reports `done` still counts, because herdr uses `done` for an idle agent that nobody
+   has looked at yet. A pane whose agent herdr does not report on still counts. `dl`
+   names the panes it found.
 2. After the `up` succeeds, `dl` types each pane's line back into that pane with
    `herdr pane run`. herdr refuses a pane until the old session in it has exited and its
    shell is back, so `dl` asks again every half second, for up to ten seconds per pane.
