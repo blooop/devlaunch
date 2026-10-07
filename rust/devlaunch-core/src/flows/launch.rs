@@ -1412,7 +1412,7 @@ pub(crate) fn serialize_launch(
     }
 }
 
-fn lock_reason(error: &LockError) -> String {
+pub(crate) fn lock_reason(error: &LockError) -> String {
     match error {
         LockError::CreateParent { failure, .. }
         | LockError::Open { failure, .. }
@@ -4618,6 +4618,10 @@ pub enum LaunchVerb {
     Code,
     /// `dl <spec> recreate`: rebuild the container, then attach.
     Recreate,
+    /// `dl --refresh-stale`: rebuild the container and start its held agents
+    /// again, as `recreate` does, and attach nothing. It runs unattended, after a
+    /// daily pull, where there is nobody to hand a session to.
+    RecreateUnattended,
     /// `dl <spec> reset`: clean slate, then attach.
     Reset,
     /// `dl <spec> restart`: stop and start without rebuilding, then attach.
@@ -4630,7 +4634,7 @@ impl LaunchVerb {
     /// What this verb asks devpod to rebuild.
     fn rebuild(&self) -> Rebuild {
         match self {
-            Self::Recreate => Rebuild::Recreate,
+            Self::Recreate | Self::RecreateUnattended => Rebuild::Recreate,
             Self::Reset => Rebuild::Reset,
             Self::Attach { .. } | Self::Up | Self::Code | Self::Restart | Self::Dotfiles => {
                 Rebuild::Reuse
@@ -4645,6 +4649,7 @@ impl LaunchVerb {
             Self::Attach { .. }
             | Self::Up
             | Self::Recreate
+            | Self::RecreateUnattended
             | Self::Reset
             | Self::Restart
             | Self::Dotfiles => Ide::NoIde,
@@ -4656,7 +4661,7 @@ impl LaunchVerb {
         match self {
             Self::Attach { command } => command.as_ref(),
             Self::Recreate | Self::Reset | Self::Restart => None,
-            Self::Up | Self::Code | Self::Dotfiles => None,
+            Self::Up | Self::Code | Self::Dotfiles | Self::RecreateUnattended => None,
         }
     }
 
@@ -5057,9 +5062,10 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
             LaunchVerb::Up => self.run_up_verb(&placement, devcontainer),
             LaunchVerb::Restart => self.run_restart(verb, devcontainer, &placement),
             LaunchVerb::Attach { .. } => self.run_attach(raw_spec, verb, devcontainer, &placement),
-            LaunchVerb::Code | LaunchVerb::Recreate | LaunchVerb::Reset => {
-                self.run_rebuild(verb, devcontainer, &placement)
-            }
+            LaunchVerb::Code
+            | LaunchVerb::Recreate
+            | LaunchVerb::RecreateUnattended
+            | LaunchVerb::Reset => self.run_rebuild(verb, devcontainer, &placement),
         }
     }
 
@@ -5125,7 +5131,7 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
         session
     }
 
-    /// `dl <ws> code`, `recreate`, `reset`.
+    /// `dl <ws> code`, `recreate`, `reset`, and the unattended recreate.
     fn run_rebuild(
         &mut self,
         verb: &LaunchVerb,
@@ -5134,7 +5140,9 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
     ) -> Result<Launched, LaunchAborted> {
         // Only a recreate: `code` keeps the container when nothing changed, and a
         // `reset` drops the volumes, so neither is the case this is for.
-        let held = if matches!(verb, LaunchVerb::Recreate) && placement.is_running() {
+        let held = if matches!(verb, LaunchVerb::Recreate | LaunchVerb::RecreateUnattended)
+            && placement.is_running()
+        {
             self.hold_agent_sessions(placement.workspace_id())
         } else {
             None
@@ -13866,6 +13874,58 @@ mod tests {
                     pane_id: "w1:p1".to_owned(),
                     line: crate::shell::join(line.iter().map(String::as_str)),
                 }),
+            "{:?}",
+            parts.said
+        );
+    }
+
+    /// `dl --refresh-stale` runs unattended: the recreate starts the agents
+    /// again in their panes, and hands no session to anybody.
+    #[test]
+    fn an_unattended_recreate_starts_the_agents_again_and_attaches_nothing() {
+        let mut scene = Scene::new().with_running("myws");
+        in_herdr_beside_claude(&mut scene);
+        let updater = SelfInvocation::new("dl");
+        let completion = scene.cache_dir().join("completion.json");
+        let mut parts = launching(&scene.runner, &updater, &completion);
+        let mut cold = NeverCold;
+        let launched = {
+            let mut launch = Launch::new(
+                &mut parts.context,
+                &mut parts.refresh,
+                &mut cold,
+                &parts.provision,
+                &scene.host,
+                &mut parts.chatter,
+                &mut parts.said,
+            );
+            launch.run("myws", &LaunchVerb::RecreateUnattended, None)
+        };
+
+        assert_eq!(launched, Ok(Launched::Ready));
+        let argvs = scene.runner.argvs();
+        let up = argvs
+            .iter()
+            .find(|argv| argv.get(1).map(String::as_str) == Some("up"))
+            .expect("an up");
+        assert!(up.contains(&"--recreate".to_owned()), "{up:?}");
+        assert!(
+            argvs
+                .iter()
+                .any(|argv| argv.get(1..3) == Some(&["pane".to_owned(), "run".to_owned()])),
+            "the agent was not started again: {argvs:?}"
+        );
+        assert!(
+            !argvs.iter().any(|argv| {
+                argv.first().map(String::as_str) == Some("devpod")
+                    && argv.get(1).map(String::as_str) == Some("ssh")
+            }),
+            "a session was opened: {argvs:?}"
+        );
+        assert!(
+            parts.said.contains(&LaunchNotice::AgentSessionRestarted {
+                pane_id: "w1:p1".to_owned(),
+            }),
             "{:?}",
             parts.said
         );
