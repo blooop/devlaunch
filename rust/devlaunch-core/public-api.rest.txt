@@ -2559,6 +2559,8 @@ pub devlaunch_core::flows::listing::DlView::cache_dir: &'a std::path::Path
 pub devlaunch_core::flows::listing::DlView::clones: &'a dyn devlaunch_core::flows::listing::ClonePathResolver
 pub devlaunch_core::flows::listing::DlView::storage: &'a devlaunch_core::domain::metadata::MetadataStorage
 pub struct devlaunch_core::flows::listing::ListedWorkspace
+impl devlaunch_core::flows::listing::ListedWorkspace
+pub fn devlaunch_core::flows::listing::ListedWorkspace::id(&self) -> &str
 impl core::clone::Clone for devlaunch_core::flows::listing::ListedWorkspace
 pub fn devlaunch_core::flows::listing::ListedWorkspace::clone(&self) -> devlaunch_core::flows::listing::ListedWorkspace
 impl core::cmp::Eq for devlaunch_core::flows::listing::ListedWorkspace
@@ -2652,6 +2654,7 @@ pub fn devlaunch_core::flows::listing::describe_source(&devlaunch_core::clients:
 pub fn devlaunch_core::flows::listing::discover_repos_from_workspaces(&devlaunch_core::clients::git::Git<'_>, &[devlaunch_core::clients::devpod::Workspace]) -> devlaunch_core::flows::listing::RepoDiscovery
 pub fn devlaunch_core::flows::listing::flatten_repos(&indexmap::map::IndexMap<alloc::string::String, alloc::vec::Vec<alloc::string::String>>) -> alloc::vec::Vec<alloc::string::String>
 pub fn devlaunch_core::flows::listing::head_branch_of(&devlaunch_core::clients::devpod::Workspace, &std::path::Path) -> core::option::Option<alloc::string::String>
+pub fn devlaunch_core::flows::listing::mark_stale_images(&mut [devlaunch_core::flows::listing::ListedWorkspace], &devlaunch_core::flows::stale_images::StaleImages)
 pub fn devlaunch_core::flows::listing::outstanding_sweep_notes(&devlaunch_core::domain::metadata::MetadataStorage) -> alloc::vec::Vec<devlaunch_core::flows::listing::SweptRepoNote>
 pub fn devlaunch_core::flows::listing::owner_of(&devlaunch_core::clients::devpod::Workspace, &std::path::Path) -> core::option::Option<alloc::string::String>
 pub fn devlaunch_core::flows::listing::repo_of(&devlaunch_core::clients::devpod::Workspace, &std::path::Path) -> core::option::Option<alloc::string::String>
@@ -3189,6 +3192,33 @@ impl core::fmt::Debug for devlaunch_core::flows::session_manager::PaneDestinatio
 pub fn devlaunch_core::flows::session_manager::PaneDestination::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::session_manager::PaneDestination
 pub fn devlaunch_core::flows::session_manager::pane_destination(&dyn devlaunch_runner::Runner) -> devlaunch_core::flows::session_manager::PaneDestination
+pub mod devlaunch_core::flows::stale_images
+pub struct devlaunch_core::flows::stale_images::StaleImage
+impl devlaunch_core::flows::stale_images::StaleImage
+pub fn devlaunch_core::flows::stale_images::StaleImage::reference(&self) -> &str
+impl core::clone::Clone for devlaunch_core::flows::stale_images::StaleImage
+pub fn devlaunch_core::flows::stale_images::StaleImage::clone(&self) -> devlaunch_core::flows::stale_images::StaleImage
+impl core::cmp::Eq for devlaunch_core::flows::stale_images::StaleImage
+impl core::cmp::PartialEq for devlaunch_core::flows::stale_images::StaleImage
+pub fn devlaunch_core::flows::stale_images::StaleImage::eq(&self, &devlaunch_core::flows::stale_images::StaleImage) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::stale_images::StaleImage
+pub fn devlaunch_core::flows::stale_images::StaleImage::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::stale_images::StaleImage
+pub struct devlaunch_core::flows::stale_images::StaleImages
+impl devlaunch_core::flows::stale_images::StaleImages
+pub fn devlaunch_core::flows::stale_images::StaleImages::is_empty(&self) -> bool
+pub fn devlaunch_core::flows::stale_images::StaleImages::of(&self, &str) -> core::option::Option<&devlaunch_core::flows::stale_images::StaleImage>
+impl core::clone::Clone for devlaunch_core::flows::stale_images::StaleImages
+pub fn devlaunch_core::flows::stale_images::StaleImages::clone(&self) -> devlaunch_core::flows::stale_images::StaleImages
+impl core::cmp::Eq for devlaunch_core::flows::stale_images::StaleImages
+impl core::cmp::PartialEq for devlaunch_core::flows::stale_images::StaleImages
+pub fn devlaunch_core::flows::stale_images::StaleImages::eq(&self, &devlaunch_core::flows::stale_images::StaleImages) -> bool
+impl core::default::Default for devlaunch_core::flows::stale_images::StaleImages
+pub fn devlaunch_core::flows::stale_images::StaleImages::default() -> devlaunch_core::flows::stale_images::StaleImages
+impl core::fmt::Debug for devlaunch_core::flows::stale_images::StaleImages
+pub fn devlaunch_core::flows::stale_images::StaleImages::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::stale_images::StaleImages
+pub fn devlaunch_core::flows::stale_images::stale_images<'w>(&dyn devlaunch_runner::Runner, core::option::Option<&devlaunch_core::clients::devpod_home::DevpodHome>, impl core::iter::traits::collect::IntoIterator<Item = &'w str>) -> devlaunch_core::flows::stale_images::StaleImages
 pub mod devlaunch_core::flows::workspace_clone
 pub enum devlaunch_core::flows::workspace_clone::EnsureBranchError
 pub devlaunch_core::flows::workspace_clone::EnsureBranchError::Branch(devlaunch_core::flows::branch_manager::BranchError)
