@@ -691,6 +691,8 @@ pub enum LaunchNotice {
     AgentSessionUnresumable {
         workspace_id: String,
         pane_id: String,
+        /// herdr's name for the agent in the pane: `claude`, `codex`, ...
+        agent: String,
     },
     /// The agent's line was typed back into its pane.
     AgentSessionRestarted { pane_id: String },
@@ -5183,10 +5185,11 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
                 .say(LaunchNotice::AgentSessionsUnanswered { workspace_id });
             return None;
         };
-        for pane_id in &held.unresumable {
+        for pane in &held.unresumable {
             self.notices.say(LaunchNotice::AgentSessionUnresumable {
                 workspace_id: workspace_id.clone(),
-                pane_id: pane_id.clone(),
+                pane_id: pane.pane_id.clone(),
+                agent: pane.agent.clone(),
             });
         }
         if !held.sessions.is_empty() {

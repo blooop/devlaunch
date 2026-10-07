@@ -3296,10 +3296,20 @@ pub(crate) fn launch_notice(notice: &LaunchNotice) -> Option<String> {
         LaunchNotice::AgentSessionUnresumable {
             workspace_id,
             pane_id,
-        } => format!(
+            agent,
+        } if agent == "claude" => format!(
             "Pane {pane_id} runs an agent in {workspace_id}, and herdr saved no line to start \
              it again. The recreate ends it. Run 'claude --resume' there to pick the \
              conversation up again."
+        ),
+        LaunchNotice::AgentSessionUnresumable {
+            workspace_id,
+            pane_id,
+            agent,
+        } => format!(
+            "Pane {pane_id} runs {agent} in {workspace_id}, and herdr saved no line to start \
+             it again. The recreate ends it. Start {agent} there again to pick the \
+             conversation up."
         ),
         LaunchNotice::AgentSessionRestarted { pane_id } => {
             format!("Started the agent in pane {pane_id} again.")
@@ -5155,6 +5165,28 @@ mod tests {
         })
         .expect("a sentence");
         assert!(here.ends_with(&format!(": {line}")), "{here}");
+    }
+
+    /// devlaunch#673. A pane herdr says runs codex is not told to run
+    /// 'claude --resume'; claude's own pane keeps the words it had.
+    #[test]
+    fn a_pane_with_no_line_is_told_about_the_agent_it_runs() {
+        let unresumable = |agent: &str| {
+            launch_notice(&LaunchNotice::AgentSessionUnresumable {
+                workspace_id: "myws".to_owned(),
+                pane_id: "w1:p2".to_owned(),
+                agent: agent.to_owned(),
+            })
+            .expect("a sentence")
+        };
+        let codex = unresumable("codex");
+        assert!(codex.contains("codex"), "{codex}");
+        assert!(!codex.contains("claude"), "{codex}");
+        assert_eq!(
+            unresumable("claude"),
+            "Pane w1:p2 runs an agent in myws, and herdr saved no line to start it again. \
+             The recreate ends it. Run 'claude --resume' there to pick the conversation up again."
+        );
     }
 
     #[test]

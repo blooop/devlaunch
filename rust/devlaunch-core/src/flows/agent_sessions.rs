@@ -100,7 +100,15 @@ pub struct HeldSessions {
     /// The sessions that can be started again.
     pub sessions: Vec<HeldSession>,
     /// Panes that hold a live agent in this workspace and no saved line for it.
-    pub unresumable: Vec<String>,
+    pub unresumable: Vec<UnresumablePane>,
+}
+
+/// A pane with a live agent and no saved line to start it again.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnresumablePane {
+    pub pane_id: String,
+    /// herdr's name for the agent in the pane: `claude`, `codex`, ...
+    pub agent: String,
 }
 
 /// The agent sessions herdr's panes hold in `workspace_id`, or `None` when herdr
@@ -146,17 +154,22 @@ pub fn collect(
             .and_then(|json| herdr::saved_argv(json, &pane.pane_id))
             .flatten()
             .filter(|argv| starts_an_agent(argv, workspace_id));
-        let live = match agent_reading(runner, manager, &pane.pane_id) {
+        let live_agent = match agent_reading(runner, manager, &pane.pane_id) {
             herdr::AgentReading::Unanswered => None,
-            herdr::AgentReading::NoAgent => Some(false),
-            herdr::AgentReading::Agent(agent) => Some(agent.status != herdr::AgentStatus::Done),
+            herdr::AgentReading::NoAgent => Some(None),
+            herdr::AgentReading::Agent(agent) => {
+                Some((agent.status != herdr::AgentStatus::Done).then_some(agent.agent))
+            }
         };
-        match (line, live) {
-            (Some(line), Some(true) | None) => held.sessions.push(HeldSession {
+        match (line, live_agent) {
+            (Some(line), Some(Some(_)) | None) => held.sessions.push(HeldSession {
                 pane_id: pane.pane_id,
                 line,
             }),
-            (None, Some(true)) => held.unresumable.push(pane.pane_id),
+            (None, Some(Some(agent))) => held.unresumable.push(UnresumablePane {
+                pane_id: pane.pane_id,
+                agent,
+            }),
             (Some(_) | None, _) => {}
         }
     }
@@ -416,7 +429,43 @@ mod tests {
                     pane_id: "w1:p3".to_owned(),
                     line: words(CLAUDE_LINE),
                 }],
-                unresumable: vec!["w1:p2".to_owned()],
+                unresumable: vec![UnresumablePane {
+                    pane_id: "w1:p2".to_owned(),
+                    agent: "claude".to_owned(),
+                }],
+            })
+        );
+    }
+
+    /// The agent named for a pane with no line is the one herdr says runs there,
+    /// so a pane running codex is not told to run claude's resume.
+    #[test]
+    fn a_pane_with_no_line_is_named_with_the_agent_herdr_reports() {
+        let runner = ScriptedRunner::new();
+        runner.script(
+            [HERDR, "pane", "list"],
+            Response::stdout(pane_list(&["w1:p1"])),
+        );
+        runner.script(
+            [HERDR, "pane", "process-info"],
+            Response::stdout(process_info(&[TRANSPORT])),
+        );
+        runner.script(
+            [HERDR, "agent", "get", "w1:p1"],
+            Response::stdout(agent("codex", "idle")),
+        );
+        let file = saved(&[None]);
+
+        let held = collect(&runner, &manager(), "myws", &|_| Some(file.clone()));
+
+        assert_eq!(
+            held,
+            Some(HeldSessions {
+                sessions: Vec::new(),
+                unresumable: vec![UnresumablePane {
+                    pane_id: "w1:p1".to_owned(),
+                    agent: "codex".to_owned(),
+                }],
             })
         );
     }
@@ -545,7 +594,10 @@ mod tests {
             held,
             Some(HeldSessions {
                 sessions: Vec::new(),
-                unresumable: vec!["w1:p1".to_owned()],
+                unresumable: vec![UnresumablePane {
+                    pane_id: "w1:p1".to_owned(),
+                    agent: "claude".to_owned(),
+                }],
             })
         );
     }
