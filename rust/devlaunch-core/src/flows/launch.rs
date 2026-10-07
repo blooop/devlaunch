@@ -5143,7 +5143,12 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
         let held = if matches!(verb, LaunchVerb::Recreate | LaunchVerb::RecreateUnattended)
             && placement.is_running()
         {
-            self.hold_agent_sessions(placement.workspace_id())
+            // Outside herdr the unattended recreate warns of nothing: `dl
+            // --refresh-stale` recreates there only a container it saw no Claude in.
+            self.hold_agent_sessions(
+                placement.workspace_id(),
+                matches!(verb, LaunchVerb::Recreate),
+            )
         } else {
             None
         };
@@ -5170,11 +5175,14 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
     fn hold_agent_sessions(
         &mut self,
         workspace_id: &str,
+        warn_unseen: bool,
     ) -> Option<(agent_sessions::Manager, agent_sessions::HeldSessions)> {
         let workspace_id = workspace_id.to_owned();
         let Some(manager) = agent_sessions::Manager::from_host(self.host) else {
-            self.notices
-                .say(LaunchNotice::AgentSessionsUnseen { workspace_id });
+            if warn_unseen {
+                self.notices
+                    .say(LaunchNotice::AgentSessionsUnseen { workspace_id });
+            }
             return None;
         };
         let Some(held) =
@@ -13926,6 +13934,40 @@ mod tests {
             parts.said.contains(&LaunchNotice::AgentSessionRestarted {
                 pane_id: "w1:p1".to_owned(),
             }),
+            "{:?}",
+            parts.said
+        );
+    }
+
+    /// Outside herdr, `dl --refresh-stale` recreates only a workspace it has seen
+    /// no Claude process in, so the warning that the recreate ends unseen agents
+    /// would be false there.
+    #[test]
+    fn an_unattended_recreate_outside_herdr_does_not_warn_of_agents_it_ends() {
+        let scene = Scene::new().with_running("myws");
+        let updater = SelfInvocation::new("dl");
+        let completion = scene.cache_dir().join("completion.json");
+        let mut parts = launching(&scene.runner, &updater, &completion);
+        let mut cold = NeverCold;
+        let launched = {
+            let mut launch = Launch::new(
+                &mut parts.context,
+                &mut parts.refresh,
+                &mut cold,
+                &parts.provision,
+                &scene.host,
+                &mut parts.chatter,
+                &mut parts.said,
+            );
+            launch.run("myws", &LaunchVerb::RecreateUnattended, None)
+        };
+
+        assert_eq!(launched, Ok(Launched::Ready));
+        assert!(
+            !parts
+                .said
+                .iter()
+                .any(|notice| matches!(notice, LaunchNotice::AgentSessionsUnseen { .. })),
             "{:?}",
             parts.said
         );
