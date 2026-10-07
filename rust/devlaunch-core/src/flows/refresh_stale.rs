@@ -54,7 +54,7 @@ use crate::runner::Runner;
 /// (the first 15 bytes of the program's file name).
 pub const BUILD_PROGRAMS: &[&str] = &[
     "bazel", "bazelisk", "cargo", "rustc", "cc1", "cc1plus", "make", "gmake", "ninja", "cmake",
-    "pixi", "colcon", "gcc", "g++", "clang", "clang++", "ld", "ld.lld", "ld.gold", "collect2",
+    "colcon", "gcc", "g++", "clang", "clang++", "ld", "ld.lld", "ld.gold", "collect2",
 ];
 
 /// The shells an agent runs its tool calls and background tasks through.
@@ -84,6 +84,9 @@ pub enum Skip {
     LaunchUnderWay,
     /// Its launch lock could not be asked.
     LockUnreadable { why: String },
+    /// Its container is stopped. A recreate would also start it, which a refresh
+    /// is not asked to do.
+    Stopped,
     /// Its container's processes could not be read.
     ProcessesUnread { why: String },
     /// A build runs in it.
@@ -174,6 +177,9 @@ fn judge(
         .and_then(|out| process_table(&out))
     {
         Ok(table) => table,
+        // docker's words for an exec into a stopped container, stable since
+        // docker 1.x: "container <id> is not running".
+        Err(why) if why.contains("is not running") => return Some(Skip::Stopped),
         Err(why) => return Some(Skip::ProcessesUnread { why }),
     };
     if let Some(build) = table
