@@ -391,6 +391,86 @@ fn normalize_bytes(document: &str) -> String {
 }
 
 // ===========================================================================
+// --ls and a container behind its image reference (devlaunch#673)
+// ===========================================================================
+
+const STALE_ID: &str = "blooop-devlaunch-main-4f3a2b1c";
+const STALE_REFERENCE: &str = "ghcr.io/blooop/devlaunch-devcontainer:latest";
+
+/// The full scenario, with the first workspace's container created from
+/// [`STALE_REFERENCE`] and a docker that says the reference has since moved.
+///
+/// The container was created from the reference itself, so differing image ids
+/// are the whole of the evidence; the time and the layers are there only because
+/// the format asks for them.
+fn world_with_a_stale_workspace() -> World {
+    let world = World::full();
+    let records = world.path(&format!("devpod/contexts/default/workspaces/{STALE_ID}"));
+    std::fs::create_dir_all(&records).expect("a devpod record directory");
+    std::fs::write(
+        records.join("workspace.json"),
+        format!(r#"{{"id": "{STALE_ID}"}}"#),
+    )
+    .expect("a devpod record");
+    std::fs::write(
+        records.join("workspace_result.json"),
+        format!(
+            r#"{{"ContainerDetails": {{"Id": "c1", "Config": {{"Image": "{STALE_REFERENCE}"}}}}, "MergedConfig": {{}}}}"#
+        ),
+    )
+    .expect("a create result");
+    let docker = world.path("bin/docker");
+    std::fs::write(
+        &docker,
+        format!(
+            r#"#!/bin/sh
+[ "$1" = inspect ] || exit 1
+case "$3 $6" in
+"container c1") echo "c1 sha256:old" ;;
+"image sha256:old") echo 'sha256:old 2026-10-01T00:00:00Z ["sha256:l1"]' ;;
+"image {STALE_REFERENCE}") echo 'sha256:new 2026-10-05T00:00:00.123Z ["sha256:l2"]' ;;
+*) exit 1 ;;
+esac
+"#
+        ),
+    )
+    .expect("a fake docker");
+    make_executable(&docker);
+    world
+}
+
+#[test]
+fn a_stale_workspace_is_named_under_the_table_and_the_table_is_untouched() {
+    let world = world_with_a_stale_workspace();
+    let run = world.dl(&["--ls"]);
+    run.succeeded();
+    assert_eq!(run.out, LS_TABLE);
+    assert_eq!(
+        run.err,
+        format!(
+            "{STALE_ID} runs an older image than {STALE_REFERENCE} now names. \
+             Run `dl {STALE_ID} recreate` to move it.\n"
+        )
+    );
+}
+
+#[test]
+fn a_stale_workspace_carries_its_reference_last_in_its_json_row() {
+    let world = world_with_a_stale_workspace();
+    let run = world.dl(&["--ls", "--json"]);
+    run.succeeded();
+    let first_row_end = "      \"nothingToLose\": true\n    }\n  }";
+    assert_eq!(LS_JSON.matches(first_row_end).count(), 1);
+    let expected = LS_JSON.replace(
+        first_row_end,
+        &format!(
+            "      \"nothingToLose\": true\n    }},\n    \"staleImage\": \"{STALE_REFERENCE}\"\n  }}"
+        ),
+    );
+    assert_eq!(run.out, expected);
+}
+
+// ===========================================================================
 // the completion commands
 // ===========================================================================
 

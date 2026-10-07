@@ -162,6 +162,14 @@ included, is a reason not to destroy anything without a person in the loop, and 
 caller that tests for `wouldLose` alone will force-delete exactly the rows `rm` itself
 would have stopped at.
 
+Two keys are appended only when they have something to say, so a caller must not
+expect them. `lastSweep` is described in [cleanup.md](cleanup.md). `staleImage` is a
+string, the image reference the workspace's container is behind: the container runs an
+older image than that reference now names, because a pull moved the reference and only a
+new container picks it up. `dl <ws> recreate` moves it. The key is absent on a current
+row and also on a row `dl` could not read about (no docker, no devpod result, a
+reference this machine never pulled), so absence is not proof that a row is current.
+
 `--json` is currently `--ls` only. Other commands report in English, so a caller that
 creates a workspace and then needs to address it should derive the id from a subsequent
 `--ls --json` rather than parsing the launch.
