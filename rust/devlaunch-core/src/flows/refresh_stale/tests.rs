@@ -455,3 +455,155 @@ fn the_table_reads_what_the_script_prints() {
         ])
     );
 }
+
+#[test]
+fn a_listing_that_ends_halfway_through_a_process_is_unread() {
+    let runner = ScriptedRunner::new().with_script(
+        ["docker", "exec"],
+        Response::stdout("1 (sleep) S 0 1 1 0 -1 4194560\ndevlaunch-end\n"),
+    );
+    let cache = cache();
+
+    assert!(matches!(
+        plan_of(&runner, None, cache.path(), None).as_slice(),
+        [Verdict::Skip(Skip::ProcessesUnread { .. })]
+    ));
+}
+
+#[test]
+fn a_stat_line_that_does_not_parse_is_unread() {
+    let runner = ScriptedRunner::new().with_script(
+        ["docker", "exec"],
+        Response::stdout("x (y\n\ndevlaunch-end\n"),
+    );
+    let cache = cache();
+
+    let verdicts = plan_of(&runner, None, cache.path(), None);
+
+    let [Verdict::Skip(Skip::ProcessesUnread { why })] = verdicts.as_slice() else {
+        panic!("{verdicts:?}");
+    };
+    assert!(why.contains("did not parse"), "{why}");
+}
+
+/// `collect` keeps a saved line when `agent get` goes unanswered, so the
+/// pane's agent is then one whose state nobody knows.
+#[test]
+fn a_held_agent_herdr_does_not_answer_for_is_skipped() {
+    let runner = runner_reading(&with_claude());
+    runner.script([HERDR, "agent", "get"], Response::exited(1));
+    let session = herdr_holding(&runner, Some(CLAUDE_LINE), "idle");
+    let cache = cache();
+
+    assert_eq!(
+        plan_of(&runner, Some(&manager()), cache.path(), Some(session)),
+        vec![Verdict::Skip(Skip::AgentBusy {
+            pane_id: "w1:p1".to_owned(),
+            state: AgentState::Unanswered,
+        })]
+    );
+}
+
+/// herdr names no agent in the pane, so its saved line is not held, and the
+/// Claude process in the container is one no pane holds.
+#[test]
+fn a_saved_line_in_a_pane_herdr_says_has_no_agent_holds_no_session() {
+    let runner = runner_reading(&with_claude());
+    runner.script(
+        [HERDR, "agent", "get"],
+        Response::stdout(r#"{"id":"a","result":{"type":"agent","agent":null}}"#),
+    );
+    let session = herdr_holding(&runner, Some(CLAUDE_LINE), "idle");
+    let cache = cache();
+
+    assert_eq!(
+        plan_of(&runner, Some(&manager()), cache.path(), Some(session)),
+        vec![Verdict::Skip(Skip::SessionsOutsidePanes {
+            running: 1,
+            held: 0,
+        })]
+    );
+}
+
+#[test]
+fn a_lock_that_cannot_be_asked_is_a_skip() {
+    let runner = runner_reading(&quiet());
+    let cache = cache();
+    std::fs::write(
+        cache
+            .path()
+            .join(crate::flows::launch_locks::LAUNCH_LOCK_DIR),
+        "",
+    )
+    .expect("a file where the lock directory goes");
+
+    assert!(matches!(
+        plan_of(&runner, None, cache.path(), None).as_slice(),
+        [Verdict::Skip(Skip::LockUnreadable { .. })]
+    ));
+    assert!(runner.args_to("docker").is_empty());
+}
+
+/// A Claude started by a Claude (a subagent) is the same session.
+#[test]
+fn a_claude_under_a_claude_is_one_session() {
+    let mut processes = with_claude();
+    processes.push(process(53, 50, "claude", &["claude", "-p", "review"]));
+    let runner = runner_reading(&processes);
+    let session = herdr_holding(&runner, Some(CLAUDE_LINE), "idle");
+    let cache = cache();
+
+    assert_eq!(
+        plan_of(&runner, Some(&manager()), cache.path(), Some(session)),
+        vec![Verdict::Refresh]
+    );
+}
+
+#[test]
+fn each_stale_workspace_gets_its_own_verdict() {
+    let mut building = quiet();
+    building.push(process(77, 41, "cargo", &["cargo", "build"]));
+    let runner = ScriptedRunner::new()
+        .with_script(
+            ["docker", "exec", "--user", "0", "busy", "sh", "-c"],
+            Response::stdout(table(&building)),
+        )
+        .with_script(
+            ["docker", "exec", "--user", "0", "quiet", "sh", "-c"],
+            Response::stdout(table(&quiet())),
+        );
+    let cache = cache();
+    let locks = LaunchLocks::under(cache.path());
+    let _held = locks::hold_lock(&locks.path_for("locked")).expect("the lock");
+
+    let verdicts: Vec<(String, Verdict)> = plan(
+        &runner,
+        &StaleImages::of_pairs([
+            ("locked", "ghcr.io/o/img:latest"),
+            ("busy", "ghcr.io/o/img:latest"),
+            ("quiet", "ghcr.io/o/img:latest"),
+        ]),
+        ["locked", "busy", "quiet"],
+        None,
+        &locks,
+        &|_| None,
+    )
+    .into_iter()
+    .map(|planned| (planned.workspace_id, planned.verdict))
+    .collect();
+
+    assert_eq!(
+        verdicts,
+        vec![
+            ("locked".to_owned(), Verdict::Skip(Skip::LaunchUnderWay)),
+            (
+                "busy".to_owned(),
+                Verdict::Skip(Skip::Building {
+                    program: "cargo".to_owned(),
+                    pid: 77,
+                })
+            ),
+            ("quiet".to_owned(), Verdict::Refresh),
+        ]
+    );
+}
