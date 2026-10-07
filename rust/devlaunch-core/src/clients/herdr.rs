@@ -1382,7 +1382,7 @@ pub(crate) struct Visibility<'a> {
 }
 
 /// A value that is present and not just whitespace.
-fn non_empty(value: Option<&str>) -> Option<String> {
+pub(crate) fn non_empty(value: Option<&str>) -> Option<String> {
     let value = crate::osext::strip(value?);
     (!value.is_empty()).then(|| value.to_owned())
 }
@@ -1778,6 +1778,90 @@ pub(crate) fn process_info_in(answer: &str) -> Option<PaneProcessInfo> {
         .map(|envelope| envelope.result.process_info)
 }
 
+/// The argv that has herdr type `command` into one pane's shell and run it.
+///
+/// One string, as herdr takes it: herdr types it as written, so `command` is
+/// already a shell line. herdr refuses a pane whose foreground is not its shell.
+pub(crate) fn pane_run_argv(pane_id: &str, command: &str) -> Vec<String> {
+    vec![
+        "pane".to_owned(),
+        "run".to_owned(),
+        pane_id.to_owned(),
+        command.to_owned(),
+    ]
+}
+
+/// The argv that asks herdr which agent one pane holds, and in what state.
+pub(crate) fn agent_get_argv(pane_id: &str) -> Vec<String> {
+    vec!["agent".to_owned(), "get".to_owned(), pane_id.to_owned()]
+}
+
+/// An agent's state, as herdr reports it in `agent get`'s `agent_status`.
+///
+/// `Unknown` stands for herdr's own `unknown` and for any word this build does
+/// not know, so a herdr that grows a state reads as one nobody can vouch for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AgentStatus {
+    /// Waiting for the user.
+    Idle,
+    Working,
+    /// Waiting on a permission prompt.
+    Blocked,
+    /// The agent has ended. herdr keeps a finished agent queryable in its pane.
+    Done,
+    Unknown,
+}
+
+/// One pane's agent, as `herdr agent get` describes it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PaneAgent {
+    /// herdr's name for the agent: `claude`, `codex`, ...
+    pub agent: String,
+    pub status: AgentStatus,
+}
+
+/// What `herdr agent get` said about one pane.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AgentReading {
+    /// No answer that reads as herdr's: a refusal, a timeout, a herdr too old for
+    /// the command, an agent named in a shape this build cannot read.
+    Unanswered,
+    /// herdr answered, and the pane holds no agent.
+    NoAgent,
+    Agent(PaneAgent),
+}
+
+/// The agent in `herdr agent get`'s answer: `/result/agent`, with its `agent`
+/// name and its `agent_status`.
+pub(crate) fn agent_reading_in(answer: &str) -> AgentReading {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(answer) else {
+        return AgentReading::Unanswered;
+    };
+    let Some(result) = value.get("result") else {
+        return AgentReading::Unanswered;
+    };
+    let Some(agent) = result.get("agent").filter(|agent| !agent.is_null()) else {
+        return AgentReading::NoAgent;
+    };
+    let Some(name) = agent.get("agent").and_then(serde_json::Value::as_str) else {
+        return AgentReading::Unanswered;
+    };
+    let status = match agent
+        .get("agent_status")
+        .and_then(serde_json::Value::as_str)
+    {
+        Some("idle") => AgentStatus::Idle,
+        Some("working") => AgentStatus::Working,
+        Some("blocked") => AgentStatus::Blocked,
+        Some("done") => AgentStatus::Done,
+        _ => AgentStatus::Unknown,
+    };
+    AgentReading::Agent(PaneAgent {
+        agent: name.to_owned(),
+        status,
+    })
+}
+
 // ===========================================================================
 // starting the agent again after herdr restarts
 // ===========================================================================
@@ -2014,7 +2098,7 @@ pub(crate) enum Saved {
 ///
 /// herdr's pane ids are `w<workspace>:p<public number>`, and the file keys panes by
 /// an internal number that `public_pane_numbers` maps to the public one.
-fn saved_argv(session_json: &str, pane_id: &str) -> Option<Option<Vec<String>>> {
+pub(crate) fn saved_argv(session_json: &str, pane_id: &str) -> Option<Option<Vec<String>>> {
     let (workspace_id, public) = pane_id.split_once(":p")?;
     let public: u64 = public.parse().ok()?;
     let session: serde_json::Value = serde_json::from_str(session_json).ok()?;
