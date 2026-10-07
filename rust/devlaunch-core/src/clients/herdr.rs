@@ -1778,6 +1778,19 @@ pub(crate) fn process_info_in(answer: &str) -> Option<PaneProcessInfo> {
         .map(|envelope| envelope.result.process_info)
 }
 
+/// The argv that has herdr type `command` into one pane's shell and run it.
+///
+/// One string, as herdr takes it: herdr types it as written, so `command` is
+/// already a shell line. herdr refuses a pane whose foreground is not its shell.
+pub(crate) fn pane_run_argv(pane_id: &str, command: &str) -> Vec<String> {
+    vec![
+        "pane".to_owned(),
+        "run".to_owned(),
+        pane_id.to_owned(),
+        command.to_owned(),
+    ]
+}
+
 /// The argv that asks herdr which agent one pane holds, and in what state.
 pub(crate) fn agent_get_argv(pane_id: &str) -> Vec<String> {
     vec!["agent".to_owned(), "get".to_owned(), pane_id.to_owned()]

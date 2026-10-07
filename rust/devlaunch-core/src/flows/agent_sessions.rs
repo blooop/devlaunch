@@ -179,6 +179,64 @@ fn starts_an_agent(argv: &[String]) -> bool {
         .is_some_and(|program| herdr::agent_named(program).is_some())
 }
 
+/// What became of one held session after the recreate.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Restarted {
+    /// herdr typed the line into the pane.
+    Typed { pane_id: String },
+    /// The pane is the one this `dl` runs in, so nothing was typed into it.
+    /// `line` is the command to run there, as one shell line.
+    OwnPane { pane_id: String, line: String },
+    /// herdr would not take the line in the time allowed.
+    NotTyped { pane_id: String, line: String },
+}
+
+/// How many times one pane is asked to take its line, and how far apart.
+///
+/// herdr refuses `pane run` while the pane's foreground is not its shell, and
+/// the old transport exits on its own schedule once the container it spoke to is
+/// gone. Ten seconds per pane is well past that, and short enough that a pane
+/// herdr closed, or one that never returns to a shell, costs little.
+pub(crate) const RUN_TRIES: u32 = 20;
+pub(crate) const RUN_TICK: Duration = Duration::from_millis(500);
+
+/// Type each held session's line into the pane it came from.
+///
+/// Call it once the recreate's `up` has finished: the line runs `dl` again, and
+/// that `dl` attaches to whatever container is up when it starts. `wait` sleeps
+/// between tries.
+///
+/// The pane this `dl` runs in is never typed into. Its foreground is this
+/// process, so `pane run` would refuse it for as long as this `dl` runs; its line
+/// is handed back for the caller to say.
+pub fn restart(
+    runner: &dyn Runner,
+    manager: &Manager,
+    held: &HeldSessions,
+    wait: &dyn Fn(Duration),
+) -> Vec<Restarted> {
+    held.sessions
+        .iter()
+        .map(|session| {
+            let pane_id = session.pane_id.clone();
+            let line = crate::shell::join(session.line.iter().map(String::as_str));
+            if manager.own_pane.as_deref() == Some(pane_id.as_str()) {
+                return Restarted::OwnPane { pane_id, line };
+            }
+            let run = herdr::pane_run_argv(&pane_id, &line);
+            for tick in 0..RUN_TRIES {
+                if tick > 0 {
+                    wait(RUN_TICK);
+                }
+                if manager.ask(runner, &run).is_some() {
+                    return Restarted::Typed { pane_id };
+                }
+            }
+            Restarted::NotTyped { pane_id, line }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -420,6 +478,101 @@ mod tests {
             ScriptedRunner::new().with_script([HERDR, "pane", "list"], Response::exited(1));
 
         assert_eq!(collect(&runner, &manager(), "myws", &|_| None), None);
+    }
+
+    fn held(panes: &[&str]) -> HeldSessions {
+        HeldSessions {
+            sessions: panes
+                .iter()
+                .map(|pane| HeldSession {
+                    pane_id: (*pane).to_owned(),
+                    line: words(CLAUDE_LINE),
+                })
+                .collect(),
+            unresumable: Vec::new(),
+        }
+    }
+
+    const TYPED: &str = "dl myws -- IS_SANDBOX=1 claude --remote-control=myws --resume 4b1e";
+
+    #[test]
+    fn each_line_is_typed_into_the_pane_it_came_from() {
+        let runner = ScriptedRunner::new();
+        runner.script([HERDR, "pane", "run"], Response::ok());
+
+        let restarted = restart(&runner, &manager(), &held(&["w1:p1", "w1:p4"]), &|_| {
+            panic!("nothing was refused, so nothing waits")
+        });
+
+        assert_eq!(
+            restarted,
+            vec![
+                Restarted::Typed {
+                    pane_id: "w1:p1".to_owned()
+                },
+                Restarted::Typed {
+                    pane_id: "w1:p4".to_owned()
+                },
+            ]
+        );
+        assert_eq!(
+            runner.args_to(HERDR),
+            vec![
+                vec!["pane", "run", "w1:p1", TYPED],
+                vec!["pane", "run", "w1:p4", TYPED],
+            ]
+        );
+    }
+
+    /// The pane this `dl` runs in has this `dl` in its foreground, and a line
+    /// typed there would wait behind the shell the recreate attaches to.
+    #[test]
+    fn the_pane_this_dl_runs_in_is_handed_its_line_rather_than_typed_into() {
+        let runner = ScriptedRunner::new();
+
+        let restarted = restart(&runner, &manager(), &held(&["w1:p9"]), &|_| {});
+
+        assert_eq!(
+            restarted,
+            vec![Restarted::OwnPane {
+                pane_id: "w1:p9".to_owned(),
+                line: TYPED.to_owned(),
+            }]
+        );
+        assert!(runner.args_to(HERDR).is_empty());
+    }
+
+    /// herdr refuses `pane run` into a pane whose foreground is not its shell, and
+    /// the old transport takes a moment to exit once its container is gone. So a
+    /// refusal is asked again, a bounded number of times, and then given up.
+    #[test]
+    fn a_pane_that_stays_busy_is_given_up_on_after_a_bounded_wait() {
+        let runner = ScriptedRunner::new();
+        runner.script(
+            [HERDR, "pane", "run"],
+            Response::failed(1, "").and_stdout(r#"{"error":{"code":"pane_busy"}}"#),
+        );
+        let waited = std::cell::Cell::new(Duration::ZERO);
+
+        let restarted = restart(&runner, &manager(), &held(&["w1:p1"]), &|pause| {
+            waited.set(waited.get() + pause);
+        });
+
+        assert_eq!(
+            restarted,
+            vec![Restarted::NotTyped {
+                pane_id: "w1:p1".to_owned(),
+                line: TYPED.to_owned(),
+            }]
+        );
+        let tries = runner.args_to(HERDR).len();
+        assert!(tries > 1, "a refusal was not asked again");
+        assert_eq!(waited.get(), RUN_TICK * u32::try_from(tries - 1).unwrap());
+        assert!(
+            waited.get() <= Duration::from_secs(30),
+            "{:?}",
+            waited.get()
+        );
     }
 
     #[test]
