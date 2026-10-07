@@ -348,9 +348,9 @@ pub(crate) fn refresh_stale_line(planned: &Planned) -> String {
         }
         Skip::Building { program, pid } => format!("a build runs in it ({program}, pid {pid})"),
         Skip::AgentRunsACommand { program, pid } => {
-            format!("a Claude session runs a command in it ({program}, pid {pid})")
+            format!("an agent runs a command in it ({program}, pid {pid})")
         }
-        Skip::SessionsUnseen => "Claude runs in it, and this dl is not in a herdr pane, so it \
+        Skip::SessionsUnseen => "an agent runs in it, and this dl is not in a herdr pane, so it \
                                  cannot see the sessions to start them again"
             .to_owned(),
         Skip::HerdrUnanswered => "herdr did not say which panes it has".to_owned(),
@@ -370,7 +370,7 @@ pub(crate) fn refresh_stale_line(planned: &Planned) -> String {
             }
         },
         Skip::SessionsOutsidePanes { running, held } => format!(
-            "{running} Claude sessions run in it and herdr's panes hold {held}, so the others \
+            "{running} agent sessions run in it and herdr's panes hold {held}, so the others \
              would end with nothing to start them again"
         ),
     };

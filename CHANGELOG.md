@@ -30,9 +30,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`dl --refresh-stale` recreates the stale workspaces that are idle** (#673). It runs
   the recreate above, with no attach, on each workspace `dl --ls` calls stale, so it can
   run after the daily pull. It skips a workspace, and says why, when another `dl` is
-  launching it, a build runs in it, a Claude session runs a command in it or is not
-  idle, or it holds a Claude session `dl` cannot start again (outside herdr, any Claude
-  session). It prints its plan first and a count last, and exits 1 when a recreate
+  launching it, a build runs in it, an agent (`claude`, `codex` or `gemini`) runs a
+  command in it or is not idle, or it holds an agent session `dl` cannot start again
+  (outside herdr, any agent session). It prints its plan first and a count last, and exits 1 when a recreate
   failed. See docs/cli.md, "`--refresh-stale`: recreate the stale workspaces that are
   idle".
 

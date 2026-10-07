@@ -22,17 +22,19 @@
 //! 3. **No build runs in it.** A process whose name (`comm`) is one of
 //!    [`BUILD_PROGRAMS`] is a build. The list is short on purpose: compilers,
 //!    linkers and the build drivers seen on the hosts this was made for.
-//! 4. **No agent runs a command in it.** A Claude process whose child is a shell
-//!    is running a tool call or a background task: Claude runs both through a
-//!    shell. Its MCP servers are started directly, not through a shell, so they
-//!    do not count.
-//! 5. **Every Claude session in it can be brought back, and is idle.** With no
-//!    Claude process there is nothing to bring back and this holds. Otherwise dl
+//! 4. **No agent runs a command in it.** An agent is a process of any agent dl
+//!    knows by name ([`herdr::agent_named`]): Claude, codex, gemini. One whose
+//!    child is a shell is running a tool call or a background task: the agents
+//!    run both through a shell. Claude's MCP servers are started directly, not
+//!    through a shell, so they do not count.
+//! 5. **Every agent session in it can be brought back, and is idle.** With no
+//!    agent process there is nothing to bring back and this holds. Otherwise dl
 //!    has to see the sessions, which takes a herdr pane: outside herdr it skips.
 //!    herdr has to answer, every pane in the workspace with a live agent has to
 //!    have a saved line ([`agent_sessions::HeldSessions::unresumable`]), each
-//!    held agent has to be `idle` or `done`, and there must be no more Claude
-//!    sessions in the container than herdr's panes hold. A session started from
+//!    held agent has to be `idle` or `done`, and there must be no more agent
+//!    sessions in the container than herdr's panes hold. Both sides of that count
+//!    are agents of any kind. A session started from
 //!    a terminal outside herdr would otherwise end with nothing to start it again.
 //!
 //! The check is a moment's reading, and a recreate starts a moment later. A
@@ -55,7 +57,7 @@ pub const BUILD_PROGRAMS: &[&str] = &[
     "pixi", "colcon", "gcc", "g++", "clang", "clang++", "ld", "ld.lld", "ld.gold", "collect2",
 ];
 
-/// The shells Claude runs its tool calls and background tasks through.
+/// The shells an agent runs its tool calls and background tasks through.
 const SHELLS: &[&str] = &["sh", "bash", "dash", "zsh", "fish"];
 
 /// What `dl --refresh-stale` will do with one stale workspace.
@@ -86,9 +88,9 @@ pub enum Skip {
     ProcessesUnread { why: String },
     /// A build runs in it.
     Building { program: String, pid: u32 },
-    /// A Claude session runs a command in it.
+    /// An agent runs a command in it.
     AgentRunsACommand { program: String, pid: u32 },
-    /// Claude runs in it and this `dl` is not in a herdr pane, so it cannot see
+    /// An agent runs in it and this `dl` is not in a herdr pane, so it cannot see
     /// the sessions to bring them back.
     SessionsUnseen,
     /// herdr did not say which panes it has.
@@ -97,7 +99,7 @@ pub enum Skip {
     Unresumable { pane_id: String },
     /// The agent in this pane is not idle.
     AgentBusy { pane_id: String, state: AgentState },
-    /// More Claude sessions run in the container than herdr's panes hold.
+    /// More agent sessions run in the container than herdr's panes hold.
     SessionsOutsidePanes { running: usize, held: usize },
 }
 
@@ -183,14 +185,14 @@ fn judge(
             pid: build.pid,
         });
     }
-    let is_claude = |pid: u32| {
+    let is_agent = |pid: u32| {
         table
             .iter()
-            .any(|process| process.pid == pid && process.is_claude())
+            .any(|process| process.pid == pid && process.is_agent())
     };
     if let Some(command) = table
         .iter()
-        .find(|process| SHELLS.contains(&process.comm.as_str()) && is_claude(process.ppid))
+        .find(|process| SHELLS.contains(&process.comm.as_str()) && is_agent(process.ppid))
     {
         return Some(Skip::AgentRunsACommand {
             program: command.comm.clone(),
@@ -199,7 +201,7 @@ fn judge(
     }
     let running = table
         .iter()
-        .filter(|process| process.is_claude() && !is_claude(process.ppid))
+        .filter(|process| process.is_agent() && !is_agent(process.ppid))
         .count();
     if running == 0 {
         return None;
@@ -207,7 +209,7 @@ fn judge(
     sessions_skip(runner, workspace_id, running, manager, read)
 }
 
-/// Rule 5: the Claude sessions in the workspace, as herdr's panes hold them.
+/// Rule 5: the agent sessions in the workspace, as herdr's panes hold them.
 fn sessions_skip(
     runner: &dyn Runner,
     workspace_id: &str,
@@ -267,11 +269,12 @@ struct Process {
 }
 
 impl Process {
-    /// A Claude process: named `claude`, started as `claude`, or a `node`
-    /// running a script named `claude` (the npm install).
-    fn is_claude(&self) -> bool {
-        let named_claude = |word: &String| word.rsplit('/').next() == Some("claude");
-        self.comm == "claude" || self.argv.iter().take(2).any(named_claude)
+    /// An agent dl knows by name ([`herdr::agent_named`]): named for one,
+    /// started as one, or a `node` running a script named for one (the npm
+    /// install).
+    fn is_agent(&self) -> bool {
+        let named = |word: &String| herdr::agent_named(word).is_some();
+        herdr::agent_named(&self.comm).is_some() || self.argv.iter().take(2).any(named)
     }
 }
 

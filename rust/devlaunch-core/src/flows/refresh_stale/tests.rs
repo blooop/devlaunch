@@ -160,6 +160,45 @@ fn a_claude_run_by_node_is_claude() {
     );
 }
 
+/// codex runs its commands through a shell as Claude does.
+#[test]
+fn a_shell_under_codex_is_a_command_it_runs() {
+    let mut processes = quiet();
+    processes.push(process(50, 41, "codex", &["codex", "resume", "019a"]));
+    processes.push(process(60, 50, "bash", &["/bin/bash", "-lc", "cargo test"]));
+    let runner = runner_reading(&processes);
+    let cache = cache();
+
+    assert_eq!(
+        plan_of(&runner, None, cache.path(), None),
+        vec![Verdict::Skip(Skip::AgentRunsACommand {
+            program: "bash".to_owned(),
+            pid: 60,
+        })]
+    );
+}
+
+/// Each agent dl knows by name is a session to bring back, the npm form too.
+#[test]
+fn outside_herdr_a_workspace_running_any_agent_is_skipped() {
+    for (comm, argv) in [
+        ("codex", ["codex", "resume"]),
+        ("node", ["node", "/usr/local/bin/codex"]),
+        ("node", ["node", "/usr/local/bin/gemini"]),
+    ] {
+        let mut processes = quiet();
+        processes.push(process(50, 41, comm, &argv));
+        let runner = runner_reading(&processes);
+        let cache = cache();
+
+        assert_eq!(
+            plan_of(&runner, None, cache.path(), None),
+            vec![Verdict::Skip(Skip::SessionsUnseen)],
+            "{argv:?}"
+        );
+    }
+}
+
 #[test]
 fn outside_herdr_a_workspace_running_claude_is_skipped() {
     let runner = runner_reading(&with_claude());
@@ -237,6 +276,16 @@ const CLAUDE_LINE: &str =
 /// herdr with pane `w1:p1` attached to `myws`, its saved line `line`, and
 /// `status` as its agent's state.
 fn herdr_holding(runner: &ScriptedRunner, line: Option<&str>, status: &str) -> String {
+    herdr_holding_agent(runner, "claude", line, status)
+}
+
+/// [`herdr_holding`], with `agent` as herdr's name for the pane's agent.
+fn herdr_holding_agent(
+    runner: &ScriptedRunner,
+    agent: &str,
+    line: Option<&str>,
+    status: &str,
+) -> String {
     runner.script(
         [HERDR, "pane", "list"],
         Response::stdout(
@@ -252,7 +301,7 @@ fn herdr_holding(runner: &ScriptedRunner, line: Option<&str>, status: &str) -> S
     runner.script(
         [HERDR, "agent", "get", "w1:p1"],
         Response::stdout(format!(
-            r#"{{"id":"a","result":{{"type":"agent","agent":{{"agent":"claude","agent_status":"{status}"}}}}}}"#
+            r#"{{"id":"a","result":{{"type":"agent","agent":{{"agent":"{agent}","agent_status":"{status}"}}}}}}"#
         )),
     );
     let resume = line.map_or(String::new(), |argv| {
@@ -330,6 +379,30 @@ fn more_claude_sessions_than_herdr_holds_is_a_skip() {
     processes.push(process(52, 41, "claude", &["claude"]));
     let runner = runner_reading(&processes);
     let session = herdr_holding(&runner, Some(CLAUDE_LINE), "idle");
+    let cache = cache();
+
+    assert_eq!(
+        plan_of(&runner, Some(&manager()), cache.path(), Some(session)),
+        vec![Verdict::Skip(Skip::SessionsOutsidePanes {
+            running: 2,
+            held: 1,
+        })]
+    );
+}
+
+/// herdr's panes hold agents of any kind, so the processes they are counted
+/// against are too: a held codex does not cover a Claude outside herdr.
+#[test]
+fn a_held_codex_does_not_cover_a_claude_outside_herdr() {
+    let mut processes = with_claude();
+    processes.push(process(70, 41, "codex", &["codex", "resume", "019a"]));
+    let runner = runner_reading(&processes);
+    let session = herdr_holding_agent(
+        &runner,
+        "codex",
+        Some(r#"["dl","myws","--","codex","resume","019a"]"#),
+        "idle",
+    );
     let cache = cache();
 
     assert_eq!(

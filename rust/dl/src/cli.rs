@@ -634,7 +634,7 @@ pub(crate) struct Cli {
     #[arg(long, group = "what")]
     purge: bool,
     /// Recreate each workspace that runs an older image than its reference, when
-    /// its Claude sessions are idle and nothing builds in it, and start its agents
+    /// its agents are idle and nothing builds in it, and start its agents
     /// again. Skips the others and says why. Attaches nothing, so it can run after
     /// a pull.
     #[arg(long = "refresh-stale", group = "what")]
