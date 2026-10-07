@@ -350,6 +350,10 @@ mod tests {
             [HERDR, "pane", "process-info", "--pane", "w1:p3"],
             Response::stdout(process_info(&[TRANSPORT])),
         );
+        runner.script(
+            [HERDR, "agent", "get", "w1:p3"],
+            Response::stdout(r#"{"id":"x","result":{"type":"agent","agent":null}}"#),
+        );
         let file = saved(&[Some(CLAUDE_LINE), Some(OTHER_LINE), None]);
 
         let held = collect(&runner, &manager(), "myws", &|path| {
@@ -415,6 +419,83 @@ mod tests {
                 unresumable: vec!["w1:p2".to_owned()],
             })
         );
+    }
+
+    /// herdr says the pane holds no agent, so the line it saved is left over
+    /// from one the user already quit.
+    #[test]
+    fn a_saved_line_in_a_pane_herdr_says_holds_no_agent_is_dropped() {
+        let runner = ScriptedRunner::new();
+        runner.script(
+            [HERDR, "pane", "list"],
+            Response::stdout(pane_list(&["w1:p1"])),
+        );
+        runner.script(
+            [HERDR, "pane", "process-info"],
+            Response::stdout(process_info(&[TRANSPORT])),
+        );
+        runner.script(
+            [HERDR, "agent", "get", "w1:p1"],
+            Response::stdout(r#"{"id":"x","result":{"type":"agent","agent":null}}"#),
+        );
+        let file = saved(&[Some(CLAUDE_LINE)]);
+
+        let held = collect(&runner, &manager(), "myws", &|_| Some(file.clone()));
+
+        assert_eq!(held, Some(HeldSessions::default()));
+    }
+
+    /// An agent this build cannot read is no word from herdr that the agent
+    /// ended, so the saved line is kept.
+    #[test]
+    fn a_saved_line_is_kept_when_herdr_names_an_agent_this_build_cannot_read() {
+        let runner = ScriptedRunner::new();
+        runner.script(
+            [HERDR, "pane", "list"],
+            Response::stdout(pane_list(&["w1:p1"])),
+        );
+        runner.script(
+            [HERDR, "pane", "process-info"],
+            Response::stdout(process_info(&[TRANSPORT])),
+        );
+        runner.script(
+            [HERDR, "agent", "get", "w1:p1"],
+            Response::stdout(
+                r#"{"id":"x","result":{"type":"agent","agent":{"pane_id":"w1:p1","agent_status":"idle"}}}"#,
+            ),
+        );
+        let file = saved(&[Some(CLAUDE_LINE)]);
+
+        let held = collect(&runner, &manager(), "myws", &|_| Some(file.clone()));
+
+        assert_eq!(
+            held,
+            Some(HeldSessions {
+                sessions: vec![HeldSession {
+                    pane_id: "w1:p1".to_owned(),
+                    line: words(CLAUDE_LINE),
+                }],
+                unresumable: Vec::new(),
+            })
+        );
+    }
+
+    #[test]
+    fn an_agent_herdr_names_in_a_shape_this_build_cannot_read_is_no_answer() {
+        for agent in [
+            r#"{"pane_id":"w1:p1","agent_status":"idle"}"#,
+            r#"{"pane_id":"w1:p1","agent":7,"agent_status":"idle"}"#,
+            r#"{"pane_id":"w1:p1","agent":null,"agent_status":"idle"}"#,
+            r#""claude""#,
+            "[]",
+        ] {
+            let answer = format!(r#"{{"id":"x","result":{{"type":"agent","agent":{agent}}}}}"#);
+            assert_eq!(
+                herdr::agent_reading_in(&answer),
+                herdr::AgentReading::Unanswered,
+                "{agent}"
+            );
+        }
     }
 
     /// A saved line that does not start an agent is a plain attach, and typing it
