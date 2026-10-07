@@ -90,6 +90,15 @@ impl World {
     }
 
     fn dl_with(&self, args: &[&str], extra: &[(&str, &str)]) -> Run {
+        let output = self
+            .command(args, extra)
+            .output()
+            .expect("the dl binary runs");
+        Run::of(&output, &self.root)
+    }
+
+    /// The `dl` command [`World::dl_with`] runs, before it runs.
+    fn command(&self, args: &[&str], extra: &[(&str, &str)]) -> Command {
         let root = self.root.display().to_string();
         let mut command = Command::new(env!("CARGO_BIN_EXE_dl"));
         command
@@ -117,8 +126,7 @@ impl World {
         for (name, value) in extra {
             command.env(name, value);
         }
-        let output = command.output().expect("the dl binary runs");
-        Run::of(&output, &self.root)
+        command
     }
 
     fn path(&self, relative: &str) -> PathBuf {
@@ -915,4 +923,231 @@ fn a_verb_with_no_workspace_opens_the_selector_and_no_terminal_picks_nothing() {
         // it did on stderr, and there is nothing on it.
         assert_eq!(run.err, "", "dl {args:?} acted on a workspace");
     }
+}
+
+// ===========================================================================
+// --refresh-stale (devlaunch#673)
+// ===========================================================================
+
+/// The git-sourced workspace, the second one these tests make stale.
+const SECOND_ID: &str = "devpod-upstream";
+
+/// What a quiet container's processes read as: one `sleep`.
+const QUIET: &str = r"printf '1 (sleep) S 0 1 1\nsleep\037infinity\ndevlaunch-end\n'";
+/// What a container with a build in it reads as: a `cc1plus` beside the `sleep`.
+const BUILDING: &str = r"printf '1 (sleep) S 0 1 1\nsleep\037infinity\n77 (cc1plus) R 1 1 1\ncc1plus\ndevlaunch-end\n'";
+
+/// The full scenario with each `(workspace, container, answer)` stale: its
+/// container created from [`STALE_REFERENCE`], and a docker that says the
+/// reference has since moved.
+///
+/// The n-th `docker exec` into a container runs the shell in
+/// `exec/<container>.<n>` when that file exists, and `answer` otherwise. Every
+/// docker call is logged to `docker.log`. The devpod in front of the shim copies
+/// what `dl` has printed so far to `stdout-at-up-<workspace>` when it is asked
+/// to `up` that workspace, which is what [`World::refresh_stale`] reads the
+/// order of events from.
+fn world_with_stale(stale: &[(&str, &str, &str)]) -> World {
+    let world = World::full();
+    let root = world.root.display().to_string();
+    std::fs::create_dir_all(world.path("exec")).expect("an exec directory");
+    for (id, container, answer) in stale {
+        let records = world.path(&format!("devpod/contexts/default/workspaces/{id}"));
+        std::fs::create_dir_all(&records).expect("a devpod record directory");
+        std::fs::write(
+            records.join("workspace.json"),
+            format!(r#"{{"id": "{id}"}}"#),
+        )
+        .expect("a devpod record");
+        std::fs::write(
+            records.join("workspace_result.json"),
+            format!(
+                r#"{{"ContainerDetails": {{"Id": "{container}", "Config": {{"Image": "{STALE_REFERENCE}"}}}}, "MergedConfig": {{}}}}"#
+            ),
+        )
+        .expect("a create result");
+        std::fs::write(world.path(&format!("exec/{container}")), answer).expect("an answer");
+    }
+    let docker = world.path("bin/docker");
+    std::fs::write(
+        &docker,
+        format!(
+            r#"#!/bin/sh
+echo "$*" >> "{root}/docker.log"
+case "$1" in
+inspect)
+  kind=$3; shift 5
+  for name in "$@"; do
+    case "$kind $name" in
+    "image sha256:old") echo 'sha256:old 2026-10-01T00:00:00Z ["sha256:l1"]' ;;
+    "image {STALE_REFERENCE}") echo 'sha256:new 2026-10-05T00:00:00.123Z ["sha256:l2"]' ;;
+    container\ *) [ -f "{root}/exec/$name" ] && echo "$name sha256:old" ;;
+    esac
+  done ;;
+exec)
+  n=$(( $(cat "{root}/exec/$4.count" 2>/dev/null || echo 0) + 1 ))
+  echo "$n" > "{root}/exec/$4.count"
+  if [ -f "{root}/exec/$4.$n" ]; then . "{root}/exec/$4.$n"; else . "{root}/exec/$4"; fi ;;
+*) exit 1 ;;
+esac
+"#
+        ),
+    )
+    .expect("a fake docker");
+    make_executable(&docker);
+    let devpod = world.path("bin/devpod");
+    let shim = std::fs::read_to_string(&devpod).expect("the scenario's devpod");
+    let (shebang, rest) = shim.split_once('\n').expect("a shebang line");
+    std::fs::write(
+        &devpod,
+        format!(
+            "{shebang}\n[ \"$1\" = up ] && cp \"{root}/stdout.txt\" \"{root}/stdout-at-up-$2\"\n{rest}"
+        ),
+    )
+    .expect("a devpod that notes the order");
+    world
+}
+
+impl World {
+    /// `dl --refresh-stale`, its stdout written to `stdout.txt` as it goes and
+    /// its devpod calls logged to `devpod.log`.
+    fn refresh_stale(&self) -> Run {
+        let log = self.path("devpod.log").display().to_string();
+        let config = self.path("shim-config.json").display().to_string();
+        let stdout = std::fs::File::create(self.path("stdout.txt")).expect("a stdout file");
+        let output = self
+            .command(
+                &["--refresh-stale"],
+                &[("DEVPOD_SHIM_LOG", &log), ("DEVPOD_SHIM_CONFIG", &config)],
+            )
+            .stdout(stdout)
+            .output()
+            .expect("the dl binary runs");
+        let mut run = Run::of(&output, &self.root);
+        run.out = self.read("stdout.txt");
+        run
+    }
+
+    /// The workspaces devpod was asked to `up`, in order.
+    fn upped(&self) -> Vec<String> {
+        self.read("devpod.log")
+            .lines()
+            .filter_map(|line| {
+                let argv: Vec<String> = serde_json::from_str::<serde_json::Value>(line)
+                    .ok()?
+                    .get("argv")?
+                    .as_array()?
+                    .iter()
+                    .filter_map(|word| word.as_str().map(str::to_owned))
+                    .collect();
+                (argv.first()? == "up").then(|| argv.get(1).cloned())?
+            })
+            .collect()
+    }
+}
+
+/// The plan line for a stale workspace `dl --refresh-stale` will recreate.
+fn refreshing(id: &str) -> String {
+    format!("Refreshing {id}: it runs an older image than {STALE_REFERENCE} now names.\n")
+}
+
+#[test]
+fn a_workspace_that_got_busy_after_the_plan_is_not_recreated() {
+    // Both are quiet when the plan is read. By the time the first recreate is
+    // done, a build runs in the second: the plan said refresh it, and it is
+    // judged again before its recreate and left alone.
+    let world = world_with_stale(&[(STALE_ID, "c1", QUIET), (SECOND_ID, "c2", QUIET)]);
+    std::fs::write(world.path("exec/c2.2"), BUILDING).expect("a later answer");
+    let run = world.refresh_stale();
+    run.succeeded();
+    assert_eq!(world.upped(), vec![STALE_ID.to_owned()]);
+    assert_eq!(
+        run.out,
+        format!(
+            "{}{}Skipping {SECOND_ID} after all, judged again before its recreate: a build \
+             runs in it (cc1plus, pid 77). Run `dl {SECOND_ID} recreate` once it is done.\n\
+             Refreshed 1 stale workspace, skipped 1, and 0 failed.\n",
+            refreshing(STALE_ID),
+            refreshing(SECOND_ID),
+        )
+    );
+}
+
+#[test]
+fn a_refresh_with_nothing_stale_says_so_and_reads_no_container() {
+    let world = world_with_stale(&[]);
+    let run = world.refresh_stale();
+    run.succeeded();
+    assert_eq!(
+        run.out,
+        "No workspace runs an older image than its reference names.\n"
+    );
+    assert!(
+        !world.read("docker.log").contains("exec"),
+        "docker exec ran: {}",
+        world.read("docker.log")
+    );
+    assert_eq!(world.upped(), Vec::<String>::new());
+}
+
+#[test]
+fn a_refresh_prints_its_plan_then_recreates_the_quiet_one_and_skips_the_build() {
+    let world = world_with_stale(&[(STALE_ID, "c1", QUIET), (SECOND_ID, "c2", BUILDING)]);
+    let run = world.refresh_stale();
+    run.succeeded();
+    let plan = format!(
+        "{}Skipping {SECOND_ID}: a build runs in it (cc1plus, pid 77). \
+         Run `dl {SECOND_ID} recreate` once it is done.\n",
+        refreshing(STALE_ID)
+    );
+    assert_eq!(world.read(&format!("stdout-at-up-{STALE_ID}")), plan);
+    assert_eq!(world.upped(), vec![STALE_ID.to_owned()]);
+    assert_eq!(
+        run.out,
+        format!("{plan}Refreshed 1 stale workspace, skipped 1, and 0 failed.\n")
+    );
+}
+
+#[test]
+fn a_refresh_whose_recreate_fails_goes_on_to_the_next_and_exits_1() {
+    let world = world_with_stale(&[(STALE_ID, "c1", QUIET), (SECOND_ID, "c2", QUIET)]);
+    std::fs::write(
+        world.path("shim-config.json"),
+        format!(
+            r#"{{"responses": [{{"prefix": ["up", "{STALE_ID}"], "returncode": 1, "stdout": "", "stderr": "up failed"}}]}}"#
+        ),
+    )
+    .expect("a shim config");
+    let run = world.refresh_stale();
+    run.exited(1);
+    assert_eq!(
+        world.upped(),
+        vec![STALE_ID.to_owned(), SECOND_ID.to_owned()]
+    );
+    assert!(
+        run.out
+            .ends_with("Refreshed 1 stale workspace, skipped 0, and 1 failed.\n"),
+        "stdout: {}",
+        run.out
+    );
+}
+
+#[test]
+fn a_refresh_skips_a_stopped_stale_workspace() {
+    let world = world_with_stale(&[(
+        STALE_ID,
+        "c1",
+        "echo 'Error response from daemon: container c1 is not running' >&2; exit 1",
+    )]);
+    let run = world.refresh_stale();
+    run.succeeded();
+    assert_eq!(world.upped(), Vec::<String>::new());
+    assert_eq!(
+        run.out,
+        format!(
+            "Skipping {STALE_ID}: it is stopped, and a refresh starts nothing. \
+             `dl {STALE_ID} recreate` starts it on the new image.\n\
+             Refreshed 0 stale workspaces, skipped 1, and 0 failed.\n"
+        )
+    );
 }

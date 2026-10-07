@@ -142,6 +142,7 @@ pub devlaunch_core::api::LaunchVerb::Attach::command: core::option::Option<devla
 pub devlaunch_core::api::LaunchVerb::Code
 pub devlaunch_core::api::LaunchVerb::Dotfiles
 pub devlaunch_core::api::LaunchVerb::Recreate
+pub devlaunch_core::api::LaunchVerb::RecreateUnattended
 pub devlaunch_core::api::LaunchVerb::Reset
 pub devlaunch_core::api::LaunchVerb::Restart
 pub devlaunch_core::api::LaunchVerb::Up
@@ -717,6 +718,7 @@ pub devlaunch_core::flows::launch::LaunchVerb::Attach::command: core::option::Op
 pub devlaunch_core::flows::launch::LaunchVerb::Code
 pub devlaunch_core::flows::launch::LaunchVerb::Dotfiles
 pub devlaunch_core::flows::launch::LaunchVerb::Recreate
+pub devlaunch_core::flows::launch::LaunchVerb::RecreateUnattended
 pub devlaunch_core::flows::launch::LaunchVerb::Reset
 pub devlaunch_core::flows::launch::LaunchVerb::Restart
 pub devlaunch_core::flows::launch::LaunchVerb::Up

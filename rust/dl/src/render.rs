@@ -55,6 +55,7 @@ use devlaunch_core::flows::migration::{Listing, MigrationReport};
 use devlaunch_core::flows::provision::{BundleFailed, FailureLevel, ProvisionEvent};
 use devlaunch_core::flows::pull_request::Refusal as PullRequestRefusal;
 use devlaunch_core::flows::records::{RecordsNotice, StartupError};
+use devlaunch_core::flows::refresh_stale::{AgentState, Planned, Skip, Verdict};
 use devlaunch_core::flows::repo_manager::{
     CacheNotice, Cleanup, CloneError, EnsureRepoError, NotRefreshed, Refusal, RefusalReason,
     RemoveTreeError, WrongRepoLock,
@@ -319,6 +320,106 @@ pub(crate) fn stale_image_notes<'a>(
             )
         })
         .collect()
+}
+
+/// What `dl --refresh-stale` says when no workspace is stale.
+pub(crate) const REFRESH_STALE_NOTHING: &str =
+    "No workspace runs an older image than its reference names.";
+
+/// The one line `dl --refresh-stale` says about one stale workspace, before it
+/// acts: that it will recreate it, or that it leaves it alone and why.
+pub(crate) fn refresh_stale_line(planned: &Planned) -> String {
+    let Planned {
+        workspace_id: id,
+        reference,
+        verdict,
+    } = planned;
+    match verdict {
+        Verdict::Refresh => {
+            format!("Refreshing {id}: it runs an older image than {reference} now names.")
+        }
+        Verdict::Skip(Skip::Stopped) => format!(
+            "Skipping {id}: it is stopped, and a refresh starts nothing. \
+             `dl {id} recreate` starts it on the new image."
+        ),
+        Verdict::Skip(skip) => format!(
+            "Skipping {id}: {}. Run `dl {id} recreate` once it is done.",
+            skip_reason(skip)
+        ),
+    }
+}
+
+/// The line `dl --refresh-stale` says when a workspace its plan would refresh
+/// is judged again just before its recreate, and is now to be left alone.
+pub(crate) fn refresh_stale_rejudged_line(id: &str, skip: &Skip) -> String {
+    format!(
+        "Skipping {id} after all, judged again before its recreate: {}. \
+         Run `dl {id} recreate` once it is done.",
+        skip_reason(skip)
+    )
+}
+
+/// Why `dl --refresh-stale` leaves a stale workspace alone, as a clause.
+fn skip_reason(skip: &Skip) -> String {
+    match skip {
+        Skip::LaunchUnderWay => "another dl is launching it".to_owned(),
+        Skip::Stopped => "it is stopped".to_owned(),
+        Skip::LockUnreadable { why } => format!("could not ask its launch lock ({why})"),
+        Skip::ProcessesUnread { why } => {
+            format!("could not read the processes in its container ({why})")
+        }
+        Skip::Building { program, pid } => format!("a build runs in it ({program}, pid {pid})"),
+        Skip::AgentRunsACommand { program, pid } => {
+            format!("an agent runs a command in it ({program}, pid {pid})")
+        }
+        Skip::SessionsUnseen => "an agent runs in it, and this dl is not in a herdr pane, so it \
+                                 cannot see the sessions to start them again"
+            .to_owned(),
+        Skip::HerdrUnanswered => "herdr did not say which panes it has".to_owned(),
+        Skip::Unresumable { pane_id } => {
+            format!("the agent in pane {pane_id} has no saved line to start it again")
+        }
+        Skip::AgentBusy { pane_id, state } => match state {
+            AgentState::Working => format!("the agent in pane {pane_id} is working"),
+            AgentState::Blocked => {
+                format!("the agent in pane {pane_id} waits on a permission prompt")
+            }
+            AgentState::Unknown => {
+                format!("herdr does not know what the agent in pane {pane_id} is doing")
+            }
+            AgentState::Unanswered => {
+                format!("herdr did not say what the agent in pane {pane_id} is doing")
+            }
+        },
+        Skip::SessionsOutsidePanes { running, held } => format!(
+            "{running} agent sessions run in it and herdr's panes hold {held}, so the others \
+             would end with nothing to start them again"
+        ),
+    }
+}
+
+/// How many stale workspaces `dl --refresh-stale` refreshed, skipped, and failed
+/// to refresh.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct RefreshTally {
+    pub(crate) refreshed: usize,
+    pub(crate) skipped: usize,
+    pub(crate) failed: usize,
+}
+
+/// The last line of `dl --refresh-stale`.
+pub(crate) fn refresh_stale_summary(tally: RefreshTally) -> String {
+    let RefreshTally {
+        refreshed,
+        skipped,
+        failed,
+    } = tally;
+    let noun = if refreshed == 1 {
+        "workspace"
+    } else {
+        "workspaces"
+    };
+    format!("Refreshed {refreshed} stale {noun}, skipped {skipped}, and {failed} failed.")
 }
 
 /// The lines `dl --ls` writes under its table for the repositories whose last
@@ -6975,5 +7076,106 @@ mod tests {
             },
         ));
         assert!(line.contains("owner/repo@#579"), "{line}");
+    }
+
+    // --- dl --refresh-stale (devlaunch#673)
+
+    fn planned(verdict: Verdict) -> Planned {
+        Planned {
+            workspace_id: "myws".to_owned(),
+            reference: "ghcr.io/o/img:latest".to_owned(),
+            verdict,
+        }
+    }
+
+    #[test]
+    fn the_refresh_plan_names_the_workspace_and_what_it_will_do() {
+        assert_eq!(
+            refresh_stale_line(&planned(Verdict::Refresh)),
+            "Refreshing myws: it runs an older image than ghcr.io/o/img:latest now names."
+        );
+        assert_eq!(
+            refresh_stale_line(&planned(Verdict::Skip(Skip::Building {
+                program: "cc1plus".to_owned(),
+                pid: 77,
+            }))),
+            "Skipping myws: a build runs in it (cc1plus, pid 77). Run `dl myws recreate` once it is done."
+        );
+    }
+
+    /// Every skip says why in words of its own, so a reader can tell two apart.
+    #[test]
+    fn each_reason_to_skip_reads_differently() {
+        let reasons = [
+            Skip::LaunchUnderWay,
+            Skip::LockUnreadable {
+                why: "eacces".to_owned(),
+            },
+            Skip::ProcessesUnread {
+                why: "not running".to_owned(),
+            },
+            Skip::Building {
+                program: "make".to_owned(),
+                pid: 1,
+            },
+            Skip::AgentRunsACommand {
+                program: "bash".to_owned(),
+                pid: 1,
+            },
+            Skip::SessionsUnseen,
+            Skip::HerdrUnanswered,
+            Skip::Unresumable {
+                pane_id: "w1:p1".to_owned(),
+            },
+            Skip::AgentBusy {
+                pane_id: "w1:p1".to_owned(),
+                state: AgentState::Working,
+            },
+            Skip::AgentBusy {
+                pane_id: "w1:p1".to_owned(),
+                state: AgentState::Blocked,
+            },
+            Skip::AgentBusy {
+                pane_id: "w1:p1".to_owned(),
+                state: AgentState::Unknown,
+            },
+            Skip::AgentBusy {
+                pane_id: "w1:p1".to_owned(),
+                state: AgentState::Unanswered,
+            },
+            Skip::SessionsOutsidePanes {
+                running: 2,
+                held: 1,
+            },
+        ];
+        let lines: Vec<String> = reasons
+            .into_iter()
+            .map(|skip| refresh_stale_line(&planned(Verdict::Skip(skip))))
+            .collect();
+        for line in &lines {
+            assert!(line.starts_with("Skipping myws: "), "{line}");
+        }
+        let distinct: std::collections::BTreeSet<&String> = lines.iter().collect();
+        assert_eq!(distinct.len(), lines.len(), "{lines:#?}");
+    }
+
+    #[test]
+    fn the_refresh_summary_counts_what_happened() {
+        assert_eq!(
+            refresh_stale_summary(RefreshTally {
+                refreshed: 2,
+                skipped: 1,
+                failed: 1
+            }),
+            "Refreshed 2 stale workspaces, skipped 1, and 1 failed."
+        );
+        assert_eq!(
+            refresh_stale_summary(RefreshTally {
+                refreshed: 1,
+                skipped: 0,
+                failed: 0
+            }),
+            "Refreshed 1 stale workspace, skipped 0, and 0 failed."
+        );
     }
 }
