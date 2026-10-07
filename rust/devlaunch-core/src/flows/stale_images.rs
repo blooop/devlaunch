@@ -27,7 +27,16 @@
 //!   never moves on a pull, so its id says nothing. The declared reference's
 //!   layers do: a derived image starts with every layer of the image it was built
 //!   from, so the container is stale when the declared reference's current layers
-//!   are no longer the start of the running image's layers.
+//!   are no longer the start of the running image's layers **and** the declared
+//!   image was created after the running one. Layers that differ only say
+//!   "different". The creation time is what says "older": a prebuilt derived image
+//!   pulled from a registry can sit on a newer base than this machine's copy of
+//!   the declared reference, and a recreate would pull the same prebuild again,
+//!   so without the time the note would never clear.
+//!
+//! A rebuild of the declared image that changes only its configuration (an `ENV`
+//! or a `LABEL`) keeps every layer, so a derived container reads as current
+//! through it. That is a miss, not a false alarm.
 //!
 //! A devcontainer that declares no image (a Dockerfile build, or a compose file
 //! whose service names it) falls to the first case with the reference the
@@ -114,10 +123,15 @@ struct Created {
     reference: String,
 }
 
-/// One image as docker describes it: its id and its layers, bottom first.
+/// One image as docker describes it: its id, when it was created, and its
+/// layers, bottom first.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Image {
     id: String,
+    /// docker's `Created`, cut to whole seconds: `YYYY-MM-DDTHH:MM:SS`. docker
+    /// writes it in UTC with a varying count of fractional digits, so the cut is
+    /// what makes two of them compare in time order as strings.
+    created: String,
     layers: Vec<String>,
 }
 
@@ -178,7 +192,7 @@ fn is_stale(created: &Created, running: &Image, current: &Image) -> bool {
     if created.created_from == created.reference {
         return true;
     }
-    !running.layers.starts_with(&current.layers)
+    !running.layers.starts_with(&current.layers) && current.created > running.created
 }
 
 /// What devpod's result file says about this workspace's container, if there is
@@ -227,20 +241,25 @@ fn images(runner: &dyn Runner, names: impl IntoIterator<Item = String>) -> BTree
     let Some(names) = NonEmpty::of(names) else {
         return BTreeMap::new();
     };
-    let Some(printed) =
-        docker::inspect_formatted(runner, "image", "{{.Id}} {{json .RootFS.Layers}}", &names)
-    else {
+    let Some(printed) = docker::inspect_formatted(
+        runner,
+        "image",
+        "{{.Id}} {{.Created}} {{json .RootFS.Layers}}",
+        &names,
+    ) else {
         return BTreeMap::new();
     };
     printed
         .lines()
         .filter_map(|line| {
-            let (id, layers) = line.trim().split_once(' ')?;
+            let (id, rest) = line.trim().split_once(' ')?;
+            let (created, layers) = rest.split_once(' ')?;
             let layers: Vec<String> = serde_json::from_str(layers).ok()?;
             Some((
                 id.to_owned(),
                 Image {
                     id: id.to_owned(),
+                    created: created.get(..19)?.to_owned(),
                     layers,
                 },
             ))
@@ -256,7 +275,7 @@ mod tests {
     use crate::clients::devpod_home::{ScratchHome, devpod_home_with};
 
     const CONTAINER_FORMAT: &str = "{{.Id}} {{.Image}}";
-    const IMAGE_FORMAT: &str = "{{.Id}} {{json .RootFS.Layers}}";
+    const IMAGE_FORMAT: &str = "{{.Id}} {{.Created}} {{json .RootFS.Layers}}";
 
     /// A devpod home whose one workspace was created from `created_from`, with
     /// `declared` as the devcontainer's image where it declared one.
@@ -289,7 +308,14 @@ mod tests {
     }
 
     fn line(id: &str, layers: &[&str]) -> String {
-        format!("{id} {}\n", serde_json::to_string(layers).expect("layers"))
+        line_at(id, "2026-10-01T00:00:00.000000000Z", layers)
+    }
+
+    fn line_at(id: &str, created: &str, layers: &[&str]) -> String {
+        format!(
+            "{id} {created} {}\n",
+            serde_json::to_string(layers).expect("layers")
+        )
     }
 
     fn inspect_container(fake: &FakeRunner, running: &str) {
@@ -386,7 +412,7 @@ mod tests {
         inspect_image(
             &fake,
             "ghcr.io/o/img:latest",
-            line("sha256:base2", &["l1", "l3"]),
+            line_at("sha256:base2", "2026-10-05T09:00:00Z", &["l1", "l3"]),
         );
 
         let stale = stale_images(&fake, Some(&home), ["ws"]);
@@ -410,7 +436,7 @@ mod tests {
         inspect_image(
             &fake,
             "ghcr.io/o/img:latest",
-            line("sha256:base2", &["l1", "f1"]),
+            line_at("sha256:base2", "2026-10-05T09:00:00Z", &["l1", "f1"]),
         );
 
         let stale = stale_images(&fake, Some(&home), ["ws"]);
@@ -419,6 +445,36 @@ mod tests {
             stale.of("ws").map(StaleImage::reference),
             Some("ghcr.io/o/img:latest")
         );
+    }
+
+    #[test]
+    fn a_prebuilt_image_on_a_newer_base_than_the_local_reference_is_current() {
+        // The derived image came from a registry, built on a base this machine
+        // has not pulled yet. The layers differ, but the running image is the
+        // newer one, and a recreate would pull the same prebuild again.
+        let home = home_with(
+            "ws",
+            "ghcr.io/o/img-devcontainer:abc",
+            Some("ghcr.io/o/img:latest"),
+        );
+        let fake = FakeRunner::new();
+        inspect_container(&fake, "sha256:prebuilt");
+        inspect_image(
+            &fake,
+            "sha256:prebuilt",
+            line_at(
+                "sha256:prebuilt",
+                "2026-10-06T08:00:00.5Z",
+                &["l1", "l9", "f1"],
+            ),
+        );
+        inspect_image(
+            &fake,
+            "ghcr.io/o/img:latest",
+            line_at("sha256:base", "2026-10-01T00:00:00Z", &["l1", "l2"]),
+        );
+
+        assert!(stale_images(&fake, Some(&home), ["ws"]).is_empty());
     }
 
     #[test]

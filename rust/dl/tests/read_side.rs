@@ -401,8 +401,8 @@ const STALE_REFERENCE: &str = "ghcr.io/blooop/devlaunch-devcontainer:latest";
 /// [`STALE_REFERENCE`] and a docker that says the reference has since moved.
 ///
 /// The container was created from the reference itself, so differing image ids
-/// are the whole of the evidence; the layers are there only because the format
-/// asks for them.
+/// are the whole of the evidence; the time and the layers are there only because
+/// the format asks for them.
 fn world_with_a_stale_workspace() -> World {
     let world = World::full();
     let records = world.path(&format!("devpod/contexts/default/workspaces/{STALE_ID}"));
@@ -427,8 +427,8 @@ fn world_with_a_stale_workspace() -> World {
 [ "$1" = inspect ] || exit 1
 case "$3 $6" in
 "container c1") echo "c1 sha256:old" ;;
-"image sha256:old") echo 'sha256:old ["sha256:l1"]' ;;
-"image {STALE_REFERENCE}") echo 'sha256:new ["sha256:l2"]' ;;
+"image sha256:old") echo 'sha256:old 2026-10-01T00:00:00Z ["sha256:l1"]' ;;
+"image {STALE_REFERENCE}") echo 'sha256:new 2026-10-05T00:00:00.123Z ["sha256:l2"]' ;;
 *) exit 1 ;;
 esac
 "#
