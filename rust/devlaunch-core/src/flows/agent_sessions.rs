@@ -22,8 +22,9 @@
 //!
 //! **Every failure is a notice, never a refusal of the recreate.** A herdr that
 //! does not answer, a pane with no saved line, a pane that will not take the
-//! line: each costs that agent its automatic restart, and the caller says so with
-//! the line to type by hand. A recreate asked for is a recreate done.
+//! line: each costs that agent its automatic restart, and the caller says so,
+//! with the line to type by hand where herdr saved one. A recreate asked for is a
+//! recreate done.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -100,7 +101,15 @@ pub struct HeldSessions {
     /// The sessions that can be started again.
     pub sessions: Vec<HeldSession>,
     /// Panes that hold a live agent in this workspace and no saved line for it.
-    pub unresumable: Vec<String>,
+    pub unresumable: Vec<UnresumablePane>,
+}
+
+/// A pane with a live agent and no saved line to start it again.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnresumablePane {
+    pub pane_id: String,
+    /// herdr's name for the agent in the pane: `claude`, `codex`, ...
+    pub agent: String,
 }
 
 /// The agent sessions herdr's panes hold in `workspace_id`, or `None` when herdr
@@ -109,7 +118,8 @@ pub struct HeldSessions {
 /// A pane counts when its foreground is a dl transport into this workspace (the
 /// reading the pane shell does, [`session_manager::workspace_among`]) and herdr
 /// does not say its agent has ended. Its line is herdr's saved resume argv, taken
-/// only when the words after its `--` start an agent dl knows by name.
+/// only when it names this workspace and the words after its `--` start an agent
+/// dl knows by name.
 ///
 /// `herdr agent get` decides the two doubtful cases. A saved line in a pane whose
 /// agent herdr calls `done`, or where herdr names no agent, is a line left over
@@ -144,18 +154,23 @@ pub fn collect(
             .as_deref()
             .and_then(|json| herdr::saved_argv(json, &pane.pane_id))
             .flatten()
-            .filter(|argv| starts_an_agent(argv));
-        let live = match agent_reading(runner, manager, &pane.pane_id) {
+            .filter(|argv| starts_an_agent(argv, workspace_id));
+        let live_agent = match agent_reading(runner, manager, &pane.pane_id) {
             herdr::AgentReading::Unanswered => None,
-            herdr::AgentReading::NoAgent => Some(false),
-            herdr::AgentReading::Agent(agent) => Some(agent.status != herdr::AgentStatus::Done),
+            herdr::AgentReading::NoAgent => Some(None),
+            herdr::AgentReading::Agent(agent) => {
+                Some((agent.status != herdr::AgentStatus::Done).then_some(agent.agent))
+            }
         };
-        match (line, live) {
-            (Some(line), Some(true) | None) => held.sessions.push(HeldSession {
+        match (line, live_agent) {
+            (Some(line), Some(Some(_)) | None) => held.sessions.push(HeldSession {
                 pane_id: pane.pane_id,
                 line,
             }),
-            (None, Some(true)) => held.unresumable.push(pane.pane_id),
+            (None, Some(Some(agent))) => held.unresumable.push(UnresumablePane {
+                pane_id: pane.pane_id,
+                agent,
+            }),
             (Some(_) | None, _) => {}
         }
     }
@@ -170,13 +185,21 @@ pub fn agent_reading(runner: &dyn Runner, manager: &Manager, pane_id: &str) -> h
         .map_or(herdr::AgentReading::Unanswered, herdr::agent_reading_in)
 }
 
-/// Whether a saved line starts an agent: `dl <ws> [...] -- [NAME=value ...] <agent> ...`.
-fn starts_an_agent(argv: &[String]) -> bool {
-    argv.iter()
-        .skip_while(|word| *word != "--")
-        .skip(1)
-        .find(|word| !herdr::is_assignment(word))
-        .is_some_and(|program| herdr::agent_named(program).is_some())
+/// Whether a saved line starts an agent in `workspace_id`:
+/// `dl <workspace_id> [...] -- [NAME=value ...] <agent> ...`.
+///
+/// The workspace word is compared with the id because that is what dl writes
+/// there, both from the launch and through the container hook. A line naming
+/// another workspace was saved by an earlier session in the same pane, and would
+/// start its agent there.
+fn starts_an_agent(argv: &[String], workspace_id: &str) -> bool {
+    argv.get(1).map(String::as_str) == Some(workspace_id)
+        && argv
+            .iter()
+            .skip_while(|word| *word != "--")
+            .skip(1)
+            .find(|word| !herdr::is_assignment(word))
+            .is_some_and(|program| herdr::agent_named(program).is_some())
 }
 
 /// What became of one held session after the recreate.
@@ -341,6 +364,10 @@ mod tests {
             [HERDR, "pane", "process-info", "--pane", "w1:p3"],
             Response::stdout(process_info(&[TRANSPORT])),
         );
+        runner.script(
+            [HERDR, "agent", "get", "w1:p3"],
+            Response::stdout(r#"{"id":"x","result":{"type":"agent","agent":null}}"#),
+        );
         let file = saved(&[Some(CLAUDE_LINE), Some(OTHER_LINE), None]);
 
         let held = collect(&runner, &manager(), "myws", &|path| {
@@ -403,9 +430,122 @@ mod tests {
                     pane_id: "w1:p3".to_owned(),
                     line: words(CLAUDE_LINE),
                 }],
-                unresumable: vec!["w1:p2".to_owned()],
+                unresumable: vec![UnresumablePane {
+                    pane_id: "w1:p2".to_owned(),
+                    agent: "claude".to_owned(),
+                }],
             })
         );
+    }
+
+    /// The agent named for a pane with no line is the one herdr says runs there,
+    /// so a pane running codex is not told to run claude's resume.
+    #[test]
+    fn a_pane_with_no_line_is_named_with_the_agent_herdr_reports() {
+        let runner = ScriptedRunner::new();
+        runner.script(
+            [HERDR, "pane", "list"],
+            Response::stdout(pane_list(&["w1:p1"])),
+        );
+        runner.script(
+            [HERDR, "pane", "process-info"],
+            Response::stdout(process_info(&[TRANSPORT])),
+        );
+        runner.script(
+            [HERDR, "agent", "get", "w1:p1"],
+            Response::stdout(agent("codex", "idle")),
+        );
+        let file = saved(&[None]);
+
+        let held = collect(&runner, &manager(), "myws", &|_| Some(file.clone()));
+
+        assert_eq!(
+            held,
+            Some(HeldSessions {
+                sessions: Vec::new(),
+                unresumable: vec![UnresumablePane {
+                    pane_id: "w1:p1".to_owned(),
+                    agent: "codex".to_owned(),
+                }],
+            })
+        );
+    }
+
+    /// herdr says the pane holds no agent, so the line it saved is left over
+    /// from one the user already quit.
+    #[test]
+    fn a_saved_line_in_a_pane_herdr_says_holds_no_agent_is_dropped() {
+        let runner = ScriptedRunner::new();
+        runner.script(
+            [HERDR, "pane", "list"],
+            Response::stdout(pane_list(&["w1:p1"])),
+        );
+        runner.script(
+            [HERDR, "pane", "process-info"],
+            Response::stdout(process_info(&[TRANSPORT])),
+        );
+        runner.script(
+            [HERDR, "agent", "get", "w1:p1"],
+            Response::stdout(r#"{"id":"x","result":{"type":"agent","agent":null}}"#),
+        );
+        let file = saved(&[Some(CLAUDE_LINE)]);
+
+        let held = collect(&runner, &manager(), "myws", &|_| Some(file.clone()));
+
+        assert_eq!(held, Some(HeldSessions::default()));
+    }
+
+    /// An agent this build cannot read is no word from herdr that the agent
+    /// ended, so the saved line is kept.
+    #[test]
+    fn a_saved_line_is_kept_when_herdr_names_an_agent_this_build_cannot_read() {
+        let runner = ScriptedRunner::new();
+        runner.script(
+            [HERDR, "pane", "list"],
+            Response::stdout(pane_list(&["w1:p1"])),
+        );
+        runner.script(
+            [HERDR, "pane", "process-info"],
+            Response::stdout(process_info(&[TRANSPORT])),
+        );
+        runner.script(
+            [HERDR, "agent", "get", "w1:p1"],
+            Response::stdout(
+                r#"{"id":"x","result":{"type":"agent","agent":{"pane_id":"w1:p1","agent_status":"idle"}}}"#,
+            ),
+        );
+        let file = saved(&[Some(CLAUDE_LINE)]);
+
+        let held = collect(&runner, &manager(), "myws", &|_| Some(file.clone()));
+
+        assert_eq!(
+            held,
+            Some(HeldSessions {
+                sessions: vec![HeldSession {
+                    pane_id: "w1:p1".to_owned(),
+                    line: words(CLAUDE_LINE),
+                }],
+                unresumable: Vec::new(),
+            })
+        );
+    }
+
+    #[test]
+    fn an_agent_herdr_names_in_a_shape_this_build_cannot_read_is_no_answer() {
+        for agent in [
+            r#"{"pane_id":"w1:p1","agent_status":"idle"}"#,
+            r#"{"pane_id":"w1:p1","agent":7,"agent_status":"idle"}"#,
+            r#"{"pane_id":"w1:p1","agent":null,"agent_status":"idle"}"#,
+            r#""claude""#,
+            "[]",
+        ] {
+            let answer = format!(r#"{{"id":"x","result":{{"type":"agent","agent":{agent}}}}}"#);
+            assert_eq!(
+                herdr::agent_reading_in(&answer),
+                herdr::AgentReading::Unanswered,
+                "{agent}"
+            );
+        }
     }
 
     /// A saved line that does not start an agent is a plain attach, and typing it
@@ -426,6 +566,41 @@ mod tests {
         let held = collect(&runner, &manager(), "myws", &|_| Some(file.clone()));
 
         assert_eq!(held, Some(HeldSessions::default()));
+    }
+
+    /// A pane attached to this workspace can still hold a line saved by an
+    /// earlier `dl other -- claude` in it, since a plain attach saves nothing.
+    /// Typing that line would start an agent in the other workspace, so the live
+    /// agent here is one the recreate ends with no way back.
+    #[test]
+    fn a_saved_line_into_another_workspace_is_not_this_workspaces_session() {
+        let runner = ScriptedRunner::new();
+        runner.script(
+            [HERDR, "pane", "list"],
+            Response::stdout(pane_list(&["w1:p1"])),
+        );
+        runner.script(
+            [HERDR, "pane", "process-info"],
+            Response::stdout(process_info(&[TRANSPORT])),
+        );
+        runner.script(
+            [HERDR, "agent", "get", "w1:p1"],
+            Response::stdout(agent("claude", "idle")),
+        );
+        let file = saved(&[Some(OTHER_LINE)]);
+
+        let held = collect(&runner, &manager(), "myws", &|_| Some(file.clone()));
+
+        assert_eq!(
+            held,
+            Some(HeldSessions {
+                sessions: Vec::new(),
+                unresumable: vec![UnresumablePane {
+                    pane_id: "w1:p1".to_owned(),
+                    agent: "claude".to_owned(),
+                }],
+            })
+        );
     }
 
     /// What part 3 of devlaunch#673 reads to tell an idle workspace from a busy
@@ -572,6 +747,126 @@ mod tests {
             waited.get() <= Duration::from_secs(30),
             "{:?}",
             waited.get()
+        );
+    }
+
+    /// A refusal is asked again after one tick, and a pane that frees up in the
+    /// meantime is typed into with no more waiting than it took.
+    #[test]
+    fn a_pane_that_comes_back_to_its_shell_is_typed_into_on_a_later_try() {
+        let runner = ScriptedRunner::new();
+        runner.script(
+            [HERDR, "pane", "run"],
+            Response::failed(1, "").and_stdout(r#"{"error":{"code":"pane_busy"}}"#),
+        );
+        let waits = std::cell::RefCell::new(Vec::new());
+
+        let restarted = restart(&runner, &manager(), &held(&["w1:p1"]), &|pause| {
+            waits.borrow_mut().push(pause);
+            if waits.borrow().len() == 2 {
+                runner.clear_scripts();
+                runner.script([HERDR, "pane", "run"], Response::ok());
+            }
+        });
+
+        assert_eq!(
+            restarted,
+            vec![Restarted::Typed {
+                pane_id: "w1:p1".to_owned()
+            }]
+        );
+        assert_eq!(waits.into_inner(), vec![RUN_TICK, RUN_TICK]);
+        assert_eq!(runner.args_to(HERDR).len(), 3);
+    }
+
+    /// The line goes to `pane run` as one shell line, so a word with a space or a
+    /// quote in it has to be quoted to come back as the same word.
+    #[test]
+    fn a_saved_word_with_a_space_or_a_quote_is_typed_back_as_the_same_word() {
+        let runner = ScriptedRunner::new();
+        runner.script([HERDR, "pane", "run"], Response::ok());
+        let line = words(
+            r#"["dl","myws","--","claude","--append-system-prompt","be brief","--name","it's","--resume","4b1e"]"#,
+        );
+        let sessions = HeldSessions {
+            sessions: vec![HeldSession {
+                pane_id: "w1:p1".to_owned(),
+                line: line.clone(),
+            }],
+            unresumable: Vec::new(),
+        };
+
+        restart(&runner, &manager(), &sessions, &|_| {});
+
+        let typed = crate::shell::join(line.iter().map(String::as_str));
+        assert_eq!(
+            typed,
+            r#"dl myws -- claude --append-system-prompt 'be brief' --name 'it'"'"'s' --resume 4b1e"#
+        );
+        assert_eq!(
+            runner.args_to(HERDR),
+            vec![vec![
+                "pane".to_owned(),
+                "run".to_owned(),
+                "w1:p1".to_owned(),
+                typed.clone()
+            ]]
+        );
+        assert_eq!(shlex::split(&typed), Some(line));
+    }
+
+    /// One pane herdr will not describe costs that pane, not the scan.
+    #[test]
+    fn a_pane_herdr_will_not_describe_is_skipped_and_the_rest_are_collected() {
+        let runner = ScriptedRunner::new();
+        runner.script(
+            [HERDR, "pane", "list"],
+            Response::stdout(pane_list(&["w1:p1", "w1:p2", "w1:p3"])),
+        );
+        runner.script(
+            [HERDR, "pane", "process-info", "--pane", "w1:p2"],
+            Response::exited(1),
+        );
+        runner.script(
+            [HERDR, "pane", "process-info"],
+            Response::stdout(process_info(&[TRANSPORT])),
+        );
+        let file = saved(&[Some(CLAUDE_LINE), Some(CLAUDE_LINE), Some(CLAUDE_LINE)]);
+
+        let collected = collect(&runner, &manager(), "myws", &|_| Some(file.clone()));
+
+        assert_eq!(collected, Some(held(&["w1:p1", "w1:p3"])));
+    }
+
+    /// No session file is no saved line for any pane, so a live agent in this
+    /// workspace is one the recreate ends with no way back.
+    #[test]
+    fn a_live_agent_with_no_session_file_to_read_is_unresumable() {
+        let runner = ScriptedRunner::new();
+        runner.script(
+            [HERDR, "pane", "list"],
+            Response::stdout(pane_list(&["w1:p1"])),
+        );
+        runner.script(
+            [HERDR, "pane", "process-info"],
+            Response::stdout(process_info(&[TRANSPORT])),
+        );
+        runner.script(
+            [HERDR, "agent", "get", "w1:p1"],
+            Response::stdout(agent("claude", "working")),
+        );
+
+        let held = collect(&runner, &manager(), "myws", &|_| None);
+
+        assert_eq!(
+            held,
+            Some(HeldSessions {
+                sessions: Vec::new(),
+                unresumable: vec![UnresumablePane {
+                    pane_id: "w1:p1".to_owned(),
+                    agent: "claude".to_owned(),
+                }],
+            })
         );
     }
 

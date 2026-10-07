@@ -22,9 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   was left alone. In a herdr pane, the recreate now reads which panes hold a live agent in
   the workspace and the line herdr saved to start each one again
   (`dl <ws> -- ... claude ... --resume <uuid>`). Once the new container is up, it types
-  each line back into its pane with `herdr pane run`, and then attaches. Outside herdr, or
-  for a pane that will not take its line, it prints the line to run by hand. No failure
-  here refuses the recreate. See docs/cli.md, "A recreate starts the agents it ends again".
+  each line back into its pane with `herdr pane run`, and then attaches. For a pane that
+  will not take its line, it prints the line to run by hand. Outside herdr there is no
+  line to print, so it says that the recreate ends the agents and that `claude --resume`
+  in the new container picks a conversation up again. No failure here refuses the
+  recreate. See docs/cli.md, "A recreate starts the agents it ends again".
 - **`dl --refresh-stale` recreates the stale workspaces that are idle** (#673). It runs
   the recreate above, with no attach, on each workspace `dl --ls` calls stale, so it can
   run after the daily pull. It skips a workspace, and says why, when another `dl` is

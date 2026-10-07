@@ -221,9 +221,9 @@ fn sessions_skip(
     let Some(held) = agent_sessions::collect(runner, manager, workspace_id, read) else {
         return Some(Skip::HerdrUnanswered);
     };
-    if let Some(pane_id) = held.unresumable.first() {
+    if let Some(pane) = held.unresumable.first() {
         return Some(Skip::Unresumable {
-            pane_id: pane_id.clone(),
+            pane_id: pane.pane_id.clone(),
         });
     }
     for session in &held.sessions {

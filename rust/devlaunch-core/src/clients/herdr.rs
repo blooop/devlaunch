@@ -1824,7 +1824,7 @@ pub struct PaneAgent {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AgentReading {
     /// No answer that reads as herdr's: a refusal, a timeout, a herdr too old for
-    /// the command.
+    /// the command, an agent named in a shape this build cannot read.
     Unanswered,
     /// herdr answered, and the pane holds no agent.
     NoAgent,
@@ -1844,7 +1844,7 @@ pub(crate) fn agent_reading_in(answer: &str) -> AgentReading {
         return AgentReading::NoAgent;
     };
     let Some(name) = agent.get("agent").and_then(serde_json::Value::as_str) else {
-        return AgentReading::NoAgent;
+        return AgentReading::Unanswered;
     };
     let status = match agent
         .get("agent_status")
