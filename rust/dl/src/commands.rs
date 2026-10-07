@@ -347,8 +347,10 @@ fn render_table(
     if let listing::WorkspaceTable::Rows(rows) = &table {
         let ids: Vec<&str> = rows.iter().map(|row| row.id.as_str()).collect();
         let stale = stale_images(runner, DevpodHome::locate().as_ref(), ids.iter().copied());
-        let notes =
-            render::stale_image_notes(ids.iter().filter_map(|id| Some((*id, stale.of(id)?))));
+        let notes = render::stale_image_notes(
+            ids.iter()
+                .filter_map(|id| Some((*id, stale.of(id)?.reference()))),
+        );
         for line in notes {
             eprintln!("{line}");
         }

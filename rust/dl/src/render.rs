@@ -59,7 +59,6 @@ use devlaunch_core::flows::repo_manager::{
     CacheNotice, Cleanup, CloneError, EnsureRepoError, NotRefreshed, Refusal, RefusalReason,
     RemoveTreeError, WrongRepoLock,
 };
-use devlaunch_core::flows::stale_images::StaleImage;
 use devlaunch_core::flows::workspace_clone::{
     EnsureBranchError, PrepareColdError, PrepareWorkspaceError, RemoveWorkspaceError,
 };
@@ -310,14 +309,13 @@ fn shared_account_notes(rows: &[claude_profiles::ProfileSummary]) -> Vec<String>
 /// moves it: a pull moves the reference and nothing else, so a person who reads
 /// the line has to be told that the container did not follow.
 pub(crate) fn stale_image_notes<'a>(
-    stale: impl IntoIterator<Item = (&'a str, &'a StaleImage)>,
+    stale: impl IntoIterator<Item = (&'a str, &'a str)>,
 ) -> Vec<String> {
     stale
         .into_iter()
-        .map(|(id, image)| {
+        .map(|(id, reference)| {
             format!(
-                "{id} runs an older image than {} now names. Run `dl {id} recreate` to move it.",
-                image.reference()
+                "{id} runs an older image than {reference} now names. Run `dl {id} recreate` to move it."
             )
         })
         .collect()
@@ -5983,6 +5981,23 @@ mod tests {
             ["Last cache sweep of blooop/devlaunch: ran out of time fetching"]
         );
         assert!(sweep_notes(&[]).is_empty(), "a clean cache says nothing");
+    }
+
+    #[test]
+    fn each_stale_workspace_gets_one_line_in_the_order_given() {
+        assert_eq!(
+            stale_image_notes([
+                ("zeta-main-1", "ghcr.io/o/img:latest"),
+                ("alpha-main-2", "ubuntu:24.04"),
+            ]),
+            [
+                "zeta-main-1 runs an older image than ghcr.io/o/img:latest now names. \
+                 Run `dl zeta-main-1 recreate` to move it.",
+                "alpha-main-2 runs an older image than ubuntu:24.04 now names. \
+                 Run `dl alpha-main-2 recreate` to move it.",
+            ]
+        );
+        assert!(stale_image_notes([]).is_empty());
     }
 
     #[test]
