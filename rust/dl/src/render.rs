@@ -3266,8 +3266,7 @@ pub(crate) fn launch_notice(notice: &LaunchNotice) -> Option<String> {
              --devcontainer ...' to switch config."
         ),
 
-        // --- the agents a recreate ends (devlaunch#673; warnings, bar the two
-        // that report what was done, which are info)
+        // --- the agents a recreate ends (devlaunch#673; no Python line)
         LaunchNotice::AgentSessionsUnseen { workspace_id } => format!(
             "This dl is not in a herdr pane, so it cannot see the agents running in \
              {workspace_id}. The recreate ends them. Run 'claude --resume' in the new \

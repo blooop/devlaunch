@@ -22,8 +22,9 @@
 //!
 //! **Every failure is a notice, never a refusal of the recreate.** A herdr that
 //! does not answer, a pane with no saved line, a pane that will not take the
-//! line: each costs that agent its automatic restart, and the caller says so with
-//! the line to type by hand. A recreate asked for is a recreate done.
+//! line: each costs that agent its automatic restart, and the caller says so,
+//! with the line to type by hand where herdr saved one. A recreate asked for is a
+//! recreate done.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
