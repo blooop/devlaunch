@@ -3266,6 +3266,52 @@ pub(crate) fn launch_notice(notice: &LaunchNotice) -> Option<String> {
              --devcontainer ...' to switch config."
         ),
 
+        // --- the agents a recreate ends (devlaunch#673; warnings, bar the two
+        // that report what was done, which are info)
+        LaunchNotice::AgentSessionsUnseen { workspace_id } => format!(
+            "This dl is not in a herdr pane, so it cannot see the agents running in \
+             {workspace_id}. The recreate ends them. Run 'claude --resume' in the new \
+             container to pick a conversation up again."
+        ),
+        LaunchNotice::AgentSessionsUnanswered { workspace_id } => format!(
+            "herdr did not say which panes it has, so the agents running in {workspace_id} \
+             end with the recreate. Run 'claude --resume' in the new container to pick a \
+             conversation up again."
+        ),
+        LaunchNotice::AgentSessionsHeld {
+            workspace_id,
+            panes,
+        } => {
+            let (noun, pronoun) = if panes.len() == 1 {
+                ("pane", "it")
+            } else {
+                ("panes", "each")
+            };
+            format!(
+                "The recreate ends the agent in {noun} {} of {workspace_id}; dl starts {pronoun} \
+                 again, resumed, once the new container is up.",
+                panes.join(", ")
+            )
+        }
+        LaunchNotice::AgentSessionUnresumable {
+            workspace_id,
+            pane_id,
+        } => format!(
+            "Pane {pane_id} runs an agent in {workspace_id}, and herdr saved no line to start \
+             it again. The recreate ends it. Run 'claude --resume' there to pick the \
+             conversation up again."
+        ),
+        LaunchNotice::AgentSessionRestarted { pane_id } => {
+            format!("Started the agent in pane {pane_id} again.")
+        }
+        LaunchNotice::AgentSessionNotRestarted { pane_id, line } => format!(
+            "Could not start the agent in pane {pane_id} again. Run this in that pane: {line}"
+        ),
+        LaunchNotice::AgentSessionInThisPane { line } => format!(
+            "The agent that ran in this pane ended with the recreate. Run this here to start it \
+             again: {line}"
+        ),
+
         // --- devpod's own lock (devlaunch#600, devlaunch#602; no Python line,
         // Python never watched)
         //
@@ -5089,6 +5135,37 @@ mod tests {
             launch_notice(&LaunchNotice::HerdrTab(HerdrTabRename::Off)),
             None
         );
+    }
+
+    /// devlaunch#673. A line dl could not type is only worth anything if it can be
+    /// pasted, so it is given whole, at the end, with nothing after it.
+    #[test]
+    fn an_agent_line_dl_could_not_type_is_handed_over_whole() {
+        let line = "dl myws -- claude --remote-control=myws --resume 4b1e";
+        let said = launch_notice(&LaunchNotice::AgentSessionNotRestarted {
+            pane_id: "w1:p3".to_owned(),
+            line: line.to_owned(),
+        })
+        .expect("a sentence");
+        assert!(said.contains("pane w1:p3"), "{said}");
+        assert!(said.ends_with(&format!(": {line}")), "{said}");
+
+        let here = launch_notice(&LaunchNotice::AgentSessionInThisPane {
+            line: line.to_owned(),
+        })
+        .expect("a sentence");
+        assert!(here.ends_with(&format!(": {line}")), "{here}");
+    }
+
+    #[test]
+    fn the_agents_a_recreate_will_start_again_are_named_by_pane() {
+        let said = launch_notice(&LaunchNotice::AgentSessionsHeld {
+            workspace_id: "myws".to_owned(),
+            panes: vec!["w1:p1".to_owned(), "w1:p4".to_owned()],
+        })
+        .expect("a sentence");
+        assert!(said.contains("panes w1:p1, w1:p4 of myws"), "{said}");
+        assert!(said.contains("starts each again"), "{said}");
     }
 
     #[test]
