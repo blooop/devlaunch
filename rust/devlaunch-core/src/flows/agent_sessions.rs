@@ -109,7 +109,8 @@ pub struct HeldSessions {
 /// A pane counts when its foreground is a dl transport into this workspace (the
 /// reading the pane shell does, [`session_manager::workspace_among`]) and herdr
 /// does not say its agent has ended. Its line is herdr's saved resume argv, taken
-/// only when the words after its `--` start an agent dl knows by name.
+/// only when it names this workspace and the words after its `--` start an agent
+/// dl knows by name.
 ///
 /// `herdr agent get` decides the two doubtful cases. A saved line in a pane whose
 /// agent herdr calls `done`, or where herdr names no agent, is a line left over
@@ -144,7 +145,7 @@ pub fn collect(
             .as_deref()
             .and_then(|json| herdr::saved_argv(json, &pane.pane_id))
             .flatten()
-            .filter(|argv| starts_an_agent(argv));
+            .filter(|argv| starts_an_agent(argv, workspace_id));
         let live = match agent_reading(runner, manager, &pane.pane_id) {
             herdr::AgentReading::Unanswered => None,
             herdr::AgentReading::NoAgent => Some(false),
@@ -170,13 +171,21 @@ pub fn agent_reading(runner: &dyn Runner, manager: &Manager, pane_id: &str) -> h
         .map_or(herdr::AgentReading::Unanswered, herdr::agent_reading_in)
 }
 
-/// Whether a saved line starts an agent: `dl <ws> [...] -- [NAME=value ...] <agent> ...`.
-fn starts_an_agent(argv: &[String]) -> bool {
-    argv.iter()
-        .skip_while(|word| *word != "--")
-        .skip(1)
-        .find(|word| !herdr::is_assignment(word))
-        .is_some_and(|program| herdr::agent_named(program).is_some())
+/// Whether a saved line starts an agent in `workspace_id`:
+/// `dl <workspace_id> [...] -- [NAME=value ...] <agent> ...`.
+///
+/// The workspace word is compared with the id because that is what dl writes
+/// there, both from the launch and through the container hook. A line naming
+/// another workspace was saved by an earlier session in the same pane, and would
+/// start its agent there.
+fn starts_an_agent(argv: &[String], workspace_id: &str) -> bool {
+    argv.get(1).map(String::as_str) == Some(workspace_id)
+        && argv
+            .iter()
+            .skip_while(|word| *word != "--")
+            .skip(1)
+            .find(|word| !herdr::is_assignment(word))
+            .is_some_and(|program| herdr::agent_named(program).is_some())
 }
 
 /// What became of one held session after the recreate.
@@ -426,6 +435,38 @@ mod tests {
         let held = collect(&runner, &manager(), "myws", &|_| Some(file.clone()));
 
         assert_eq!(held, Some(HeldSessions::default()));
+    }
+
+    /// A pane attached to this workspace can still hold a line saved by an
+    /// earlier `dl other -- claude` in it, since a plain attach saves nothing.
+    /// Typing that line would start an agent in the other workspace, so the live
+    /// agent here is one the recreate ends with no way back.
+    #[test]
+    fn a_saved_line_into_another_workspace_is_not_this_workspaces_session() {
+        let runner = ScriptedRunner::new();
+        runner.script(
+            [HERDR, "pane", "list"],
+            Response::stdout(pane_list(&["w1:p1"])),
+        );
+        runner.script(
+            [HERDR, "pane", "process-info"],
+            Response::stdout(process_info(&[TRANSPORT])),
+        );
+        runner.script(
+            [HERDR, "agent", "get", "w1:p1"],
+            Response::stdout(agent("claude", "idle")),
+        );
+        let file = saved(&[Some(OTHER_LINE)]);
+
+        let held = collect(&runner, &manager(), "myws", &|_| Some(file.clone()));
+
+        assert_eq!(
+            held,
+            Some(HeldSessions {
+                sessions: Vec::new(),
+                unresumable: vec!["w1:p1".to_owned()],
+            })
+        );
     }
 
     /// What part 3 of devlaunch#673 reads to tell an idle workspace from a busy
