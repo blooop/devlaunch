@@ -17,6 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reads devpod's `workspace_result.json` and asks docker for the container's image and the
   reference's current one; where devpod built a derived image on top of the declared one,
   it compares layers. Every doubt reads as current.
+- **`dl <ws> recreate` starts the agents it ends again, in the panes they held** (#673).
+  A recreate ended every agent session in the container, which is why a stale workspace
+  was left alone. In a herdr pane, the recreate now reads which panes hold a live agent in
+  the workspace and the line herdr saved to start each one again
+  (`dl <ws> -- ... claude ... --resume <uuid>`). Once the new container is up, it types
+  each line back into its pane with `herdr pane run`, and then attaches. Outside herdr, or
+  for a pane that will not take its line, it prints the line to run by hand. No failure
+  here refuses the recreate. See docs/cli.md, "A recreate starts the agents it ends again".
 
 ## [0.59.4] - 2026-10-05
 

@@ -914,6 +914,41 @@ only difference is the `--session-id` on the line.
 [docs/workspace-tools.md](workspace-tools.md#coming-back-after-herdr-restarts) has what
 herdr needs and what it does not cover.
 
+### A recreate starts the agents it ends again
+
+`dl <ws> recreate` replaces the container, so every process in it ends, the agents
+included. Their conversations do not: the transcripts live in `~/.claude`, which outlives
+the container. In a herdr pane, the recreate uses the same saved line as a herdr restore
+to bring each agent back (devlaunch#673):
+
+1. Before the `up`, `dl` asks herdr for its panes. A pane counts when its foreground is a
+   `dl` session into this workspace, herdr saved a line for it that starts an agent, and
+   `herdr agent get` does not report the agent as `done`. `dl` names the panes it found.
+2. After the `up` succeeds, `dl` types each pane's line back into that pane with
+   `herdr pane run`. herdr refuses a pane until the old session in it has exited and its
+   shell is back, so `dl` asks again every half second, for up to ten seconds per pane.
+3. Then `dl` attaches to the new container as a recreate always did.
+
+Each line is the one herdr saved for the pane, for example
+`dl <ws> -- ... claude ... --remote-control=<ws> --resume <uuid>`. It holds the session
+the pane is in now, because the container hook reports a new id after `/clear`.
+
+Nothing here can refuse the recreate. Each failure is one line on stderr, and the
+recreate goes ahead:
+
+- Outside a herdr pane there are no panes to read. `dl` says the recreate ends the
+  agents and that `claude --resume` in the new container picks a conversation up again.
+  The same applies when herdr does not answer.
+- A pane where herdr reports a live agent and saved no line ends with the recreate, and
+  `dl` names it.
+- A pane that does not take its line in ten seconds, or any pane at all when the `up`
+  fails, gets the line printed, to run there by hand.
+- The pane that `dl` itself runs in is never typed into, because its foreground is that
+  `dl`. Its line is printed instead.
+
+`reset` and `code` do none of this. A `reset` drops the volumes, and `code` keeps the
+container when nothing changed.
+
 ## `kill`: the workspace that will not answer
 
 `dl <ws> stop` asks devpod to stop a workspace, and it is the right thing to type
