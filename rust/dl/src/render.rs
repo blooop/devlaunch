@@ -334,13 +334,30 @@ pub(crate) fn refresh_stale_line(planned: &Planned) -> String {
         reference,
         verdict,
     } = planned;
-    let skip = match verdict {
+    match verdict {
         Verdict::Refresh => {
-            return format!("Refreshing {id}: it runs an older image than {reference} now names.");
+            format!("Refreshing {id}: it runs an older image than {reference} now names.")
         }
-        Verdict::Skip(skip) => skip,
-    };
-    let why = match skip {
+        Verdict::Skip(skip) => format!(
+            "Skipping {id}: {}. Run `dl {id} recreate` once it is done.",
+            skip_reason(skip)
+        ),
+    }
+}
+
+/// The line `dl --refresh-stale` says when a workspace its plan would refresh
+/// is judged again just before its recreate, and is now to be left alone.
+pub(crate) fn refresh_stale_rejudged_line(id: &str, skip: &Skip) -> String {
+    format!(
+        "Skipping {id} after all, judged again before its recreate: {}. \
+         Run `dl {id} recreate` once it is done.",
+        skip_reason(skip)
+    )
+}
+
+/// Why `dl --refresh-stale` leaves a stale workspace alone, as a clause.
+fn skip_reason(skip: &Skip) -> String {
+    match skip {
         Skip::LaunchUnderWay => "another dl is launching it".to_owned(),
         Skip::LockUnreadable { why } => format!("could not ask its launch lock ({why})"),
         Skip::ProcessesUnread { why } => {
@@ -373,8 +390,7 @@ pub(crate) fn refresh_stale_line(planned: &Planned) -> String {
             "{running} agent sessions run in it and herdr's panes hold {held}, so the others \
              would end with nothing to start them again"
         ),
-    };
-    format!("Skipping {id}: {why}. Run `dl {id} recreate` once it is done.")
+    }
 }
 
 /// How many stale workspaces `dl --refresh-stale` refreshed, skipped, and failed

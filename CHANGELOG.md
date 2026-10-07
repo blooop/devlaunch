@@ -32,8 +32,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   run after the daily pull. It skips a workspace, and says why, when another `dl` is
   launching it, a build runs in it, an agent (`claude`, `codex` or `gemini`) runs a
   command in it or is not idle, or it holds an agent session `dl` cannot start again
-  (outside herdr, any agent session). It prints its plan first and a count last, and exits 1 when a recreate
-  failed. See docs/cli.md, "`--refresh-stale`: recreate the stale workspaces that are
+  (outside herdr, any agent session). It prints its plan first and a count last, checks
+  each workspace again just before its recreate, and exits 1 when a recreate failed.
+  See docs/cli.md, "`--refresh-stale`: recreate the stale workspaces that are
   idle".
 
 ## [0.59.4] - 2026-10-05

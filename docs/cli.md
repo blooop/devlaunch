@@ -964,10 +964,13 @@ docker pull ghcr.io/owner/image:latest && dl --refresh-stale
 ```
 
 It prints one line for each stale workspace before it starts: `Refreshing <ws>`, or
-`Skipping <ws>` with the reason. Then it recreates each workspace it did not skip, with
-the recreate's own lines, and ends with a count. A recreate that fails does not stop
-the others. The exit status is 1 when a recreate failed, and 0 otherwise. A skip is not
-a failure.
+`Skipping <ws>` with the reason. Then it takes each workspace it did not skip in turn.
+It checks the workspace again just before its recreate, because the recreates before
+it can take minutes. If the workspace is now to be skipped, it prints
+`Skipping <ws> after all` with the reason and leaves it alone. Otherwise it recreates
+it, with the recreate's own lines. It ends with a count. A recreate that fails does not
+stop the others. The exit status is 1 when a recreate failed, and 0 otherwise. A skip
+is not a failure.
 
 `dl` skips a stale workspace when any of these is true, and names the first that is:
 
@@ -990,8 +993,8 @@ a failure.
   of every kind on both sides. A session that was started from a terminal outside
   herdr has no line to start it again.
 
-The reading is taken a moment before the recreate. An agent that starts work in that
-moment ends with the recreate, the same as with `dl <ws> recreate`.
+The second check is taken a moment before the recreate. An agent that starts work in
+that moment ends with the recreate, the same as with `dl <ws> recreate`.
 
 ## `kill`: the workspace that will not answer
 

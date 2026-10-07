@@ -1276,7 +1276,9 @@ impl Cleanup {
 /// It says the whole plan first, one line per stale workspace, so the skips are
 /// on the screen before the recreates start to scroll it away. Which workspaces
 /// are safe is core's ([`refresh_stale::plan`]); each recreate is the launch
-/// flow's own, with its own notices.
+/// flow's own, with its own notices. The recreates before one can take minutes,
+/// so each workspace the plan would refresh is judged again just before its
+/// recreate, and left alone, with a line, if that verdict is a skip.
 ///
 /// A recreate that fails is said by its launch and counted, and the loop goes on
 /// to the next. The exit status is 1 when any recreate failed. A skip is not a
@@ -1302,14 +1304,18 @@ fn render_refresh_stale<'r>(
     }
     let host = Host::from_process(cache);
     let manager = agent_sessions::Manager::from_host(&host);
-    let planned = refresh_stale::plan(
-        runner,
-        &stale,
-        ids.iter().copied(),
-        manager.as_ref(),
-        &LaunchLocks::under(cache),
-        &|path| std::fs::read_to_string(path).ok(),
-    );
+    let launch_locks = LaunchLocks::under(cache);
+    let judge = |ids: &mut dyn Iterator<Item = &str>| {
+        refresh_stale::plan(
+            runner,
+            &stale,
+            ids,
+            manager.as_ref(),
+            &launch_locks,
+            &|path| std::fs::read_to_string(path).ok(),
+        )
+    };
+    let planned = judge(&mut ids.iter().copied());
     for line in planned.iter().map(render::refresh_stale_line) {
         println!("{line}");
     }
@@ -1320,6 +1326,21 @@ fn render_refresh_stale<'r>(
         if let refresh_stale::Verdict::Skip(_) = planned.verdict {
             tally.skipped += 1;
             continue;
+        }
+        // The plan was read before the recreates ahead of this one, which can
+        // take minutes. Judged again now, a skip wins.
+        let id = planned.workspace_id.as_str();
+        match judge(&mut std::iter::once(id)).pop().map(|now| now.verdict) {
+            Some(refresh_stale::Verdict::Refresh) => {}
+            Some(refresh_stale::Verdict::Skip(skip)) => {
+                println!("{}", render::refresh_stale_rejudged_line(id, &skip));
+                tally.skipped += 1;
+                continue;
+            }
+            None => {
+                tally.skipped += 1;
+                continue;
+            }
         }
         let ran = launch::render_launch(
             context,
