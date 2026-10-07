@@ -1072,3 +1072,83 @@ fn a_workspace_that_got_busy_after_the_plan_is_not_recreated() {
         )
     );
 }
+
+#[test]
+fn a_refresh_with_nothing_stale_says_so_and_reads_no_container() {
+    let world = world_with_stale(&[]);
+    let run = world.refresh_stale();
+    run.succeeded();
+    assert_eq!(
+        run.out,
+        "No workspace runs an older image than its reference names.\n"
+    );
+    assert!(
+        !world.read("docker.log").contains("exec"),
+        "docker exec ran: {}",
+        world.read("docker.log")
+    );
+    assert_eq!(world.upped(), Vec::<String>::new());
+}
+
+#[test]
+fn a_refresh_prints_its_plan_then_recreates_the_quiet_one_and_skips_the_build() {
+    let world = world_with_stale(&[(STALE_ID, "c1", QUIET), (SECOND_ID, "c2", BUILDING)]);
+    let run = world.refresh_stale();
+    run.succeeded();
+    let plan = format!(
+        "{}Skipping {SECOND_ID}: a build runs in it (cc1plus, pid 77). \
+         Run `dl {SECOND_ID} recreate` once it is done.\n",
+        refreshing(STALE_ID)
+    );
+    assert_eq!(world.read(&format!("stdout-at-up-{STALE_ID}")), plan);
+    assert_eq!(world.upped(), vec![STALE_ID.to_owned()]);
+    assert_eq!(
+        run.out,
+        format!("{plan}Refreshed 1 stale workspace, skipped 1, and 0 failed.\n")
+    );
+}
+
+#[test]
+fn a_refresh_whose_recreate_fails_goes_on_to_the_next_and_exits_1() {
+    let world = world_with_stale(&[(STALE_ID, "c1", QUIET), (SECOND_ID, "c2", QUIET)]);
+    std::fs::write(
+        world.path("shim-config.json"),
+        format!(
+            r#"{{"responses": [{{"prefix": ["up", "{STALE_ID}"], "returncode": 1, "stdout": "", "stderr": "up failed"}}]}}"#
+        ),
+    )
+    .expect("a shim config");
+    let run = world.refresh_stale();
+    run.exited(1);
+    assert_eq!(
+        world.upped(),
+        vec![STALE_ID.to_owned(), SECOND_ID.to_owned()]
+    );
+    assert!(
+        run.out
+            .ends_with("Refreshed 1 stale workspace, skipped 0, and 1 failed.\n"),
+        "stdout: {}",
+        run.out
+    );
+}
+
+#[test]
+fn a_refresh_skips_a_stopped_stale_workspace() {
+    let world = world_with_stale(&[(
+        STALE_ID,
+        "c1",
+        "echo 'Error response from daemon: container c1 is not running' >&2; exit 1",
+    )]);
+    let run = world.refresh_stale();
+    run.succeeded();
+    assert_eq!(world.upped(), Vec::<String>::new());
+    assert_eq!(
+        run.out,
+        format!(
+            "Skipping {STALE_ID}: could not read the processes in its container \
+             (docker exec failed (Code(1)): Error response from daemon: container c1 is not \
+             running). Run `dl {STALE_ID} recreate` once it is done.\n\
+             Refreshed 0 stale workspaces, skipped 1, and 0 failed.\n"
+        )
+    );
+}
