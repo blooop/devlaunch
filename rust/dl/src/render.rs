@@ -5227,12 +5227,25 @@ mod tests {
             launch_notice(&LaunchNotice::AgentSessionUnresumable {
                 workspace_id: "myws".to_owned(),
                 pane_id: "w1:p2".to_owned(),
+                agent: "claude".to_owned(),
             })
             .as_deref(),
             Some(
                 "Pane w1:p2 runs an agent in myws, and herdr saved no line to start it again. \
                  The recreate ends it. Run 'claude --resume' there to pick the conversation up \
                  again."
+            )
+        );
+        assert_eq!(
+            launch_notice(&LaunchNotice::AgentSessionUnresumable {
+                workspace_id: "myws".to_owned(),
+                pane_id: "w1:p2".to_owned(),
+                agent: "codex".to_owned(),
+            })
+            .as_deref(),
+            Some(
+                "Pane w1:p2 runs codex in myws, and herdr saved no line to start it again. \
+                 The recreate ends it. Start codex there again to pick the conversation up."
             )
         );
         assert_eq!(

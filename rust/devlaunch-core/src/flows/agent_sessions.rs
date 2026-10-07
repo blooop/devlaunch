@@ -862,7 +862,10 @@ mod tests {
             held,
             Some(HeldSessions {
                 sessions: Vec::new(),
-                unresumable: vec!["w1:p1".to_owned()],
+                unresumable: vec![UnresumablePane {
+                    pane_id: "w1:p1".to_owned(),
+                    agent: "claude".to_owned(),
+                }],
             })
         );
     }
