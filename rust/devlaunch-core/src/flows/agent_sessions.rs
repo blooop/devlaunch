@@ -750,6 +750,123 @@ mod tests {
         );
     }
 
+    /// A refusal is asked again after one tick, and a pane that frees up in the
+    /// meantime is typed into with no more waiting than it took.
+    #[test]
+    fn a_pane_that_comes_back_to_its_shell_is_typed_into_on_a_later_try() {
+        let runner = ScriptedRunner::new();
+        runner.script(
+            [HERDR, "pane", "run"],
+            Response::failed(1, "").and_stdout(r#"{"error":{"code":"pane_busy"}}"#),
+        );
+        let waits = std::cell::RefCell::new(Vec::new());
+
+        let restarted = restart(&runner, &manager(), &held(&["w1:p1"]), &|pause| {
+            waits.borrow_mut().push(pause);
+            if waits.borrow().len() == 2 {
+                runner.clear_scripts();
+                runner.script([HERDR, "pane", "run"], Response::ok());
+            }
+        });
+
+        assert_eq!(
+            restarted,
+            vec![Restarted::Typed {
+                pane_id: "w1:p1".to_owned()
+            }]
+        );
+        assert_eq!(waits.into_inner(), vec![RUN_TICK, RUN_TICK]);
+        assert_eq!(runner.args_to(HERDR).len(), 3);
+    }
+
+    /// The line goes to `pane run` as one shell line, so a word with a space or a
+    /// quote in it has to be quoted to come back as the same word.
+    #[test]
+    fn a_saved_word_with_a_space_or_a_quote_is_typed_back_as_the_same_word() {
+        let runner = ScriptedRunner::new();
+        runner.script([HERDR, "pane", "run"], Response::ok());
+        let line = words(
+            r#"["dl","myws","--","claude","--append-system-prompt","be brief","--name","it's","--resume","4b1e"]"#,
+        );
+        let sessions = HeldSessions {
+            sessions: vec![HeldSession {
+                pane_id: "w1:p1".to_owned(),
+                line: line.clone(),
+            }],
+            unresumable: Vec::new(),
+        };
+
+        restart(&runner, &manager(), &sessions, &|_| {});
+
+        let typed = crate::shell::join(line.iter().map(String::as_str));
+        assert_eq!(
+            typed,
+            r#"dl myws -- claude --append-system-prompt 'be brief' --name 'it'"'"'s' --resume 4b1e"#
+        );
+        assert_eq!(
+            runner.args_to(HERDR),
+            vec![vec![
+                "pane".to_owned(),
+                "run".to_owned(),
+                "w1:p1".to_owned(),
+                typed.clone()
+            ]]
+        );
+        assert_eq!(shlex::split(&typed), Some(line));
+    }
+
+    /// One pane herdr will not describe costs that pane, not the scan.
+    #[test]
+    fn a_pane_herdr_will_not_describe_is_skipped_and_the_rest_are_collected() {
+        let runner = ScriptedRunner::new();
+        runner.script(
+            [HERDR, "pane", "list"],
+            Response::stdout(pane_list(&["w1:p1", "w1:p2", "w1:p3"])),
+        );
+        runner.script(
+            [HERDR, "pane", "process-info", "--pane", "w1:p2"],
+            Response::exited(1),
+        );
+        runner.script(
+            [HERDR, "pane", "process-info"],
+            Response::stdout(process_info(&[TRANSPORT])),
+        );
+        let file = saved(&[Some(CLAUDE_LINE), Some(CLAUDE_LINE), Some(CLAUDE_LINE)]);
+
+        let collected = collect(&runner, &manager(), "myws", &|_| Some(file.clone()));
+
+        assert_eq!(collected, Some(held(&["w1:p1", "w1:p3"])));
+    }
+
+    /// No session file is no saved line for any pane, so a live agent in this
+    /// workspace is one the recreate ends with no way back.
+    #[test]
+    fn a_live_agent_with_no_session_file_to_read_is_unresumable() {
+        let runner = ScriptedRunner::new();
+        runner.script(
+            [HERDR, "pane", "list"],
+            Response::stdout(pane_list(&["w1:p1"])),
+        );
+        runner.script(
+            [HERDR, "pane", "process-info"],
+            Response::stdout(process_info(&[TRANSPORT])),
+        );
+        runner.script(
+            [HERDR, "agent", "get", "w1:p1"],
+            Response::stdout(agent("claude", "working")),
+        );
+
+        let held = collect(&runner, &manager(), "myws", &|_| None);
+
+        assert_eq!(
+            held,
+            Some(HeldSessions {
+                sessions: Vec::new(),
+                unresumable: vec!["w1:p1".to_owned()],
+            })
+        );
+    }
+
     #[test]
     fn outside_a_herdr_pane_there_is_no_manager_to_ask() {
         let mut outside = env("w1:p9");

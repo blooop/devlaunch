@@ -13966,6 +13966,84 @@ mod tests {
         }
     }
 
+    /// A stopped workspace has no container for an agent to run in, so there is
+    /// nothing a recreate ends and herdr is not asked.
+    #[test]
+    fn a_recreate_of_a_stopped_workspace_asks_herdr_nothing() {
+        let mut scene = Scene::new().with_stopped("myws");
+        in_herdr_beside_claude(&mut scene);
+        let updater = SelfInvocation::new("dl");
+        let completion = scene.cache_dir().join("completion.json");
+        let mut parts = launching(&scene.runner, &updater, &completion);
+        let mut cold = NeverCold;
+        let mut launch = Launch::new(
+            &mut parts.context,
+            &mut parts.refresh,
+            &mut cold,
+            &parts.provision,
+            &scene.host,
+            &mut parts.chatter,
+            &mut parts.said,
+        );
+        let _ = launch.run("myws", &LaunchVerb::Recreate, None);
+
+        assert!(
+            !scene
+                .runner
+                .argvs()
+                .iter()
+                .any(|argv| argv.get(1).map(String::as_str) == Some("pane")),
+            "{:?}",
+            scene.runner.argvs()
+        );
+    }
+
+    /// herdr that will not list its panes is a recreate that cannot see the
+    /// agents, said as such, and the recreate goes ahead.
+    #[test]
+    fn a_recreate_whose_herdr_will_not_list_its_panes_says_so_and_goes_ahead() {
+        const HERDR: &str = "/opt/herdr/bin/herdr";
+        let mut scene = Scene::new().with_running("myws");
+        scene.host.herdr = herdr::HostEnv {
+            in_pane: Some("1".to_owned()),
+            pane_id: Some("w1:p9".to_owned()),
+            socket: Some(scene.cache_dir().join("herdr.sock").display().to_string()),
+            ..herdr::HostEnv::default()
+        };
+        scene.host.herdr_bin = Some(HERDR.to_owned());
+        scene
+            .runner
+            .script([HERDR, "pane", "list"], Response::exited(1));
+        let updater = SelfInvocation::new("dl");
+        let completion = scene.cache_dir().join("completion.json");
+        let mut parts = launching(&scene.runner, &updater, &completion);
+        let mut cold = NeverCold;
+        let launched = {
+            let mut launch = Launch::new(
+                &mut parts.context,
+                &mut parts.refresh,
+                &mut cold,
+                &parts.provision,
+                &scene.host,
+                &mut parts.chatter,
+                &mut parts.said,
+            );
+            launch.run("myws", &LaunchVerb::Recreate, None)
+        };
+
+        assert_eq!(
+            launched,
+            Ok(Launched::Session(Session::RemoteExit { status: 0 }))
+        );
+        assert!(
+            parts.said.contains(&LaunchNotice::AgentSessionsUnanswered {
+                workspace_id: "myws".to_owned(),
+            }),
+            "{:?}",
+            parts.said
+        );
+    }
+
     #[test]
     fn a_reset_asks_for_a_clean_slate_and_then_attaches() {
         let scene = Scene::new().with_running("myws");

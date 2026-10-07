@@ -5200,6 +5200,51 @@ mod tests {
     }
 
     #[test]
+    fn the_agents_a_recreate_cannot_start_again_are_said_word_for_word() {
+        assert_eq!(
+            launch_notice(&LaunchNotice::AgentSessionsUnseen {
+                workspace_id: "myws".to_owned(),
+            })
+            .as_deref(),
+            Some(
+                "This dl is not in a herdr pane, so it cannot see the agents running in myws. \
+                 The recreate ends them. Run 'claude --resume' in the new container to pick a \
+                 conversation up again."
+            )
+        );
+        assert_eq!(
+            launch_notice(&LaunchNotice::AgentSessionsUnanswered {
+                workspace_id: "myws".to_owned(),
+            })
+            .as_deref(),
+            Some(
+                "herdr did not say which panes it has, so the agents running in myws end with \
+                 the recreate. Run 'claude --resume' in the new container to pick a \
+                 conversation up again."
+            )
+        );
+        assert_eq!(
+            launch_notice(&LaunchNotice::AgentSessionUnresumable {
+                workspace_id: "myws".to_owned(),
+                pane_id: "w1:p2".to_owned(),
+            })
+            .as_deref(),
+            Some(
+                "Pane w1:p2 runs an agent in myws, and herdr saved no line to start it again. \
+                 The recreate ends it. Run 'claude --resume' there to pick the conversation up \
+                 again."
+            )
+        );
+        assert_eq!(
+            launch_notice(&LaunchNotice::AgentSessionRestarted {
+                pane_id: "w1:p1".to_owned(),
+            })
+            .as_deref(),
+            Some("Started the agent in pane w1:p1 again.")
+        );
+    }
+
+    #[test]
     fn the_stale_checkout_line_claims_the_clone_and_never_the_remote() {
         // devlaunch#560. The wording is the deliverable here: the fact was
         // available locally the whole time, and a line that read as though dl had
