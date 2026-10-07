@@ -976,11 +976,15 @@ is not a failure.
 `dl` skips a stale workspace when any of these is true, and names the first that is:
 
 - Another `dl` holds the workspace's launch lock.
+- The container is stopped. A recreate would also start it, which a refresh does not
+  do. `dl <ws> recreate` starts it on the new image.
 - `dl` cannot read the processes in the container. It reads them with one
-  `docker exec` as root, so a stopped container is skipped here too.
+  `docker exec` as root.
 - A build runs in the container: a process named `bazel`, `bazelisk`, `cargo`, `rustc`,
-  `cc1`, `cc1plus`, `make`, `gmake`, `ninja`, `cmake`, `pixi`, `colcon`, `gcc`, `g++`,
-  `clang`, `clang++`, `ld`, `ld.lld`, `ld.gold` or `collect2`.
+  `cc1`, `cc1plus`, `make`, `gmake`, `ninja`, `cmake`, `colcon`, `gcc`, `g++`,
+  `clang`, `clang++`, `ld`, `ld.lld`, `ld.gold` or `collect2`. `pixi` is not on the
+  list: an open `pixi shell` is not a build, and a build that `pixi run` starts runs one
+  of the programs above.
 - An agent process has a shell as its child. An agent is any of the agents `dl`
   knows by name: `claude`, `codex` and `gemini`, run directly or by `node`. The agents
   run their tool calls and background tasks through a shell, and Claude starts its MCP

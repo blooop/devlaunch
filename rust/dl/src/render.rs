@@ -338,6 +338,10 @@ pub(crate) fn refresh_stale_line(planned: &Planned) -> String {
         Verdict::Refresh => {
             format!("Refreshing {id}: it runs an older image than {reference} now names.")
         }
+        Verdict::Skip(Skip::Stopped) => format!(
+            "Skipping {id}: it is stopped, and a refresh starts nothing. \
+             `dl {id} recreate` starts it on the new image."
+        ),
         Verdict::Skip(skip) => format!(
             "Skipping {id}: {}. Run `dl {id} recreate` once it is done.",
             skip_reason(skip)
@@ -359,6 +363,7 @@ pub(crate) fn refresh_stale_rejudged_line(id: &str, skip: &Skip) -> String {
 fn skip_reason(skip: &Skip) -> String {
     match skip {
         Skip::LaunchUnderWay => "another dl is launching it".to_owned(),
+        Skip::Stopped => "it is stopped".to_owned(),
         Skip::LockUnreadable { why } => format!("could not ask its launch lock ({why})"),
         Skip::ProcessesUnread { why } => {
             format!("could not read the processes in its container ({why})")

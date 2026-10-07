@@ -211,10 +211,29 @@ fn outside_herdr_a_workspace_running_claude_is_skipped() {
 }
 
 #[test]
+fn a_stopped_container_is_skipped_as_stopped() {
+    // A recreate would also start it, which nobody asked a refresh to do. The
+    // skip names the reason, so the line does not read like a docker fault.
+    let runner = ScriptedRunner::new().with_script(
+        ["docker", "exec"],
+        Response::failed(
+            1,
+            "Error response from daemon: container c1 is not running\n",
+        ),
+    );
+    let cache = cache();
+
+    assert_eq!(
+        plan_of(&runner, None, cache.path(), None),
+        vec![Verdict::Skip(Skip::Stopped)]
+    );
+}
+
+#[test]
 fn a_container_whose_processes_cannot_be_read_is_skipped() {
     let runner = ScriptedRunner::new().with_script(
         ["docker", "exec"],
-        Response::failed(1, "Error response from daemon: container is not running\n"),
+        Response::failed(1, "Error response from daemon: permission denied\n"),
     );
     let cache = cache();
 
@@ -223,7 +242,7 @@ fn a_container_whose_processes_cannot_be_read_is_skipped() {
     let [Verdict::Skip(Skip::ProcessesUnread { why })] = verdicts.as_slice() else {
         panic!("{verdicts:?}");
     };
-    assert!(why.contains("is not running"), "{why}");
+    assert!(why.contains("permission denied"), "{why}");
 }
 
 #[test]
@@ -321,17 +340,9 @@ fn an_idle_claude_herdr_holds_a_line_for_is_refreshed() {
 
         let verdicts = plan_of(&runner, Some(&manager()), cache.path(), Some(session));
 
-        // A `done` agent's line is not held, so the one Claude process is then
-        // one herdr's panes do not hold.
-        let expected = if status == "idle" {
-            Verdict::Refresh
-        } else {
-            Verdict::Skip(Skip::SessionsOutsidePanes {
-                running: 1,
-                held: 0,
-            })
-        };
-        assert_eq!(verdicts, vec![expected], "{status}");
+        // herdr's `done` is `idle` that nobody has looked at yet, so both are an
+        // agent waiting for the user, and the recreate brings it back.
+        assert_eq!(verdicts, vec![Verdict::Refresh], "{status}");
     }
 }
 

@@ -1145,9 +1145,8 @@ fn a_refresh_skips_a_stopped_stale_workspace() {
     assert_eq!(
         run.out,
         format!(
-            "Skipping {STALE_ID}: could not read the processes in its container \
-             (docker exec failed (Code(1)): Error response from daemon: container c1 is not \
-             running). Run `dl {STALE_ID} recreate` once it is done.\n\
+            "Skipping {STALE_ID}: it is stopped, and a refresh starts nothing. \
+             `dl {STALE_ID} recreate` starts it on the new image.\n\
              Refreshed 0 stale workspaces, skipped 1, and 0 failed.\n"
         )
     );
