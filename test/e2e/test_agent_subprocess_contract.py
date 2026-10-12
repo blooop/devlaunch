@@ -3,10 +3,11 @@
 `test_interactive_session.py` already runs one-shot commands through this workspace
 and already asserts that a failing one comes back non-zero. It does all of it on a
 **pty**, because that is the transport a developer gets, and dl reaches the container
-two different ways depending on which it is: an OpenSSH invocation carrying `-F` for
-the pty path, and `devpod ssh --command` for the piped one. So none of those
-assertions cover the shape a script runs in, and the shape a script runs in is the one
-`docs/agents-using-dl.md` publishes a contract about.
+differently depending on which it is: OpenSSH with `-t` for the pty path, and OpenSSH
+with `-T` for the piped one (`devpod ssh --command` until devlaunch#139, and still the
+fallback where devpod published no alias). So none of those assertions cover the shape
+a script runs in, and the shape a script runs in is the one `docs/agents-using-dl.md`
+publishes a contract about.
 
 Hence a second file rather than four more cases over there. Everything here runs with
 stdout, stderr and stdin as pipes, which is what `subprocess.run(capture_output=True)`
@@ -88,10 +89,10 @@ def piped(tmp_path_factory) -> Iterator[PipedWorkspace]:
     hand a function-scoped `devpod_cleanup` to a module-scoped fixture, and the
     class behind both is the same one, so a leak is caught the same way.
 
-    No ssh routing, unlike the interactive fixture. That scratch `HOME` exists so
-    an OpenSSH lookup cannot succeed by accident against the developer's machine,
-    and the piped transport makes no OpenSSH lookup: it is `devpod ssh --command`,
-    which resolves the workspace out of this run's own `DEVPOD_HOME`.
+    No ssh routing, unlike the interactive fixture. The piped transport is OpenSSH
+    over whatever alias `devpod up` published for this run's own `DEVPOD_HOME`, and
+    `devpod ssh --command` where it published none; either way it reaches this
+    run's workspace and no other.
     """
     root = tmp_path_factory.mktemp("agent-contract")
     cache_dir = root / "cache"

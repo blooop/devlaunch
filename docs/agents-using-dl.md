@@ -29,8 +29,9 @@ $ dl ws -- sh -c 'kill -TERM $$';  echo $?   # 255
 $ dl ws -- sh -c 'kill -KILL $$';  echo $?   # 255
 ```
 
-devpod's ssh server reports a signalled remote process as `Process exited with status
-255`, with no signal in the line, and `dl` passes that number through rather than
+The ssh server devpod runs in the container reports a signalled remote process with
+no signal a client can read, and both transports `dl` uses (OpenSSH, and `devpod ssh`
+where there is no alias) turn that into 255. `dl` passes the number through rather than
 inventing one. So a caller can tell a signalled command from `exit 42`, and cannot tell
 *which* signal, or tell either from a command that genuinely exited 255. If your
 orchestrator needs the distinction, have the command report it itself, for example
@@ -59,11 +60,16 @@ and nothing else around it, so a compiler's diagnostics and a test runner's trac
 arrive parseable. `dl`'s own narration shares that stream, and it all comes before the
 command starts, so the command's output is the tail of it.
 
-Two caveats worth knowing before you match on it. The command's stderr is still read a
-line at a time on the way out, so a partial last line arrives with a newline appended
-that the command did not write. And devpod's transport strips ANSI escapes from it, so
-a tool that colours its errors arrives uncoloured; since the command sees a pipe rather
-than a terminal, most tools emit no colour there anyway.
+The bytes are the command's own. A call with no terminal goes over OpenSSH, which
+copies the stream as it is written: a partial last line arrives without a newline, and
+a colour escape a tool writes anyway arrives as written. Since the command sees a pipe
+rather than a terminal, most tools emit no colour there.
+
+One caveat, for a call that falls back to `devpod ssh --command` (a workspace devpod
+published no ssh alias for, a host with no `ssh` client, or `DEVLAUNCH_NO_TTY=1`).
+That transport reads stderr a line at a time on the way out, so a partial last line
+arrives with a newline appended that the command did not write, and it strips ANSI
+escapes, so a tool that colours its errors arrives uncoloured.
 
 This clause used to be the one the transport did not keep, and callers were told to
 merge the streams inside the container instead. That merge still works and is still the

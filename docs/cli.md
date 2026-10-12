@@ -242,6 +242,14 @@ so interactive programs start and stay up instead of exiting immediately. A codi
 agent, `htop`, `git rebase -i`, a REPL. Redirect the output and the terminal
 goes away again, so `dl <ws> -- ls > files.txt` stays free of escape sequences.
 
+A command with no terminal, the call a script or an agent makes, goes the same
+way without the pty: OpenSSH with `-T`, over the same alias and the same shared
+connection ([performance.md](performance.md)). The command sees pipes, the same
+environment and the same directory it saw under `devpod ssh --command`, and a
+repeat call costs a fraction of a second where `devpod ssh` paid about two to
+connect each time. It falls back to `devpod ssh --command`, in silence, when
+there is no alias for the workspace or no `ssh` on the host.
+
 This needs the ssh host alias `devpod up` writes. Where it writes it is devpod's
 choice and `dl` follows it: `SSH_CONFIG_INCLUDE_PATH` from devpod's context
 options, else `$DEVPOD_SSH_CONFIG`, else the `SSH_CONFIG_PATH` context option,
@@ -267,7 +275,8 @@ there is no ssh config at all, `dl` says that instead and names the file it look
 in, and the advice it gives is qualified: a restart publishes there only if devpod
 writes to that same file, so a notice that comes back means `DEVPOD_SSH_CONFIG` or
 one of devpod's ssh-config context options names a different one. Set
-`DEVLAUNCH_NO_TTY=1` to force the fallback everywhere.
+`DEVLAUNCH_NO_TTY=1` to force the fallback everywhere, for commands with no
+terminal too.
 
 ### Getting the terminal back when a session dies badly
 

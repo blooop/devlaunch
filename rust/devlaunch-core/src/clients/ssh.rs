@@ -300,7 +300,35 @@ fn control_key(alias: &str, send_env: &[String], agent: Option<&str>) -> String 
         .collect()
 }
 
-/// Build the OpenSSH invocation that runs `command` under a pty.
+/// Whether the session asks the container for a pty.
+///
+/// A sum rather than a bool, because each arm is a flag OpenSSH is *given*, and
+/// leaving the flag off is neither of them: with no `-t`/`-T` OpenSSH decides
+/// for itself from whether its own stdin is a terminal, which is the one
+/// decision this module exists to make on purpose.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Pty {
+    /// `-t`: dl is on a terminal and the command gets one. The reason this
+    /// transport was added: `claude` under `--command` sees pipes and exits.
+    Requested,
+    /// `-T`: dl is not on a terminal, so neither is the command. Its three
+    /// streams are pipes, as `devpod ssh --command` gives them, and its output is
+    /// free of the escape sequences a pty would add. What it buys over devpod's
+    /// transport is the connection: a multiplexed trip costs milliseconds where a
+    /// `devpod ssh --command` costs seconds (devlaunch#139).
+    Refused,
+}
+
+impl Pty {
+    fn flag(self) -> &'static str {
+        match self {
+            Self::Requested => "-t",
+            Self::Refused => "-T",
+        }
+    }
+}
+
+/// Build the OpenSSH invocation that runs `command`, under a pty or not.
 ///
 /// `config` is required, and it is the whole reason this function takes a path at
 /// all. OpenSSH reads **neither** [`CONFIG_VAR`] nor `$HOME`: it resolves the
@@ -340,6 +368,7 @@ fn control_key(alias: &str, send_env: &[String], agent: Option<&str>) -> String 
 /// same command with the same result.
 pub(crate) fn command_args(
     config: &Path,
+    pty: Pty,
     workspace_id: &str,
     command: &str,
     send_env: &[String],
@@ -355,7 +384,7 @@ pub(crate) fn command_args(
         PROGRAM.to_owned(),
         "-F".to_owned(),
         config.display().to_string(),
-        "-t".to_owned(),
+        pty.flag().to_owned(),
     ];
     if let Reuse::Multiplexed(socket) = reuse {
         // `auto` and not `yes`: the first trip opens the master and every trip
@@ -618,6 +647,7 @@ mod tests {
     fn args_for(workspace_id: &str, command: &str) -> Vec<String> {
         command_args(
             Path::new(A_CONFIG),
+            Pty::Requested,
             workspace_id,
             command,
             &[],
@@ -637,6 +667,7 @@ mod tests {
         let socket = ControlSocket(PathBuf::from("/scratch/ssh-control/0123456789abcdef"));
         let args = command_args(
             Path::new("/scratch/ssh_config"),
+            Pty::Requested,
             "devlaunch-main-abcdefgh",
             "bash -lc claude",
             &["GH_TOKEN".to_owned()],
@@ -674,6 +705,7 @@ mod tests {
         // send.
         let args = command_args(
             Path::new("/scratch/ssh_config"),
+            Pty::Requested,
             "devlaunch-main-abcdefgh",
             "bash -lc claude",
             &["GH_TOKEN".to_owned()],
@@ -710,8 +742,16 @@ mod tests {
         // this function looks up, because a second lookup is a second chance to
         // disagree with the first.
         for config in ["/scratch/ssh_config", "/home/dev/.ssh/config"] {
-            let args = command_args(Path::new(config), "myws", "true", &[], None, &Reuse::Direct)
-                .expect("a well-formed request");
+            let args = command_args(
+                Path::new(config),
+                Pty::Requested,
+                "myws",
+                "true",
+                &[],
+                None,
+                &Reuse::Direct,
+            )
+            .expect("a well-formed request");
 
             let flag = args
                 .iter()
@@ -735,6 +775,43 @@ mod tests {
 
         assert_eq!(args[0], PROGRAM);
         assert!(args.contains(&"-t".to_owned()), "{args:?}");
+    }
+
+    #[test]
+    fn a_piped_session_refuses_a_pty_in_place_of_forcing_one() {
+        // `-T`, not an absent flag: with neither, OpenSSH decides from its own
+        // stdin, and `echo x | dl ws -- cat` typed at a prompt has a terminal
+        // nowhere but stdin -- not the half that decides. The flag sits where `-t`
+        // sits, and nothing else about the argv moves.
+        let socket = ControlSocket(PathBuf::from("/scratch/ssh-control/0123456789abcdef"));
+        let build = |pty| {
+            command_args(
+                Path::new(A_CONFIG),
+                pty,
+                "myws",
+                "bash -lc cat",
+                &["GH_TOKEN".to_owned()],
+                None,
+                &Reuse::Multiplexed(socket.clone()),
+            )
+            .expect("a well-formed request")
+        };
+        let piped = build(Pty::Refused);
+        let terminal = build(Pty::Requested);
+
+        assert!(piped.contains(&"-T".to_owned()), "{piped:?}");
+        assert!(!piped.contains(&"-t".to_owned()), "{piped:?}");
+        let swapped: Vec<String> = piped
+            .iter()
+            .map(|arg| {
+                if arg == "-T" {
+                    "-t".to_owned()
+                } else {
+                    arg.clone()
+                }
+            })
+            .collect();
+        assert_eq!(swapped, terminal);
     }
 
     #[test]
@@ -772,6 +849,7 @@ mod tests {
         // The token must reach the container through the environment, not argv.
         let args = command_args(
             Path::new(A_CONFIG),
+            Pty::Requested,
             "myws",
             "bash -lc claude",
             &["GH_TOKEN".to_owned()],
@@ -799,6 +877,7 @@ mod tests {
         // ssh has no --workdir, so a directory has to travel in the command.
         let args = command_args(
             Path::new(A_CONFIG),
+            Pty::Requested,
             "myws",
             "bash -lc make",
             &[],
@@ -819,6 +898,7 @@ mod tests {
     fn a_workdir_with_spaces_is_quoted_for_the_remote_shell() {
         let args = command_args(
             Path::new(A_CONFIG),
+            Pty::Requested,
             "myws",
             "bash -lc make",
             &[],
@@ -849,6 +929,7 @@ mod tests {
         ] {
             let args = command_args(
                 Path::new(A_CONFIG),
+                Pty::Requested,
                 "myws",
                 "bash -lc make",
                 &[],
@@ -868,6 +949,7 @@ mod tests {
         // `cd '' &&` would be a payload that fails for no reason.
         let args = command_args(
             Path::new(A_CONFIG),
+            Pty::Requested,
             "myws",
             "bash -lc make",
             &[],
@@ -890,6 +972,7 @@ mod tests {
             assert_eq!(
                 command_args(
                     Path::new(A_CONFIG),
+                    Pty::Requested,
                     workspace_id,
                     "bash -lc claude",
                     &[],
@@ -910,6 +993,7 @@ mod tests {
             assert!(
                 command_args(
                     Path::new(A_CONFIG),
+                    Pty::Requested,
                     workspace_id,
                     "true",
                     &[],
@@ -931,6 +1015,7 @@ mod tests {
         assert_eq!(
             command_args(
                 Path::new(A_CONFIG),
+                Pty::Requested,
                 "myws",
                 "true",
                 &[],
@@ -1442,6 +1527,7 @@ mod tests {
         let fake = ScriptedRunner::new();
         let args = command_args(
             Path::new(A_CONFIG),
+            Pty::Requested,
             "myws",
             "bash -lc claude",
             &["GH_TOKEN".to_owned()],

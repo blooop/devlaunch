@@ -228,8 +228,9 @@ is not. Read it once. None of it is repeated here.
 Four things about the loop itself:
 
 - **Start once, then run many.** `dl <ws> -- true` against an already-running
-  workspace measures about 4.8s on this host, and that is paid per call. Launch
-  the workspace in its own call and keep the loop inside it.
+  workspace measures about 0.75s on this host once the workspace's OpenSSH
+  master is up (2.8s before #139 put piped calls on it), and that is paid per
+  call. Launch the workspace in its own call and keep the loop inside it.
 - **A hot inner loop can skip the transport.** The same `true` through
   `docker exec` measures about 0.04s. When one suite is run over and over, take
   the id from `--ls --json`, find its container with

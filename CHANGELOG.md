@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`dl <ws> -- <cmd>` with no terminal reuses the workspace's OpenSSH connection** (#139).
+  A call from a script or an agent took `devpod ssh --command`, which opened a new
+  connection every time, at about 2s each. It now goes over OpenSSH with `-T`, through
+  the same alias and the same shared master a terminal session uses, so a repeat call
+  joins a live connection. The command sees what it saw before: pipes, the same
+  environment and directory, the same exit status, its stdin, agent forwarding and
+  `GH_TOKEN`. Its stderr now arrives byte for byte, so a partial last line no longer
+  gets a newline appended. `devpod ssh --command` still carries the call when devpod
+  published no alias, when the host has no `ssh`, or under `DEVLAUNCH_NO_TTY=1`.
+
 ## [0.59.4] - 2026-10-05
 
 ### Fixed

@@ -534,7 +534,7 @@ Images are yours: `docker system df` is what shows those.
 | `DEVLAUNCH_ZELLIJ=1` | Install zellij, and create the session a command can open panes into. Off by default |
 | `DEVLAUNCH_NO_TITLE=1` | Do not name the terminal after the workspace |
 | `DEVLAUNCH_DOTFILES_ON_ATTACH=1` | Refresh dotfiles before every interactive attach. Off by default |
-| `DEVLAUNCH_NO_TTY=1` | Never give a workspace command a terminal |
+| `DEVLAUNCH_NO_TTY=1` | Never give a workspace command a terminal, and run every command through `devpod ssh` rather than OpenSSH |
 | `DEVLAUNCH_AID_AGENT=<agent>` | Change `aid`'s default agent |
 | `DEVLAUNCH_AID_REMOTE_CONTROL=0` | Start `aid` sessions without Claude Code's Remote Control, which is otherwise on |
 | `DEVLAUNCH_HERDR=1` | Let an agent started *inside* a workspace report to the [herdr](https://herdr.dev) pane you launched from. Off by default: it lends herdr into the container and opens a second ssh connection. See [docs/workspace-tools.md](docs/workspace-tools.md) |

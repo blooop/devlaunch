@@ -2436,6 +2436,18 @@ pub(crate) enum Terminal {
     /// dl is on a terminal and devpod published this workspace's ssh alias in that
     /// config, which is the file OpenSSH has to be told to read.
     Usable { config: PathBuf },
+    /// dl is not on a terminal and devpod published this workspace's alias in that
+    /// config. The command gets no pty, exactly as under `devpod ssh --command`,
+    /// and goes over OpenSSH anyway for the connection it can share
+    /// ([`ssh::Reuse`]): a multiplexed trip is milliseconds where `devpod ssh
+    /// --command` is about two seconds, paid on every `dl <ws> -- <cmd>` a script
+    /// makes (devlaunch#139).
+    ///
+    /// A state of its own and not `Usable` with a flag, because the three report
+    /// arms below are about a terminal dl *had* and could not use. Off a terminal
+    /// there is nothing to report: a missing alias quietly leaves the command on
+    /// devpod, which is where every piped command ran before this arm existed.
+    Piped { config: PathBuf },
     /// dl read the config devpod publishes into and this workspace has no alias
     /// in it, so there is no way to ask for a pty. The command still runs.
     NoAlias { config: PathBuf },
@@ -2447,7 +2459,8 @@ pub(crate) enum Terminal {
     /// context option naming one, and no home directory to hold the default. `dl`
     /// reaches here on a machine with `XDG_CACHE_HOME` set and no home.
     ConfigUnlocatable,
-    /// dl is not on a terminal, or the user opted this machine out.
+    /// The user opted this machine out, or dl is not on a terminal and has no
+    /// published alias to reach the workspace through.
     Absent,
 }
 
@@ -2457,24 +2470,35 @@ pub(crate) enum Terminal {
 /// [`Host::ssh_config`] for why this must not be the ones devpod would answer
 /// with.
 pub(crate) fn terminal_for(host: &Host, options: &ContextOptions, workspace_id: &str) -> Terminal {
-    if !ssh::terminal_usable(host.no_tty.as_deref(), host.stdin_tty, host.stdout_tty) {
+    // The opt-out first and on its own: `DEVLAUNCH_NO_TTY` keeps *every* command
+    // on devpod, piped ones included, and a piped command on OpenSSH is new
+    // enough that the one switch that turns it off has to keep working.
+    if ssh::tty_disabled(host.no_tty.as_deref()) {
         return Terminal::Absent;
     }
+    let on_a_terminal = ssh::terminal_usable(None, host.stdin_tty, host.stdout_tty);
     let Some(config) = host.ssh_config(options) else {
-        return Terminal::ConfigUnlocatable;
+        return if on_a_terminal {
+            Terminal::ConfigUnlocatable
+        } else {
+            Terminal::Absent
+        };
     };
-    match ssh::alias_in(&config, workspace_id) {
-        ssh::Alias::Published => Terminal::Usable { config },
-        ssh::Alias::WorkspaceAbsent => Terminal::NoAlias { config },
-        ssh::Alias::NoConfig => Terminal::ConfigMissing { looked_in: config },
+    match (ssh::alias_in(&config, workspace_id), on_a_terminal) {
+        (ssh::Alias::Published, true) => Terminal::Usable { config },
+        (ssh::Alias::Published, false) => Terminal::Piped { config },
+        (ssh::Alias::WorkspaceAbsent, true) => Terminal::NoAlias { config },
+        (ssh::Alias::NoConfig, true) => Terminal::ConfigMissing { looked_in: config },
+        (ssh::Alias::WorkspaceAbsent | ssh::Alias::NoConfig, false) => Terminal::Absent,
     }
 }
 
 /// Which transport carries this session.
 ///
-/// Deliberately the same decision ssh itself makes — use a terminal when there is
-/// a terminal to use — so a redirected `dl <ws> -- ls > out.txt` keeps the devpod
-/// transport and keeps its output free of escape sequences.
+/// A command goes over OpenSSH whenever devpod published an alias for it, and
+/// whether it gets a pty is the same decision ssh itself makes — use a terminal
+/// when there is a terminal to use — so a redirected `dl <ws> -- ls > out.txt`
+/// gets `-T` and keeps its output free of escape sequences.
 ///
 /// Each arm that runs a command carries the payload it runs, so a command route
 /// with no command cannot be built: the correlation ("there is a command exactly
@@ -2491,11 +2515,13 @@ pub(crate) enum Route<'p> {
     /// A bare attach. It stays on devpod whatever the terminal says: devpod
     /// requests a pty for exactly this case, so there is nothing to escape.
     DevpodAttach,
-    /// A command under a pty, through the ssh alias `devpod up` published, in the
-    /// config the alias was read out of.
-    Terminal {
+    /// A command through the ssh alias `devpod up` published, in the config the
+    /// alias was read out of: under a pty when dl is on a terminal, and with none
+    /// when it is not.
+    OpenSsh {
         payload: &'p RemotePayload,
         config: &'p Path,
+        pty: ssh::Pty,
     },
     /// A command through `devpod ssh --command`, which never asks for a pty.
     DevpodCommand(&'p RemotePayload),
@@ -2512,9 +2538,15 @@ pub(crate) fn route<'p>(
         return Route::DevpodAttach;
     };
     match terminal {
-        Terminal::Usable { config } => Route::Terminal {
+        Terminal::Usable { config } => Route::OpenSsh {
             payload: command,
             config,
+            pty: ssh::Pty::Requested,
+        },
+        Terminal::Piped { config } => Route::OpenSsh {
+            payload: command,
+            config,
+            pty: ssh::Pty::Refused,
         },
         Terminal::NoAlias { config } => {
             notices.say(LaunchNotice::NoTerminalAlias {
@@ -2550,7 +2582,9 @@ pub(crate) fn route<'p>(
 /// normally with, say, 130.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Session {
-    /// OpenSSH ran the remote program and exited with its status. Nothing to
+    /// OpenSSH ran the remote program and exited with its status, with or without
+    /// a pty: the arm is named for the transport's first job, not for a terminal
+    /// every session has. Nothing to
     /// recover: OpenSSH passes the status through, which is the thing devpod loses
     /// by wrapping its `*ssh.ExitError` three times before type-asserting on it,
     /// and the reason this transport needs none of that machinery.
@@ -2794,6 +2828,14 @@ impl<'a> SessionContext<'a> {
 /// is itself on a terminal, the command goes to OpenSSH through the host alias
 /// devpod published, with `-t`.
 ///
+/// Off a terminal it goes to OpenSSH too, with `-T`, for the connection rather
+/// than the pty: `devpod ssh --command` opens a new one every call (about 2s),
+/// where OpenSSH joins the workspace's shared master ([`ssh::Reuse`]). The
+/// command sees what it saw under devpod -- pipes, the same environment, the same
+/// directory, its own exit status -- which was measured rather than assumed
+/// (devlaunch#139). devpod keeps a piped command only when there is no alias to
+/// use, no OpenSSH client on the host, or `DEVLAUNCH_NO_TTY` says so.
+///
 /// A bare attach is left on devpod: it already gets a pty, being the one case
 /// devpod requests one for.
 ///
@@ -2864,15 +2906,38 @@ pub(crate) fn workspace_ssh(
     });
     let session_outcome = beside_resume_report(session.runner, resume.as_ref(), || {
         match route(payload.as_ref(), &terminal, workspace_id, notices) {
-            Route::Terminal { payload, config } => ssh_with_terminal(
+            Route::OpenSsh {
+                payload,
+                config,
+                pty,
+            } => match openssh_session(
                 session,
                 workspace_id,
                 payload,
                 config,
+                pty,
                 workdir,
                 visibility,
                 notices,
-            ),
+            ) {
+                // Off a terminal, a host with no OpenSSH client keeps the transport
+                // it always had. Nothing ran -- the spawn itself failed -- so no
+                // byte of stdin was read and the command runs exactly once. On a
+                // terminal the refusal stands, as it always has: it names the
+                // opt-out, and the pty it would fall back from is the point.
+                Err(SessionRefused::Ssh(ssh::NotRun::NotInstalled)) if pty == ssh::Pty::Refused => {
+                    devpod_session(
+                        session,
+                        workspace_id,
+                        Some(payload),
+                        workdir,
+                        visibility,
+                        forward,
+                        notices,
+                    )
+                }
+                outcome => outcome,
+            },
             Route::DevpodAttach => devpod_session(
                 session,
                 workspace_id,
@@ -3147,17 +3212,19 @@ fn devpod_session(
     })
 }
 
-/// The OpenSSH transport: an already-wrapped payload under a pty.
+/// The OpenSSH transport: an already-wrapped payload, under a pty or not.
 ///
 /// `config` is the file the alias was found in, and it arrives from
-/// [`Route::Terminal`] rather than from a lookup here — the transport must not get
+/// [`Route::OpenSsh`] rather than from a lookup here — the transport must not get
 /// a second opinion about which config it is talking about. It reaches ssh as
 /// `-F`, because ssh reads neither `$DEVPOD_SSH_CONFIG` nor `$HOME`.
-fn ssh_with_terminal(
+#[allow(clippy::too_many_arguments)]
+fn openssh_session(
     session: &SessionContext<'_>,
     workspace_id: &str,
     payload: &RemotePayload,
     config: &Path,
+    pty: ssh::Pty,
     workdir: Option<&str>,
     visible: herdr::Visibility<'_>,
     notices: &mut dyn Notices<LaunchNotice>,
@@ -3193,6 +3260,7 @@ fn ssh_with_terminal(
     );
     let args = ssh::command_args(
         config,
+        pty,
         workspace_id,
         payload.as_str(),
         &forwarding.args,
@@ -8996,19 +9064,129 @@ mod tests {
         .expect("quotable");
         assert_eq!(
             route(Some(&payload), &terminal, "myws", &mut no_notices()),
-            Route::Terminal {
+            Route::OpenSsh {
                 payload: &payload,
-                config: &published
+                config: &published,
+                pty: ssh::Pty::Requested,
             }
         );
     }
 
-    #[test]
-    fn no_terminal_keeps_the_devpod_transport() {
-        // Piped output must stay clean, so no pty and no escape sequences.
-        let scene = Scene::new();
+    /// `on_a_terminal`'s published config, with dl's own streams on pipes: what a
+    /// script or an agent calling `dl <ws> -- <cmd>` looks like.
+    fn piped(scene: Scene) -> Scene {
+        let mut scene = scene;
+        scene.host.stdin_tty = false;
+        scene.host.stdout_tty = false;
+        scene
+    }
 
-        assert_eq!(terminal_here(&scene.host, "myws"), Terminal::Absent);
+    #[test]
+    fn a_piped_command_with_an_alias_goes_over_openssh_without_a_pty() {
+        // devlaunch#139: every `dl <ws> -- <cmd>` from a script paid a fresh
+        // `devpod ssh --command` connection (about 2s) while a multiplexed OpenSSH
+        // trip to the same container costs milliseconds. The command must still
+        // see pipes, so the route asks for no pty.
+        let scene = piped(Scene::new().on_a_terminal(&["myws"]));
+        let published = published_config(&scene.host);
+        let mut notices = no_notices();
+
+        let terminal = terminal_here(&scene.host, "myws");
+        assert_eq!(
+            terminal,
+            Terminal::Piped {
+                config: published.clone()
+            }
+        );
+        let payload = RemotePayload::wrap(
+            &RemoteCommand::argv(&["make", "test"]),
+            ZellijWrap::Off,
+            CodexLogin::Off,
+        )
+        .expect("quotable");
+        assert_eq!(
+            route(Some(&payload), &terminal, "myws", &mut notices),
+            Route::OpenSsh {
+                payload: &payload,
+                config: &published,
+                pty: ssh::Pty::Refused,
+            }
+        );
+        assert_eq!(notices, no_notices(), "an ordinary piped call says nothing");
+    }
+
+    #[test]
+    fn half_a_terminal_is_piped_too() {
+        // `dl <ws> -- ls > out.txt` typed at a prompt: stdin is the terminal and
+        // stdout is a file. A pty would put escape sequences in the file, so the
+        // whole-terminal rule still decides, and this is the no-pty arm.
+        for (stdin_tty, stdout_tty) in [(true, false), (false, true)] {
+            let mut scene = Scene::new().on_a_terminal(&["myws"]);
+            scene.host.stdin_tty = stdin_tty;
+            scene.host.stdout_tty = stdout_tty;
+
+            assert!(
+                matches!(terminal_here(&scene.host, "myws"), Terminal::Piped { .. }),
+                "stdin_tty={stdin_tty} stdout_tty={stdout_tty}"
+            );
+        }
+    }
+
+    #[test]
+    fn no_terminal_and_no_alias_keeps_the_devpod_transport_and_says_nothing() {
+        // Off a terminal, every way of having no alias is the transport piped
+        // commands always had, and none of the three terminal reports applies:
+        // each one is about a pty dl could not hand over, and there was no pty
+        // to hand.
+        let payload = RemotePayload::wrap(
+            &RemoteCommand::argv(&["true"]),
+            ZellijWrap::Off,
+            CodexLogin::Off,
+        )
+        .expect("quotable");
+        let other = piped(Scene::new().on_a_terminal(&["some-other-workspace"]));
+        let never_written = Host {
+            devpod_ssh_config: Some(
+                other
+                    .dir
+                    .path()
+                    .join("elsewhere")
+                    .join("ssh_config")
+                    .display()
+                    .to_string(),
+            ),
+            ..other.host.clone()
+        };
+        let nowhere = Host {
+            devpod_ssh_config: None,
+            home: None,
+            ..other.host.clone()
+        };
+        let mut notices = no_notices();
+
+        for host in [&Scene::new().host, &other.host, &never_written, &nowhere] {
+            let terminal = terminal_here(host, "myws");
+            assert_eq!(terminal, Terminal::Absent);
+            assert_eq!(
+                route(Some(&payload), &terminal, "myws", &mut notices),
+                Route::DevpodCommand(&payload)
+            );
+        }
+        assert_eq!(notices, no_notices());
+    }
+
+    #[test]
+    fn the_tty_opt_out_keeps_a_piped_command_on_devpod_too() {
+        // `DEVLAUNCH_NO_TTY` is documented as keeping *every* command on devpod.
+        // A piped command on OpenSSH is the new behaviour, so the switch that
+        // turns the transport off has to turn this off as well.
+        let scene = piped(Scene::new().on_a_terminal(&["myws"]));
+        let opted_out = Host {
+            no_tty: Some("1".to_owned()),
+            ..scene.host.clone()
+        };
+
+        assert_eq!(terminal_here(&opted_out, "myws"), Terminal::Absent);
     }
 
     #[test]
@@ -9145,6 +9323,9 @@ mod tests {
                 looked_in: PathBuf::from("/scratch/ssh_config"),
             },
             Terminal::ConfigUnlocatable,
+            Terminal::Piped {
+                config: PathBuf::from("/scratch/ssh_config"),
+            },
             Terminal::Absent,
         ] {
             assert_eq!(
@@ -9729,7 +9910,10 @@ mod tests {
             &line,
             Some(by_id),
         );
-        scene.host.stdout_tty = false;
+        // The opt-out, not a redirected stdout: off a terminal the command now
+        // goes over OpenSSH too (devlaunch#139), and the devpod transport is the
+        // half of this pin that needs a launch of its own.
+        scene.host.no_tty = Some("1".to_owned());
         let _ = a_session(&scene, Some(&command));
         let devpod = coordinated_devpod(&scene);
         let at = devpod
@@ -9766,7 +9950,10 @@ mod tests {
             &line,
             None,
         );
-        scene.host.stdout_tty = false;
+        // The opt-out, not a redirected stdout: off a terminal the command now
+        // goes over OpenSSH too (devlaunch#139), and the devpod transport is the
+        // half of this pin that needs a launch of its own.
+        scene.host.no_tty = Some("1".to_owned());
         let _ = a_session(&scene, Some(&command));
         let devpod = coordinated_devpod(&scene);
         assert!(
@@ -10396,6 +10583,136 @@ mod tests {
             .expect("an ssh call");
         assert!(argv.contains(&"SendEnv=GH_TOKEN".to_owned()), "{argv:?}");
         assert!(!argv.iter().any(|arg| arg.contains("gho_secretvalue")));
+    }
+
+    #[test]
+    fn a_piped_command_is_one_openssh_trip_with_no_pty_and_no_devpod_ssh() {
+        // devlaunch#139, at the flow: the call a script makes reaches the
+        // container as one OpenSSH trip that joins the workspace's master, asks
+        // for no pty, and carries the same permit list. `devpod ssh` is not
+        // spawned at all; that is the about 2s this saves.
+        let scene = logged_in(piped(
+            Scene::new().on_a_terminal(&["myws"]).with_running("myws"),
+        ));
+
+        let (session, notices, _) = a_session(&scene, Some(&RemoteCommand::argv(&["echo", "hi"])));
+
+        assert_eq!(
+            session,
+            Ok(Session::Terminal {
+                exit: Exit::Code(0)
+            })
+        );
+        assert!(
+            !scene
+                .devpod_commands()
+                .iter()
+                .any(|argv| argv.first().map(String::as_str) == Some("ssh")),
+            "{:?}",
+            scene.devpod_commands()
+        );
+        let calls = scene.runner.calls_to("ssh");
+        let [call] = calls.as_slice() else {
+            panic!("one OpenSSH trip, not {calls:?}");
+        };
+        let argv = call.argv();
+        assert!(argv.contains(&"-T".to_owned()), "{argv:?}");
+        assert!(!argv.contains(&"-t".to_owned()), "{argv:?}");
+        assert!(argv.contains(&"ControlMaster=auto".to_owned()), "{argv:?}");
+        assert!(argv.contains(&"SendEnv=GH_TOKEN".to_owned()), "{argv:?}");
+        assert_eq!(argv.last().map(String::as_str), Some("bash -lc 'echo hi'"));
+        assert!(!argv.iter().any(|arg| arg.contains("gho_secretvalue")));
+        assert_eq!(
+            call.invocation()
+                .env
+                .entries
+                .get("GH_TOKEN")
+                .map(String::as_str),
+            Some("gho_secretvalue")
+        );
+        assert!(
+            notices
+                .iter()
+                .any(|notice| matches!(notice, LaunchNotice::SshCommand { .. })),
+            "the argv is echoed as every session's is: {notices:?}"
+        );
+    }
+
+    #[test]
+    fn a_piped_command_on_a_host_with_no_openssh_still_runs_through_devpod() {
+        // Before devlaunch#139 a piped command needed no OpenSSH client on the
+        // host at all, so a host without one must keep working. The spawn failed,
+        // nothing ran and no stdin was read, so devpod running it is the one run.
+        let scene = piped(Scene::new().on_a_terminal(&["myws"]).with_running("myws"));
+        scene.runner.script_missing("ssh");
+
+        let (session, _, _) = a_session(&scene, Some(&RemoteCommand::argv(&["echo", "hi"])));
+
+        assert_eq!(session, Ok(Session::RemoteExit { status: 0 }));
+        assert_eq!(
+            scene.devpod_commands(),
+            vec![vec![
+                "ssh".to_owned(),
+                "myws".to_owned(),
+                "--log-output".to_owned(),
+                "json".to_owned(),
+                "--command".to_owned(),
+                "bash -lc 'echo hi'".to_owned(),
+            ]]
+        );
+    }
+
+    #[test]
+    fn on_a_terminal_a_missing_openssh_is_still_refused() {
+        // The fallback above is for the piped arm only. At a terminal the pty is
+        // the point, and the refusal names `DEVLAUNCH_NO_TTY` as the way out, as
+        // it did before.
+        let scene = Scene::new().on_a_terminal(&["myws"]).with_running("myws");
+        scene.runner.script_missing("ssh");
+
+        let (session, _, _) = a_session(&scene, Some(&RemoteCommand::argv(&["claude"])));
+
+        assert_eq!(session, Err(SessionRefused::Ssh(ssh::NotRun::NotInstalled)));
+        assert!(
+            !scene
+                .devpod_commands()
+                .iter()
+                .any(|argv| argv.first().map(String::as_str) == Some("ssh")),
+            "{:?}",
+            scene.devpod_commands()
+        );
+    }
+
+    #[test]
+    fn a_piped_run_and_a_terminal_run_share_one_master() {
+        // The pty is asked for per session, not per connection, so it is not in
+        // the socket's identity: the terminal session someone has open and the
+        // script running beside it join one master rather than paying for two.
+        let piped_scene = piped(Scene::new().on_a_terminal(&["myws"]).with_running("myws"));
+        let terminal_scene = Scene::new().on_a_terminal(&["myws"]).with_running("myws");
+
+        let _ = a_session(&piped_scene, Some(&RemoteCommand::argv(&["true"])));
+        let _ = a_session(&terminal_scene, Some(&RemoteCommand::argv(&["true"])));
+
+        let socket_name = |scene: &Scene| -> String {
+            let argv = scene
+                .runner
+                .argvs()
+                .into_iter()
+                .next()
+                .expect("an ssh call");
+            let path = argv
+                .iter()
+                .find_map(|arg| arg.strip_prefix("ControlPath="))
+                .unwrap_or_else(|| panic!("no ControlPath in {argv:?}"))
+                .to_owned();
+            Path::new(&path)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .expect("a socket name")
+                .to_owned()
+        };
+        assert_eq!(socket_name(&piped_scene), socket_name(&terminal_scene));
     }
 
     #[test]

@@ -1717,6 +1717,7 @@ mod tests {
 
         let openssh = ssh::command_args(
             Path::new("/home/dev/.ssh/devpod/config"),
+            ssh::Pty::Requested,
             workspace_id,
             "claude",
             &["GH_TOKEN".to_owned()],

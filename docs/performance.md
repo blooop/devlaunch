@@ -84,8 +84,11 @@ on the launch path. A launch asks about one workspace, and pays one trip for it.
 
 ## One connection per workspace
 
-The trip that carries `dl <ws> -- <cmd>` at a terminal is OpenSSH, over the host
-alias `devpod up` publishes, and that connection is now reused. Three options go
+The trip that carries `dl <ws> -- <cmd>` is OpenSSH, over the host alias `devpod
+up` publishes, and that connection is now reused. At a terminal it asks for a pty
+with `-t`. With no terminal, the call a script makes, it asks for none with `-T`,
+and that is the change that put scripts on this transport at all: they used to
+take `devpod ssh --command`, which opens a connection of its own every call. Three options go
 on an argv `dl` already built: `ControlMaster=auto`, a derived `ControlPath`, and
 `ControlPersist=60`. The first trip into a live workspace opens a master, every
 trip for the next minute joins it, and nothing pre-warms anything, so `dl` starts
