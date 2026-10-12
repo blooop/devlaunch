@@ -120,6 +120,24 @@ failing. A master that has gone away leaves a socket the next client unlinks, an
 resident `devpod ssh --stdio` process and a `docker exec` per key, and `dl` must
 not be the reason a container never goes idle.
 
+## One shell for the setup pass
+
+A cold launch sends one `devpod ssh --command` trip that runs dl's setup stages
+and then the tools probe. Each stage runs in a subshell of that trip's shell, not
+in a `bash` of its own. The reason is `$BASH_ENV`: every new non-interactive bash
+reads it, and an image may point it at a whole ROS bashrc. kinisi_ros's image
+does, and inside a `devpod ssh` session one read costs about 1.1s.
+
+Measured on 2026-10-12, on one host with the local docker provider and devpod
+0.26.3, over six cold launches of `kinisi-robotics/kinisi_ros` on six fresh
+branches. With a `bash -c` per stage the trip took 10.90s to 11.14s. With
+subshells it took 6.66s to 6.90s, so about 4.2s comes off every cold launch of
+that repo. An image with no `$BASH_ENV` saves a few milliseconds, because there
+was nothing to read. A warm launch makes no setup trip, so it is not affected.
+
+`the_pass_reads_the_images_bash_env_once_however_many_stages_it_runs` and
+`dl/tests/setup_pass_shells.rs` pin the count at one read per pass.
+
 ## Measuring launch time
 
 Set `DEVLAUNCH_TIMING=1` and a `dl` command ends with one summary on stderr,
