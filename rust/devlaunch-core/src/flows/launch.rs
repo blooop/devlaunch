@@ -380,6 +380,14 @@ impl Host {
         self.cache_dir.join("context-options.json")
     }
 
+    /// Where dl remembers that devpod has a provider registered.
+    ///
+    /// A marker and not a listing: the guard asks one question, "is there any
+    /// provider at all", and only a yes is worth remembering.
+    pub(crate) fn provider_cache(&self) -> PathBuf {
+        self.cache_dir.join("provider-registered")
+    }
+
     /// devpod's own config file, which holds every context and its options.
     pub(crate) fn devpod_config(&self) -> Option<PathBuf> {
         self.devpod_home.as_ref().map(DevpodHome::config)
@@ -1798,10 +1806,10 @@ fn up_under_stage(
 
     // Here rather than at the top of the launch: this is the first line on the path
     // that is about to need a provider, and every arm above it returns without
-    // running an `up`. It costs a `devpod provider list` -- about half a second --
-    // on the path that is already spending seconds to minutes in `devpod up`, and
-    // nothing at all on the fast-attach arm, which never reaches this function.
-    ensure_a_provider(context.runner(), notices);
+    // running an `up`. A `devpod provider list` costs about half a second, so its
+    // yes is cached on disk and the listing is asked only when that cache is
+    // missing or stale; the fast-attach arm never reaches this function at all.
+    ensure_a_provider(context.runner(), host, SystemTime::now(), notices);
 
     // Give every workspace the host's gh login, whatever its devcontainer.json
     // does or does not set up for itself. The file is removed when `staged` drops,
@@ -1883,6 +1891,7 @@ fn up_under_stage(
         .unwrap_or(request.source)
         .to_owned();
     let mut lock_wait = devpod::LockWait::default();
+    let mut provider_gone = false;
     let exit = devpod::run_watching(
         runner,
         &Call::new(args)
@@ -1890,6 +1899,8 @@ fn up_under_stage(
             .whose_output_is_progress()
             .with_env(env),
         &mut |line| {
+            // Noted and not returned on: the line may be any of the ones below too.
+            provider_gone |= devpod::says_the_provider_set_changed(line);
             // Before the lock arm, and not behind `said`: these are the failure
             // being watched for, where the lock line is a wait that may resolve.
             if let Some(path) = devpod::names_a_missing_mount_source(line) {
@@ -1928,6 +1939,12 @@ fn up_under_stage(
     // `up` creates and starts workspaces, so any snapshot of `devpod list` taken
     // before it is now out of date.
     context.forget_workspaces();
+    // devpod just said the provider it wanted is not there, so the cached yes
+    // that let this launch skip the listing is wrong: the next launch asks again
+    // and registers one if the answer is none.
+    if provider_gone {
+        forget_provider(&host.provider_cache());
+    }
 
     if !exit.is_success() {
         return Ok(UpOutcome::Refused { exit });
@@ -2150,14 +2167,83 @@ const FALLBACK_PROVIDER: &str = "docker";
 /// would have added a way to fail where there was none. So every outcome but
 /// "devpod already had one" is a line on the terminal, and the `up` goes ahead to
 /// succeed or to produce devpod's own diagnosis of why it cannot.
-fn ensure_a_provider(runner: &dyn Runner, notices: &mut dyn Notices<LaunchNotice>) {
+///
+/// A yes is remembered on disk, the way the context options are, because the
+/// listing costs about 0.4s on every `up`, `restart` and `recreate` and its answer
+/// almost never changes. The cache is believed for [`CONTEXT_OPTIONS_TTL`], and
+/// not at all once devpod's config file or any context's `providers` directory is
+/// newer than it: `provider add`, `delete` and `use` all write one of those. A
+/// `devpod up` that says its provider is missing drops it too (see
+/// [`devpod::says_the_provider_set_changed`]). Only a yes is cached, so a devpod
+/// with no provider, or one whose listing could not be read, is asked every time.
+fn ensure_a_provider(
+    runner: &dyn Runner,
+    host: &Host,
+    now: SystemTime,
+    notices: &mut dyn Notices<LaunchNotice>,
+) {
+    let cache = host.provider_cache();
+    if provider_cached(&cache, host.devpod_home.as_ref(), now) {
+        return;
+    }
     match devpod::ensure_a_provider(runner, FALLBACK_PROVIDER) {
-        Ok(ProviderRegistration::AlreadyRegistered) => {}
-        Ok(ProviderRegistration::Added) => notices.say(LaunchNotice::ProviderRegistered {
-            name: FALLBACK_PROVIDER.to_owned(),
-        }),
+        Ok(ProviderRegistration::AlreadyRegistered) => remember_provider(&cache),
+        Ok(ProviderRegistration::Added) => {
+            remember_provider(&cache);
+            notices.say(LaunchNotice::ProviderRegistered {
+                name: FALLBACK_PROVIDER.to_owned(),
+            });
+        }
         Err(failure) => notices.say(LaunchNotice::ProviderGuardFailed(failure)),
     }
+}
+
+/// Whether a remembered "devpod has a provider" can still be believed.
+fn provider_cached(cache: &Path, devpod_home: Option<&DevpodHome>, now: SystemTime) -> bool {
+    let Some(cached_at) = std::fs::metadata(cache)
+        .and_then(|meta| meta.modified())
+        .ok()
+    else {
+        return false;
+    };
+    let fresh = now
+        .duration_since(cached_at)
+        .is_ok_and(|age| age < CONTEXT_OPTIONS_TTL);
+    if !fresh {
+        return false;
+    }
+    let Some(home) = devpod_home else {
+        return true;
+    };
+    let changed_since = |path: &Path| {
+        std::fs::metadata(path)
+            .and_then(|meta| meta.modified())
+            .is_ok_and(|changed_at| changed_at > cached_at)
+    };
+    !changed_since(&home.config()) && !home.provider_dirs().iter().any(|dir| changed_since(dir))
+}
+
+/// Remember that devpod has a provider, or say nothing about failing to: a marker
+/// that cannot be written costs the next launch one listing.
+fn remember_provider(cache: &Path) {
+    if let Some(parent) = cache.parent()
+        && std::fs::create_dir_all(parent).is_err()
+    {
+        return;
+    }
+    // Written beside the marker and renamed over it, with this process's id in the
+    // name, so two launches racing here never share a half-written file.
+    let temporary = cache.with_extension(format!("{}.tmp", std::process::id()));
+    if std::fs::write(&temporary, "registered\n").is_ok()
+        && std::fs::rename(&temporary, cache).is_err()
+    {
+        let _ = std::fs::remove_file(&temporary);
+    }
+}
+
+/// Drop the remembered "devpod has a provider".
+fn forget_provider(cache: &Path) {
+    let _ = std::fs::remove_file(cache);
 }
 
 /// Whether devpod reports this workspace as running.
@@ -7158,6 +7244,175 @@ mod tests {
                 .any(|notice| matches!(notice, LaunchNotice::ProviderRegistered { .. })),
             "{said:?}"
         );
+    }
+
+    // ------------------------------------------ the provider guard's cache
+
+    /// One `up` of `myws` on `scene`, and what it said.
+    fn up_myws(scene: &Scene) -> (Result<UpOutcome, NotRun>, Vec<LaunchNotice>) {
+        let mut context = CommandContext::new(&scene.runner);
+        let token = HostToken::new();
+        let request = UpRequest::new(
+            "owner/repo",
+            Naming::Create {
+                workspace_id: "myws",
+            },
+        );
+        let mut said = Vec::new();
+        let outcome = workspace_up(
+            &mut context,
+            &scene.host,
+            &token,
+            &ClaudeSeen::new(),
+            &NoProvisioning,
+            &request,
+            None,
+            &mut said,
+        );
+        (outcome, said)
+    }
+
+    /// How many times `devpod provider list` was asked.
+    fn provider_listings(scene: &Scene) -> usize {
+        scene
+            .devpod_heads()
+            .iter()
+            .filter(|head| *head == &["provider".to_owned(), "list".to_owned()])
+            .count()
+    }
+
+    #[test]
+    fn a_second_up_believes_the_remembered_provider_and_skips_the_listing() {
+        let scene = Scene::new();
+
+        let (first, _) = up_myws(&scene);
+        let (second, _) = up_myws(&scene);
+
+        assert_eq!(first, Ok(UpOutcome::Started));
+        assert_eq!(second, Ok(UpOutcome::Started));
+        assert_eq!(provider_listings(&scene), 1);
+        assert!(scene.host.provider_cache().is_file());
+    }
+
+    #[test]
+    fn a_provider_the_guard_added_is_remembered_too() {
+        let scene = Scene::new();
+        scene
+            .runner
+            .script(["devpod", "provider", "list"], Response::stdout("{}"));
+
+        let (_, said) = up_myws(&scene);
+
+        assert!(
+            said.contains(&LaunchNotice::ProviderRegistered {
+                name: "docker".to_owned()
+            }),
+            "{said:?}"
+        );
+        assert!(scene.host.provider_cache().is_file());
+    }
+
+    #[test]
+    fn a_listing_that_could_not_be_read_is_not_remembered() {
+        let scene = Scene::new();
+        scene.runner.script(
+            ["devpod", "provider", "list"],
+            Response::failed(1, "devpod: boom\n"),
+        );
+
+        let _ = up_myws(&scene);
+        let _ = up_myws(&scene);
+
+        assert_eq!(provider_listings(&scene), 2);
+        assert!(!scene.host.provider_cache().exists());
+    }
+
+    #[test]
+    fn a_remembered_provider_older_than_the_ttl_is_asked_again() {
+        let scene = Scene::new();
+        let cache = scene.host.provider_cache();
+        std::fs::write(&cache, "registered\n").expect("a marker");
+
+        assert!(provider_cached(&cache, None, SystemTime::now()));
+        assert!(!provider_cached(
+            &cache,
+            None,
+            SystemTime::now() + CONTEXT_OPTIONS_TTL + Duration::from_secs(1),
+        ));
+    }
+
+    #[test]
+    fn a_remembered_provider_older_than_devpods_config_is_asked_again() {
+        // `devpod provider use` and `delete` of the default rewrite the config.
+        let scene = Scene::new();
+        let cache = scene.host.provider_cache();
+        std::fs::write(&cache, "registered\n").expect("a marker");
+        aged(&cache, Duration::from_secs(10));
+        let config = scene.host.devpod_config().expect("a devpod home");
+        std::fs::create_dir_all(config.parent().expect("a parent")).expect("devpod's home");
+        std::fs::write(&config, "contexts: {}\n").expect("devpod's config");
+
+        let _ = up_myws(&scene);
+
+        assert_eq!(provider_listings(&scene), 1);
+    }
+
+    #[test]
+    fn a_remembered_provider_older_than_a_providers_directory_is_asked_again() {
+        // `devpod provider add` / `delete` add or remove an entry here.
+        let scene = Scene::new();
+        let cache = scene.host.provider_cache();
+        std::fs::write(&cache, "registered\n").expect("a marker");
+        aged(&cache, Duration::from_secs(10));
+        let home = scene.host.devpod_home.as_ref().expect("a devpod home");
+        let providers = home
+            .path()
+            .join("contexts")
+            .join("default")
+            .join("providers");
+        std::fs::create_dir_all(providers.join("docker")).expect("a providers dir");
+
+        assert!(!provider_cached(&cache, Some(home), SystemTime::now()));
+        let _ = up_myws(&scene);
+        assert_eq!(provider_listings(&scene), 1);
+    }
+
+    #[test]
+    fn an_up_that_says_its_provider_is_gone_forgets_the_remembered_one() {
+        let scene = Scene::new();
+        let cache = scene.host.provider_cache();
+        std::fs::write(&cache, "registered\n").expect("a marker");
+        scene.runner.script(
+            ["devpod", "up"],
+            Response::failed(1, "fatal no default provider found\n"),
+        );
+
+        let (outcome, _) = up_myws(&scene);
+
+        assert_eq!(
+            outcome,
+            Ok(UpOutcome::Refused {
+                exit: Exit::Code(1)
+            })
+        );
+        // The marker was believed for this launch and dropped by what devpod said.
+        assert_eq!(provider_listings(&scene), 0);
+        assert!(!cache.exists());
+    }
+
+    #[test]
+    fn an_up_that_fails_for_another_reason_keeps_the_remembered_provider() {
+        let scene = Scene::new();
+        let cache = scene.host.provider_cache();
+        std::fs::write(&cache, "registered\n").expect("a marker");
+        scene.runner.script(
+            ["devpod", "up"],
+            Response::failed(1, "docker daemon down\n"),
+        );
+
+        let _ = up_myws(&scene);
+
+        assert!(cache.is_file());
     }
 
     /// What the `up` call's environment says `SSH_AUTH_SOCK` is, or `None` when it

@@ -96,6 +96,23 @@ impl DevpodHome {
         self.root.join("contexts")
     }
 
+    /// Every context's `providers` directory, the one place devpod records which
+    /// providers it has.
+    ///
+    /// `devpod provider add` and `delete` create and remove an entry here, which
+    /// moves the directory's mtime, so a cache of "devpod has a provider" that is
+    /// older than any of these is stale. Nothing when the contexts do not read: a
+    /// devpod with no records has no provider to cache either.
+    pub(crate) fn provider_dirs(&self) -> Vec<PathBuf> {
+        let Ok(contexts) = std::fs::read_dir(self.contexts()) else {
+            return Vec::new();
+        };
+        contexts
+            .flatten()
+            .map(|context| context.path().join("providers"))
+            .collect()
+    }
+
     /// One workspace's directory under one context — the address both record files
     /// hang off, and the only place the layout is spelled.
     fn workspace_dir(&self, context: &str, workspace_id: &str) -> PathBuf {

@@ -366,6 +366,34 @@ pub(crate) fn says_a_mount_source_was_empty(line: &str) -> bool {
     line.contains("field Source must not be empty")
 }
 
+/// Whether this line is devpod saying the provider it was about to use is not
+/// there: no default at all, or a named one that is gone or never initialised.
+///
+/// Read so a cached "devpod has a provider" can be dropped the moment devpod says
+/// otherwise, rather than believed until its TTL runs out. Matched on the stable
+/// halves of devpod v0.26's own messages (`no default provider found`, `provider
+/// %s not found`, `provider '%s' does not exist`, `provider %s doesn't exist`,
+/// `provider '%s' is not initialized`). A false positive costs one `devpod
+/// provider list` on the next launch, so the match leans wide.
+pub(crate) fn says_the_provider_set_changed(line: &str) -> bool {
+    let line = line.to_ascii_lowercase();
+    if line.contains("no default provider") {
+        return true;
+    }
+    let Some(at) = line.find("provider") else {
+        return false;
+    };
+    let rest = &line[at..];
+    [
+        "not found",
+        "does not exist",
+        "doesn't exist",
+        "is not initialized",
+    ]
+    .iter()
+    .any(|tail| rest.contains(tail))
+}
+
 /// An outcome, split into "it ran, this is what came back" and "it did not".
 ///
 /// One function over all four arms rather than a `_ =>` at each call site: the
@@ -2645,6 +2673,27 @@ mod tests {
                 ProviderListUnreadable::NotRun(NotRun::NotInstalled)
             ))
         );
+    }
+
+    #[test]
+    fn devpods_missing_provider_lines_say_the_provider_set_changed() {
+        for line in [
+            "fatal no default provider found. Please make sure to run 'devpod provider use'",
+            "provider docker not found",
+            "provider 'docker' does not exist",
+            "provider kubernetes doesn't exist",
+            "provider 'docker' is not initialized, please make sure to run 'devpod provider use docker'",
+            "find provider: provider not found",
+        ] {
+            assert!(says_the_provider_set_changed(line), "{line}");
+        }
+        for line in [
+            "bind mount source path does not exist: /x",
+            "Using provider docker",
+            "workspace myws doesn't exist",
+        ] {
+            assert!(!says_the_provider_set_changed(line), "{line}");
+        }
     }
 
     // ---------------------------------------------------- the context options

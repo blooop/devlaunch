@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`up`, `restart`, `recreate` and a create no longer ask `devpod provider list` on
+  every launch.** The provider guard that runs before each `devpod up` cost about 0.4s
+  for an answer that almost never changes. `dl` now remembers a "devpod has a provider"
+  answer in `<cache>/provider-registered`, the same way it caches the context options:
+  believed for an hour, and not at all once `~/.devpod/config.yaml` or any context's
+  `providers` directory is newer than it (`devpod provider add`, `delete` and `use`
+  write one of those). A `devpod up` that says its provider is missing (`no default
+  provider found`, `provider ... not found`, `does not exist`, `is not initialized`)
+  drops it, so the next launch asks again and registers one if there is none. Only a
+  yes is cached: a devpod with no provider, or a listing `dl` could not read, is asked
+  every time, as before.
+
 ## [0.59.4] - 2026-10-05
 
 ### Fixed
