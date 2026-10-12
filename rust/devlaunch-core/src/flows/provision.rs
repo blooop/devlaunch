@@ -6850,6 +6850,93 @@ fi
         );
     }
 
+    /// Two stages that exist only to be run here.
+    const FIRST_STAGE: StageName = StageName::new("first");
+    const SECOND_STAGE: StageName = StageName::new("second");
+
+    /// Run `stages` as a whole pass on a stripped PATH, and return its report.
+    fn run_stages(scratch: &Path, stages: &[Stage]) -> String {
+        let home = a_home(scratch);
+        let sysbin = sysbin(scratch, &["readlink"]);
+        let ran = bash_with(
+            &setup_script(stages),
+            &[
+                ("HOME", &home.to_string_lossy()),
+                ("PATH", &sysbin.to_string_lossy()),
+            ],
+        );
+        assert!(
+            ran.status.success(),
+            "{}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+        String::from_utf8_lossy(&ran.stdout).into_owned()
+    }
+
+    #[test]
+    fn a_stage_that_will_not_parse_fails_alone_and_the_pass_goes_on() {
+        let scratch = scratch();
+        let stages = [
+            Stage::new(FIRST_STAGE, in_subshell("if then")),
+            Stage::new(SECOND_STAGE, in_subshell("true")),
+        ];
+        let report = run_stages(scratch.path(), &stages);
+        assert_eq!(
+            stage_outcomes(&report, &stages),
+            vec![
+                StageOutcome {
+                    stage: FIRST_STAGE,
+                    result: StageResult::Failed { status: 2 },
+                },
+                StageOutcome {
+                    stage: SECOND_STAGE,
+                    result: StageResult::Ok,
+                },
+            ],
+            "{report}"
+        );
+        assert!(
+            report.contains(&format!("{PROBE_MARK} tools ")),
+            "the probe did not answer:\n{report}"
+        );
+    }
+
+    #[test]
+    fn a_stage_that_sets_u_and_c_keeps_them_to_itself() {
+        let scratch = scratch();
+        let existing = scratch.path().join("existing");
+        fs::write(&existing, "old\n").expect("a file to overwrite");
+        let stages = [
+            Stage::new(FIRST_STAGE, in_subshell("set -uC; true")),
+            Stage::new(
+                SECOND_STAGE,
+                in_subshell(&format!(
+                    "echo \"$unset_var\" >/dev/null\necho new > {}",
+                    quote(&existing.to_string_lossy())
+                )),
+            ),
+        ];
+        let report = run_stages(scratch.path(), &stages);
+        assert_eq!(
+            stage_outcomes(&report, &stages),
+            vec![
+                StageOutcome {
+                    stage: FIRST_STAGE,
+                    result: StageResult::Ok,
+                },
+                StageOutcome {
+                    stage: SECOND_STAGE,
+                    result: StageResult::Ok,
+                },
+            ],
+            "{report}"
+        );
+        assert_eq!(
+            fs::read_to_string(&existing).expect("the file is still there"),
+            "new\n"
+        );
+    }
+
     #[test]
     fn a_real_bash_over_the_pass_calls_hostname_with_the_whole_id() {
         // The derivation through a real shell, reading what `hostname` was actually
