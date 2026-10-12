@@ -1753,7 +1753,7 @@ fn up_under_stage(
     if let Some(identity) = request.naming.identity()
         && serialization.waited()
         && !request.wants_more_than_a_running_workspace()
-        && is_running(context.runner(), identity)
+        && is_running(context, identity)
         && create_record(host.devpod_home.as_ref(), identity) != CreateRecord::NeverCompleted
     {
         notices.say(LaunchNotice::BroughtUpBySibling {
@@ -2165,10 +2165,15 @@ fn ensure_a_provider(runner: &dyn Runner, notices: &mut dyn Notices<LaunchNotice
 /// Nothing is timed here: [`lifecycle::workspace_state`] opens the `devpod-up`
 /// stage and [`crate::clients::devpod`] spans the round trip inside it, so the
 /// measurement is already the shape it should be wherever this is called from.
-fn is_running(runner: &dyn Runner, workspace_id: &str) -> bool {
-    lifecycle::workspace_state(runner, workspace_id, Patience::AsLongAsItTakes)
-        .as_ref()
-        .is_ok_and(ContainerState::is_running)
+fn is_running(context: &CommandContext<'_>, workspace_id: &str) -> bool {
+    lifecycle::workspace_state(
+        context.runner(),
+        context.devpod_home(),
+        workspace_id,
+        Patience::AsLongAsItTakes,
+    )
+    .as_ref()
+    .is_ok_and(ContainerState::is_running)
 }
 
 /// The token in a private file for `devpod up`, or nothing to forward.
@@ -4199,6 +4204,7 @@ pub fn resolve_triple(
 ) -> Result<Resolution, NotRun> {
     let known = lifecycle::resolve_known_workspace(
         context.runner(),
+        context.devpod_home(),
         workspace,
         || recorded_id(cold, workspace),
         &mut as_lifecycle(notices),
@@ -4859,8 +4865,12 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
         &mut self,
         name: String,
     ) -> Result<Result<Placement, LaunchRefusal>, LaunchAborted> {
-        let state =
-            lifecycle::workspace_state(self.context.runner(), &name, Patience::AsLongAsItTakes);
+        let state = lifecycle::workspace_state(
+            self.context.runner(),
+            self.context.devpod_home(),
+            &name,
+            Patience::AsLongAsItTakes,
+        );
         if let Ok(state) = state {
             return Ok(Ok(Placement::Known {
                 title: self.recognised_title(&name),
@@ -5195,6 +5205,7 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
     fn run_dotfiles(&mut self, placement: &Placement) -> Result<Launched, LaunchAborted> {
         let running = lifecycle::workspace_state(
             self.context.runner(),
+            self.context.devpod_home(),
             placement.workspace_id(),
             Patience::AsLongAsItTakes,
         )

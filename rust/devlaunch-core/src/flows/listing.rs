@@ -62,6 +62,7 @@ use serde::Serialize;
 use crate::clients::devpod::{
     self, ContainerState, ListingUnreadable, Patience, Workspace, WorkspaceSource,
 };
+use crate::clients::devpod_home::DevpodHome;
 use crate::clients::git::{Git, GitAnswer};
 use crate::domain::metadata::MetadataStorage;
 use crate::domain::model::{SweepNote, WorktreeInfo};
@@ -90,6 +91,12 @@ pub struct CommandContext<'r> {
     /// `None` until devpod has answered once. Never holds an answer devpod did
     /// not give.
     snapshot: Option<Vec<Workspace>>,
+    /// Where devpod keeps its records, when the binary located them. Read by
+    /// [`crate::flows::lifecycle::workspace_state`] to ask docker about a
+    /// local-docker workspace instead of `devpod status`; `None` keeps every
+    /// state question on devpod, which is what a context built by [`Self::new`]
+    /// alone does.
+    devpod_home: Option<DevpodHome>,
 }
 
 impl<'r> CommandContext<'r> {
@@ -98,7 +105,24 @@ impl<'r> CommandContext<'r> {
         Self {
             runner,
             snapshot: None,
+            devpod_home: None,
         }
+    }
+
+    /// This context, reading devpod's records from `devpod_home`.
+    ///
+    /// Opt-in rather than located in [`Self::new`], for the reason
+    /// [`DevpodHome::locate`] gives: the binary resolves the environment once and
+    /// hands the answer down, and a test driving a fake runner must not read the
+    /// host's real `~/.devpod`.
+    pub fn with_devpod_home(mut self, devpod_home: Option<DevpodHome>) -> Self {
+        self.devpod_home = devpod_home;
+        self
+    }
+
+    /// devpod's records, if this context was given them.
+    pub fn devpod_home(&self) -> Option<&DevpodHome> {
+        self.devpod_home.as_ref()
     }
 
     /// The runner every flow under this command spawns through.

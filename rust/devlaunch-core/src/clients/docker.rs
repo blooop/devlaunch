@@ -202,6 +202,56 @@ pub(crate) fn inspect(runner: &dyn Runner, ids: &NonEmpty<String>) -> Result<Str
     read(runner, &args, INSPECT_THEM)
 }
 
+/// One container's lifecycle state and its `dev.containers.id` label, as
+/// `docker inspect` reports them.
+///
+/// `None` for every answer that is not exactly that pair: no such container, a
+/// docker that refused, was missing or did not answer within `timeout`, or
+/// output of another shape. The one caller (`flows::lifecycle::state`) asks
+/// devpod instead whenever this has nothing, so the arms that a removal or a
+/// kill have to tell apart are all the same "could not tell" here.
+pub(crate) fn container_status(
+    runner: &dyn Runner,
+    id: &str,
+    timeout: Duration,
+) -> Option<InspectedContainer> {
+    let stdout = read(
+        runner,
+        &[
+            "inspect",
+            "--type",
+            "container",
+            "--format",
+            INSPECT_STATUS_FORMAT,
+            id,
+        ],
+        timeout,
+    )
+    .ok()?;
+    let (status, label) = stdout.trim_end_matches(['\n', '\r']).split_once('\t')?;
+    if status.is_empty() || status.contains(char::is_whitespace) {
+        return None;
+    }
+    Some(InspectedContainer {
+        status: status.to_owned(),
+        label: label.to_owned(),
+    })
+}
+
+/// What [`container_status`] asks docker to print: the state word, a tab, and
+/// the label devpod finds a workspace's container by.
+pub(crate) const INSPECT_STATUS_FORMAT: &str =
+    "{{.State.Status}}\t{{index .Config.Labels \"dev.containers.id\"}}";
+
+/// [`container_status`]'s answer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct InspectedContainer {
+    /// docker's `State.Status` word: `running`, `exited`, `paused` and so on.
+    pub(crate) status: String,
+    /// The `dev.containers.id` label, empty when the container has none.
+    pub(crate) label: String,
+}
+
 /// Run `argv` inside a running container as root, and what it printed.
 ///
 /// As root because a `/proc` mounted with `hidepid` hides other users'
@@ -465,5 +515,69 @@ mod tests {
             remove_volumes(&fake, &names(&["ws-pixi"])),
             Answer::NotStarted(failure)
         );
+    }
+
+    /// The probe asks for exactly one container, by id, with a format that
+    /// prints the state word and the label devpod finds containers by.
+    #[test]
+    fn a_containers_status_is_asked_for_by_id_with_one_format() {
+        let fake = FakeRunner::new();
+        fake.script(["docker", "inspect"], Response::stdout("running\tws-uid\n"));
+
+        assert_eq!(
+            container_status(&fake, "c0ffee", Duration::from_secs(3)),
+            Some(InspectedContainer {
+                status: "running".to_owned(),
+                label: "ws-uid".to_owned(),
+            })
+        );
+        assert_eq!(
+            fake.argvs(),
+            [[
+                "docker",
+                "inspect",
+                "--type",
+                "container",
+                "--format",
+                INSPECT_STATUS_FORMAT,
+                "c0ffee",
+            ]]
+        );
+        assert_eq!(
+            fake.only_call().spec().and_then(|spec| spec.timeout),
+            Some(Duration::from_secs(3))
+        );
+    }
+
+    /// A container with no label prints an empty label, which is an answer;
+    /// every way of not answering is `None`.
+    #[test]
+    fn a_container_docker_cannot_describe_is_nothing() {
+        let unlabelled = FakeRunner::new();
+        unlabelled.script(["docker", "inspect"], Response::stdout("exited\t\n"));
+        assert_eq!(
+            container_status(&unlabelled, "c0ffee", Duration::from_secs(3)),
+            Some(InspectedContainer {
+                status: "exited".to_owned(),
+                label: String::new(),
+            })
+        );
+
+        for response in [
+            Response::failed(1, "Error: No such container: c0ffee\n"),
+            Response::ProgramNotFound,
+            Response::TimedOut,
+            Response::stdout(""),
+            Response::stdout("running\n"),
+            Response::stdout("two words\tws-uid\n"),
+        ] {
+            let fake = FakeRunner::new();
+            fake.script(["docker", "inspect"], response.clone());
+            assert_eq!(
+                container_status(&fake, "c0ffee", Duration::from_secs(3)),
+                None,
+                "{response:?}"
+            );
+        }
     }
 }

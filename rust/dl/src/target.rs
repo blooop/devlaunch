@@ -258,7 +258,9 @@ fn existing(
             notices: Vec::new(),
         });
     }
-    let described = lifecycle::workspace_state(runner, &name, vetting.patience()).is_ok();
+    let described =
+        lifecycle::workspace_state(runner, context.devpod_home(), &name, vetting.patience())
+            .is_ok();
     if !described {
         let listed = context.workspaces().map_err(Unaddressable::Listing)?;
         if !listed.iter().any(|workspace| workspace.id == name) {

@@ -242,7 +242,8 @@ the fetched ref.
 
 `dl <workspace> up` prepares one, and running it repeatedly is
 cheap on purpose: against a container that is already up, a second `up` costs one
-`devpod status` and nothing else. It used to also pay the tools setup pass,
+state question and nothing else (a `docker inspect` on the local docker provider,
+`devpod status` otherwise). It used to also pay the tools setup pass,
 ~1.7s of `devpod ssh` to be told the tools it was told about last time, and now
 reuses the recorded answer instead. See
 [The trip a launch can skip](workspace-tools.md#the-trip-a-launch-can-skip) for what makes a recorded

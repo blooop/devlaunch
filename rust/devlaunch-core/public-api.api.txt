@@ -341,8 +341,10 @@ pub fn devlaunch_core::flows::launch::ColdPath<'r, '_>::open(&mut self) -> core:
 pub fn devlaunch_core::flows::launch::ColdPath<'r, '_>::recorded(&mut self) -> core::option::Option<&devlaunch_core::domain::metadata::MetadataStorage>
 pub struct devlaunch_core::api::CommandContext<'r>
 impl<'r> devlaunch_core::flows::listing::CommandContext<'r>
+pub fn devlaunch_core::flows::listing::CommandContext<'r>::devpod_home(&self) -> core::option::Option<&devlaunch_core::clients::devpod_home::DevpodHome>
 pub fn devlaunch_core::flows::listing::CommandContext<'r>::git(&self) -> devlaunch_core::clients::git::Git<'r>
 pub fn devlaunch_core::flows::listing::CommandContext<'r>::new(&'r dyn devlaunch_runner::Runner) -> Self
+pub fn devlaunch_core::flows::listing::CommandContext<'r>::with_devpod_home(self, core::option::Option<devlaunch_core::clients::devpod_home::DevpodHome>) -> Self
 pub fn devlaunch_core::flows::listing::CommandContext<'r>::workspaces(&mut self) -> core::result::Result<alloc::vec::Vec<devlaunch_core::clients::devpod::Workspace>, devlaunch_core::clients::devpod::ListingUnreadable>
 pub struct devlaunch_core::api::DevcontainerPath(_)
 impl devlaunch_core::domain::spec::DevcontainerPath
@@ -894,8 +896,10 @@ pub fn devlaunch_core::flows::lifecycle::workspace_remove(&mut devlaunch_core::f
 pub fn devlaunch_core::flows::lifecycle::workspace_stop(&mut devlaunch_core::flows::listing::CommandContext<'_>, &mut devlaunch_core::flows::lifecycle::Refresh<'_>, &str) -> core::result::Result<devlaunch_core::flows::lifecycle::StopOutcome, devlaunch_core::clients::devpod::NotRun>
 pub struct devlaunch_core::flows::listing::CommandContext<'r>
 impl<'r> devlaunch_core::flows::listing::CommandContext<'r>
+pub fn devlaunch_core::flows::listing::CommandContext<'r>::devpod_home(&self) -> core::option::Option<&devlaunch_core::clients::devpod_home::DevpodHome>
 pub fn devlaunch_core::flows::listing::CommandContext<'r>::git(&self) -> devlaunch_core::clients::git::Git<'r>
 pub fn devlaunch_core::flows::listing::CommandContext<'r>::new(&'r dyn devlaunch_runner::Runner) -> Self
+pub fn devlaunch_core::flows::listing::CommandContext<'r>::with_devpod_home(self, core::option::Option<devlaunch_core::clients::devpod_home::DevpodHome>) -> Self
 pub fn devlaunch_core::flows::listing::CommandContext<'r>::workspaces(&mut self) -> core::result::Result<alloc::vec::Vec<devlaunch_core::clients::devpod::Workspace>, devlaunch_core::clients::devpod::ListingUnreadable>
 pub fn devlaunch_core::flows::listing::enriched_listing(&mut devlaunch_core::flows::listing::CommandContext<'_>, &devlaunch_core::flows::listing::DlView<'_>, devlaunch_core::flows::listing::Sizes) -> core::result::Result<alloc::vec::Vec<devlaunch_core::flows::listing::ListedWorkspace>, devlaunch_core::clients::devpod::ListingUnreadable>
 pub fn devlaunch_core::flows::listing::json_document(&[devlaunch_core::flows::listing::ListedWorkspace]) -> serde_json::value::Value

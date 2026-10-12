@@ -1,7 +1,11 @@
 //! Which workspace a name means, and what state that workspace is in.
 
 use super::notices::LifecycleNotice;
+use std::time::Duration;
+
 use crate::clients::devpod::{self, ContainerState, NotRun, Patience, StatusUnreadable};
+use crate::clients::devpod_home::{DevpodHome, ProbeEnv, recorded_local_container};
+use crate::clients::docker;
 use crate::domain::metadata::MetadataStorage;
 use crate::domain::workspace_id::WorkspaceId;
 use crate::notices::Notices;
@@ -17,12 +21,45 @@ use crate::timing;
 /// [`timing::stage_result`](crate::timing::stage_result), because an unreadable
 /// answer is Python's `None` return and not an exception — the stage completed,
 /// devpod just had nothing to say.
+///
+/// **docker first, when devpod's records allow it.** `devpod status` costs about
+/// 0.55s on a warm host, and for a workspace on the built-in local `docker`
+/// provider all of it goes to one `docker ps` and one `docker inspect` that
+/// devpod runs through its own agent. [`docker_state`] asks docker directly
+/// about the container devpod recorded, which costs about 0.015s, and answers
+/// only when the answer is the one devpod would give. Every doubt falls through
+/// to `devpod status`, so the slow path is the old path.
+///
+/// `devpod_home` is where those records are; `None` (a host with none, or a
+/// caller that did not look) is always the devpod path.
 pub fn workspace_state(
     runner: &dyn Runner,
+    devpod_home: Option<&DevpodHome>,
     workspace_id: &str,
     patience: Patience,
 ) -> Result<ContainerState, StatusUnreadable> {
+    workspace_state_in(
+        runner,
+        devpod_home,
+        workspace_id,
+        patience,
+        &ProbeEnv::from_process(),
+    )
+}
+
+/// [`workspace_state`] with the environment it reads handed in, so a test can
+/// pin it rather than inherit the host's `DOCKER_HOST`.
+pub(crate) fn workspace_state_in(
+    runner: &dyn Runner,
+    devpod_home: Option<&DevpodHome>,
+    workspace_id: &str,
+    patience: Patience,
+    env: &ProbeEnv,
+) -> Result<ContainerState, StatusUnreadable> {
     let mut stage = timing::stage(timing::Stage::DevpodUp);
+    if let Some(state) = docker_state(runner, devpod_home, workspace_id, patience, env) {
+        return Ok(state);
+    }
     let answer = devpod::status(runner, workspace_id, patience);
     // Python's `@timing.staged("devpod-up") get_workspace_state` returns `None`
     // for a devpod that ran and refused, gave non-JSON, or omitted `state` — the
@@ -34,6 +71,48 @@ pub fn workspace_state(
         stage.fail();
     }
     answer
+}
+
+/// The longest the docker probe may take before devpod is asked instead.
+///
+/// A docker that has not answered an inspect in this long is wedged, and
+/// waiting longer only delays the `devpod status` that would answer anyway.
+const DOCKER_PROBE: Duration = Duration::from_secs(3);
+
+/// The state `devpod status` would report, read from docker directly, or
+/// nothing when that cannot be done with certainty.
+///
+/// Three checks, and a miss at any of them is `None`:
+///
+/// 1. devpod's records describe a plain local-docker workspace and name its
+///    container ([`recorded_local_container`] lists what that takes);
+/// 2. docker knows that container, and it still carries the
+///    `dev.containers.id=<uid>` label devpod finds containers by. A container
+///    docker no longer knows is *not* read as `NotFound`: devpod looks by label,
+///    not by id, and a recreate outside devpod could have left a new container
+///    under the same label;
+/// 3. the state word maps onto devpod's vocabulary on its own
+///    ([`ContainerState::from_docker_status`]).
+pub(crate) fn docker_state(
+    runner: &dyn Runner,
+    devpod_home: Option<&DevpodHome>,
+    workspace_id: &str,
+    patience: Patience,
+    env: &ProbeEnv,
+) -> Option<ContainerState> {
+    let recorded = recorded_local_container(devpod_home, workspace_id, env)?;
+    let timeout = match patience {
+        Patience::AsLongAsItTakes => DOCKER_PROBE,
+        Patience::UpTo(limit) => limit.min(DOCKER_PROBE),
+    };
+    let inspected = {
+        let _span = timing::span("docker inspect");
+        docker::container_status(runner, &recorded.id, timeout)?
+    };
+    if inspected.label != recorded.uid {
+        return None;
+    }
+    ContainerState::from_docker_status(&inspected.status)
 }
 
 /// Which devpod workspace a triple is, and what devpod said about it.
@@ -138,13 +217,14 @@ impl KnownWorkspace {
 /// nobody has, and a launch pointed at whichever of the two the record matched.
 pub(crate) fn resolve_known_workspace(
     runner: &dyn Runner,
+    devpod_home: Option<&DevpodHome>,
     workspace: &WorkspaceId,
     recorded_id: impl FnOnce() -> Option<String>,
     notices: &mut dyn Notices<LifecycleNotice>,
     patience: Patience,
 ) -> Result<KnownWorkspace, NotRun> {
     let derived = workspace.value();
-    match workspace_state(runner, derived, patience) {
+    match workspace_state(runner, devpod_home, derived, patience) {
         Ok(state) => {
             return Ok(KnownWorkspace::Known {
                 workspace_id: derived.to_owned(),
@@ -168,7 +248,7 @@ pub(crate) fn resolve_known_workspace(
     if recorded == derived {
         return unknown();
     }
-    let state = match workspace_state(runner, &recorded, patience) {
+    let state = match workspace_state(runner, devpod_home, &recorded, patience) {
         Ok(state) => state,
         Err(StatusUnreadable::NotRun(not_run)) => return Err(not_run),
         Err(_) => return unknown(),

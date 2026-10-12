@@ -402,6 +402,146 @@ pub enum RepointFailure {
     Unwritable { path: PathBuf, reason: String },
 }
 
+/// The container devpod's records say a local-docker workspace runs in.
+///
+/// What [`recorded_local_container`] hands the state probe in
+/// `flows::lifecycle::state`: enough to ask docker about one container and to
+/// check that the container docker describes is still the one devpod would find.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RecordedContainer {
+    /// `ContainerDetails.ID` from `workspace_result.json`.
+    pub(crate) id: String,
+    /// The workspace's `uid` from `workspace.json`. devpod finds a workspace's
+    /// container by the label `dev.containers.id=<uid>`, not by the recorded id,
+    /// so a container whose label says something else is not the one devpod
+    /// would describe.
+    pub(crate) uid: String,
+}
+
+/// The two environment variables that can make devpod ask a different docker,
+/// or a different context, than the records below describe. Read by the caller
+/// (`flows::lifecycle::state`) so this module stays a pure reader of files.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ProbeEnv {
+    /// `DOCKER_HOST`. devpod's docker driver runs docker with the provider's own
+    /// `DOCKER_HOST` option appended to the environment, so a host value is one
+    /// that dl's docker and devpod's docker may not agree on.
+    pub(crate) docker_host: Option<OsString>,
+    /// `DEVPOD_CONTEXT`, which devpod binds to its `--context` flag.
+    pub(crate) devpod_context: Option<OsString>,
+}
+
+impl ProbeEnv {
+    /// The two variables as this process has them.
+    pub(crate) fn from_process() -> Self {
+        Self {
+            docker_host: std::env::var_os("DOCKER_HOST"),
+            devpod_context: std::env::var_os("DEVPOD_CONTEXT"),
+        }
+    }
+}
+
+/// The container to ask docker about in place of `devpod status`, or nothing
+/// when devpod's records cannot say with certainty which docker and which
+/// container `devpod status` would look at.
+///
+/// **Nothing is the safe answer, and every doubt gives it.** The caller asks
+/// devpod when this answers nothing, so a wrong `None` costs about half a
+/// second and a wrong `Some` costs a wrong state. So this answers only for the
+/// one shape it can read completely: the built-in `docker` provider in devpod's
+/// default context, with no `DOCKER_HOST` anywhere, no custom `DOCKER_PATH`, no
+/// machine, no pre-existing container as the source, and a completed create that
+/// recorded a container id. Each of those is what devpod v0.26.3 reads on its
+/// way to `docker ps --filter label=dev.containers.id=<uid>` (its
+/// `cmd/agent/workspace/status.go` through `pkg/driver/docker/docker.go`), and a
+/// record that departs from any of them is one where dl's docker call and
+/// devpod's could disagree.
+///
+/// `config.yaml` is YAML and this crate has no YAML reader, so it is read for
+/// two lines only and read conservatively: a `defaultContext:` that names
+/// another context, or any `DOCKER_HOST:` option that is not the empty `{}`,
+/// answers nothing.
+pub(crate) fn recorded_local_container(
+    devpod_home: Option<&DevpodHome>,
+    workspace_id: &str,
+    env: &ProbeEnv,
+) -> Option<RecordedContainer> {
+    let set = |value: &Option<OsString>| value.as_ref().is_some_and(|value| !value.is_empty());
+    if set(&env.docker_host) || set(&env.devpod_context) {
+        return None;
+    }
+    let home = devpod_home?;
+    let context = home.sole_context_holding(workspace_id)?;
+    if !config_is_plain_docker(&std::fs::read_to_string(home.config()).ok()?, &context) {
+        return None;
+    }
+    let record: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(home.record(&context, workspace_id)).ok()?)
+            .ok()?;
+    let uid = plain_docker_uid(&record, workspace_id, &context)?;
+    let result: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(home.result(&context, workspace_id)).ok()?)
+            .ok()?;
+    let id = result["ContainerDetails"]["ID"].as_str()?;
+    if id.is_empty() {
+        return None;
+    }
+    Some(RecordedContainer {
+        id: id.to_owned(),
+        uid,
+    })
+}
+
+/// Whether devpod's `config.yaml` makes `context` the one a bare `devpod status`
+/// reads and leaves `DOCKER_HOST` unset. A text scan, so it errs towards no.
+fn config_is_plain_docker(config: &str, context: &str) -> bool {
+    let mut default_context = "default";
+    for line in config.lines() {
+        if let Some(value) = line.strip_prefix("defaultContext:") {
+            default_context = value.trim().trim_matches(|c| c == '"' || c == '\'');
+        }
+        if let Some(value) = line.trim_start().strip_prefix("DOCKER_HOST:")
+            && value.trim() != "{}"
+        {
+            return false;
+        }
+    }
+    default_context == context
+}
+
+/// The workspace's `uid`, when its `workspace.json` is the plain local-docker
+/// shape [`recorded_local_container`] describes.
+fn plain_docker_uid(
+    record: &serde_json::Value,
+    workspace_id: &str,
+    context: &str,
+) -> Option<String> {
+    let empty = |value: &serde_json::Value| match value {
+        serde_json::Value::Null => true,
+        serde_json::Value::String(text) => text.is_empty(),
+        serde_json::Value::Object(map) => map.is_empty(),
+        _ => false,
+    };
+    let provider = &record["provider"];
+    if provider["name"].as_str()? != "docker"
+        || record["id"].as_str()? != workspace_id
+        || record["context"]
+            .as_str()
+            .is_some_and(|recorded| recorded != context)
+        || !empty(&record["machine"])
+        || !empty(&record["source"]["container"])
+        || !empty(&provider["options"]["DOCKER_HOST"]["value"])
+    {
+        return None;
+    }
+    let docker_path = &provider["options"]["DOCKER_PATH"]["value"];
+    if !(docker_path.is_null() || docker_path.as_str() == Some("docker")) {
+        return None;
+    }
+    let uid = record["uid"].as_str()?;
+    (!uid.is_empty()).then(|| uid.to_owned())
+}
+
 /// A devpod home under a temporary directory, holding whatever these workspaces
 /// were left holding. `Some(())` writes the create result beside the record;
 /// `None` leaves the record alone, which is what an aborted `up` leaves behind.
@@ -427,6 +567,63 @@ pub(crate) fn devpod_home_with(entries: &[(&str, &str, Option<()>)]) -> ScratchH
     }
     ScratchHome { _dir: dir, home }
 }
+
+/// A devpod home holding one completed local-docker workspace in the shape
+/// devpod v0.26.3 writes it: `config.yaml` with the docker provider's options
+/// empty, `workspace.json` with a `uid` and the docker provider, and a
+/// `workspace_result.json` whose `ContainerDetails.ID` is `container_id`.
+///
+/// Beside [`devpod_home_with`] for its reason: the state probe's tests in
+/// `flows::lifecycle` want one too, and the layout is spelled here.
+#[cfg(test)]
+pub(crate) fn local_docker_home(workspace_id: &str, uid: &str, container_id: &str) -> ScratchHome {
+    let home = devpod_home_with(&[("default", workspace_id, Some(()))]);
+    std::fs::write(home.config(), LOCAL_DOCKER_CONFIG).expect("a config");
+    std::fs::write(
+        home.record("default", workspace_id),
+        serde_json::json!({
+            "id": workspace_id,
+            "uid": uid,
+            "provider": {
+                "name": "docker",
+                "options": { "DOCKER_PATH": { "value": "docker" }, "INACTIVITY_TIMEOUT": {} },
+            },
+            "machine": {},
+            "ide": { "name": "none" },
+            "source": { "localFolder": "/somewhere" },
+            "context": "default",
+        })
+        .to_string(),
+    )
+    .expect("a record");
+    std::fs::write(
+        home.result("default", workspace_id),
+        serde_json::json!({
+            "ContainerDetails": { "ID": container_id, "State": { "Status": "running" } },
+            "MergedConfig": {},
+        })
+        .to_string(),
+    )
+    .expect("a result");
+    home
+}
+
+/// devpod's `config.yaml` as a host on the default docker provider has it.
+#[cfg(test)]
+pub(crate) const LOCAL_DOCKER_CONFIG: &str = "contexts:
+  default:
+    defaultProvider: docker
+    providers:
+      docker:
+        initialized: true
+        options:
+          DOCKER_BUILDER: {}
+          DOCKER_HOST: {}
+          DOCKER_PATH:
+            value: docker
+          INACTIVITY_TIMEOUT: {}
+defaultContext: default
+";
 
 /// The `flock` devpod blocks on, created empty, for the one test that has to
 /// assert it is still standing afterwards.
@@ -650,5 +847,174 @@ mod tests {
             Some(DevpodHome::at("/home/someone/.devpod"))
         );
         assert_eq!(DevpodHome::located(None, || None), None);
+    }
+
+    // ------------------------------------------------ the local-docker record
+
+    fn recorded(home: &DevpodHome) -> Option<RecordedContainer> {
+        recorded_local_container(Some(home), "myws", &ProbeEnv::default())
+    }
+
+    fn edit_json(path: &Path, edit: impl FnOnce(&mut serde_json::Value)) {
+        let mut value: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).expect("a file")).expect("json");
+        edit(&mut value);
+        std::fs::write(path, value.to_string()).expect("rewritten");
+    }
+
+    /// The one shape the probe answers for: devpod's own records of a completed
+    /// local-docker create, read back as the container id and the label value.
+    #[test]
+    fn a_completed_local_docker_workspace_names_its_container_and_uid() {
+        let home = local_docker_home("myws", "default-my-1a2b3", "c0ffee");
+        assert_eq!(
+            recorded(&home),
+            Some(RecordedContainer {
+                id: "c0ffee".to_owned(),
+                uid: "default-my-1a2b3".to_owned(),
+            })
+        );
+    }
+
+    /// No home, no record, no result, a result with no id, and a `config.yaml`
+    /// that will not read are all "ask devpod".
+    #[test]
+    fn missing_or_unreadable_records_answer_nothing() {
+        assert_eq!(
+            recorded_local_container(None, "myws", &ProbeEnv::default()),
+            None
+        );
+
+        let home = local_docker_home("myws", "u", "c0ffee");
+        assert_eq!(
+            recorded_local_container(Some(&home), "otherws", &ProbeEnv::default()),
+            None
+        );
+
+        let home = local_docker_home("myws", "u", "c0ffee");
+        std::fs::remove_file(home.result("default", "myws")).expect("removed");
+        assert_eq!(recorded(&home), None, "an up that never finished");
+
+        let home = local_docker_home("myws", "u", "c0ffee");
+        std::fs::write(home.result("default", "myws"), "{}").expect("written");
+        assert_eq!(recorded(&home), None, "a result with no container id");
+
+        let home = local_docker_home("myws", "u", "c0ffee");
+        std::fs::write(home.result("default", "myws"), "not json").expect("written");
+        assert_eq!(recorded(&home), None, "a result that is not json");
+
+        let home = local_docker_home("myws", "u", "c0ffee");
+        std::fs::write(home.record("default", "myws"), "{").expect("written");
+        assert_eq!(recorded(&home), None, "a record that is not json");
+
+        let home = local_docker_home("myws", "u", "c0ffee");
+        std::fs::remove_file(home.config()).expect("removed");
+        assert_eq!(recorded(&home), None, "no config.yaml to check");
+    }
+
+    /// Each departure from the plain local-docker record is one where dl's
+    /// docker and devpod's could look at different things.
+    #[test]
+    fn a_record_that_is_not_plain_local_docker_answers_nothing() {
+        let cases: [(&str, fn(&mut serde_json::Value)); 7] = [
+            ("another provider", |r| r["provider"]["name"] = "ssh".into()),
+            ("a custom docker binary", |r| {
+                r["provider"]["options"]["DOCKER_PATH"]["value"] = "podman".into();
+            }),
+            ("a workspace DOCKER_HOST", |r| {
+                r["provider"]["options"]["DOCKER_HOST"] =
+                    serde_json::json!({ "value": "tcp://elsewhere:2375" });
+            }),
+            ("a machine", |r| {
+                r["machine"] = serde_json::json!({ "id": "m1" })
+            }),
+            ("an existing container as the source", |r| {
+                r["source"]["container"] = "abc".into();
+            }),
+            ("no uid", |r| {
+                r.as_object_mut().expect("an object").remove("uid");
+            }),
+            ("a record for another id", |r| r["id"] = "notmyws".into()),
+        ];
+        for (why, edit) in cases {
+            let home = local_docker_home("myws", "u", "c0ffee");
+            edit_json(&home.record("default", "myws"), edit);
+            assert_eq!(recorded(&home), None, "{why}");
+        }
+    }
+
+    /// `config.yaml` is read for two facts and read conservatively.
+    #[test]
+    fn a_config_naming_another_context_or_a_docker_host_answers_nothing() {
+        let home = local_docker_home("myws", "u", "c0ffee");
+        std::fs::write(
+            home.config(),
+            LOCAL_DOCKER_CONFIG.replace("defaultContext: default", "defaultContext: work"),
+        )
+        .expect("written");
+        assert_eq!(
+            recorded(&home),
+            None,
+            "devpod status would ask another context"
+        );
+
+        let home = local_docker_home("myws", "u", "c0ffee");
+        std::fs::write(
+            home.config(),
+            LOCAL_DOCKER_CONFIG.replace(
+                "DOCKER_HOST: {}",
+                "DOCKER_HOST:\n            value: ssh://elsewhere",
+            ),
+        )
+        .expect("written");
+        assert_eq!(recorded(&home), None, "devpod's docker is another daemon");
+
+        let home = local_docker_home("myws", "u", "c0ffee");
+        std::fs::write(
+            home.config(),
+            LOCAL_DOCKER_CONFIG.replace("defaultContext: default\n", ""),
+        )
+        .expect("written");
+        assert!(
+            recorded(&home).is_some(),
+            "no defaultContext means `default`"
+        );
+    }
+
+    /// The environment can point devpod somewhere the records do not describe.
+    #[test]
+    fn a_docker_host_or_devpod_context_in_the_environment_answers_nothing() {
+        let home = local_docker_home("myws", "u", "c0ffee");
+        let host = ProbeEnv {
+            docker_host: Some("tcp://elsewhere:2375".into()),
+            ..ProbeEnv::default()
+        };
+        assert_eq!(recorded_local_container(Some(&home), "myws", &host), None);
+        let context = ProbeEnv {
+            devpod_context: Some("default".into()),
+            ..ProbeEnv::default()
+        };
+        assert_eq!(
+            recorded_local_container(Some(&home), "myws", &context),
+            None
+        );
+        let empty = ProbeEnv {
+            docker_host: Some("".into()),
+            devpod_context: Some("".into()),
+        };
+        assert!(
+            recorded_local_container(Some(&home), "myws", &empty).is_some(),
+            "an empty variable is an unset one"
+        );
+    }
+
+    /// Two contexts holding the id is the ambiguity every reader here refuses.
+    #[test]
+    fn one_id_in_two_contexts_answers_nothing() {
+        let home = local_docker_home("myws", "u", "c0ffee");
+        let other = home.record("work", "myws");
+        std::fs::create_dir_all(other.parent().expect("a directory")).expect("a directory");
+        std::fs::write(other, "{}").expect("a record");
+        assert_eq!(recorded(&home), None);
     }
 }

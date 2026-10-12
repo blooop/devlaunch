@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **A local-docker workspace's state comes from `docker inspect`, not `devpod status`.**
+  Attach, stop, up, dotfiles and rm each started with one `devpod status` (about 0.55s,
+  twice for dotfiles). For a workspace on the built-in `docker` provider, `dl` now inspects
+  the container devpod recorded in `workspace_result.json` (about 0.015s) and maps its
+  state as devpod does. Any doubt (another provider, a `DOCKER_HOST`, a container docker
+  does not know, another label, an unmapped state) still asks devpod. See "A state question
+  can skip devpod" in docs/performance.md.
+
 ## [0.59.4] - 2026-10-05
 
 ### Fixed

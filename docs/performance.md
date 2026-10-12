@@ -20,6 +20,27 @@ naming it and then the tools probe, rides a single setup pass. So an
 interactive `dl <ws>` and a one-shot
 `dl <ws> -- <cmd>` cost the same trips.
 
+## A state question can skip devpod
+
+Most commands start with one question: what state is this workspace in?
+`devpod status` answers it in about 0.55s on a warm host. For a workspace on
+the built-in local `docker` provider, that answer is only docker's word for one
+container, so `dl` asks docker for it directly. It runs one `docker inspect` on
+the container that devpod recorded in `workspace_result.json`, which costs
+about 0.015s. The timing document shows this as a `docker inspect` span in
+the `devpod-up` stage, where `devpod status` was.
+
+The mapping is devpod's own (v0.26.3, `cmd/agent/workspace/status.go`):
+`running` is Running, `exited` is Stopped, and `created`, `paused`,
+`restarting` and `dead` are Busy. `dl` asks devpod as before whenever it cannot
+be sure that docker gives devpod's answer. That covers any other provider, a
+`DOCKER_HOST` or `DEVPOD_CONTEXT` in the environment, a `DOCKER_HOST` or custom
+`DOCKER_PATH` in devpod's options, a context other than devpod's default, a
+missing or unreadable record, a container docker does not know (for example
+after a `docker rm -f`), a container under another `dev.containers.id` label,
+and a `removing` or unknown state word. `dl --ls --json` still asks
+`devpod status` for each row.
+
 ## The listing's questions are asked together
 
 `dl --ls --json` is the one command whose cost grows with the machine, and the

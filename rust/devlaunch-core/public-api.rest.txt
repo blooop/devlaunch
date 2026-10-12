@@ -2477,7 +2477,7 @@ pub fn devlaunch_core::flows::lifecycle::purge_all_data(&mut devlaunch_core::flo
 pub fn devlaunch_core::flows::lifecycle::purge_plan(&mut devlaunch_core::flows::listing::CommandContext<'_>, &std::path::Path) -> core::result::Result<devlaunch_core::flows::lifecycle::PurgePlan, devlaunch_core::clients::devpod::ListingUnreadable>
 pub fn devlaunch_core::flows::lifecycle::reconcile_plan(&devlaunch_core::flows::workspace_clone::WorkspaceCloneManager<'_>, &devlaunch_core::domain::metadata::MetadataStorage, &[devlaunch_core::clients::devpod::Workspace], &devlaunch_core::flows::lifecycle::ClonePlacement, &mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::lifecycle::LifecycleNotice>) -> devlaunch_core::flows::lifecycle::ReconcilePlan
 pub fn devlaunch_core::flows::lifecycle::sweep_repo_fetches(&devlaunch_core::flows::repo_manager::RepositoryManager<'_>, &mut devlaunch_core::domain::metadata::MetadataStorage) -> devlaunch_core::flows::lifecycle::SweepReport
-pub fn devlaunch_core::flows::lifecycle::workspace_state(&dyn devlaunch_runner::Runner, &str, devlaunch_core::clients::devpod::Patience) -> core::result::Result<devlaunch_core::clients::devpod::ContainerState, devlaunch_core::clients::devpod::StatusUnreadable>
+pub fn devlaunch_core::flows::lifecycle::workspace_state(&dyn devlaunch_runner::Runner, core::option::Option<&devlaunch_core::clients::devpod_home::DevpodHome>, &str, devlaunch_core::clients::devpod::Patience) -> core::result::Result<devlaunch_core::clients::devpod::ContainerState, devlaunch_core::clients::devpod::StatusUnreadable>
 pub mod devlaunch_core::flows::listing
 pub enum devlaunch_core::flows::listing::LastUsed
 pub devlaunch_core::flows::listing::LastUsed::At(alloc::string::String)

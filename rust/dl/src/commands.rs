@@ -109,7 +109,7 @@ pub(crate) fn dispatch(
     command: Command,
     resume: Option<AgentResume>,
 ) -> Ending {
-    let mut context = CommandContext::new(runner);
+    let mut context = CommandContext::new(runner).with_devpod_home(DevpodHome::locate());
     match command {
         Command::Version => render_version(),
         Command::List { output, sizes } => render_list(runner, &mut context, cache, output, sizes),

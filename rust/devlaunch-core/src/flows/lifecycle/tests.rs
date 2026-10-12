@@ -50,7 +50,9 @@ use super::*;
 use crate::clients::devpod::{
     ContainerState, ListingUnreadable, NotRun, Patience, Workspace, WorkspaceSource,
 };
-use crate::clients::devpod_home::{DevpodHome, RepointFailure, ScratchHome, devpod_home_with};
+use crate::clients::devpod_home::{
+    DevpodHome, ProbeEnv, RepointFailure, ScratchHome, devpod_home_with, local_docker_home,
+};
 use crate::clients::git::Git;
 use crate::clients::{devpod, docker};
 use crate::domain::locks;
@@ -120,7 +122,7 @@ fn a_devpod_that_cannot_be_run_fails_the_stage_but_one_that_refuses_does_not() {
             timing::Seam::default(),
             0.0,
         )));
-        let _ = workspace_state(runner, "dl-ws", Patience::AsLongAsItTakes);
+        let _ = workspace_state(runner, None, "dl-ws", Patience::AsLongAsItTakes);
         let report = timing::emit().expect("a report");
         let document = report.document().expect("a document");
         document
@@ -4214,6 +4216,7 @@ fn the_id_probed_is_the_one_the_triple_itself_derives() {
 
     let resolved = resolve_known_workspace(
         &devpod,
+        None,
         &workspace,
         || None,
         &mut ignoring(),
@@ -4256,6 +4259,7 @@ fn a_workspace_devpod_knows_answers_from_the_derivation_and_reads_no_record() {
 
     let resolved = resolve_known_workspace(
         &devpod,
+        None,
         &workspace,
         || {
             asked = true;
@@ -4286,6 +4290,7 @@ fn a_workspace_created_under_the_old_scheme_is_still_addressable() {
 
     let resolved = resolve_known_workspace(
         &devpod,
+        None,
         &workspace,
         || Some("r-main-old".to_owned()),
         &mut notices,
@@ -4320,6 +4325,7 @@ fn a_record_that_agrees_with_the_derivation_changes_nothing() {
     let devpod = devpod_knowing(&[]);
     let resolved = resolve_known_workspace(
         &devpod,
+        None,
         &workspace,
         || Some(workspace.value().to_owned()),
         &mut ignoring(),
@@ -4342,6 +4348,7 @@ fn a_stored_id_devpod_also_denies_is_not_used() {
     let devpod = devpod_knowing(&[]);
     let resolved = resolve_known_workspace(
         &devpod,
+        None,
         &workspace,
         || Some("r-main-old".to_owned()),
         &mut ignoring(),
@@ -4363,6 +4370,7 @@ fn no_record_at_all_falls_back_to_the_derivation() {
     let devpod = devpod_knowing(&[]);
     let resolved = resolve_known_workspace(
         &devpod,
+        None,
         &workspace,
         || None,
         &mut ignoring(),
@@ -4393,6 +4401,7 @@ fn a_devpod_nobody_can_run_is_not_a_workspace_nobody_knows() {
 
     let resolved = resolve_known_workspace(
         &missing,
+        None,
         &a_triple("main"),
         || {
             asked = true;
@@ -4417,6 +4426,7 @@ fn a_devpod_that_refused_the_derived_id_is_a_denial_and_not_a_failure() {
     let devpod = devpod_knowing(&[]);
     let resolved = resolve_known_workspace(
         &devpod,
+        None,
         &workspace,
         || None,
         &mut ignoring(),
@@ -4458,13 +4468,190 @@ fn asking_devpod_for_a_state_charges_the_devpod_up_stage() {
     // showing a gap where its one round trip was.
     let devpod = devpod_knowing(&[("ws", "Running")]);
     assert_eq!(
-        workspace_state(&devpod, "ws", Patience::AsLongAsItTakes),
+        workspace_state(&devpod, None, "ws", Patience::AsLongAsItTakes),
         Ok(ContainerState::Running)
     );
     assert_eq!(
         devpod.args_to("devpod"),
         [["status", "ws", "--output", "json"]]
     );
+}
+
+// =======================================================================
+// the docker probe in front of `devpod status`
+// =======================================================================
+
+/// A fake whose docker answers `inspect` with `answer` and whose devpod knows
+/// "ws" as Stopped, so a test can tell which of the two gave the state.
+fn docker_then_devpod(answer: Response) -> FakeRunner {
+    let fake = devpod_knowing(&[("ws", "Stopped")]);
+    fake.script(["docker", "inspect"], answer);
+    fake
+}
+
+/// The fast path: devpod's records name the container, docker describes it
+/// under the right label, and devpod is never asked.
+#[test]
+fn a_local_docker_workspace_is_read_from_docker_without_asking_devpod() {
+    let home = local_docker_home("ws", "ws-uid", "c0ffee");
+    for (word, expected) in [
+        ("running", ContainerState::Running),
+        ("exited", ContainerState::Stopped),
+        ("paused", ContainerState::Busy),
+    ] {
+        let fake = docker_then_devpod(Response::stdout(format!("{word}\tws-uid\n")));
+        assert_eq!(
+            docker_state(
+                &fake,
+                Some(&home),
+                "ws",
+                Patience::AsLongAsItTakes,
+                &ProbeEnv::default()
+            ),
+            Some(expected.clone()),
+            "{word}"
+        );
+        assert!(
+            fake.args_to("devpod").is_empty(),
+            "{word}: devpod was asked"
+        );
+        assert_eq!(
+            fake.args_to("docker"),
+            [[
+                "inspect",
+                "--type",
+                "container",
+                "--format",
+                docker::INSPECT_STATUS_FORMAT,
+                "c0ffee",
+            ]]
+        );
+    }
+}
+
+/// Every doubt is `devpod status`: a container docker no longer knows (an
+/// external `docker rm -f`), one under another label, a state word devpod
+/// would not read on its own, a docker that is missing or wedged.
+#[test]
+fn whatever_docker_cannot_settle_is_asked_of_devpod() {
+    let home = local_docker_home("ws", "ws-uid", "c0ffee");
+    for (why, answer) in [
+        (
+            "removed outside dl",
+            Response::failed(1, "Error: No such container: c0ffee\n"),
+        ),
+        (
+            "another workspace's label",
+            Response::stdout("running\tother-uid\n"),
+        ),
+        ("no label", Response::stdout("running\t\n")),
+        ("being removed", Response::stdout("removing\tws-uid\n")),
+        (
+            "a word devpod has no rule for",
+            Response::stdout("hibernating\tws-uid\n"),
+        ),
+        ("no docker", Response::ProgramNotFound),
+        ("a wedged docker", Response::TimedOut),
+    ] {
+        let fake = docker_then_devpod(answer);
+        assert_eq!(
+            workspace_state_with(&fake, Some(&home)),
+            Ok(ContainerState::Stopped),
+            "{why}"
+        );
+        assert_eq!(
+            fake.args_to("devpod"),
+            [["status", "ws", "--output", "json"]],
+            "{why}"
+        );
+    }
+}
+
+/// No records to read means no docker call at all, so a context the binary did
+/// not give a devpod home behaves exactly as before.
+#[test]
+fn no_devpod_home_never_asks_docker() {
+    let fake = docker_then_devpod(Response::stdout("running\tws-uid\n"));
+    assert_eq!(
+        workspace_state(&fake, None, "ws", Patience::AsLongAsItTakes),
+        Ok(ContainerState::Stopped)
+    );
+    assert!(fake.args_to("docker").is_empty());
+
+    let records_of_nothing = devpod_home_with(&[("default", "ws", Some(()))]);
+    let fake = docker_then_devpod(Response::stdout("running\tws-uid\n"));
+    assert_eq!(
+        workspace_state_with(&fake, Some(&records_of_nothing)),
+        Ok(ContainerState::Stopped)
+    );
+    assert!(fake.args_to("docker").is_empty());
+}
+
+/// A kill's bounded resolution keeps its bound through the probe.
+#[test]
+fn the_probe_waits_no_longer_than_the_caller_will() {
+    let home = local_docker_home("ws", "ws-uid", "c0ffee");
+    let fake = docker_then_devpod(Response::stdout("running\tws-uid\n"));
+    let _ = docker_state(
+        &fake,
+        Some(&home),
+        "ws",
+        Patience::UpTo(Duration::from_millis(500)),
+        &ProbeEnv::default(),
+    );
+    let calls = fake.calls_to("docker");
+    assert_eq!(
+        calls[0].spec().and_then(|spec| spec.timeout),
+        Some(Duration::from_millis(500))
+    );
+}
+
+/// The docker round trip is charged where the devpod one was, so the stage
+/// table still accounts for the warm attach's state question.
+#[test]
+fn the_probe_charges_the_devpod_up_stage() {
+    let _serialized = timing::exclusive();
+    let home = local_docker_home("ws", "ws-uid", "c0ffee");
+    let fake = docker_then_devpod(Response::stdout("running\tws-uid\n"));
+    timing::install(Some(timing::Registry::start(
+        timing::Mode::Document,
+        timing::Seam::default(),
+        0.0,
+    )));
+    assert_eq!(
+        workspace_state_with(&fake, Some(&home)),
+        Ok(ContainerState::Running)
+    );
+    let report = timing::emit().expect("a report");
+    let document = report.document().expect("a document");
+    let stage = document
+        .stages
+        .iter()
+        .find(|stage| stage.stage == "devpod-up")
+        .expect("a devpod-up stage");
+    assert_eq!(
+        stage
+            .spans
+            .iter()
+            .map(|span| span.label.as_str())
+            .collect::<Vec<_>>(),
+        ["docker inspect"]
+    );
+}
+
+/// [`workspace_state`] for "ws" as the flows call it, minus the process
+/// environment.
+fn workspace_state_with(
+    runner: &dyn crate::runner::Runner,
+    home: Option<&DevpodHome>,
+) -> Result<ContainerState, devpod::StatusUnreadable> {
+    workspace_state_in(
+        runner,
+        home,
+        "ws",
+        Patience::AsLongAsItTakes,
+        &ProbeEnv::default(),
+    )
 }
 
 // =======================================================================

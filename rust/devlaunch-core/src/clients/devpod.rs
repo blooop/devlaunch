@@ -723,6 +723,29 @@ impl ContainerState {
         }
     }
 
+    /// The state `devpod status` reports for a local-docker workspace whose
+    /// container docker describes with this `State.Status` word, or nothing when
+    /// the word alone does not settle it.
+    ///
+    /// devpod v0.26.3's `cmd/agent/workspace/status.go`, which is what `devpod
+    /// status` runs for the docker provider: no container is `NotFound`,
+    /// `running` is `Running`, `exited` is `Stopped`, and every other word is
+    /// `Busy`. That last arm covers `created`, `paused`, `restarting` and `dead`,
+    /// and they are listed here by name rather than caught by a wildcard so a
+    /// word docker adds later answers nothing instead of a guess.
+    ///
+    /// `removing` answers nothing because devpod skips a container in that
+    /// state (`pkg/docker/helper.go`, `FindContainerByID`) and reports whatever
+    /// else carries the label, which one container's word cannot say.
+    pub(crate) fn from_docker_status(word: &str) -> Option<Self> {
+        match word.to_ascii_lowercase().as_str() {
+            "running" => Some(Self::Running),
+            "exited" => Some(Self::Stopped),
+            "created" | "paused" | "restarting" | "dead" => Some(Self::Busy),
+            _ => None,
+        }
+    }
+
     /// The word devpod would print. An unknown state answers with what devpod
     /// said, which is the only honest thing it has.
     pub(crate) fn as_devpod_word(&self) -> &str {
@@ -1933,6 +1956,32 @@ mod tests {
                 "json".to_owned(),
             ]]
         );
+    }
+
+    /// docker's state words, mapped as devpod v0.26.3 maps them for the docker
+    /// provider. Checked against the real devpod on a live workspace for
+    /// running, paused, exited, created and restarting (absent is devpod's
+    /// `NotFound`, which the probe never claims: see `flows::lifecycle::state`);
+    /// `dead` is read off `cmd/agent/workspace/status.go`, whose last arm is
+    /// `Busy` for every word but `running` and `exited`.
+    #[test]
+    fn docker_state_words_map_as_devpod_maps_them() {
+        for (word, expected) in [
+            ("running", Some(ContainerState::Running)),
+            ("Running", Some(ContainerState::Running)),
+            ("exited", Some(ContainerState::Stopped)),
+            ("created", Some(ContainerState::Busy)),
+            ("paused", Some(ContainerState::Busy)),
+            ("restarting", Some(ContainerState::Busy)),
+            ("dead", Some(ContainerState::Busy)),
+            // devpod skips a container being removed and looks for another.
+            ("removing", None),
+            // A word docker adds later is not guessed at.
+            ("hibernating", None),
+            ("", None),
+        ] {
+            assert_eq!(ContainerState::from_docker_status(word), expected, "{word}");
+        }
     }
 
     #[test]
