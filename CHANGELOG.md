@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`up`, restart and recreate no longer lend `claude` again to a workspace whose dotfiles
+  reorder PATH.** `devpod up` re-runs the dotfiles installer on every start, and a dotfiles
+  repo that appends its own PATH block (chezmoi's puts `~/.pixi/bin` and its `claude-shim`
+  first) lands below the line the lend wrote. The probe then resolved `claude` to the shim,
+  read the workspace as lendable, and re-paid the transfer on every start (10 of 10 ups on
+  four repos, about 4.5s each) without changing anything. The probe now also recognises the
+  lend itself: `~/.local/bin/claude` resolves into the official versions directory and the
+  login profile carries the lend's PATH line. A workspace where a second lend would change
+  something (a baked install behind a shim, a `~/.bash_profile` that hides the line) is
+  still lent.
+
 ## [0.59.4] - 2026-10-05
 
 ### Fixed

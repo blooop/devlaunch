@@ -181,6 +181,16 @@ const CLAUDE_SCAN_KEY: &str = "claudescan";
 const CLAUDE_SCAN_OK: &str = "ok";
 const CLAUDE_SCAN_NO: &str = "no";
 
+/// Where a lend points the `claude` name under the container's home: the symlink
+/// the official installer makes, and the one [`transfer_script`] makes against the
+/// container's own `$HOME`. The probe resolves it directly (see [`probe_script`])
+/// so that a lend stays recognised when something else wins `command -v claude`.
+pub(crate) const CLAUDE_LINK_RELPATH: &str = ".local/bin/claude";
+
+/// The report key the lent link's resolution travels under. Empty unless the lend's
+/// own PATH line is in the login profile; see [`lent_claude_lines`].
+const LENT_KEY: &str = "lent";
+
 /// Where a lent `gh` lands under the container's home — a tar arcname, so the
 /// same payload works whatever the container's username is.
 pub(crate) const GH_RELPATH: &str = ".local/bin/gh";
@@ -624,7 +634,7 @@ pub(crate) fn profile_resolution(home: &str) -> String {
 /// the mark is read as a regex and a longer line that merely contains it does not
 /// count as a match.
 pub(crate) fn profile_prepend(line: &str, on_failure: Option<&str>) -> String {
-    let mark = format!("{PROFILE_MARK} {}", mark_digest(line));
+    let mark = profile_mark(line);
     let tail = match on_failure {
         Some(on_failure) => format!(" || {on_failure}"),
         None => String::new(),
@@ -678,6 +688,12 @@ fn profile_title_line(title: &str) -> String {
 }
 
 /// The twelve hex characters of SHA-256 that name one appended line.
+/// The comment line [`profile_prepend`] writes above `line`, which is also the
+/// whole of what its guard looks for.
+fn profile_mark(line: &str) -> String {
+    format!("{PROFILE_MARK} {}", mark_digest(line))
+}
+
 fn mark_digest(line: &str) -> String {
     let digest = Sha256::digest(line.as_bytes());
     // Twelve characters of the same lowercase hex `hexdigest()[:12]` takes.
@@ -1420,7 +1436,49 @@ pub(crate) fn probe_script() -> String {
             "echo \"{PROBE_MARK} claude $(readlink -f \"$(command -v claude)\" 2>/dev/null || true)\""
         ),
     ]);
+    lines.extend(lent_claude_lines());
     lines.join("\n")
+}
+
+/// The lines that report a lend already in place, whatever won `command -v`.
+///
+/// `command -v claude` answers for whichever directory is first on the login PATH,
+/// and that is not devlaunch's to keep. `devpod up` re-runs a dotfiles installer on
+/// every start, and a dotfiles repo that appends its own PATH block (chezmoi's puts
+/// `~/.pixi/bin` in front, where its own `claude-shim` lives) lands *below* the line
+/// a lend wrote. From then on the name resolved to the shim, the probe read
+/// *lendable*, and every `up`, restart and recreate re-paid a transfer that changed
+/// nothing: the transfer's own guard finds its mark and leaves the profile as it is,
+/// so the next dotfiles run wins again. Measured: 10 of 10 ups re-lent, ~4.5s each.
+///
+/// So the lend is also recognised by its own two traces rather than by PATH order:
+/// the `~/.local/bin/claude` link resolves into the official versions directory,
+/// **and** the profile a login shell reads carries the transfer's PATH line. The
+/// second half is what keeps every case where a lend *would* change something:
+/// an image that installed the official layout itself but leaves a shim in front
+/// (Ubuntu's stock `~/.profile` puts `~/.local/bin` on PATH with no devlaunch mark),
+/// or a `~/.bash_profile` that appeared after the lend and hides the `~/.profile`
+/// that carries the line. Both still read *lendable*, and the lend fixes them. With
+/// both traces present a lend is a no-op by construction, so not lending is exact.
+///
+/// The `claude` a session finds may still be a shim in front of the link. The
+/// `claude-shim` package defers to `~/.local/bin/claude` when the official layout is
+/// there, which is the case this is for; a shim that does not is not one a second
+/// lend could put behind it either.
+///
+/// A missing `grep` or `readlink` reports the link empty, which reads as before.
+fn lent_claude_lines() -> Vec<String> {
+    vec![
+        profile_resolution("${HOME-}"),
+        "lent=".to_owned(),
+        format!(
+            "if grep -qxF {} \"$PROFILE\" 2>/dev/null; then",
+            quote(&profile_mark(LOCAL_BIN_LINE))
+        ),
+        format!("  lent=$(readlink -f \"${{HOME-}}/{CLAUDE_LINK_RELPATH}\" 2>/dev/null || true)"),
+        "fi".to_owned(),
+        format!("echo \"{PROBE_MARK} {LENT_KEY} $lent\""),
+    ]
 }
 
 /// The lines that describe the container's Claude config directory.
@@ -1567,7 +1625,11 @@ impl ProbeResult {
         }
         let versions = found.get("versions").map(String::as_str).unwrap_or("");
         let claude = found.get("claude").map(String::as_str).unwrap_or("");
-        if is_official_claude(versions, claude) {
+        let lent = found.get(LENT_KEY).map(String::as_str).unwrap_or("");
+        // Either trace of the official install will do: the name a login shell
+        // resolves, or a lend whose PATH line is in place (see
+        // [`lent_claude_lines`] for why the second one exists).
+        if is_official_claude(versions, claude) || is_official_claude(versions, lent) {
             Self::Provisioned
         } else {
             Self::Lendable
@@ -2444,7 +2506,7 @@ pub(crate) fn transfer_script(payload: &HostPayload) -> String {
         format!("mv -f \"$STAGE/{GH_RELPATH}\" \"$HOME/{GH_RELPATH}\""),
         // The host's own symlink points through the host's home, so the link is
         // made here, against this container's $HOME.
-        format!("ln -sfn \"$HOME/{claude_rel}\" \"$HOME/.local/bin/claude\""),
+        format!("ln -sfn \"$HOME/{claude_rel}\" \"$HOME/{CLAUDE_LINK_RELPATH}\""),
         profile_lines,
     ]
     .join("\n")
@@ -3390,6 +3452,20 @@ fi
 echo "devlaunch-probe claudescan $cfg_scan"
 echo "devlaunch-probe claudemounts $cfg_mounts""#;
 
+    /// The lent-link fact, which Python never asked for either: it reports where
+    /// `~/.local/bin/claude` resolves, but only where the lend's own PATH line is in
+    /// the profile a login shell reads. Last, behind the gate, since it is only worth
+    /// anything where both tools answer.
+    const LENT_CLAUDE_LINES: &str = r#"if [ -f "${HOME-}/.bash_profile" ]; then PROFILE="${HOME-}/.bash_profile"
+elif [ -f "${HOME-}/.bash_login" ]; then PROFILE="${HOME-}/.bash_login"
+else PROFILE="${HOME-}/.profile"
+fi
+lent=
+if grep -qxF '# devlaunch: 63c662ba0560' "$PROFILE" 2>/dev/null; then
+  lent=$(readlink -f "${HOME-}/.local/bin/claude" 2>/dev/null || true)
+fi
+echo "devlaunch-probe lent $lent""#;
+
     const PYTHON_TRANSFER_SCRIPT: &str = r#"set -eu
 exec >&2
 echo "devlaunch: lending claude 2.0.1 and gh from the host"
@@ -3648,6 +3724,28 @@ fi
     const DEVCONTAINER_PROFILE_LINES: &str = r#"export PATH="$HOME/.pixi/bin:$PATH"
 # Workaround: pixi trampoline fails for bash scripts, so add env bin directly
 [ -d "$HOME/.pixi/envs/claude-shim/bin" ] && export PATH="$HOME/.pixi/envs/claude-shim/bin:$PATH"
+"#;
+
+    /// The hook a chezmoi dotfiles repo appends to `~/.profile`, verbatim from
+    /// blooop's `modify_dot_profile`. That script strips its own block and appends
+    /// it again on every run, and `devpod up` re-runs the dotfiles installer on every
+    /// start, so after the first lend this block always sits *below* the lend's
+    /// PATH line, and whatever `~/.bash_env` puts in front of PATH wins.
+    const CHEZMOI_PROFILE_HOOK: &str = r#"
+# Environment only (managed by chezmoi) — .bashrc above returns before this file
+# when the shell is not interactive, so `bash -lc <cmd>` would otherwise get no
+# PATH and no SSH_AUTH_SOCK. See modify_dot_profile in the chezmoi source dir.
+# Bash only: .bash_env is bash code, and `sh -lc` (dash) died on it with exit 2.
+if [ -n "${BASH_VERSION:-}" ] && [ -f ~/.bash_env ]; then
+    _BASH_ENV_ENV_ONLY=1 . ~/.bash_env
+    unset _BASH_ENV_ENV_ONLY
+fi
+"#;
+
+    /// The part of that `~/.bash_env` that matters here: it moves the personal pixi
+    /// bin directory, where a `pixi global` `claude-shim` lives, to the front of PATH.
+    const CHEZMOI_BASH_ENV: &str = r#"PATH="$HOME/.pixi/bin:$PATH"
+export PATH
 "#;
 
     // =======================================================================
@@ -4123,9 +4221,24 @@ fi
     /// `-l` would also source the *test host's* /etc/profile and drag its system
     /// directories — and whatever `claude` the developer has — into a run meant to
     /// see only this scratch home.
+    ///
+    /// The file sourced is the one a login bash would read, picked by the same
+    /// resolution the writers use, so a home that grew a `~/.bash_profile` is read
+    /// the way a container would read it. `grep` rides along with `readlink`
+    /// because the lent-link fact asks the profile for the transfer's mark.
     fn probe_answer_after_login(scratch: &Path, home: &Path) -> ProbeResult {
-        let path = sysbin(scratch, &["readlink"]);
-        let script = format!(". \"$HOME/.profile\"\n{}", probe_script());
+        ProbeResult::parse(&probe_report_after_login(scratch, home))
+    }
+
+    /// The raw report behind [`probe_answer_after_login`], for a test that has to
+    /// show what `command -v` found as well as what it meant.
+    fn probe_report_after_login(scratch: &Path, home: &Path) -> String {
+        let path = sysbin(scratch, &["readlink", "grep"]);
+        let script = format!(
+            "{}\n. \"$PROFILE\"\n{}",
+            profile_resolution("$HOME"),
+            probe_script()
+        );
         let answered = bash_with(
             &script,
             &[
@@ -4138,7 +4251,7 @@ fi
             "{}",
             String::from_utf8_lossy(&answered.stderr)
         );
-        ProbeResult::parse(&String::from_utf8_lossy(&answered.stdout))
+        String::from_utf8_lossy(&answered.stdout).into_owned()
     }
 
     /// Run the real transfer script against a scratch `$HOME`, for real.
@@ -4512,7 +4625,7 @@ fi
         assert_eq!(set_u, "set -u");
         assert_eq!(
             probe_script(),
-            format!("{set_u}\n{CLAUDE_CONFIG_LINES}\n{gated}")
+            format!("{set_u}\n{CLAUDE_CONFIG_LINES}\n{gated}\n{LENT_CLAUDE_LINES}")
         );
         let facts = probe_script();
         assert!(
@@ -5065,6 +5178,145 @@ fi
         );
     }
 
+    /// A container built from this repo's image with a chezmoi dotfiles repo, after
+    /// its first lend: the state every later `devpod up` starts from.
+    fn lent_home_with_dotfiles(scratch: &Path) -> PathBuf {
+        let home = a_home(scratch);
+        fs::write(
+            home.join(".profile"),
+            format!("{UBUNTU_STOCK_PROFILE}{DEVCONTAINER_PROFILE_LINES}"),
+        )
+        .expect("the image's profile");
+        write_program(
+            &home.join(".pixi/envs/claude-shim/bin/claude"),
+            "#!/bin/sh\necho 'downloading 285MB' >&2\n",
+        );
+        write_program(&home.join(".pixi/bin/gh"), "#!/bin/sh\nexit 0\n");
+        lend_into(scratch, &home, "2.0.1");
+        home
+    }
+
+    /// What a dotfiles re-run leaves: the chezmoi hook appended below everything,
+    /// and the personal pixi `claude` trampoline it puts in front.
+    fn rerun_dotfiles(home: &Path) {
+        let profile = home.join(".profile");
+        let mut text = fs::read_to_string(&profile).expect("the profile");
+        text.push_str(CHEZMOI_PROFILE_HOOK);
+        fs::write(&profile, text).expect("the hook appended");
+        fs::write(home.join(".bash_env"), CHEZMOI_BASH_ENV).expect("a .bash_env");
+        write_program(
+            &home.join(".pixi/bin/claude"),
+            "#!/bin/sh\necho 'downloading 285MB' >&2\n",
+        );
+    }
+
+    #[test]
+    fn a_dotfiles_block_below_the_lend_does_not_bring_the_lend_back() {
+        // The re-lend measured on every `up`, restart and recreate (10 of 10, about
+        // 4.5s each): `devpod up` re-runs the dotfiles installer, chezmoi re-appends
+        // its hook below the lend's PATH line, and `command -v claude` then finds
+        // the personal pixi trampoline. A second lend cannot change that, since the
+        // transfer's guard finds its own mark and writes nothing, so the probe must
+        // recognise the lend that is already there.
+        let scratch = scratch();
+        let home = lent_home_with_dotfiles(scratch.path());
+        assert_eq!(
+            probe_answer_after_login(scratch.path(), &home),
+            ProbeResult::Provisioned
+        );
+
+        for _ in 0..2 {
+            rerun_dotfiles(&home);
+            let report = probe_report_after_login(scratch.path(), &home);
+            // The reorder really happened: the name resolves to the trampoline, so
+            // the old reading of this report was lendable.
+            let shim = home.join(".pixi/bin/claude");
+            assert_eq!(
+                marked_lines(&report).get("claude").map(String::as_str),
+                Some(shim.to_string_lossy().as_ref()),
+                "{report}"
+            );
+            assert_eq!(
+                ProbeResult::parse(&report),
+                ProbeResult::Provisioned,
+                "{report}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_lend_whose_path_line_a_login_shell_no_longer_reads_is_lent_again() {
+        // The case where a second lend *does* change something, and so must still
+        // happen: a `~/.bash_profile` that appeared after the lend hides the
+        // `~/.profile` carrying its PATH line. The transfer resolves to the new file,
+        // writes the line there, and the probe after it reads provisioned.
+        let scratch = scratch();
+        let home = lent_home_with_dotfiles(scratch.path());
+        fs::write(
+            home.join(".bash_profile"),
+            "export PATH=\"$HOME/.pixi/envs/claude-shim/bin:$HOME/.pixi/bin:$PATH\"\n",
+        )
+        .expect("a bash_profile");
+        assert_eq!(
+            probe_answer_after_login(scratch.path(), &home),
+            ProbeResult::Lendable
+        );
+        lend_into(scratch.path(), &home, "2.0.1");
+        assert_eq!(
+            probe_answer_after_login(scratch.path(), &home),
+            ProbeResult::Provisioned
+        );
+    }
+
+    #[test]
+    fn an_image_install_behind_a_shim_with_no_lend_is_still_lendable() {
+        // The other trace has to be the lend's own line, not `~/.local/bin` merely
+        // being on PATH: Ubuntu's stock profile puts it there, so an image with the
+        // official layout baked in and a shim in front would otherwise read
+        // provisioned and keep the shim in front for good. That is the bug class
+        // PROFILE_MARK's note describes.
+        let scratch = scratch();
+        let home = a_home(scratch.path());
+        fs::write(
+            home.join(".profile"),
+            format!("{UBUNTU_STOCK_PROFILE}{DEVCONTAINER_PROFILE_LINES}"),
+        )
+        .expect("the image's profile");
+        official_claude(&home, "2.0.1");
+        write_program(
+            &home.join(".pixi/envs/claude-shim/bin/claude"),
+            "#!/bin/sh\necho 'downloading 285MB' >&2\n",
+        );
+        write_program(&home.join(".pixi/bin/gh"), "#!/bin/sh\nexit 0\n");
+        assert_eq!(
+            probe_answer_after_login(scratch.path(), &home),
+            ProbeResult::Lendable
+        );
+    }
+
+    #[test]
+    fn a_lent_link_counts_only_where_it_is_the_official_layout() {
+        // The lent link is held to the same relation as the resolved name: a link
+        // into the versions directory reads provisioned, and a downloader parked
+        // deeper does not, whatever `command -v` found.
+        let report = |lent: &str| format!("{REPORT_LENDABLE}devlaunch-probe lent {lent}\n",);
+        assert_eq!(
+            ProbeResult::parse(&report("/ws/.local/share/claude/versions/2.0.1")),
+            ProbeResult::Provisioned
+        );
+        for not_lent in [
+            "",
+            "/ws/.local/share/claude/versions/latest/bin/claude",
+            "relative",
+        ] {
+            assert_eq!(
+                ProbeResult::parse(&report(not_lent)),
+                ProbeResult::Lendable,
+                "{not_lent:?}"
+            );
+        }
+    }
+
     #[test]
     fn a_shim_hiding_inside_the_versions_directory_is_lendable() {
         // "Under the versions directory" is not the official layout — being a direct
@@ -5208,6 +5460,7 @@ fi
         let scrubbed = script
             .replace("command -v claude", "")
             .replace(CLAUDE_VERSIONS_RELPATH, "")
+            .replace(CLAUDE_LINK_RELPATH, "")
             .replace(CLAUDE_CONFIG_RELPATH, "")
             .replace("devlaunch-probe claude", "");
         assert!(!scrubbed.contains("claude"), "{scrubbed}");

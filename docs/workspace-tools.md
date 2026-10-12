@@ -637,8 +637,11 @@ to. It reports those and names no verdict; the host reads them, so "a real
 `claude`" is defined in exactly one place. The reading is one of three:
 
 - **provisioned**, when `gh` answers on the login PATH and `claude` resolves to a
-  binary the official installer put in the versions directory. Nothing else
-  happens.
+  binary the official installer put in the versions directory. A lend already in
+  place counts too: `~/.local/bin/claude` resolves into the versions directory
+  and the login profile carries the lend's own PATH line. That second form is for
+  dotfiles that put another directory in front of PATH on every start, which a
+  lend cannot undo. Nothing else happens.
 - **lendable**, when both names answer but that `claude` is a shim or a wrapper.
 - **absent**, when a tool is genuinely missing.
 
