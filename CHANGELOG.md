@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **A stop and an `up` of the same container no longer pays for the setup pass.** The
+  verdict a pass leaves under `tool-verdicts/` is now keyed on the container id in devpod's
+  `workspace_result.json`, which a stop and an `up` keep, and no longer on that file's
+  mtime, which every `up` moves. The pass after an `up` is skipped when the last pass over
+  the same container found it provisioned and could not set its hostname, which most
+  containers refuse. A pass that lent the host's `claude` and `gh` now leaves a verdict
+  too, so a container whose login PATH puts a `claude` shim first is no longer lent the
+  same binaries on every `up`. A verdict carries across a start for at most 7 days, and
+  `dl <ws> dotfiles` drops it. A recreate or a reset makes a new container id and drops
+  it as before.
+
 ## [0.59.4] - 2026-10-05
 
 ### Fixed

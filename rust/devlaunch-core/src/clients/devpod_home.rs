@@ -422,7 +422,13 @@ pub(crate) fn devpod_home_with(entries: &[(&str, &str, Option<()>)]) -> ScratchH
             .expect("a record directory");
         std::fs::write(record, "{}").expect("a record");
         if result.is_some() {
-            std::fs::write(home.result(context, workspace_id), "{}").expect("a result");
+            // The one field the verdict cache keys on, and an id unique to this
+            // context and workspace, as docker's ids are.
+            let document = serde_json::json!({
+                "ContainerDetails": { "ID": format!("container-{context}-{workspace_id}") },
+            });
+            std::fs::write(home.result(context, workspace_id), document.to_string())
+                .expect("a result");
         }
     }
     ScratchHome { _dir: dir, home }

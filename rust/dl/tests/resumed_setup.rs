@@ -47,8 +47,8 @@ fn repo_root() -> PathBuf {
 /// `workspace.json` on the way in and `workspace_result.json` on the way out of a
 /// completed `up`, and both halves of this launch read them: the fast-attach arm
 /// asks whether the create finished, and the host's memory of a pass is anchored to
-/// the result file's mtime so that a rebuilt container is never described by an
-/// older container's record. A fake that skipped them would make every question
+/// the container id in the result file so that a rebuilt container is never
+/// described by an older container's record. A fake that skipped them would make every question
 /// here unanswerable and the test vacuous.
 struct World {
     root: PathBuf,
@@ -98,7 +98,7 @@ impl World {
              \x20 d=\"$DEVPOD_HOME/contexts/default/workspaces/$ws\"\n\
              \x20 mkdir -p \"$d\"\n\
              \x20 printf '{{}}' > \"$d/workspace.json\"\n\
-             \x20 printf '{{}}' > \"$d/workspace_result.json\"\n\
+             \x20 printf '{{\"ContainerDetails\":{{\"ID\":\"container-%s\"}}}}' \"$ws\" > \"$d/workspace_result.json\"\n\
              \x20 exit 0\n\
              fi\n\
              if [ \"$1\" = \"ssh\" ] && [ -n \"$DL_BLOCK_PASS\" ]; then\n\

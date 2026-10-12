@@ -673,28 +673,47 @@ thing it was told last time. So when the answer was *provisioned*, `dl` writes i
 down and reuses it.
 
 The marker is one small JSON file per workspace under
-`${XDG_CACHE_HOME:-~/.cache}/devlaunch/tool-verdicts/`, holding the verdict and the
-modification time of devpod's own `workspace_result.json` for that workspace. devpod
-rewrites that file on the way out of every **completed** `up`, whoever ran it:
-`dl`, VS Code, a hand-typed `devpod up`, a `--recreate`. So a container that has
-been rebuilt has a result file whose mtime no longer matches, and the marker stops
-being believed. Anything else unexpected also stops it being believed: no marker, an
-unreadable one, a workspace `dl` cannot find one result file for. Every one of
-those falls back to making the trip, which is exactly what happened before the
-marker existed.
+`${XDG_CACHE_HOME:-~/.cache}/devlaunch/tool-verdicts/`, holding the verdict, the
+container id (`ContainerDetails.ID` in devpod's own `workspace_result.json` for that
+workspace), that file's modification time, and how the hostname stage went. devpod
+rewrites the file on the way out of every **completed** `up`, whoever ran it: `dl`,
+VS Code, a hand-typed `devpod up`, a `--recreate`. A stop and an `up` keep the
+container and its id. A create, a `--recreate` and a `--reset` make a new one, and
+the marker stops being believed. Anything else unexpected also stops it being
+believed: no marker, an unreadable one, a result file with no container id, a
+workspace `dl` cannot find one result file for. Every one of those falls back to
+making the trip, which is exactly what happened before the marker existed.
 
-**Only a launch that finds the workspace already running can skip it**, and that is
-a smaller claim than it sounds. The container's hostname lives in a namespace docker
-rebuilds from the container's config on every start, so a `devpod up` (creating a
-container or starting a stopped one) loses the name and the pass has to run again
-to set it. The two paths that skip are `dl <workspace> up` against a container that
-is already up, which is the pre-warm and where the 1.7s is paid most often, and a
-launch that waited on a sibling which had already brought the workspace up. Nothing
-is ever skipped after this launch's own `devpod up`.
+A pass that lent the host's binaries writes the marker too. The lend ends by running
+what it lent, so the container has both tools. An image whose login PATH puts a
+`claude` shim ahead of `~/.local/bin` reads as lendable again after every lend, so
+without the marker each `up` lent the same binaries again, two trips and about 7s.
 
-Nothing has to be cleaned up, and there is nothing to invalidate by hand: the
-markers are compared, never trusted on age, and deleting the whole directory costs
-one round trip on each workspace's next launch.
+**The pass after an `up` is skipped only when the container could not take a
+hostname.** The container's hostname lives in a namespace docker rebuilds from the
+container's config on every start, so a `devpod up` that starts a stopped container
+loses any name the last pass set, and the pass has to run again to set it. Most
+containers refuse `sudo hostname` (it needs `CAP_SYS_ADMIN`), and a container that
+refused it once refuses it on every start. So when the marker says the hostname
+stage was refused, the pass after an `up` of the same container is skipped. When it
+says the name was set, as in a privileged docker-in-docker container, that pass
+travels. A launch that finds the workspace already running, `dl <workspace> up` as
+a pre-warm or a launch that waited on a sibling, skips whenever nothing started the
+container since the marker was written.
+
+What the container id cannot see is a change made inside a container that is still
+the same one. Two such changes are covered:
+
+- `dl <workspace> dotfiles`, and the refresh `DEVLAUNCH_DOTFILES_ON_ATTACH` runs,
+  delete the marker before they run, because `chezmoi update` and
+  `pixi global sync` can add or remove tools.
+- A tool removed by hand inside the container is caught by the pass after an `up`
+  at most 7 days after the marker was written: past that, a marker carries no
+  longer across a start, and that pass travels and writes a fresh one.
+  `dl <workspace> recreate` or `dl <workspace> dotfiles` catch it at once.
+
+Nothing has to be cleaned up: deleting the whole directory costs one round trip on
+each workspace's next launch.
 
 ### A pass that was interrupted
 
@@ -713,9 +732,9 @@ a file left standing rather than one written on the way out: nothing runs on the
 way out. A launch that finds one still standing for the container standing now runs
 the pass before it hands over a shell, and says so.
 
-The record is anchored to the same `workspace_result.json` mtime the marker is, so
-one left by a container that has since been rebuilt describes nothing that exists
-and is ignored. It is read as positive evidence and never as the absence of it: a
+The record is anchored to the same container id the marker is, so one left by a
+container that has since been rebuilt describes nothing that exists and is ignored.
+One left by a container that was only stopped and started again is still owed. It is read as positive evidence and never as the absence of it: a
 workspace brought up by VS Code, by a hand-typed `devpod up`, or by a build older
 than the record has no record either, and those keep attaching in one round trip.
 

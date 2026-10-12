@@ -1,8 +1,9 @@
-//! Remembering that a container was found provisioned, so the next top-up of a
-//! container that never stopped can skip the trip that found out.
+//! Remembering that a container was found provisioned, so a later pass over the
+//! same container can skip the trip that found out.
 //!
 //! The setup pass is one `devpod ssh` round trip, measured at ~1.7s of which ~99%
-//! is connection and process setup (#157). A workspace that has had `gh` and a real
+//! is connection and process setup (#157), and on a container the host lends its
+//! binaries to it is two trips and ~7s. A workspace that has had `gh` and a real
 //! `claude` in it for a week pays that on every `dl <ws> up`, every time, to be told
 //! the same thing it was told last time. This is the one file that lets the answer
 //! be reused: a marker per workspace under devlaunch's own cache directory, holding
@@ -11,64 +12,111 @@
 //!
 //! # What makes a remembered verdict still true
 //!
-//! Not the marker's own age, and not a TTL. A verdict about *this* container is
-//! true until there is a different container, and "a different container" is a fact
-//! the host can read without asking anything: devpod rewrites
-//! `workspace_result.json` on its way out of every **completed** `up`, whoever ran
-//! that `up` — `dl`, VS Code, a hand-typed `devpod up`, a `--recreate`. So the
-//! marker records that file's mtime, and the verdict is trusted only while the
-//! file's mtime is still *equal* to the recorded one.
+//! Not the marker's own age alone, and not a TTL standing in for an identity. A
+//! verdict about *this* container is true until there is a different container,
+//! and "a different container" is a fact the host can read without asking
+//! anything: devpod rewrites `workspace_result.json` on its way out of every
+//! **completed** `up`, whoever ran that `up` — `dl`, VS Code, a hand-typed
+//! `devpod up`, a `--recreate` — and that file carries `ContainerDetails.ID`, the
+//! container's docker id. So the marker records the id, and the verdict is trusted
+//! only while the result file still names the *same* id.
 //!
-//! Equality rather than "not newer", because the comparison is an identity check
-//! and not a freshness one. A file restored from a backup, a clock that stepped
-//! backwards, a devpod home copied between machines: each moves the mtime somewhere
-//! that is not newer, and each is exactly the case where the recorded verdict is
-//! about a container that is not the one standing now.
+//! The id and not the file's mtime, which is what this used to key on, because the
+//! mtime moves on every `up` and the id does not. Measured on devpod 0.26.3: a
+//! stop and an `up` leave `ContainerDetails.ID` and `.Created` exactly as they
+//! were, and only a create, a `--recreate` or a `--reset` makes a new one. Keyed on
+//! the mtime, every `up` threw away a verdict about a container that had merely
+//! been stopped, and the pass after it always travelled.
+//!
+//! The mtime is still recorded beside the id, and it still answers one question:
+//! *has this container been started since the verdict was written?* That matters
+//! for one stage only, the hostname, which lives in the container's UTS namespace
+//! and is rebuilt from the container's config on every start. A pass whose
+//! `sudo hostname` worked has to run again after a start, or the prompt reads the
+//! wrong name. A pass whose `sudo hostname` was refused, which is most containers
+//! (it needs `CAP_SYS_ADMIN`), has nothing to redo, and every other stage writes
+//! files the start leaves alone. So a verdict carries across a start exactly when
+//! its pass recorded the hostname stage as refused. See [`Marker::survives_a_start`].
+//!
+//! Equality rather than "not newer", for both fields, because the comparison is an
+//! identity check and not a freshness one. A file restored from a backup, a clock
+//! that stepped backwards, a devpod home copied between machines: each is exactly
+//! the case where the recorded verdict is about a container that is not the one
+//! standing now.
 //!
 //! `workspace.json` beside it is deliberately not the anchor — devpod writes it on
-//! the way *in* and never touches it again, so a container rebuilt ten times still
-//! carries the first create's timestamps, and a marker keyed on it would survive
-//! every rebuild it exists to notice.
+//! the way *in* and never touches it again.
 //!
 //! # Absent is the only harmless misreading
 //!
 //! Every failure here reads as *no trusted verdict*: a marker that is not there,
 //! will not parse, carries a word this build does not know, names a workspace whose
-//! `workspace_result.json` cannot be found or is ambiguous between two devpod
-//! contexts, or whose mtime cannot be read. That is the same argument
-//! [`super::ProbeResult::parse`] makes for reading a garbled report as *absent*:
-//! provisioning is idempotent, so reading a valid marker as invalid costs one
-//! redundant round trip — today's behaviour, exactly — where reading an invalid one
-//! as valid silently ships a container without the tools the pass exists to put
+//! `workspace_result.json` cannot be found, is ambiguous between two devpod
+//! contexts, carries no container id, or whose mtime cannot be read. That is the
+//! same argument [`super::ProbeResult::parse`] makes for reading a garbled report as
+//! *absent*: provisioning is idempotent, so reading a valid marker as invalid costs
+//! one redundant round trip — today's behaviour, exactly — where reading an invalid
+//! one as valid silently ships a container without the tools the pass exists to put
 //! there.
 //!
-//! Which is also why nothing here ever *deletes* a marker. Invalidation is the
-//! comparison, made afresh on every read; a delete would be a second mechanism
-//! saying the same thing, and one that has to run to be correct.
+//! # What the id cannot see, and how long a verdict is believed across a start
+//!
+//! The id says the container is the same one. It does not say nothing changed
+//! inside it. Two kinds of change are invisible to it:
+//!
+//! - **A dotfiles refresh** (`dl <ws> dotfiles`, or `DEVLAUNCH_DOTFILES_ON_ATTACH`)
+//!   runs `chezmoi update` and `pixi global sync` in a standing container, which
+//!   can add or remove tools. devlaunch runs it, so devlaunch drops the marker
+//!   first: [`VerdictCache::forget`]. That is the one place a marker is ever
+//!   deleted. Every other invalidation is the comparison, made afresh on every read.
+//! - **A hand edit inside the container**, such as deleting the lent `claude`.
+//!   Nothing on the host sees that. Before this module keyed on the id, the next
+//!   `up` caught it, because its pass always travelled. Now a verdict that carries
+//!   across a start is believed for at most [`MAX_CARRY_ACROSS_A_START`] after the
+//!   pass that wrote it. After that, the pass after an `up` travels again and writes
+//!   a fresh one. A container that never stops was already trusted for as long as it
+//!   stood, which is the top-up's old bargain, and that is unchanged.
 //!
 //! # What is deliberately not remembered
 //!
-//! Only [`super::Provisioning::AlreadyProvisioned`] is recorded. A pass that lent,
-//! installed or kept a shim is **not**, and `ShimKept` is the one that says why:
-//! that arm is a documented residual (see [`super::provision`]) in which a
-//! container re-attempts one failing transfer on every `up`, and a marker would
-//! turn "re-attempts on every up" into "never attempts again" — a behaviour change
-//! wearing a cache's clothes. A lend or an install is also the launch on which the
-//! container's state just changed, which is the worst moment to freeze an opinion
-//! about it. Each of them is followed by a later pass that probes *provisioned*,
-//! and that pass writes the marker.
+//! Only [`super::Provisioning::AlreadyProvisioned`] and
+//! [`super::Provisioning::Lent`] are recorded. A lend is recorded because its
+//! transfer ends with a gate that runs the lent binaries in the container, so a
+//! lend that returned is a container that has them; and because a lent container
+//! does not probe provisioned again when an image puts a `claude` shim ahead of
+//! `~/.local/bin` on the login PATH, so waiting for "a later pass that probes
+//! provisioned" waited for ever and every `up` lent the same binaries again.
+//!
+//! A pass that installed or kept a shim is **not** recorded, and `ShimKept` is the
+//! one that says why: that arm is a documented residual (see [`super::provision`])
+//! in which a container re-attempts one failing transfer on every `up`, and a
+//! marker would turn "re-attempts on every up" into "never attempts again" — a
+//! behaviour change wearing a cache's clothes. An install is followed by a later
+//! pass that probes *provisioned*, and that pass writes the marker.
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use super::{ClaudeConfig, CodexSwitch, Switches, ToolsSwitch, ZellijSwitch};
+use super::{
+    ClaudeConfig, CodexSwitch, PassOccasion, StageResult, Switches, ToolsSwitch, ZellijSwitch,
+};
 
 use crate::clients::devpod_home::{DevpodHome, sole_workspace_result};
 
 /// The directory the markers live in, under devlaunch's cache directory.
 const MARKERS_DIR: &str = "tool-verdicts";
+
+/// How long a verdict is believed across a container start.
+///
+/// The bound on the one stale verdict the container id cannot see: a change made
+/// inside a container by hand. A week, so a workspace started every morning pays
+/// one pass a week rather than one an `up`, and a container somebody broke by hand
+/// is mended by the first `up` after the week, at the latest. `dl <ws> recreate`
+/// and `dl <ws> dotfiles` mend it at once.
+pub(crate) const MAX_CARRY_ACROSS_A_START: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
 /// Where the host remembers its verdicts, and what it checks them against.
 ///
@@ -107,26 +155,74 @@ impl VerdictCache {
         self.markers_dir.join(format!("{workspace_id}.json"))
     }
 
+    /// The container standing for this workspace now, as devpod's records name it.
+    fn anchor(&self, workspace_id: &str) -> Option<Anchor> {
+        let result = sole_workspace_result(self.devpod_home.as_ref(), workspace_id)?;
+        Anchor::of(&result)
+    }
+
     /// Whether this workspace's remembered verdict still describes the container
-    /// standing now.
+    /// standing now, for a pass on `occasion`.
     ///
     /// Total, and false for every doubt — see the module note on why absent is the
     /// only harmless misreading.
-    pub(crate) fn trusted(&self, workspace_id: &str, switches: Switches) -> bool {
+    pub(crate) fn trusted(
+        &self,
+        workspace_id: &str,
+        switches: Switches,
+        occasion: PassOccasion,
+    ) -> bool {
+        self.trusted_at(workspace_id, switches, occasion, SystemTime::now())
+    }
+
+    /// [`Self::trusted`], with the clock as a parameter.
+    fn trusted_at(
+        &self,
+        workspace_id: &str,
+        switches: Switches,
+        occasion: PassOccasion,
+        now: SystemTime,
+    ) -> bool {
         let Some(marker) = read_marker(&self.marker(workspace_id)) else {
             return false;
         };
         // Before the anchor, because it is the cheaper of the two and because it is
         // the one that is wrong about a container that really is standing: the
-        // mtime can match perfectly while the marker describes a pass that skipped
+        // id can match perfectly while the marker describes a pass that skipped
         // the very stage this launch is asking for.
         if marker.switches != MarkerSwitches::of(switches) {
             return false;
         }
-        let Some(result) = sole_workspace_result(self.devpod_home.as_ref(), workspace_id) else {
+        let Some(standing) = self.anchor(workspace_id) else {
             return false;
         };
-        Stamp::of(&result) == Some(marker.result_mtime)
+        if marker.container != standing.container {
+            return false;
+        }
+        // The same container. Whether it has been started since the pass is the
+        // mtime's question, and only a top-up can answer "no": the pass after an
+        // `up` follows a start by definition, whatever the file says.
+        let not_started_since = marker.result_mtime == standing.result_mtime;
+        match occasion {
+            PassOccasion::TopUp if not_started_since => true,
+            PassOccasion::TopUp | PassOccasion::AfterUp => marker.survives_a_start(now),
+        }
+    }
+
+    /// Drop this workspace's verdict, so the next pass travels.
+    ///
+    /// For the one change devlaunch makes inside a standing container that no file
+    /// of devpod's records: a dotfiles refresh, which runs `chezmoi update` and
+    /// `pixi global sync` and can add or take away the tools a verdict is about.
+    /// Called *before* the refresh, so a refresh killed halfway still leaves no
+    /// verdict behind. The Claude memo stays: it is about who mounted the config
+    /// directory, which a refresh does not change.
+    ///
+    /// Silent, like every write here: a marker that could not be removed is one the
+    /// next pass after an `up` may still trust, which is the bound the module note
+    /// gives and no worse.
+    pub(crate) fn forget(&self, workspace_id: &str) {
+        let _ = std::fs::remove_file(self.marker(workspace_id));
     }
 
     /// Where the Claude memo for this workspace lives.
@@ -139,32 +235,27 @@ impl VerdictCache {
     ///
     /// Deliberately *not* a field on the verdict marker, and the difference is the
     /// question each answers. A marker answers "may this launch skip the trip", so
-    /// it is written only for the one verdict worth remembering. This answers "who
+    /// it is written only for the verdicts worth remembering. This answers "who
     /// owns that directory", which a launch needs whether or not a trip was skipped
-    /// and whether or not the container was ever provisioned -- a workspace the host
-    /// lent its binaries to has no marker at all, and that is the very case the
-    /// credential exists for. Folding the two together made a missing marker mean
-    /// two different things, and the second one silently forwarded nothing.
+    /// and whether or not the container was ever provisioned. Folding the two
+    /// together made a missing marker mean two different things, and the second one
+    /// silently forwarded nothing.
     ///
-    /// Anchored the way a marker is, and for the same reason rather than a weaker
-    /// one. It used to carry no container mtime, on the argument that every route
-    /// which changes a container runs a pass that rewrites this. That argument is
-    /// the one the module note above already refuses: a `devpod up` devlaunch did
-    /// not run -- VS Code's, a hand-typed one, an older `dl` -- rebuilds the
-    /// container without touching anything here, and the memo left standing then
-    /// described a container that no longer exists. `ours` outliving its container
-    /// is the direction that costs the host's credential, so this pays the same
-    /// stamp the marker does and a rebuilt container reads as unknown until
-    /// devlaunch itself passes over it again.
+    /// Anchored on the container id, as a marker is. A `devpod up` devlaunch did not
+    /// run -- VS Code's, a hand-typed one, an older `dl` -- can rebuild the container
+    /// without touching anything here, and a memo left standing would then describe
+    /// a container that no longer exists. `ours` outliving its container is the
+    /// direction that costs the host's credential. The id needs no mtime beside it
+    /// here: who mounted the config directory is fixed when the container is
+    /// created, and a start does not change it.
     ///
     /// Silent about every way of not working, exactly as [`Self::record`] is.
     pub(crate) fn remember_claude(
         &self,
         workspace_id: &str,
         claude: Option<ClaudeConfig>,
-        observed: Observed,
+        observed: &Observed,
     ) {
-        let Observed(result_mtime) = observed;
         let memo = Memo {
             // Written, not skipped: "a pass ran and could not tell" is an answer,
             // and leaving the previous one in place would let a stale `ours` outlive
@@ -174,7 +265,7 @@ impl VerdictCache {
                 Some(ClaudeConfig::Foreign) => MemoWord::Foreign,
                 None => MemoWord::Unknown,
             },
-            result_mtime,
+            container: observed.0.container.clone(),
         };
         let Ok(text) = serde_json::to_string(&memo) else {
             return;
@@ -214,14 +305,13 @@ impl VerdictCache {
     /// This workspace's memo, if one parses and still describes the container that
     /// is standing.
     ///
-    /// The anchor check is [`Self::trusted`]'s, deliberately spelled the same way:
-    /// no `workspace_result.json` to compare against is itself a doubt, and doubt
+    /// No `workspace_result.json` to compare against is itself a doubt, and doubt
     /// reads as no memo.
     fn read_memo(&self, workspace_id: &str) -> Option<MemoWord> {
         let text = std::fs::read_to_string(self.memo(workspace_id)).ok()?;
         let memo: Memo = serde_json::from_str(&text).ok()?;
-        let result = sole_workspace_result(self.devpod_home.as_ref(), workspace_id)?;
-        (Stamp::of(&result) == Some(memo.result_mtime)).then_some(memo.claude)
+        let standing = self.anchor(workspace_id)?;
+        (memo.container == standing.container).then_some(memo.claude)
     }
 
     /// Which container a pass is about to be about, read **before** it runs.
@@ -230,28 +320,60 @@ impl VerdictCache {
     /// seconds, and nothing devlaunch holds keeps somebody else's `devpod up` — VS
     /// Code, a hand-typed one, a sibling `--recreate` — from completing inside that
     /// window. Read the anchor afterwards and the marker pairs the *new* container's
-    /// mtime with the *old* container's verdict, which is a marker that matches
-    /// until something else rebuilds: the silent misreading the module note says
-    /// must never happen. Read it first and the same race writes a stamp that no
-    /// longer matches, so the next launch travels — one redundant round trip, which
-    /// is the direction that is allowed to be wrong.
+    /// id with the *old* container's verdict, which is a marker that matches until
+    /// something else rebuilds: the silent misreading the module note says must
+    /// never happen. Read it first and the same race writes an id that no longer
+    /// matches, so the next launch travels — one redundant round trip, which is the
+    /// direction that is allowed to be wrong.
     pub(crate) fn observe(&self, workspace_id: &str) -> Option<Observed> {
-        let result = sole_workspace_result(self.devpod_home.as_ref(), workspace_id)?;
-        Stamp::of(&result).map(Observed)
+        self.anchor(workspace_id).map(Observed)
     }
 
-    /// Remember that this workspace probed provisioned, as the container
-    /// [`Self::observe`] identified before the pass.
+    /// Remember that this workspace was found provisioned, or was just lent its
+    /// tools, as the container [`Self::observe`] identified before the pass.
+    ///
+    /// `hostname` is how the pass's hostname stage went, which is what decides
+    /// whether the verdict may carry across a start of this container: see
+    /// [`Marker::survives_a_start`].
     ///
     /// Silent about every way of not working — a cache directory that will not be
     /// created, a write that fails. A verdict cache that could not write is a launch
     /// that pays what it pays today, and a launch is not worth failing over that.
-    pub(crate) fn record(&self, workspace_id: &str, observed: Observed, switches: Switches) {
-        let Observed(result_mtime) = observed;
+    pub(crate) fn record(
+        &self,
+        workspace_id: &str,
+        observed: &Observed,
+        switches: Switches,
+        hostname: StageResult,
+    ) {
+        self.record_at(
+            workspace_id,
+            observed,
+            switches,
+            hostname,
+            SystemTime::now(),
+        );
+    }
+
+    /// [`Self::record`], with the clock as a parameter.
+    fn record_at(
+        &self,
+        workspace_id: &str,
+        observed: &Observed,
+        switches: Switches,
+        hostname: StageResult,
+        now: SystemTime,
+    ) {
+        let Some(recorded) = Stamp::at(now) else {
+            return;
+        };
         let marker = Marker {
             verdict: Verdict::Provisioned,
-            result_mtime,
+            container: observed.0.container.clone(),
+            result_mtime: observed.0.result_mtime,
             switches: MarkerSwitches::of(switches),
+            hostname: HostnameWord::of(hostname),
+            recorded,
         };
         let Ok(text) = serde_json::to_string(&marker) else {
             return;
@@ -276,17 +398,21 @@ impl VerdictCache {
     /// a file left standing rather than one written on the way out: nothing runs on
     /// the way out.
     ///
-    /// Anchored like everything else here, and against the same failure: a record
-    /// left by an interrupted pass over a container that has since been rebuilt
-    /// describes a container that is not standing, and reading it would send every
-    /// later launch on a round trip it does not owe.
+    /// Anchored on the container id like everything else here, and against the
+    /// same failure: a record left by an interrupted pass over a container that has
+    /// since been rebuilt describes a container that is not standing, and reading
+    /// it would send every later launch on a round trip it does not owe. A start
+    /// does not end it: the pass that was cut short is still owed to the container
+    /// that was started.
     ///
     /// Silent about every way of not working, as [`Self::record`] is. A record that
     /// could not be written costs one interrupted launch its recovery and nothing
     /// else -- which is today's behaviour, exactly.
-    pub(crate) fn begin_pass(&self, workspace_id: &str, observed: Observed) {
-        let Observed(result_mtime) = observed;
-        let Ok(text) = serde_json::to_string(&InFlight { result_mtime }) else {
+    pub(crate) fn begin_pass(&self, workspace_id: &str, observed: &Observed) {
+        let in_flight = InFlight {
+            container: observed.0.container.clone(),
+        };
+        let Ok(text) = serde_json::to_string(&in_flight) else {
             return;
         };
         write_atomically(&self.in_flight(workspace_id), &text);
@@ -322,40 +448,95 @@ impl VerdictCache {
         let Ok(in_flight) = serde_json::from_str::<InFlight>(&text) else {
             return false;
         };
-        let Some(result) = sole_workspace_result(self.devpod_home.as_ref(), workspace_id) else {
+        let Some(standing) = self.anchor(workspace_id) else {
             return false;
         };
-        Stamp::of(&result) == Some(in_flight.result_mtime)
+        in_flight.container == standing.container
     }
+}
+
+/// Which container `workspace_result.json` names, and when devpod last wrote it.
+///
+/// Read from one open file, so the two halves describe one write of it: devpod
+/// replaces the file by rename, and the handle keeps the file it opened.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Anchor {
+    /// `ContainerDetails.ID`: which container. Moves on a create, a `--recreate`
+    /// and a `--reset`, and on nothing else.
+    container: String,
+    /// The result file's mtime: moves on every completed `up`, which is to say on
+    /// every start of the container as well as every rebuild.
+    result_mtime: Stamp,
+}
+
+impl Anchor {
+    /// The anchor `result` describes, or nothing when it describes none.
+    ///
+    /// Nothing for a file that will not open or parse, and for one with no
+    /// container id or an empty one: an id that is not there cannot be told apart
+    /// from the next container's, so it must not match anything.
+    fn of(result: &Path) -> Option<Self> {
+        let mut file = std::fs::File::open(result).ok()?;
+        let result_mtime = Stamp::of_file(&file)?;
+        let mut text = String::new();
+        file.read_to_string(&mut text).ok()?;
+        let document: ResultDocument = serde_json::from_str(&text).ok()?;
+        let container = document.container?.id?;
+        if container.is_empty() {
+            return None;
+        }
+        Some(Self {
+            container,
+            result_mtime,
+        })
+    }
+}
+
+/// The one field of devpod's `workspace_result.json` this module reads.
+///
+/// Spelled as devpod writes it. Every other field is ignored, so a devpod that
+/// adds one changes nothing here, and one that drops this one makes every marker
+/// untrusted, which is the safe way to be wrong.
+#[derive(Deserialize)]
+struct ResultDocument {
+    #[serde(rename = "ContainerDetails")]
+    container: Option<ContainerDetails>,
+}
+
+/// `ContainerDetails`, narrowed to its id.
+#[derive(Deserialize)]
+struct ContainerDetails {
+    #[serde(rename = "ID")]
+    id: Option<String>,
 }
 
 /// What one in-flight record says.
 ///
-/// One field, and a struct rather than the bare [`Stamp`] it wraps, for
-/// [`Marker`]'s reason: the check is the parse, so a file a later build writes with
-/// a second field it needs is not silently read as this one.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+/// One field, and a struct rather than the bare id it wraps, for [`Marker`]'s
+/// reason: the check is the parse, so a file a later build writes with a second
+/// field it needs is not silently read as this one. A record written before the
+/// container id was the anchor has no `container` and is not read at all.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 struct InFlight {
-    result_mtime: Stamp,
+    container: String,
 }
 
 /// The container a pass is about, as [`VerdictCache::observe`] read it.
 ///
-/// A type rather than a bare [`Stamp`] so that [`VerdictCache::record`] cannot be
-/// handed a timestamp read at the wrong moment: the only way to make one is to ask
+/// A type rather than a bare [`Anchor`] so that [`VerdictCache::record`] cannot be
+/// handed an anchor read at the wrong moment: the only way to make one is to ask
 /// before the pass, which is the ordering the whole trust rule rests on.
-#[derive(Clone, Copy)]
-pub(crate) struct Observed(Stamp);
+pub(crate) struct Observed(Anchor);
 
 /// What one Claude memo file says.
 ///
 /// Its own file rather than a field on [`Marker`], for the reason
 /// [`VerdictCache::remember_claude`] gives, and its own anchor because a memo that
 /// outlives its container is the one misreading that costs something.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 struct Memo {
     claude: MemoWord,
-    result_mtime: Stamp,
+    container: String,
 }
 
 /// The three things a pass can have concluded about the config directory.
@@ -377,9 +558,17 @@ enum MemoWord {
 }
 
 /// What one marker file says.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+///
+/// A marker written before the container id was the anchor has no `container` key,
+/// fails to deserialize, and is therefore untrusted: one redundant round trip on
+/// the first launch after upgrading.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 struct Marker {
     verdict: Verdict,
+    /// Which container the verdict is about. The identity check.
+    container: String,
+    /// The result file's mtime when the pass ran: whether the container has been
+    /// started since.
     result_mtime: Stamp,
     /// The switches the pass ran under. Without this the marker answers "was this
     /// container provisioned?" when the question the flow asks it is "was it
@@ -394,12 +583,60 @@ struct Marker {
     /// makes `DEVLAUNCH_ZELLIJ=1` work on a workspace that is already up: the
     /// marker written by every launch before it disagrees with the one this launch
     /// wants, so the pass travels again and the stage lands.
-    ///
-    /// A marker written before this field existed has no `switches` key, fails to
-    /// deserialize, and is therefore untrusted — one redundant round trip on the
-    /// first launch after upgrading, which is the direction [`Verdict`] argues is
-    /// the only harmless one.
     switches: MarkerSwitches,
+    /// How the pass's hostname stage went.
+    hostname: HostnameWord,
+    /// When the pass ran, by the host's clock: the start of
+    /// [`MAX_CARRY_ACROSS_A_START`].
+    recorded: Stamp,
+}
+
+impl Marker {
+    /// Whether this verdict still holds for its container after the container has
+    /// been started again.
+    ///
+    /// Only when the pass's `sudo hostname` was refused. A container that refused
+    /// it once refuses it on every start, because the capability it lacks is fixed
+    /// when the container is created, so the pass after a start would ask again and
+    /// be refused again. A hostname that was set has to be set again, and a stage
+    /// that did not report is read as one that was set, since that is the reading
+    /// that travels.
+    ///
+    /// And only for [`MAX_CARRY_ACROSS_A_START`] after the pass, the bound on what
+    /// the id cannot see. A recorded time in the future is a clock that stepped
+    /// back, and is read as expired.
+    fn survives_a_start(&self, now: SystemTime) -> bool {
+        let refused = matches!(self.hostname, HostnameWord::Refused);
+        let young = now
+            .duration_since(SystemTime::from(self.recorded))
+            .is_ok_and(|age| age < MAX_CARRY_ACROSS_A_START);
+        refused && young
+    }
+}
+
+/// How a pass's hostname stage went, in the marker's own spelling.
+///
+/// Three words for [`StageResult`]'s three arms, and not the exit status: what the
+/// marker needs is whether the name has to be set again after a start, and the
+/// status adds nothing to that.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+enum HostnameWord {
+    #[serde(rename = "set")]
+    Set,
+    #[serde(rename = "refused")]
+    Refused,
+    #[serde(rename = "unreported")]
+    Unreported,
+}
+
+impl HostnameWord {
+    fn of(stage: StageResult) -> Self {
+        match stage {
+            StageResult::Ok => Self::Set,
+            StageResult::Failed { .. } => Self::Refused,
+            StageResult::NotReached => Self::Unreported,
+        }
+    }
 }
 
 /// The switches a marker was written under, in the marker's own spelling.
@@ -444,7 +681,7 @@ enum Verdict {
     Provisioned,
 }
 
-/// One file's modification time, as two integers.
+/// One instant, as two integers.
 ///
 /// Not a `SystemTime` serialized by serde's own representation, and not a float:
 /// the value is compared for exact equality against a timestamp read back from a
@@ -459,16 +696,23 @@ struct Stamp {
 
 impl Stamp {
     /// This path's mtime, or nothing when there is not one to read.
-    ///
-    /// Nothing, too, for an mtime *before* the epoch. It is not representable here,
-    /// and the alternative — clamping it to zero — makes every such file share one
-    /// timestamp, which is the one value that must not be shared: two different
-    /// container generations would then compare equal.
+    #[cfg(test)]
     fn of(path: &Path) -> Option<Self> {
-        let modified = std::fs::metadata(path)
-            .and_then(|meta| meta.modified())
-            .ok()?;
-        let since = modified.duration_since(UNIX_EPOCH).ok()?;
+        Self::of_file(&std::fs::File::open(path).ok()?)
+    }
+
+    /// This open file's mtime, or nothing when there is not one to read.
+    fn of_file(file: &std::fs::File) -> Option<Self> {
+        Self::at(file.metadata().and_then(|meta| meta.modified()).ok()?)
+    }
+
+    /// `instant`, or nothing for an instant *before* the epoch.
+    ///
+    /// It is not representable here, and the alternative — clamping it to zero —
+    /// makes every such file share one timestamp, which is the one value that must
+    /// not be shared: two different container generations would then compare equal.
+    fn at(instant: SystemTime) -> Option<Self> {
+        let since = instant.duration_since(UNIX_EPOCH).ok()?;
         Some(Self {
             secs: since.as_secs(),
             nanos: since.subsec_nanos(),
@@ -478,7 +722,7 @@ impl Stamp {
 
 impl From<Stamp> for SystemTime {
     fn from(stamp: Stamp) -> Self {
-        UNIX_EPOCH + std::time::Duration::new(stamp.secs, stamp.nanos)
+        UNIX_EPOCH + Duration::new(stamp.secs, stamp.nanos)
     }
 }
 
@@ -550,7 +794,7 @@ mod tests {
     /// The same pair, for the tests that are about *which* pass wrote the marker.
     fn recorded_under(verdicts: &VerdictCache, workspace_id: &str, switches: Switches) {
         if let Some(observed) = verdicts.observe(workspace_id) {
-            verdicts.record(workspace_id, observed, switches);
+            verdicts.record(workspace_id, &observed, switches, StageResult::Ok);
         }
     }
 
@@ -567,13 +811,13 @@ mod tests {
     /// its trip -- and, unlike [`provision`], never close it.
     fn began(verdicts: &VerdictCache, workspace_id: &str) {
         let observed = verdicts.observe(workspace_id).expect("an anchor");
-        verdicts.begin_pass(workspace_id, observed);
+        verdicts.begin_pass(workspace_id, &observed);
     }
 
     /// Remember `seen` against the container standing now, as [`provision`] does.
     fn remembered_under(verdicts: &VerdictCache, workspace_id: &str, seen: Option<ClaudeConfig>) {
         let observed = verdicts.observe(workspace_id).expect("an anchor");
-        verdicts.remember_claude(workspace_id, seen, observed);
+        verdicts.remember_claude(workspace_id, seen, &observed);
     }
 
     #[test]
@@ -606,7 +850,7 @@ mod tests {
         remembered_under(&verdicts, "ws", Some(ClaudeConfig::Ours));
 
         assert!(
-            !verdicts.trusted("ws", Switches::INSTALLING),
+            !verdicts.trusted("ws", Switches::INSTALLING, PassOccasion::TopUp),
             "no verdict was recorded, so the next pass must still travel"
         );
         assert_eq!(
@@ -644,7 +888,7 @@ mod tests {
         remembered_under(&verdicts, "ws", Some(ClaudeConfig::Ours));
         assert_eq!(verdicts.remembered_claude("ws"), Some(ClaudeConfig::Ours));
 
-        // Somebody else's `up`, which is a new result file and nothing else.
+        // Somebody else's rebuild, which is a result file naming a new container.
         rebuild_result(&home, "ws");
 
         assert_eq!(
@@ -658,21 +902,14 @@ mod tests {
         );
     }
 
-    /// Somebody else's `devpod up`: the same workspace, a result file written again.
+    /// Somebody else's `devpod up --recreate`: the same workspace, a result file
+    /// naming a container that was not there before.
     fn rebuild_result(home: &ScratchHome, workspace_id: &str) {
         let result = home.result("default", workspace_id);
-        let mtime = || {
-            std::fs::metadata(&result)
-                .expect("a result")
-                .modified()
-                .expect("an mtime")
-        };
-        // A rewrite alone can land inside one filesystem timestamp tick, and the
-        // stamp this compares is that mtime.
-        let was = mtime();
-        while mtime() == was {
-            std::fs::write(&result, "{}").expect("a result");
-        }
+        let document = serde_json::json!({
+            "ContainerDetails": { "ID": format!("rebuilt-{workspace_id}") },
+        });
+        std::fs::write(&result, document.to_string()).expect("a result");
     }
 
     #[test]
@@ -744,11 +981,11 @@ mod tests {
         recorded_under(&verdicts, "ws", unasked);
 
         assert!(
-            verdicts.trusted("ws", unasked),
+            verdicts.trusted("ws", unasked, PassOccasion::TopUp),
             "the pass that wrote it asks the same question and must still be answered"
         );
         assert!(
-            !verdicts.trusted("ws", Switches::INSTALLING),
+            !verdicts.trusted("ws", Switches::INSTALLING, PassOccasion::TopUp),
             "a launch that wants the zellij stage was told a pass that skipped it had already run"
         );
     }
@@ -765,7 +1002,7 @@ mod tests {
         let cache = cache();
         let verdicts = VerdictCache::under(cache.path(), Some(DevpodHome::at(home.path())));
         recorded(&verdicts, "ws");
-        assert!(verdicts.trusted("ws", Switches::INSTALLING));
+        assert!(verdicts.trusted("ws", Switches::INSTALLING, PassOccasion::TopUp));
 
         let marker = cache.path().join(MARKERS_DIR).join("ws.json");
         let text = std::fs::read_to_string(&marker).expect("the marker just written");
@@ -779,7 +1016,7 @@ mod tests {
         .expect("a writable cache");
 
         assert!(
-            !verdicts.trusted("ws", Switches::INSTALLING),
+            !verdicts.trusted("ws", Switches::INSTALLING, PassOccasion::TopUp),
             "a marker this build cannot read in full is a marker it must not act on"
         );
     }
@@ -807,16 +1044,16 @@ mod tests {
         let verdicts = VerdictCache::under(cache.path(), Some(DevpodHome::at(home.path())));
 
         assert!(
-            !verdicts.trusted("myws", Switches::INSTALLING),
+            !verdicts.trusted("myws", Switches::INSTALLING, PassOccasion::TopUp),
             "nothing is recorded yet"
         );
         recorded(&verdicts, "myws");
 
-        assert!(verdicts.trusted("myws", Switches::INSTALLING));
+        assert!(verdicts.trusted("myws", Switches::INSTALLING, PassOccasion::TopUp));
         // And it survives being read by a second value over the same directories,
         // which is what "the next `dl` process" is.
         let later = VerdictCache::under(cache.path(), Some(DevpodHome::at(home.path())));
-        assert!(later.trusted("myws", Switches::INSTALLING));
+        assert!(later.trusted("myws", Switches::INSTALLING, PassOccasion::TopUp));
     }
 
     #[test]
@@ -833,6 +1070,12 @@ mod tests {
         let text = std::fs::read_to_string(cache.path().join(MARKERS_DIR).join("myws.json"))
             .expect("a marker");
         assert!(text.contains(r#""verdict":"provisioned""#), "{text}");
+        assert!(
+            text.contains(r#""container":"container-default-myws""#),
+            "{text}"
+        );
+        assert!(text.contains(r#""hostname":"set""#), "{text}");
+        assert!(text.contains(r#""recorded":{"secs":"#), "{text}");
         assert!(text.contains(r#""result_mtime":{"secs":"#), "{text}");
         assert!(text.contains(r#""nanos":"#), "{text}");
     }
@@ -847,11 +1090,11 @@ mod tests {
         let cache = cache();
         let verdicts = VerdictCache::under(cache.path(), Some(DevpodHome::at(home.path())));
         recorded(&verdicts, "myws");
-        assert!(verdicts.trusted("myws", Switches::INSTALLING));
+        assert!(verdicts.trusted("myws", Switches::INSTALLING, PassOccasion::TopUp));
 
         rewritten(&result_in(&home, "myws"), Duration::from_secs(30));
 
-        assert!(!verdicts.trusted("myws", Switches::INSTALLING));
+        assert!(!verdicts.trusted("myws", Switches::INSTALLING, PassOccasion::TopUp));
     }
 
     #[test]
@@ -876,7 +1119,7 @@ mod tests {
         file.set_modified(was - Duration::from_secs(30))
             .expect("a backdated mtime");
 
-        assert!(!verdicts.trusted("myws", Switches::INSTALLING));
+        assert!(!verdicts.trusted("myws", Switches::INSTALLING, PassOccasion::TopUp));
     }
 
     #[test]
@@ -902,18 +1145,18 @@ mod tests {
         ] {
             std::fs::write(&marker, garbled).expect("a garbled marker");
             assert!(
-                !verdicts.trusted("myws", Switches::INSTALLING),
+                !verdicts.trusted("myws", Switches::INSTALLING, PassOccasion::TopUp),
                 "{garbled:?}"
             );
         }
 
         std::fs::write(&marker, &good).expect("the good marker back");
         assert!(
-            verdicts.trusted("myws", Switches::INSTALLING),
+            verdicts.trusted("myws", Switches::INSTALLING, PassOccasion::TopUp),
             "the fixture itself still holds"
         );
         std::fs::remove_file(&marker).expect("the marker removed");
-        assert!(!verdicts.trusted("myws", Switches::INSTALLING));
+        assert!(!verdicts.trusted("myws", Switches::INSTALLING, PassOccasion::TopUp));
     }
 
     #[test]
@@ -934,7 +1177,10 @@ mod tests {
         ] {
             let verdicts = VerdictCache::under(cache.path(), home.clone());
             recorded(&verdicts, "myws");
-            assert!(!verdicts.trusted("myws", Switches::INSTALLING), "{home:?}");
+            assert!(
+                !verdicts.trusted("myws", Switches::INSTALLING, PassOccasion::TopUp),
+                "{home:?}"
+            );
         }
     }
 
@@ -963,8 +1209,8 @@ mod tests {
 
         recorded(&verdicts, "myws");
 
-        assert!(verdicts.trusted("myws", Switches::INSTALLING));
-        assert!(!verdicts.trusted("other", Switches::INSTALLING));
+        assert!(verdicts.trusted("myws", Switches::INSTALLING, PassOccasion::TopUp));
+        assert!(!verdicts.trusted("other", Switches::INSTALLING, PassOccasion::TopUp));
     }
 
     #[test]
@@ -992,9 +1238,21 @@ mod tests {
         began(&verdicts, "ws");
         assert!(verdicts.pass_never_finished("ws"));
 
-        rewritten(&result_in(&home, "ws"), Duration::from_secs(30));
+        rebuild_result(&home, "ws");
 
         assert!(!verdicts.pass_never_finished("ws"));
+    }
+
+    #[test]
+    fn an_interrupted_pass_is_still_owed_after_a_start() {
+        // A stop and an `up` keep the container, so the pass cut short is still
+        // owed to it. The mtime-keyed record forgot it on the start.
+        let (_cache, home, verdicts) = anchored();
+        began(&verdicts, "ws");
+
+        rewritten(&result_in(&home, "ws"), Duration::from_secs(30));
+
+        assert!(verdicts.pass_never_finished("ws"));
     }
 
     #[test]
@@ -1068,5 +1326,194 @@ mod tests {
             .expect("an mtime");
         assert_eq!(SystemTime::from(stamp), modified);
         assert_eq!(Stamp::of(Path::new("/no/such/file")), None);
+    }
+
+    /// Record a verdict about the container standing now, with the hostname stage
+    /// having gone `hostname`, at `when`.
+    fn recorded_with(verdicts: &VerdictCache, hostname: StageResult, when: SystemTime) {
+        let observed = verdicts.observe("myws").expect("an anchor");
+        verdicts.record_at("myws", &observed, Switches::INSTALLING, hostname, when);
+    }
+
+    /// One workspace, created and finished, and a cache over it.
+    fn one_workspace() -> (ScratchHome, tempfile::TempDir, VerdictCache) {
+        let home = devpod_home_with(&[("default", "myws", Some(()))]);
+        let cache = cache();
+        let verdicts = VerdictCache::under(cache.path(), Some(DevpodHome::at(home.path())));
+        (home, cache, verdicts)
+    }
+
+    /// Both occasions, asked at `now`.
+    fn trusted_on_each(verdicts: &VerdictCache, now: SystemTime) -> [bool; 2] {
+        [PassOccasion::TopUp, PassOccasion::AfterUp]
+            .map(|occasion| verdicts.trusted_at("myws", Switches::INSTALLING, occasion, now))
+    }
+
+    #[test]
+    fn a_stopped_and_started_container_keeps_a_verdict_whose_hostname_was_refused() {
+        // The saving. A stop and an `up` keep the container id and move only the
+        // result file's mtime. A pass whose `sudo hostname` was refused has nothing
+        // to redo after a start, so the pass after the `up` may be skipped.
+        let (home, _cache, verdicts) = one_workspace();
+        let now = SystemTime::now();
+        recorded_with(&verdicts, StageResult::Failed { status: 1 }, now);
+
+        rewritten(&result_in(&home, "myws"), Duration::from_secs(30));
+
+        assert_eq!(trusted_on_each(&verdicts, now), [true, true]);
+    }
+
+    #[test]
+    fn a_hostname_that_was_set_has_to_be_set_again_after_a_start() {
+        // The UTS name is rebuilt from the container's config on every start, so a
+        // pass that set it owes the started container another pass, whatever the
+        // verdict says about the tools.
+        for hostname in [StageResult::Ok, StageResult::NotReached] {
+            let (home, _cache, verdicts) = one_workspace();
+            let now = SystemTime::now();
+            recorded_with(&verdicts, hostname, now);
+            assert_eq!(
+                trusted_on_each(&verdicts, now),
+                [true, false],
+                "not started yet, and the pass after an `up` always follows a start: {hostname:?}"
+            );
+
+            rewritten(&result_in(&home, "myws"), Duration::from_secs(30));
+
+            assert_eq!(
+                trusted_on_each(&verdicts, now),
+                [false, false],
+                "{hostname:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_rebuilt_container_is_never_the_one_a_verdict_was_about() {
+        // A create, a `--recreate` and a `--reset` all make a new container id,
+        // and no verdict carries to it, however its hostname stage went.
+        let (home, _cache, verdicts) = one_workspace();
+        let now = SystemTime::now();
+        recorded_with(&verdicts, StageResult::Failed { status: 1 }, now);
+
+        rebuild_result(&home, "myws");
+
+        assert_eq!(trusted_on_each(&verdicts, now), [false, false]);
+    }
+
+    #[test]
+    fn a_verdict_carries_across_a_start_for_a_week_at_most() {
+        // The bound on what the id cannot see: a tool somebody removed inside the
+        // container by hand. After the bound, the pass after an `up` travels and
+        // finds out. A container that never stopped keeps its old bargain.
+        let (home, _cache, verdicts) = one_workspace();
+        let then = SystemTime::now();
+        recorded_with(&verdicts, StageResult::Failed { status: 1 }, then);
+        let just_inside = then + MAX_CARRY_ACROSS_A_START - Duration::from_secs(1);
+        let past = then + MAX_CARRY_ACROSS_A_START;
+
+        assert_eq!(trusted_on_each(&verdicts, just_inside), [true, true]);
+        assert_eq!(
+            trusted_on_each(&verdicts, past),
+            [true, false],
+            "a top-up over a container never started since keeps trusting"
+        );
+
+        rewritten(&result_in(&home, "myws"), Duration::from_secs(30));
+        assert_eq!(trusted_on_each(&verdicts, just_inside), [true, true]);
+        assert_eq!(trusted_on_each(&verdicts, past), [false, false]);
+    }
+
+    #[test]
+    fn a_verdict_recorded_in_the_future_does_not_carry_across_a_start() {
+        // A clock that stepped back. Read as expired, the direction that travels.
+        let (home, _cache, verdicts) = one_workspace();
+        let now = SystemTime::now();
+        recorded_with(
+            &verdicts,
+            StageResult::Failed { status: 1 },
+            now + Duration::from_secs(3600),
+        );
+        rewritten(&result_in(&home, "myws"), Duration::from_secs(30));
+
+        assert_eq!(trusted_on_each(&verdicts, now), [false, false]);
+    }
+
+    #[test]
+    fn a_dotfiles_refresh_forgets_the_verdict_and_keeps_the_memo() {
+        // `chezmoi update` and `pixi global sync` change a standing container in a
+        // way no devpod record shows, so the verdict goes. Who mounted the Claude
+        // config directory does not change, so the memo stays.
+        let (_home, _cache, verdicts) = one_workspace();
+        let now = SystemTime::now();
+        recorded_with(&verdicts, StageResult::Failed { status: 1 }, now);
+        remembered_under(&verdicts, "myws", Some(ClaudeConfig::Ours));
+        assert_eq!(trusted_on_each(&verdicts, now), [true, true]);
+
+        verdicts.forget("myws");
+
+        assert_eq!(trusted_on_each(&verdicts, now), [false, false]);
+        assert_eq!(verdicts.remembered_claude("myws"), Some(ClaudeConfig::Ours));
+        // And forgetting what is not there is not a failure.
+        verdicts.forget("myws");
+        verdicts.forget("never-recorded");
+    }
+
+    #[test]
+    fn a_memo_survives_a_start_of_its_container() {
+        // The pass after an `up` may now be skipped, and the session it would have
+        // fed still has to know whose config directory that is.
+        let (home, _cache, verdicts) = one_workspace();
+        remembered_under(&verdicts, "myws", Some(ClaudeConfig::Foreign));
+
+        rewritten(&result_in(&home, "myws"), Duration::from_secs(30));
+
+        assert_eq!(
+            verdicts.remembered_claude("myws"),
+            Some(ClaudeConfig::Foreign)
+        );
+    }
+
+    #[test]
+    fn a_result_that_names_no_container_anchors_nothing() {
+        // An id that is not there cannot be told apart from the next container's.
+        let (home, cache, verdicts) = one_workspace();
+        for document in [
+            "{}",
+            r#"{"ContainerDetails":{}}"#,
+            r#"{"ContainerDetails":{"ID":""}}"#,
+            r#"{"ContainerDetails":{"ID":7}}"#,
+            "not json",
+        ] {
+            std::fs::write(result_in(&home, "myws"), document).expect("a result");
+            assert!(verdicts.observe("myws").is_none(), "{document}");
+            recorded(&verdicts, "myws");
+            assert!(
+                !cache.path().join(MARKERS_DIR).join("myws.json").exists(),
+                "{document}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_marker_from_before_the_container_id_is_not_trusted() {
+        // What every marker on disk looks like on the first launch after upgrading:
+        // keyed on the mtime alone. One redundant round trip, then a new marker.
+        let (home, cache, verdicts) = one_workspace();
+        let marker = cache.path().join(MARKERS_DIR).join("myws.json");
+        std::fs::create_dir_all(marker.parent().expect("a parent")).expect("the directory");
+        let result = result_in(&home, "myws");
+        let stamp = Stamp::of(&result).expect("an mtime");
+        let old = serde_json::json!({
+            "verdict": "provisioned",
+            "result_mtime": stamp,
+            "switches": MarkerSwitches::of(Switches::INSTALLING),
+        });
+        std::fs::write(&marker, old.to_string()).expect("an old marker");
+
+        assert_eq!(
+            trusted_on_each(&verdicts, SystemTime::now()),
+            [false, false]
+        );
     }
 }

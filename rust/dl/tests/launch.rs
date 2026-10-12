@@ -2257,17 +2257,19 @@ fn new_herdr_container_panes_use_the_workspace_profile_before_the_siblings_profi
         "devpod/contexts/default/workspaces/{MAIN}/workspace_result.json"
     ));
     fs::create_dir_all(result.parent().unwrap()).unwrap();
-    fs::write(&result, "{}").unwrap();
+    fs::write(
+        &result,
+        serde_json::json!({"ContainerDetails": {"ID": "container-main"}}).to_string(),
+    )
+    .unwrap();
     fs::write(result.with_file_name("workspace.json"), "{}").unwrap();
-    let stamp = fs::metadata(&result)
-        .unwrap()
-        .modified()
-        .unwrap()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap();
     let memo = world.path(&format!("cache/devlaunch/tool-verdicts/{MAIN}.claude"));
     fs::create_dir_all(memo.parent().unwrap()).unwrap();
-    fs::write(memo, serde_json::json!({"claude": "ours", "result_mtime": {"secs": stamp.as_secs(), "nanos": stamp.subsec_nanos()}}).to_string()).unwrap();
+    fs::write(
+        memo,
+        serde_json::json!({"claude": "ours", "container": "container-main"}).to_string(),
+    )
+    .unwrap();
     let profile = world.path("home/.claude-profiles/work");
     fs::create_dir_all(&profile).unwrap();
     fs::write(

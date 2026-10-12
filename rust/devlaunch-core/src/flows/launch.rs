@@ -1636,7 +1636,9 @@ impl Provision for ToolProvisioning<'_> {
         // are here: it compares the switches a marker was written under against the
         // ones this launch wants, and its own note names this exact case.
         matches!(self.switches.codex, provision::CodexSwitch::Install)
-            && !self.verdicts.trusted(workspace_id, self.switches)
+            && !self
+                .verdicts
+                .trusted(workspace_id, self.switches, PassOccasion::TopUp)
     }
 }
 
@@ -1946,11 +1948,12 @@ fn up_under_stage(
         // that follows it takes the launch with it, as Python's exception does: there
         // is no session to hand over without the binary that opens one.
         //
-        // `AfterUp`, so this pass always travels. The `up` above either created the
-        // container or started a stopped one, and both rebuild the UTS namespace
-        // from the container's config — the hostname stage has to run again before
-        // the session reads a prompt, whatever any remembered verdict says about
-        // the tools.
+        // `AfterUp`, because the `up` above either created the container or started
+        // a stopped one, and both rebuild the UTS namespace from the container's
+        // config. A created container has an id no verdict names, so its pass
+        // travels. A started one keeps its id, and its pass is skipped only when
+        // the verdict about it says the hostname stage has nothing to redo (see
+        // `provision::verdict_cache`).
         let seen = provision
             .provision_tools(context.runner(), identity, PassOccasion::AfterUp, title)
             .map_err(|DevpodMissing| NotRun::NotInstalled)?;
@@ -3364,6 +3367,11 @@ pub(crate) fn dotfiles_update(
     // it, so quoting it as argv would run a program whose name is the whole
     // pipeline.
     let command = RemoteCommand::Script(dotfiles_command(options.dotfiles_url(), bound));
+    // Before the refresh, not after it: `chezmoi update` and `pixi global sync`
+    // can add or take away the tools a remembered verdict is about, and nothing
+    // devpod records says they ran. A refresh killed halfway must leave no verdict
+    // behind either. See `VerdictCache::forget`.
+    VerdictCache::under(&session.host.cache_dir, None).forget(workspace_id);
     workspace_ssh(
         session,
         workspace_id,

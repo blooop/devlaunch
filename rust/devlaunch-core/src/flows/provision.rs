@@ -1587,6 +1587,9 @@ pub(crate) struct PassReport {
     pub(crate) tools: ProbeResult,
     /// Who owns its Claude config directory, or `None` when the report did not say.
     pub(crate) claude: Option<ClaudeConfig>,
+    /// How the hostname stage went, which a verdict records: whether a start of
+    /// this container undoes what the pass did (see [`verdict_cache`]).
+    pub(crate) hostname: StageResult,
 }
 
 impl PassReport {
@@ -2612,27 +2615,31 @@ fn ustar_header(arcname: &str, meta: &Metadata) -> Result<[u8; TAR_BLOCK], Bundl
 
 /// Which of a launch's two provisioning moments this pass is.
 ///
-/// The distinction exists because one of them may be skipped and the other may
-/// never be, and nothing else in the call tells them apart: both arrive with a
-/// workspace id and a runner, at a container devpod reports as running.
+/// Both arrive with a workspace id and a runner, at a container devpod reports as
+/// running, and both may be skipped when [`verdict_cache`] holds a verdict about
+/// that very container. They differ in what that verdict has to say.
 ///
 /// **The hostname is what separates them.** `sudo hostname` is a stage of the
 /// pass, and the name it sets lives in the container's UTS namespace, which docker
 /// rebuilds from the container's config on every `start`. So a container that has
 /// just been through `devpod up` — created, or stopped and started again — has lost
-/// the name and has to be told it again, before the session `dl` is about to hand
-/// over reads it into a prompt. That pass travels, always, whatever any cache says.
+/// any name a pass set, and has to be told it again before the session `dl` is
+/// about to hand over reads it into a prompt. In most containers the stage is
+/// refused (it needs `CAP_SYS_ADMIN`), and then there is nothing to tell it: a
+/// verdict whose pass recorded the refusal may excuse the pass after an `up`, and
+/// one whose pass set the name may not.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PassOccasion {
-    /// The pass that follows this launch's own `devpod up`. The container is new
-    /// to this boot: it has no hostname yet, and whatever was true of the last
-    /// container under this id is not evidence about this one.
+    /// The pass that follows this launch's own `devpod up`. The container has just
+    /// been started. If it was created, no verdict names its id. If it was only
+    /// stopped and started, the verdict about it stands for the tools, and for the
+    /// stages only if they have nothing to redo after a start.
     AfterUp,
     /// The pass over a container that was already running when the launch arrived —
-    /// the `dl <ws> up` top-up and the sibling-won path. Nothing has restarted, so
-    /// the hostname set by the `up` that started it is still standing, and the only
-    /// question left is whether the tools are there. That question has an answer on
-    /// disk ([`verdict_cache`]) whenever a previous pass found them.
+    /// the `dl <ws> up` top-up and the sibling-won path. Unless something started
+    /// it since the last pass, the hostname that pass set is still standing, and
+    /// the only question left is whether the tools are there. That question has an
+    /// answer on disk ([`verdict_cache`]) whenever a previous pass found them.
     TopUp,
 }
 
@@ -2686,9 +2693,9 @@ pub enum ProvisionEvent {
 pub enum Provisioning {
     /// The probe found the official layout: one trip, nothing to do.
     AlreadyProvisioned,
-    /// No trip at all: this was a [`PassOccasion::TopUp`] over a container a
-    /// previous pass found provisioned, and devpod's own records say that container
-    /// has not been through an `up` since ([`verdict_cache`]).
+    /// No trip at all: a previous pass found this same container provisioned, or
+    /// lent it the tools, and nothing since has undone what that pass did
+    /// ([`verdict_cache`]).
     ///
     /// Its own arm rather than a second way of saying [`Self::AlreadyProvisioned`],
     /// because the two are the same verdict reached by opposite means and only one
@@ -2855,11 +2862,12 @@ fn provision(
 ) -> Result<Pass, DevpodMissing> {
     // Before the trip, because a trip is the whole of what this saves; and before
     // the opt-out check below, because that check exists to report what the pass
-    // did with the stages it carried, and here there is no pass. On a top-up there
-    // is nothing for the stages to do either: the container never stopped, so the
-    // hostname the `up` that started it set is still the one it has.
-    if let (PassOccasion::TopUp, Some(verdicts)) = (occasion, verdicts)
-        && verdicts.trusted(workspace, switches)
+    // did with the stages it carried, and here there is no pass. Whether the stages
+    // have anything left to do is part of what `trusted` answers, and `occasion` is
+    // what it needs to answer it: after an `up` the container has just been
+    // started, and a hostname the last pass set is gone (see [`PassOccasion`]).
+    if let Some(verdicts) = verdicts
+        && verdicts.trusted(workspace, switches, occasion)
         // And it has an answer about the Claude config directory to give. A verdict
         // recorded before this build existed does not, and trusting it would skip
         // the one pass that could ever write one: the shortcut would hold forever
@@ -2890,12 +2898,19 @@ fn provision(
     // Running and finished creating -- so every later launch fast-attaches to it
     // and the pass never runs again. Nothing about the container says otherwise,
     // which is why the host writes it down first.
-    if let (Some(verdicts), Some(observed)) = (verdicts, observed) {
+    if let (Some(verdicts), Some(observed)) = (verdicts, &observed) {
         verdicts.begin_pass(workspace, observed);
     }
 
     let outcome = run_the_pass(
-        runner, workspace, switches, title, host, verdicts, observed, events,
+        runner,
+        workspace,
+        switches,
+        title,
+        host,
+        verdicts,
+        observed.as_ref(),
+        events,
     );
 
     // Closed out here, from what the pass answered, and that placement is the whole
@@ -2933,7 +2948,7 @@ fn run_the_pass(
     title: Option<&str>,
     host: Option<&HostLayout>,
     verdicts: Option<&VerdictCache>,
-    observed: Option<Observed>,
+    observed: Option<&Observed>,
     events: &mut dyn Notices<ProvisionEvent>,
 ) -> Result<Pass, DevpodMissing> {
     let host_home = host.and_then(|layout| layout.home.to_str());
@@ -2965,18 +2980,27 @@ fn run_the_pass(
     }
 
     if let ProbeResult::Provisioned = found.tools {
-        // The one outcome worth remembering, and the reasons the others are not are
-        // in [`verdict_cache`]'s own note.
-        //
+        // One of the two outcomes worth remembering, and the reasons the others are
+        // not are in [`verdict_cache`]'s own note.
         if let (Some(verdicts), Some(observed)) = (verdicts, observed) {
-            verdicts.record(workspace, observed, switches);
+            verdicts.record(workspace, observed, switches, found.hostname);
         }
         return Ok(found.into_pass(Provisioning::AlreadyProvisioned));
     }
 
     if let Some(payload) = host.and_then(host_payload) {
         match transfer(runner, workspace, &payload) {
-            Ok(()) => return Ok(found.into_pass(Provisioning::Lent)),
+            Ok(()) => {
+                // The other one. The transfer ends by running what it lent, so a
+                // lend that returned is a container that has both tools; and the
+                // next probe does not always say so, because an image whose login
+                // PATH puts a `claude` shim ahead of `~/.local/bin` reads lendable
+                // after every lend, and each `up` lent the same binaries again.
+                if let (Some(verdicts), Some(observed)) = (verdicts, observed) {
+                    verdicts.record(workspace, observed, switches, found.hostname);
+                }
+                return Ok(found.into_pass(Provisioning::Lent));
+            }
             Err(TransferFailed::Bundle(failure)) => {
                 events.say(ProvisionEvent::PayloadNotBundled { failure });
             }
@@ -3086,7 +3110,11 @@ fn setup_pass(
     ]);
     let answer = devpod::capture(runner, &call)?;
     let report = answer.stdout();
+    let mut hostname = StageResult::NotReached;
     for outcome in stage_outcomes(report, &stages) {
+        if outcome.stage == HOSTNAME_STAGE {
+            hostname = outcome.result;
+        }
         report_outcome(workspace, &stages, outcome, events);
     }
     if !answer.succeeded() {
@@ -3095,11 +3123,13 @@ fn setup_pass(
         return Ok(PassReport {
             tools: ProbeResult::Absent,
             claude: None,
+            hostname,
         });
     }
     Ok(PassReport {
         tools: ProbeResult::parse(report),
         claude: ClaudeConfig::parse(report, host_home),
+        hostname,
     })
 }
 
@@ -3115,7 +3145,7 @@ fn remember(
     verdicts: Option<&VerdictCache>,
     workspace: &str,
     claude: Option<ClaudeConfig>,
-    observed: Option<Observed>,
+    observed: Option<&Observed>,
 ) {
     if let (Some(verdicts), Some(observed)) = (verdicts, observed) {
         verdicts.remember_claude(workspace, claude, observed);
@@ -6434,7 +6464,7 @@ fi
             Some(crate::clients::devpod_home::DevpodHome::at(home.path())),
         );
         let observed = verdicts.observe("myws").expect("an anchor");
-        verdicts.remember_claude("myws", Some(ClaudeConfig::Ours), observed);
+        verdicts.remember_claude("myws", Some(ClaudeConfig::Ours), &observed);
         assert_eq!(
             verdicts.remembered_claude("myws"),
             Some(ClaudeConfig::Ours),
@@ -8157,7 +8187,7 @@ fi
         // A pass opened over the same container and never closed, which is the state
         // a killed `dl` leaves.
         let observed = verdicts.observe("myws").expect("an anchor");
-        verdicts.begin_pass("myws", observed);
+        verdicts.begin_pass("myws", &observed);
         assert!(verdicts.pass_never_finished("myws"));
 
         let again = Trips::new(&[0]).reporting(REPORT_PROVISIONED);
@@ -8200,11 +8230,12 @@ fi
     }
 
     #[test]
-    fn an_after_up_pass_travels_even_with_a_trusted_verdict() {
-        // The honest half of the scope. `sudo hostname` is a stage of the pass and
-        // the name lives in the container's UTS namespace, which docker rebuilds
-        // from the container's config on every start — so the pass after an `up`
-        // has work to do that no verdict about the *tools* can excuse it from.
+    fn an_after_up_pass_travels_when_the_last_pass_set_the_hostname() {
+        // `sudo hostname` is a stage of the pass and the name lives in the
+        // container's UTS namespace, which docker rebuilds from the container's
+        // config on every start — so where the last pass could set the name, the
+        // pass after an `up` has work to do that no verdict about the *tools* can
+        // excuse it from. A report with no hostname line reads as set.
         let remembering = Remembering::new();
         let verdicts = remembering.verdicts();
         let first = Trips::new(&[0]).reporting(REPORT_PROVISIONED);
@@ -8217,6 +8248,65 @@ fi
         assert_eq!(after_up.count(), 1);
         let words = shlex::split(&after_up.script(0)).expect("a readable payload");
         assert!(words[2].contains("sudo hostname myws"), "{}", words[2]);
+    }
+
+    #[test]
+    fn an_after_up_pass_is_skipped_when_the_last_pass_could_not_set_the_hostname() {
+        // The saving this anchor exists for. A stop and an `up` keep the container
+        // id, and a container that refused `sudo hostname` refuses it on every
+        // start, so the pass after the `up` has nothing to do.
+        let refused = format!("{STAGE_FAILED_LINE}{REPORT_PROVISIONED}");
+        let remembering = Remembering::new();
+        let verdicts = remembering.verdicts();
+        let first = Trips::new(&[0]).reporting(&refused);
+        assert_eq!(
+            pass_of(&first, PassOccasion::AfterUp, &verdicts),
+            Ok(Provisioning::AlreadyProvisioned)
+        );
+
+        remembering.brought_up_again();
+
+        let after_up = Trips::new(&[0]).reporting(&refused);
+        assert_eq!(
+            pass_of(&after_up, PassOccasion::AfterUp, &verdicts),
+            Ok(Provisioning::CachedProvisioned)
+        );
+        assert_eq!(after_up.count(), 0, "nothing was asked of devpod");
+    }
+
+    #[test]
+    fn a_lend_is_remembered_so_the_next_up_does_not_lend_again() {
+        // A lent container reads lendable again wherever the login PATH puts a
+        // `claude` shim ahead of `~/.local/bin`, so before this every `up` lent the
+        // same binaries again: two trips and ~7s. The transfer's own gate already
+        // ran what it lent, which is the evidence the verdict needs.
+        let scratch = scratch();
+        let host = a_host_that_can_lend(scratch.path());
+        let refused = format!("{STAGE_FAILED_LINE}{REPORT_LENDABLE}");
+        let remembering = Remembering::new();
+        let verdicts = remembering.verdicts();
+        let lend = |runner: &Trips| {
+            provision_tools(
+                runner,
+                "myws",
+                PassOccasion::AfterUp,
+                Switches::INSTALLING,
+                None,
+                Some(&host),
+                Some(&verdicts),
+                &mut Vec::new(),
+            )
+            .map(|pass| pass.provisioning)
+        };
+        let first = Trips::new(&[0, 0]).reporting(&refused);
+        assert_eq!(lend(&first), Ok(Provisioning::Lent));
+        assert_eq!(first.count(), 2);
+
+        remembering.brought_up_again();
+
+        let again = Trips::new(&[0, 0]).reporting(&refused);
+        assert_eq!(lend(&again), Ok(Provisioning::CachedProvisioned));
+        assert_eq!(again.count(), 0);
     }
 
     #[test]
@@ -8315,12 +8405,13 @@ fi
     }
 
     #[test]
-    fn only_a_provisioned_pass_writes_the_verdict() {
-        // A lend, an install and a kept shim are all passes on which the container
-        // just changed, and `ShimKept` is a documented residual that re-attempts a
+    fn only_a_provisioned_or_lent_pass_writes_the_verdict() {
+        // An install and a kept shim are passes on which the container just
+        // changed, and `ShimKept` is a documented residual that re-attempts a
         // failing transfer on every `up` — a marker would silently turn that into
-        // never attempting again. Each of them is followed by a later pass that
-        // probes provisioned, and *that* pass is what records.
+        // never attempting again. An install is followed by a later pass that
+        // probes provisioned, and *that* pass is what records. A lend records
+        // itself: see `a_lend_is_remembered_so_the_next_up_does_not_lend_again`.
         for (report, exits, expected) in [
             (REPORT_LENDABLE, &[0, 0][..], Provisioning::ShimKept),
             (REPORT_ABSENT, &[0, 0][..], Provisioning::Installed),
