@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`dl <ws> dotfiles` asks devpod for the workspace's state once, not twice** (#419). When
+  the spec names a workspace devpod knows (a bare name, or a warm `owner/repo@branch`), the
+  verb reads the state the spec resolution's `devpod status` already returned instead of
+  asking again. That is one `devpod status` round trip, about 0.57s, off this verb on those
+  shapes. A path or URL spec still asks once, because nothing asked before it. A cold
+  `owner/repo@branch` and a workspace whose state devpod could not read still ask twice,
+  as before.
+
 ## [0.59.4] - 2026-10-05
 
 ### Fixed

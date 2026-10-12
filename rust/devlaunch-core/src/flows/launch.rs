@@ -5192,14 +5192,35 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
     /// Kept as it is: this is the one caller shape [`Naming::Anonymous`] exists
     /// for, and changing it here would be a behaviour change wearing a port's
     /// clothes.
+    ///
+    /// # One liveness observation, not two
+    ///
+    /// A [`Placement::Known`] holds the state from the `devpod status` the spec
+    /// resolution just made, so this reads it rather than asking devpod again
+    /// (devlaunch#419): ~0.57s off `dl <ws> dotfiles` and `dl owner/repo@branch
+    /// dotfiles` on a workspace devpod knows. The other two arms still ask, each
+    /// for its own reason:
+    ///
+    /// - [`Placement::Creating`] is two states in one arm until devlaunch#418
+    ///   splits it. From a path spec nothing has asked devpod anything, so this
+    ///   call is the launch's *only* observation; reading the arm there would
+    ///   `up` a container that is already running. From the cold arm devpod has
+    ///   already denied the id, and the second denial is bought and thrown away,
+    ///   but the arm cannot tell the two apart.
+    /// - [`Placement::Listed`] is the arm whose first `status` was unreadable.
+    ///   Asking again keeps what that path did before: a status that reads this
+    ///   time and says running still skips the `up`.
     fn run_dotfiles(&mut self, placement: &Placement) -> Result<Launched, LaunchAborted> {
-        let running = lifecycle::workspace_state(
-            self.context.runner(),
-            placement.workspace_id(),
-            Patience::AsLongAsItTakes,
-        )
-        .as_ref()
-        .is_ok_and(ContainerState::is_running);
+        let running = match placement {
+            Placement::Known { state, .. } => state.is_running(),
+            Placement::Listed { .. } | Placement::Creating { .. } => lifecycle::workspace_state(
+                self.context.runner(),
+                placement.workspace_id(),
+                Patience::AsLongAsItTakes,
+            )
+            .as_ref()
+            .is_ok_and(ContainerState::is_running),
+        };
         if !running {
             self.notices.say(LaunchNotice::StartingForDotfiles {
                 workspace_id: placement.workspace_id().to_owned(),
@@ -11970,6 +11991,92 @@ mod tests {
                 .map(String::as_str),
             Some("not-a-real-warm-token")
         );
+    }
+
+    /// `dl <ws> dotfiles` over one scene: the `devpod` heads it ran, and what it
+    /// said.
+    fn dotfiles_by_name(scene: &Scene, name: &str) -> (Vec<Vec<String>>, Vec<LaunchNotice>) {
+        let updater = SelfInvocation::new("dl");
+        let completion = scene.cache_dir().join("completion.json");
+        let mut parts = launching(&scene.runner, &updater, &completion);
+        let mut cold = NeverCold;
+        let mut launch = Launch::new(
+            &mut parts.context,
+            &mut parts.refresh,
+            &mut cold,
+            &parts.provision,
+            &scene.host,
+            &mut parts.chatter,
+            &mut parts.said,
+        );
+        let launched = launch.run(name, &LaunchVerb::Dotfiles, None);
+        assert_eq!(
+            launched,
+            Ok(Launched::Session(Session::RemoteExit { status: 0 }))
+        );
+        drop(launch);
+        (scene.devpod_heads(), parts.said)
+    }
+
+    fn status_calls(heads: &[Vec<String>]) -> usize {
+        heads.iter().filter(|head| head[0] == "status").count()
+    }
+
+    #[test]
+    fn a_known_dotfiles_reads_the_placement_and_asks_devpod_once() {
+        // devlaunch#419. The spec resolution's `status` already said running, and
+        // `Placement::Known` carries that answer to the verb; asking again bought
+        // the same answer for ~0.57s.
+        let scene = Scene::new().with_running("myws");
+
+        let (heads, said) = dotfiles_by_name(&scene, "myws");
+
+        assert_eq!(status_calls(&heads), 1, "{heads:?}");
+        assert!(
+            !heads.iter().any(|head| head[0] == "up"),
+            "a running workspace was brought up: {heads:?}"
+        );
+        assert!(
+            !said
+                .iter()
+                .any(|notice| matches!(notice, LaunchNotice::StartingForDotfiles { .. })),
+            "{said:?}"
+        );
+    }
+
+    #[test]
+    fn a_known_stopped_dotfiles_ups_on_the_placement_s_word() {
+        // The same single observation, coming back not-running: the verb starts
+        // the workspace and says so, with no second `status` in front of the `up`.
+        let scene = Scene::new().with_stopped("myws");
+
+        let (heads, said) = dotfiles_by_name(&scene, "myws");
+
+        assert_eq!(status_calls(&heads), 1, "{heads:?}");
+        assert!(heads.iter().any(|head| head[0] == "up"), "{heads:?}");
+        assert!(
+            said.iter()
+                .any(|notice| matches!(notice, LaunchNotice::StartingForDotfiles { .. })),
+            "{said:?}"
+        );
+    }
+
+    #[test]
+    fn a_listed_dotfiles_still_asks_devpod_itself() {
+        // `Placement::Listed` is the arm whose first `status` was unreadable, so
+        // it carries no state to reuse. The verb's own ask is what it always was
+        // there: here it is unreadable too, and the verb brings the workspace up
+        // rather than refreshing a container nobody has seen running.
+        let scene = Scene::new().with_running("myws");
+        scene.runner.script(
+            ["devpod", "status"],
+            devlaunch_test_support::Response::exited(1),
+        );
+
+        let (heads, _said) = dotfiles_by_name(&scene, "myws");
+
+        assert_eq!(status_calls(&heads), 2, "{heads:?}");
+        assert!(heads.iter().any(|head| head[0] == "up"), "{heads:?}");
     }
 
     #[test]

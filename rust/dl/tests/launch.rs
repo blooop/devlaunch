@@ -1169,11 +1169,10 @@ fn dotfiles_refreshes_a_running_workspace_without_bringing_anything_up() {
     assert_eq!(
         calls,
         [
-            // Two state probes and not one, which is Python's shape: the spec
-            // resolution asks whether devpod knows this workspace, and the verb asks
-            // again whether it is *running*. The second is the one that decides
-            // whether anything is brought up.
-            format!("devpod status {MAIN} --output json"),
+            // One state probe, the spec resolution's. It is the one that decides
+            // whether anything is brought up: `run_dotfiles` reads the state the
+            // `Placement::Known` carries rather than asking again (devlaunch#419).
+            // Python asked twice; the second answer was the first one re-bought.
             format!("devpod status {MAIN} --output json"),
             // Then the context options the refresh's fallback clone URL comes from,
             // and one session carrying the refresh.
@@ -1237,18 +1236,18 @@ fn dotfiles_starts_a_stopped_workspace_first_and_says_so() {
 // can only move together. That is what a future cache, or a future substitution
 // of `Placement::is_running()` for a live ask, has to trip over.
 //
-// **"At least one", not "exactly one", and the difference is not slack.** One
-// shape asks twice today —
+// **"At least one", not "exactly one", and the difference is not slack.** The
+// named-spec dotfiles shape asked twice until devlaunch#419 —
 // `dotfiles_refreshes_a_running_workspace_without_bringing_anything_up`, some 60
-// lines up — which attaches with no `up` after two observations (the spec
-// resolution's and `run_dotfiles`'s own) and says so in its own comment.
-// Exactly-one is the state devlaunch#419 leaves behind when it drops that second
-// ask, not the state here now, and the cold row below
-// (`a_cold_triple_dotfiles_denies_the_same_id_twice`) pre-announces where its own
-// 2 becomes 1. Until then the named-spec dotfiles shape is the one exception, and
-// naming it is the point rather than an aside: devlaunch#418's type split is
-// going to be argued from this paragraph, and #408 is what a decision written on
-// half of a doc comment's meaning costs.
+// lines up — and now asks once, because `run_dotfiles` reads the state a
+// `Placement::Known` carries. The cold row below
+// (`a_cold_triple_dotfiles_denies_the_same_id_twice`) still asks twice: its
+// placement is a `Creating` built after devpod denied the id, and until
+// devlaunch#418 splits that arm it cannot be told from the path spec's
+// `Creating`, where nothing was asked and the one call is load-bearing. That row
+// is the remaining exception, and naming it is the point rather than an aside:
+// #418's type split is going to be argued from this paragraph, and #408 is what a
+// decision written on half of a doc comment's meaning costs.
 //
 // These four rows are the ones whose absence hid #408's defect. Every pin earlier
 // in this file that *counts* status calls addresses the workspace by **name**;
