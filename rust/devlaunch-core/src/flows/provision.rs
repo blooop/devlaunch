@@ -27,7 +27,8 @@
 //!    ticket of its own.
 //! 2. **A quoting layer.** The scripts are interpolated into `devpod ssh
 //!    --command`, and one of them is interpolated into another (the zellij stage
-//!    is a `bash -c <script>` inside the setup pass). [`quote`] is CPython's
+//!    runs as `( eval <script> )` in a subshell of the setup pass, see
+//!    [`in_subshell`]). [`quote`] is CPython's
 //!    `shlex.quote`, reproduced rather than delegated — see its own note.
 //! 3. **A three-trip flow.** [`provision_tools`] probes, lends and installs, and
 //!    each trip earns the next: a provisioned workspace pays one, a lendable or
@@ -1887,9 +1888,17 @@ impl Stage {
 /// A subshell and not a nested `bash -c`, because a new bash reads `$BASH_ENV`
 /// when it starts and the subshell does not. An image may point that variable at
 /// a whole ROS bashrc: kinisi_ros's does, and inside a `devpod ssh` session one
-/// read costs about 1.1s, so five stages that each started a bash cost a cold
-/// launch about 4.4s for nothing. The subshell inherits the environment the pass
-/// already loaded, which is the environment the stages were reading anyway.
+/// read costs about 1.1s. A default cold launch there runs four stages (session
+/// name, title, onboarding and trust; zellij and codex are off by default), and
+/// a bash for each made the setup trip about 4.2s slower, measured over six cold
+/// launches. The subshell inherits the environment the pass already loaded,
+/// which is the environment the stages were reading anyway.
+///
+/// The trade: a function or alias that the login profile defines now reaches the
+/// stages, where a nested bash did not get profile functions. A profile `zellij()`
+/// wrapper, for example, makes `command -v zellij` succeed, so the stage skips
+/// its install. That is accepted as unlikely, because a profile wrapper with no
+/// binary behind it is rare.
 ///
 /// `eval` of one quoted word, rather than the script pasted between parentheses,
 /// keeps what the nested bash gave each stage: the script is parsed when the stage
@@ -6785,9 +6794,9 @@ fi
     #[test]
     fn the_pass_reads_the_images_bash_env_once_however_many_stages_it_runs() {
         // A non-interactive bash sources `$BASH_ENV` on startup, and an image may
-        // point it at a whole ROS bashrc: kinisi_ros's does, at about a second a
+        // point it at a whole ROS bashrc: kinisi_ros's does, at about 1.1s a
         // read inside a `devpod ssh` session. A stage that started its own bash
-        // paid that again, four or five times a cold launch. The stages run in
+        // paid that again, four times on a default cold launch. The stages run in
         // subshells of the pass, so the one read is the pass's own.
         let scratch = scratch();
         let home = a_home(scratch.path());

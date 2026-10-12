@@ -132,8 +132,8 @@ Measured on 2026-10-12, on one host with the local docker provider and devpod
 0.26.3, over six cold launches of `kinisi-robotics/kinisi_ros` on six fresh
 branches. With a `bash -c` per stage the trip took 10.90s to 11.14s. With
 subshells it took 6.66s to 6.90s, so about 4.2s comes off every cold launch of
-that repo. An image with no `$BASH_ENV` saves a few milliseconds, because there
-was nothing to read. A warm launch makes no setup trip, so it is not affected.
+that repo. The saving on an image with no `$BASH_ENV` is not measured. It should
+be the cost of starting a bash per stage, which is small. A warm launch makes no setup trip, so it is not affected.
 
 `the_pass_reads_the_images_bash_env_once_however_many_stages_it_runs` and
 `dl/tests/setup_pass_shells.rs` pin the count at one read per pass.
