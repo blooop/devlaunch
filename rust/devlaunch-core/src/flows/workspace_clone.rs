@@ -616,7 +616,9 @@ impl<'r> WorkspaceCloneManager<'r> {
     ///   tip.** One targeted fetch of the requested ref, every time, no interval
     ///   gate.
     /// - **A branch that exists nowhere yet** is created from the default branch's
-    ///   freshly fetched tip — one more targeted fetch, and no more than one.
+    ///   freshly fetched tip — one more targeted fetch, and no more than one. It
+    ///   runs beside the requested ref's rather than after it, so it costs no
+    ///   extra round trip; on every other arm its answer is dropped unannounced.
     /// - **Offline, or any other fetch failure:** report it and carry on with
     ///   whatever the cache holds. The launch of an already-cached branch still
     ///   works. When there is nothing to launch from at all, the branch creation at
@@ -643,8 +645,21 @@ impl<'r> WorkspaceCloneManager<'r> {
             .map_err(EnsureBranchError::WrongRepoLock)?;
         let bare = self.repo_manager.bare_dir(owner, repo);
 
-        let outcome = self.repo_manager.fetch_ref(owner, repo, branch, notices);
+        // The default branch is named first so its fetch can run beside the
+        // requested ref's rather than after it: a new branch would otherwise pay
+        // two round trips one after the other. What that fetch answered is used
+        // only on the arm below that cuts a new branch, exactly where it used to
+        // be fetched; every other arm drops it unannounced.
         let default = self.resolve_default_branch(storage, owner, repo, notices);
+        let (outcome, base_fetched) = match &default {
+            DefaultBranch::Named(name) => self
+                .repo_manager
+                .fetch_ref_beside_base(owner, repo, branch, name, notices),
+            DefaultBranch::Unknown { .. } => (
+                self.repo_manager.fetch_ref(owner, repo, branch, notices),
+                None,
+            ),
+        };
 
         let base = match outcome {
             Ok(FetchOutcome::Updated) => BranchBase::Fresh,
@@ -654,7 +669,9 @@ impl<'r> WorkspaceCloneManager<'r> {
                 // current. Whatever this second fetch answers, the branch creation
                 // below proceeds — there is no third ref to fall back to, and the
                 // cache's own default branch is the best remaining start point.
-                DefaultBranch::Named(name) => self.fetch_base_branch(owner, repo, name, notices),
+                DefaultBranch::Named(name) => {
+                    self.fetch_base_branch(owner, repo, name, base_fetched, notices)
+                }
                 // No default branch could even be named, so nothing was fetched
                 // and the creation below starts from the bare cache's own HEAD — a
                 // ref of unbounded age, and the report says so.
@@ -747,13 +764,27 @@ impl<'r> WorkspaceCloneManager<'r> {
     /// Split out of [`WorkspaceCloneManager::ensure_branch`] so the "which ref is
     /// the base" question is answered in one place per outcome rather than nested
     /// three deep inside the requested ref's own dispatch.
+    ///
+    /// `fetched` is the base's outcome when its fetch already ran beside the
+    /// requested ref's ([`RepositoryManager::fetch_ref_beside_base`]). It is
+    /// announced here, where it would have run, and read exactly as a fetch run
+    /// now would be. `None` fetches it now.
     fn fetch_base_branch(
         &self,
         owner: &str,
         repo: &str,
         default_branch: &str,
+        fetched: Option<FetchOutcome>,
         notices: &mut dyn Notices<CacheNotice>,
     ) -> BranchBase {
+        if let Some(outcome) = fetched {
+            notices.say(CacheNotice::FetchingRef {
+                owner: owner.to_owned(),
+                repo: repo.to_owned(),
+                branch: default_branch.to_owned(),
+            });
+            return base_from_fetch(owner, repo, default_branch, outcome, notices);
+        }
         // Unlike the requested branch, this name is read back from metadata.json
         // and carries no proof. Its refusal is reported as a stale base rather
         // than propagated, so a hand-edited record cannot change what this method
@@ -773,36 +804,7 @@ impl<'r> WorkspaceCloneManager<'r> {
                 };
             }
         };
-        match outcome {
-            FetchOutcome::Updated => BranchBase::Fresh,
-            // The remote has no default branch under that name either. Nothing
-            // more to try — there is no third ref — and the branch creation still
-            // has the cache's own default branch to start from. Unverifiable is
-            // stale here: nothing fetched backs it.
-            FetchOutcome::RefMissingOnRemote => BranchBase::Stale {
-                base: default_branch.to_owned(),
-                reason: NotRefreshed::NoBranchOnRemote {
-                    branch: default_branch.to_owned(),
-                },
-            },
-            // Noticed here as well as reported, because the reason is carried
-            // precisely so it can be printed: the new branch is about to be cut
-            // from a possibly stale cache.
-            FetchOutcome::Failed { reason } => {
-                notices.say(CacheNotice::RefNotFetched {
-                    owner: owner.to_owned(),
-                    repo: repo.to_owned(),
-                    branch: default_branch.to_owned(),
-                    reason: NotRefreshed::FetchFailed {
-                        reason: reason.clone(),
-                    },
-                });
-                BranchBase::Stale {
-                    base: default_branch.to_owned(),
-                    reason: NotRefreshed::FetchFailed { reason },
-                }
-            }
-        }
+        base_from_fetch(owner, repo, default_branch, outcome, notices)
     }
 
     /// Make the workspace clone and record it; the caller holds `lock`.
@@ -1402,6 +1404,50 @@ fn say_branch(
     }
 }
 
+/// What the default branch's fetch means for a new branch about to be cut
+/// from it.
+///
+/// One reading for both routes to that fetch: run after the requested ref came
+/// back missing, or already run beside it.
+fn base_from_fetch(
+    owner: &str,
+    repo: &str,
+    default_branch: &str,
+    outcome: FetchOutcome,
+    notices: &mut dyn Notices<CacheNotice>,
+) -> BranchBase {
+    match outcome {
+        FetchOutcome::Updated => BranchBase::Fresh,
+        // The remote has no default branch under that name either. Nothing
+        // more to try — there is no third ref — and the branch creation still
+        // has the cache's own default branch to start from. Unverifiable is
+        // stale here: nothing fetched backs it.
+        FetchOutcome::RefMissingOnRemote => BranchBase::Stale {
+            base: default_branch.to_owned(),
+            reason: NotRefreshed::NoBranchOnRemote {
+                branch: default_branch.to_owned(),
+            },
+        },
+        // Noticed here as well as reported, because the reason is carried
+        // precisely so it can be printed: the new branch is about to be cut
+        // from a possibly stale cache.
+        FetchOutcome::Failed { reason } => {
+            notices.say(CacheNotice::RefNotFetched {
+                owner: owner.to_owned(),
+                repo: repo.to_owned(),
+                branch: default_branch.to_owned(),
+                reason: NotRefreshed::FetchFailed {
+                    reason: reason.clone(),
+                },
+            });
+            BranchBase::Stale {
+                base: default_branch.to_owned(),
+                reason: NotRefreshed::FetchFailed { reason },
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! The Python `test_workspace_clone`, `test_cold_launch_fetches`, the token
@@ -1643,7 +1689,7 @@ mod tests {
         assert_eq!(prepared.base, BranchBase::Fresh);
         let argvs = fake.argvs();
         assert_eq!(
-            as_strs(&argvs),
+            beside_the_base_fetch(as_strs(&argvs), "main"),
             [
                 vec![
                     "git",
@@ -1905,13 +1951,19 @@ mod tests {
             .into_iter()
             .filter(|call| call.args().first().map(String::as_str) == Some("fetch"))
             .collect();
-        assert_eq!(fetches.len(), 1, "one network call for the whole launch");
-        assert_eq!(fetches[0].invocation().cwd.as_deref(), Some(bare.as_path()));
-        assert!(
-            fetches[0].invocation().cwd.as_deref() != Some(ws.as_path()),
-            "fetching into the workspace would leave the cache stale for the next \
-             branch and put the round trip after the clone"
+        assert_eq!(
+            fetches.len(),
+            2,
+            "the requested ref and the default branch beside it, nothing more"
         );
+        for fetch in &fetches {
+            assert_eq!(fetch.invocation().cwd.as_deref(), Some(bare.as_path()));
+            assert!(
+                fetch.invocation().cwd.as_deref() != Some(ws.as_path()),
+                "fetching into the workspace would leave the cache stale for the next \
+                 branch and put the round trip after the clone"
+            );
+        }
     }
 
     #[test]
@@ -2114,6 +2166,22 @@ mod tests {
 
     // ================================================== the branch and base
 
+    /// `argvs` with the default branch's fetch taken out, after checking it ran
+    /// exactly once.
+    ///
+    /// That fetch runs on a thread of its own beside the requested ref's
+    /// ([`RepositoryManager::fetch_ref_beside_base`]), so where it lands in the
+    /// record is up to the scheduler. Every other call is still issued in one
+    /// order, and that order is what a sequence test pins.
+    fn beside_the_base_fetch<'a>(argvs: Vec<Vec<&'a str>>, base: &str) -> Vec<Vec<&'a str>> {
+        let refspec = format!("+refs/heads/{base}:refs/heads/{base}");
+        let fetch = ["git", "fetch", "origin", refspec.as_str()];
+        let (based, rest): (Vec<_>, Vec<_>) =
+            argvs.into_iter().partition(|argv| argv.as_slice() == fetch);
+        assert_eq!(based.len(), 1, "one base fetch, beside the requested ref's");
+        rest
+    }
+
     /// `ensure_branch` under a lock, with the notices it produced.
     fn ensure_branch_with(
         manager: &WorkspaceCloneManager<'_>,
@@ -2160,9 +2228,11 @@ mod tests {
             ],
             "the one fetch announces itself, then the branch decision"
         );
+        // The default branch's fetch ran beside it, and the notices above are
+        // the proof that nothing was based on it: the requested ref was there.
         let argvs = fake.argvs();
         assert_eq!(
-            as_strs(&argvs),
+            beside_the_base_fetch(as_strs(&argvs), "main"),
             [
                 vec![
                     "git",
@@ -2173,10 +2243,9 @@ mod tests {
                 vec!["git", "show-ref", "--verify", "refs/heads/newbranch"],
             ]
         );
-        assert_eq!(
-            fake.calls()[0].invocation().cwd.as_deref(),
-            Some(bare.as_path())
-        );
+        for call in &fake.calls()[..2] {
+            assert_eq!(call.invocation().cwd.as_deref(), Some(bare.as_path()));
+        }
     }
 
     #[test]
@@ -2200,20 +2269,22 @@ mod tests {
         let (base, _) = ensure_branch_with(&manager, &mut cache, "newbranch");
 
         let argvs = fake.argvs();
-        let fetches: Vec<_> = as_strs(&argvs)
+        // Sorted: the two run at once, so the record's order is the scheduler's.
+        let mut fetches: Vec<_> = as_strs(&argvs)
             .into_iter()
             .filter(|argv| argv.contains(&"fetch"))
             .collect();
+        fetches.sort();
         assert_eq!(
             fetches,
             [
+                vec!["git", "fetch", "origin", "+refs/heads/main:refs/heads/main"],
                 vec![
                     "git",
                     "fetch",
                     "origin",
                     "+refs/heads/newbranch:refs/heads/newbranch"
                 ],
-                vec!["git", "fetch", "origin", "+refs/heads/main:refs/heads/main"],
             ]
         );
         // Both fetches answered "no such ref", so nothing this call fetched backs
@@ -2250,6 +2321,105 @@ mod tests {
         let (base, _) = ensure_branch_with(&manager, &mut cache, "newbranch");
 
         assert_eq!(base.expect("ensured"), BranchBase::Fresh);
+    }
+
+    #[test]
+    fn the_default_branch_is_fetched_beside_the_requested_ref_not_after_it() {
+        // The saving, pinned: a new branch's two round trips overlap rather than
+        // queue. Each fetch waits here for the other to start. Run one after the
+        // other, the first would wait out the whole timeout alone and the
+        // assertion below would name it.
+        let mut cache = a_cache();
+        given_cached_repo(&mut cache);
+        let started = Arc::new((Mutex::new(0_usize), std::sync::Condvar::new()));
+        let overlapped = Arc::new(Mutex::new(Vec::new()));
+        let fake = FakeGit::new()
+            .with_script(
+                [
+                    "git",
+                    "fetch",
+                    "origin",
+                    "+refs/heads/newbranch:refs/heads/newbranch",
+                ],
+                Response::failed(
+                    128,
+                    "fatal: couldn't find remote ref refs/heads/newbranch\n",
+                ),
+            )
+            .and_then({
+                let started = Arc::clone(&started);
+                let overlapped = Arc::clone(&overlapped);
+                move |argv| {
+                    if argv.get(1).map(String::as_str) != Some("fetch") {
+                        return;
+                    }
+                    let (count, both) = &*started;
+                    let mut count = count.lock().expect("the count");
+                    *count += 1;
+                    both.notify_all();
+                    let (count, waited) = both
+                        .wait_timeout_while(count, Duration::from_secs(10), |count| *count < 2)
+                        .expect("the count");
+                    overlapped
+                        .lock()
+                        .expect("the record")
+                        .push(!waited.timed_out() && *count >= 2);
+                }
+            });
+        let manager = a_clone_manager(&cache, Git::new(&fake), GitLfs::NotInstalled);
+
+        let (base, notices) = ensure_branch_with(&manager, &mut cache, "newbranch");
+
+        assert_eq!(
+            *overlapped.lock().expect("the record"),
+            [true, true],
+            "both fetches were in flight at once"
+        );
+        assert_eq!(base.expect("ensured"), BranchBase::Fresh);
+        assert_eq!(
+            notices[..2],
+            [
+                CacheNotice::FetchingRef {
+                    owner: "owner".to_owned(),
+                    repo: "repo".to_owned(),
+                    branch: "newbranch".to_owned(),
+                },
+                CacheNotice::FetchingRef {
+                    owner: "owner".to_owned(),
+                    repo: "repo".to_owned(),
+                    branch: "main".to_owned(),
+                },
+            ],
+            "announced in the order they were announced in when they queued"
+        );
+    }
+
+    #[test]
+    fn the_default_branch_requested_by_name_is_fetched_once() {
+        // Nothing to run beside it: the base fetch and the requested one would be
+        // the same refspec, racing to write the same ref.
+        let mut cache = a_cache();
+        given_cached_repo(&mut cache);
+        let fake = FakeGit::new();
+        let manager = a_clone_manager(&cache, Git::new(&fake), GitLfs::NotInstalled);
+
+        let (base, _) = ensure_branch_with(&manager, &mut cache, "main");
+
+        assert_eq!(base.expect("ensured"), BranchBase::Fresh);
+        let argvs = fake.argvs();
+        let fetches: Vec<_> = as_strs(&argvs)
+            .into_iter()
+            .filter(|argv| argv.contains(&"fetch"))
+            .collect();
+        assert_eq!(
+            fetches,
+            [vec![
+                "git",
+                "fetch",
+                "origin",
+                "+refs/heads/main:refs/heads/main"
+            ]]
+        );
     }
 
     #[test]
@@ -2327,8 +2497,10 @@ mod tests {
     #[test]
     fn an_unreachable_remote_leaves_the_requested_ref_as_the_stale_base() {
         // Offline still launches, from whatever the cache holds — and deliberately
-        // with no default-branch fetch: nothing was learned about the remote, so
-        // nothing licenses treating this branch as new.
+        // on no default-branch base: nothing was learned about the remote, so
+        // nothing licenses treating this branch as new. The default branch's
+        // fetch did run beside the requested one, and failed the same way; it is
+        // dropped unannounced, which the notices below pin.
         let mut cache = a_cache();
         given_cached_repo(&mut cache);
         let fake = FakeGit::new().with_script(
@@ -2367,7 +2539,8 @@ mod tests {
                 .iter()
                 .filter(|argv| argv.contains(&"fetch"))
                 .count(),
-            1
+            2,
+            "the requested ref, and the default branch beside it"
         );
     }
 
@@ -2666,7 +2839,7 @@ mod tests {
             .filter(|argv| argv.contains(&"fetch"))
             .collect();
         assert_eq!(
-            fetches,
+            beside_the_base_fetch(fetches.clone(), "main"),
             [vec![
                 "git",
                 "fetch",

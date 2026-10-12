@@ -209,7 +209,10 @@ on a repo-wide refresh.
   clone devpod has forgotten): one targeted fetch of that branch, every time.
   Push upstream and immediately `dl` the branch and you get the pushed tip.
 - **A branch that does not exist yet**: created from the default branch's freshly
-  fetched tip.
+  fetched tip. That fetch runs at the same time as the fetch of the requested
+  branch, on a second connection, so a new branch waits for one round trip
+  rather than two. When the requested branch turns out to exist, the default
+  branch's answer is not used and nothing is said about it.
 - **Offline**: a warning, and the launch proceeds from whatever the cache holds.
   It only fails when there is nothing cached to launch from.
 - **Everything else** (other branches, tags, prunes) is refreshed by the

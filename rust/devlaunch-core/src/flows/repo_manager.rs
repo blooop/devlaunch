@@ -1492,9 +1492,10 @@ impl<'r> RepositoryManager<'r> {
     /// keeps the repo-lock→metadata-lock nesting off this path.
     ///
     /// Writes a ref in the shared bare repository, so it must not run
-    /// unserialized. Its one caller,
-    /// [`crate::flows::workspace_clone::WorkspaceCloneManager::ensure_branch`],
-    /// holds a [`RepoLock`] for this repository, which is what says so.
+    /// unserialized. Its callers,
+    /// [`crate::flows::workspace_clone::WorkspaceCloneManager::ensure_branch`]
+    /// and [`RepositoryManager::fetch_ref_beside_base`] under it, hold a
+    /// [`RepoLock`] for this repository, which is what says so.
     pub(crate) fn fetch_ref(
         &self,
         owner: &str,
@@ -1524,21 +1525,60 @@ impl<'r> RepositoryManager<'r> {
             repo: repo.to_owned(),
             branch: branch.to_owned(),
         });
-        let fetched = {
-            let _span = timing::span("git fetch");
-            self.git.fetch_ref(&bare, branch)
-        };
-        Ok(match fetched.refusal() {
-            None => FetchOutcome::Updated,
-            // git reached the remote and was told the ref is not there: the one
-            // case where a non-zero exit is an *answer*. Which case that is, the
-            // client says — it is the module that reads git's words.
-            Some(refused) => match refused.how() {
-                Failure::RefMissingOnRemote => FetchOutcome::RefMissingOnRemote,
-                _ => FetchOutcome::Failed {
-                    reason: refused.reason().to_owned(),
-                },
-            },
+        Ok(fetch_one_ref(&self.git, &bare, branch))
+    }
+
+    /// [`RepositoryManager::fetch_ref`] for `branch`, with `base` fetched beside
+    /// it on a second connection, at the same time.
+    ///
+    /// The launch of a branch the remote has not got pays two fetches, and before
+    /// this it paid them one after the other: the requested ref, about 1.1s to be
+    /// told it is missing, then the default branch to cut it from, about 1.1s
+    /// more. Both are mostly round-trip latency, so running them together costs
+    /// the longer of the two instead of the sum. Only the *time* moves: the base
+    /// is the same exact single-ref fetch of the same remote branch, and the new
+    /// branch is cut from the tip it returns, just as when it ran second.
+    ///
+    /// The base's outcome is handed back rather than acted on, and announced by
+    /// nobody here: whether it means anything is the caller's to decide from the
+    /// requested ref's outcome. When the requested ref was there, or the remote
+    /// could not be asked, the caller drops it and says nothing, so the notices
+    /// read as they did when no base fetch ran. The bare cache's default branch
+    /// moving to the remote's tip in passing is what the detached sweep does to
+    /// every head anyway.
+    ///
+    /// `None` for the base when nothing ran beside: `base` is the requested ref
+    /// itself, either name is unsafe, or there is no bare cache to fetch into.
+    /// The caller then fetches the base itself if it needs one, as before.
+    ///
+    /// Both fetches write refs in the shared bare repository and run under the
+    /// caller's [`RepoLock`], which is held until both are done: the scope joins
+    /// the base's thread before this returns. They write different refs, and
+    /// nothing reads the `FETCH_HEAD` both leave behind.
+    pub(crate) fn fetch_ref_beside_base(
+        &self,
+        owner: &str,
+        repo: &str,
+        branch: &str,
+        base: &str,
+        notices: &mut dyn Notices<CacheNotice>,
+    ) -> (Result<FetchOutcome, UnsafeName>, Option<FetchOutcome>) {
+        let bare = self.bare_dir(owner, repo);
+        let speculate = base != branch
+            && validate_ref_name(branch, NamePart::Ref).is_ok()
+            && validate_ref_name(base, NamePart::Ref).is_ok()
+            && bare.exists();
+        if !speculate {
+            return (self.fetch_ref(owner, repo, branch, notices), None);
+        }
+        let git = &self.git;
+        std::thread::scope(|scope| {
+            let beside = scope.spawn(|| fetch_one_ref(git, &bare, base));
+            let requested = self.fetch_ref(owner, repo, branch, notices);
+            let based = beside
+                .join()
+                .unwrap_or_else(|panicked| std::panic::resume_unwind(panicked));
+            (requested, Some(based))
         })
     }
 
@@ -1780,6 +1820,32 @@ fn seconds_since(recorded: &Timestamp) -> Option<i64> {
 // the temp cache and the real-git repository builders are wanted by
 // `flows::workspace_clone`'s and `flows::migration`'s tests too, and three private
 // copies of them would be three places for the wiring to drift.
+
+/// One `git fetch` of one branch into `bare`, read as a [`FetchOutcome`].
+///
+/// A free function over the client rather than a method, so the base fetch in
+/// [`RepositoryManager::fetch_ref_beside_base`] can run it on a thread of its
+/// own: the client is `Sync`, the manager is not. The callers check the name
+/// before it gets here.
+fn fetch_one_ref(git: &Git<'_>, bare: &Path, branch: &str) -> FetchOutcome {
+    let fetched = {
+        let _span = timing::span("git fetch");
+        git.fetch_ref(bare, branch)
+    };
+    match fetched.refusal() {
+        None => FetchOutcome::Updated,
+        // git reached the remote and was told the ref is not there: the one
+        // case where a non-zero exit is an *answer*. Which case that is, the
+        // client says — it is the module that reads git's words.
+        Some(refused) => match refused.how() {
+            Failure::RefMissingOnRemote => FetchOutcome::RefMissingOnRemote,
+            _ => FetchOutcome::Failed {
+                reason: refused.reason().to_owned(),
+            },
+        },
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     //! What the bare-clone cache does, at two seams.

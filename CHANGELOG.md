@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Creating a workspace for a new branch waits for one fetch, not two.** A branch the
+  remote has not got was asked for, refused, and only then was the default branch fetched
+  to cut it from, about 1.1s each, one after the other. The default branch is now fetched
+  beside the requested one, at the same time, under the same repo lock. The new branch
+  starts from the same tip as before. A launch of a branch the remote has uses its own
+  fetch as before and drops the default branch's answer unannounced.
+
 ## [0.59.4] - 2026-10-05
 
 ### Fixed
