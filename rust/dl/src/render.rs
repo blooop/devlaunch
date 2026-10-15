@@ -3414,6 +3414,22 @@ pub(crate) fn launch_notice(notice: &LaunchNotice) -> Option<String> {
         LaunchNotice::AgentSessionRestarted { pane_id } => {
             format!("Started the agent in pane {pane_id} again.")
         }
+        LaunchNotice::DerivedImageRemoved {
+            workspace_id,
+            image,
+        } => format!(
+            "{workspace_id} runs an older image. Removed the tag {image} that devpod built it \
+             under, so the recreate builds the image again from the newer one."
+        ),
+        LaunchNotice::DerivedImageKept {
+            workspace_id,
+            image,
+            why,
+        } => derived_image_kept(workspace_id, image, why),
+        LaunchNotice::AgentSessionLineNotKept { pane_id } => format!(
+            "Started the agent in pane {pane_id} again, and herdr did not keep the line that \
+             starts it. The next recreate ends it."
+        ),
         LaunchNotice::AgentSessionNotRestarted { pane_id, line } => format!(
             "Could not start the agent in pane {pane_id} again. Run this in that pane: {line}"
         ),
@@ -3663,6 +3679,16 @@ pub(crate) fn is_binary_missing(aborted: &LaunchAborted) -> bool {
 /// `None` is a refusal with nothing to say: `devpod up` and `devpod stop` write
 /// their own diagnostics to this process's stderr — the calls inherit the streams —
 /// so dl has nothing to add but the exit code.
+/// devpod's tag for a stale workspace's image stayed, so a recreate keeps the
+/// older image.
+fn derived_image_kept(workspace_id: &str, image: &str, why: &str) -> String {
+    format!(
+        "{workspace_id} runs an older image, and dl could not remove the tag {image} that \
+         devpod built it under ({why}). A recreate builds the container from the older image \
+         again. Remove the tag with 'docker image rm --force {image}', then recreate."
+    )
+}
+
 pub(crate) fn launch_refusal(refused: &LaunchRefusal) -> Option<String> {
     match refused {
         LaunchRefusal::UnsafeSpec(name) => Some(unsafe_name(name)),
@@ -3679,6 +3705,14 @@ pub(crate) fn launch_refusal(refused: &LaunchRefusal) -> Option<String> {
             workspace_id,
             &format!("{owner}/{repo}@{branch}"),
             &format!("{recorded_owner}/{recorded_repo}@{recorded_branch}"),
+        )),
+        LaunchRefusal::DerivedImageKept {
+            workspace_id,
+            image,
+            why,
+        } => Some(format!(
+            "{} The refresh does not recreate it.",
+            derived_image_kept(workspace_id, image, why)
         )),
         LaunchRefusal::BranchNotNamed { owner, repo, error } => Some(format!(
             "Repository '{owner}/{repo}': {}",

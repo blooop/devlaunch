@@ -1882,6 +1882,10 @@ pub devlaunch_core::flows::launch::LaunchRefusal::BranchNotNamed
 pub devlaunch_core::flows::launch::LaunchRefusal::BranchNotNamed::error: devlaunch_core::flows::launch::BranchNotNamed
 pub devlaunch_core::flows::launch::LaunchRefusal::BranchNotNamed::owner: alloc::string::String
 pub devlaunch_core::flows::launch::LaunchRefusal::BranchNotNamed::repo: alloc::string::String
+pub devlaunch_core::flows::launch::LaunchRefusal::DerivedImageKept
+pub devlaunch_core::flows::launch::LaunchRefusal::DerivedImageKept::image: alloc::string::String
+pub devlaunch_core::flows::launch::LaunchRefusal::DerivedImageKept::why: alloc::string::String
+pub devlaunch_core::flows::launch::LaunchRefusal::DerivedImageKept::workspace_id: alloc::string::String
 pub devlaunch_core::flows::launch::LaunchRefusal::IdCollision
 pub devlaunch_core::flows::launch::LaunchRefusal::IdCollision::branch: alloc::string::String
 pub devlaunch_core::flows::launch::LaunchRefusal::IdCollision::owner: alloc::string::String
@@ -3334,6 +3338,7 @@ pub mod devlaunch_core::flows::stale_images
 pub struct devlaunch_core::flows::stale_images::StaleImage
 impl devlaunch_core::flows::stale_images::StaleImage
 pub fn devlaunch_core::flows::stale_images::StaleImage::container(&self) -> &str
+pub fn devlaunch_core::flows::stale_images::StaleImage::derived_image(&self) -> core::option::Option<&str>
 pub fn devlaunch_core::flows::stale_images::StaleImage::reference(&self) -> &str
 impl core::clone::Clone for devlaunch_core::flows::stale_images::StaleImage
 pub fn devlaunch_core::flows::stale_images::StaleImage::clone(&self) -> devlaunch_core::flows::stale_images::StaleImage

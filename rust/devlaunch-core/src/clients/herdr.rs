@@ -2028,6 +2028,26 @@ impl ResumeReport {
         })
     }
 
+    /// The report for a line that is already known, and the pane it belongs to.
+    ///
+    /// For the agent a recreate starts again: the `dl` that line runs is given no
+    /// line of its own to report, so the recreate reports the one it typed.
+    pub(crate) fn for_pane(
+        binary: &str,
+        pane_id: &str,
+        session_file: &Path,
+        agent: &'static str,
+        argv: Vec<String>,
+    ) -> Self {
+        Self {
+            binary: binary.to_owned(),
+            pane_id: pane_id.to_owned(),
+            session_file: session_file.to_owned(),
+            agent,
+            argv,
+        }
+    }
+
     pub(crate) fn binary(&self) -> &str {
         &self.binary
     }

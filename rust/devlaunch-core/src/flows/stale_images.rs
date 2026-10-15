@@ -65,6 +65,10 @@ pub struct StaleImage {
     /// The container devpod recorded for the workspace: the one that runs the
     /// older image.
     container: String,
+    /// The tag devpod built the container's image under, from the reference:
+    /// `<prefix>:devpod-<hash>`. devpod names it by a hash of the config, not of
+    /// the reference, so a recreate reuses it and stays stale until it is gone.
+    derived: Option<String>,
 }
 
 impl StaleImage {
@@ -78,6 +82,11 @@ impl StaleImage {
     /// The id of the container that runs the older image.
     pub fn container(&self) -> &str {
         &self.container
+    }
+
+    /// The tag devpod built the older image under, when it built one.
+    pub fn derived_image(&self) -> Option<&str> {
+        self.derived.as_deref()
     }
 }
 
@@ -113,6 +122,7 @@ impl StaleImages {
                         StaleImage {
                             reference: reference.to_owned(),
                             container: id.to_owned(),
+                            derived: None,
                         },
                     )
                 })
@@ -188,17 +198,28 @@ pub fn stale_images<'w>(
                 None => created.created_from == created.reference && *running_id != current.id,
             };
             stale.then(|| {
+                let derived = (created.created_from != created.reference
+                    && is_devpod_tag(&created.created_from))
+                .then_some(created.created_from);
                 (
                     id.to_owned(),
                     StaleImage {
                         reference: created.reference,
                         container: created.container,
+                        derived,
                     },
                 )
             })
         })
         .collect();
     StaleImages { by_workspace }
+}
+
+/// Whether `reference` is a tag devpod built: `<prefix>:devpod-<hash>`.
+fn is_devpod_tag(reference: &str) -> bool {
+    reference
+        .rsplit_once(':')
+        .is_some_and(|(name, tag)| !name.is_empty() && tag.starts_with("devpod-"))
 }
 
 /// Whether a container created as `created` and running `running` is behind
@@ -691,5 +712,58 @@ mod tests {
 
         assert!(stale_images(&fake, Some(&home), ["ws"]).is_empty());
         assert!(fake.argvs().is_empty());
+    }
+
+    /// A stale derived image whose base moved, as devpod names it on a real host.
+    fn stale_derived(created_from: &str) -> StaleImages {
+        let home = home_with("ws", created_from, Some("ghcr.io/o/img:latest"));
+        let fake = FakeRunner::new();
+        inspect_container(&fake, "sha256:derived");
+        inspect_image(
+            &fake,
+            "sha256:derived",
+            line("sha256:derived", &["l1", "l2", "f1"]),
+        );
+        inspect_image(
+            &fake,
+            "ghcr.io/o/img:latest",
+            line_at("sha256:base2", "2026-10-05T09:00:00Z", &["l1", "l3"]),
+        );
+        stale_images(&fake, Some(&home), ["ws"])
+    }
+
+    /// devpod tags the image it builds by a hash of the config, so a recreate
+    /// reuses it. The tag is named so that the recreate can remove it first.
+    #[test]
+    fn a_stale_derived_image_names_the_tag_devpod_built_it_under() {
+        let stale = stale_derived("proj-8260d:devpod-9409a1b2");
+
+        assert_eq!(
+            stale.of("ws").and_then(StaleImage::derived_image),
+            Some("proj-8260d:devpod-9409a1b2")
+        );
+    }
+
+    /// Only a tag devpod made is named: dl removes what it names.
+    #[test]
+    fn an_image_devpod_did_not_tag_is_not_named_as_derived() {
+        let stale = stale_derived("ghcr.io/o/other:latest");
+
+        assert!(stale.of("ws").is_some());
+        assert_eq!(stale.of("ws").and_then(StaleImage::derived_image), None);
+    }
+
+    #[test]
+    fn a_container_made_from_the_reference_names_no_derived_image() {
+        let home = home_with("ws", "ghcr.io/o/img:latest", Some("ghcr.io/o/img:latest"));
+        let fake = FakeRunner::new();
+        inspect_container(&fake, "sha256:old");
+        inspect_image(&fake, "sha256:old", line("sha256:old", &["l1"]));
+        inspect_image(&fake, "ghcr.io/o/img:latest", line("sha256:new", &["l2"]));
+
+        let stale = stale_images(&fake, Some(&home), ["ws"]);
+
+        assert!(stale.of("ws").is_some());
+        assert_eq!(stale.of("ws").and_then(StaleImage::derived_image), None);
     }
 }

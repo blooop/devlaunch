@@ -70,6 +70,7 @@ use crate::clients::devpod::{
     ProviderRegistration,
 };
 use crate::clients::devpod_home::{CreateRecord, DevpodHome, create_record};
+use crate::clients::docker;
 use crate::clients::gh::{self, GhEvent, StagedToken, Token, TokenLookup};
 use crate::clients::herdr;
 use crate::clients::ssh;
@@ -696,6 +697,20 @@ pub enum LaunchNotice {
     },
     /// The agent's line was typed back into its pane.
     AgentSessionRestarted { pane_id: String },
+    /// The agent was started again, and herdr did not keep its line, so the next
+    /// recreate ends it.
+    AgentSessionLineNotKept { pane_id: String },
+    /// The workspace is stale and its image is one devpod built on the older
+    /// reference, so the recreate removed devpod's tag for it first: devpod
+    /// reuses a tag it finds, and builds again only when it is gone.
+    DerivedImageRemoved { workspace_id: String, image: String },
+    /// The tag could not be removed, so the recreate builds the container from
+    /// the older image again and the workspace stays stale.
+    DerivedImageKept {
+        workspace_id: String,
+        image: String,
+        why: String,
+    },
     /// The agent's line could not be typed into its pane; `line` is what to run
     /// there by hand.
     AgentSessionNotRestarted { pane_id: String, line: String },
@@ -2934,6 +2949,57 @@ pub(crate) fn workspace_ssh(
     session_outcome
 }
 
+/// Report each line typed back into a pane as that pane's line again, and answer
+/// the panes whose line herdr did not keep.
+///
+/// One thread per pane, because each one waits up to seconds for herdr to see
+/// its new agent, and the waits overlap.
+fn report_typed_lines_again(
+    runner: &dyn Runner,
+    manager: &agent_sessions::Manager,
+    held: &agent_sessions::HeldSessions,
+    restarted: &[agent_sessions::Restarted],
+) -> Vec<String> {
+    let typed: Vec<&agent_sessions::HeldSession> = held
+        .sessions
+        .iter()
+        .filter(|session| {
+            restarted.iter().any(|outcome| {
+                matches!(outcome, agent_sessions::Restarted::Typed { pane_id } if *pane_id == session.pane_id)
+            })
+        })
+        .collect();
+    std::thread::scope(|scope| {
+        let reports: Vec<_> = typed
+            .iter()
+            .map(|session| {
+                scope.spawn(move || {
+                    let kept = agent_sessions::report_again(
+                        runner,
+                        manager,
+                        session,
+                        &|| {
+                            SystemTime::now()
+                                .duration_since(SystemTime::UNIX_EPOCH)
+                                .map_or(0, |since| since.as_nanos())
+                        },
+                        &|path| std::fs::read_to_string(path).ok(),
+                        &|pause| {
+                            std::thread::sleep(pause);
+                            true
+                        },
+                    );
+                    (kept == agent_sessions::LineKept::NotKept).then(|| session.pane_id.clone())
+                })
+            })
+            .collect();
+        reports
+            .into_iter()
+            .filter_map(|report| report.join().ok().flatten())
+            .collect()
+    })
+}
+
 /// Run `session` with the resume argv reported beside it, on a thread of its own.
 ///
 /// The report is retried for seconds and the session lasts hours, so the report
@@ -4733,6 +4799,14 @@ pub enum LaunchRefusal {
         recorded_repo: String,
         recorded_branch: String,
     },
+    /// An unattended recreate of a stale workspace whose image devpod built, and
+    /// devpod's tag for it could not be removed. The recreate would build the
+    /// container from the older image again, so it does not run.
+    DerivedImageKept {
+        workspace_id: String,
+        image: String,
+        why: String,
+    },
     /// A bare `owner/repo` whose default branch could not be named.
     BranchNotNamed {
         owner: String,
@@ -5140,6 +5214,14 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
         devcontainer: Option<&DevcontainerPath>,
         placement: &Placement,
     ) -> Result<Launched, LaunchAborted> {
+        if matches!(verb, LaunchVerb::Recreate | LaunchVerb::RecreateUnattended)
+            && let Some(refused) = self.drop_derived_image(
+                placement.workspace_id(),
+                matches!(verb, LaunchVerb::RecreateUnattended),
+            )
+        {
+            return Ok(Launched::Refused(refused));
+        }
         // Only a recreate: `code` keeps the container when nothing changed, and a
         // `reset` drops the volumes, so neither is the case this is for.
         let held = if matches!(verb, LaunchVerb::Recreate | LaunchVerb::RecreateUnattended)
@@ -5173,6 +5255,57 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
         let session = self.attach(placement, verb.command());
         self.forced_refresh();
         session
+    }
+
+    /// Remove the tag devpod built a stale workspace's image under, so that the
+    /// recreate builds it again from the newer reference (devlaunch#673).
+    ///
+    /// devpod names that tag by a hash of the config, not of the reference, and
+    /// reuses a tag it finds: without this a recreate leaves the workspace on the
+    /// older image. Nothing to do for a workspace that is current, or whose
+    /// container was made from the reference itself. When the tag stays, a
+    /// recreate the user asked for goes ahead with a notice; an unattended one is
+    /// refused, because it would recreate the workspace on every run and never
+    /// make it current.
+    fn drop_derived_image(
+        &mut self,
+        workspace_id: &str,
+        unattended: bool,
+    ) -> Option<LaunchRefusal> {
+        let stale = crate::flows::stale_images::stale_images(
+            self.context.runner(),
+            self.host.devpod_home.as_ref(),
+            [workspace_id],
+        );
+        let image = stale.of(workspace_id)?.derived_image()?.to_owned();
+        let why = match docker::untag_image(self.context.runner(), &image) {
+            docker::Answer::Ran { exit, .. } if exit.is_success() => {
+                self.notices.say(LaunchNotice::DerivedImageRemoved {
+                    workspace_id: workspace_id.to_owned(),
+                    image,
+                });
+                return None;
+            }
+            docker::Answer::Ran { stderr, .. } => stderr.trim().to_owned(),
+            docker::Answer::NotInstalled => "docker was not found".to_owned(),
+            docker::Answer::NotStarted(failure) => {
+                format!("docker did not start ({:?})", failure.kind)
+            }
+        };
+        let workspace_id = workspace_id.to_owned();
+        if unattended {
+            return Some(LaunchRefusal::DerivedImageKept {
+                workspace_id,
+                image,
+                why,
+            });
+        }
+        self.notices.say(LaunchNotice::DerivedImageKept {
+            workspace_id,
+            image,
+            why,
+        });
+        None
     }
 
     /// Find the agents a recreate of `workspace_id` is about to end, and say what
@@ -5240,8 +5373,12 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
         }
         let restarted =
             agent_sessions::restart(self.context.runner(), manager, held, &std::thread::sleep);
+        let not_kept = report_typed_lines_again(self.context.runner(), manager, held, &restarted);
         for outcome in restarted {
             self.notices.say(match outcome {
+                agent_sessions::Restarted::Typed { pane_id } if not_kept.contains(&pane_id) => {
+                    LaunchNotice::AgentSessionLineNotKept { pane_id }
+                }
                 agent_sessions::Restarted::Typed { pane_id } => {
                     LaunchNotice::AgentSessionRestarted { pane_id }
                 }
@@ -5823,6 +5960,47 @@ mod tests {
                 .to_string(),
             )
             .expect("a create result");
+            self
+        }
+
+        /// devpod's record for a workspace whose container runs an image devpod
+        /// built, `proj-8260d:devpod-9409`, on an older `ghcr.io/o/img:latest`,
+        /// and docker's answers that make it stale.
+        fn with_stale_derived_image(self, workspace_id: &str) -> Self {
+            let home = self.devpod_home();
+            self.write_record(workspace_id);
+            std::fs::write(
+                home.result("default", workspace_id),
+                serde_json::json!({
+                    "ContainerDetails": {
+                        "ID": "c1",
+                        "Config": { "Image": "proj-8260d:devpod-9409" },
+                    },
+                    "MergedConfig": { "image": "ghcr.io/o/img:latest" },
+                })
+                .to_string(),
+            )
+            .expect("a create result");
+            let format = |kind: &str, format: &str| {
+                ["docker", "inspect", "--type", kind, "--format", format].map(str::to_owned)
+            };
+            self.runner.script(
+                format("container", "{{.Id}} {{.Image}}"),
+                Response::stdout("c1 sha256:derived\n"),
+            );
+            let image = format("image", "{{.Id}} {{.Created}} {{json .RootFS.Layers}}");
+            let mut derived = image.to_vec();
+            derived.push("sha256:derived".to_owned());
+            self.runner.script(
+                derived,
+                Response::stdout("sha256:derived 2026-10-01T00:00:00Z [\"l1\",\"f1\"]\n"),
+            );
+            let mut reference = image.to_vec();
+            reference.push("ghcr.io/o/img:latest".to_owned());
+            self.runner.script(
+                reference,
+                Response::stdout("sha256:base2 2026-10-05T00:00:00Z [\"l2\"]\n"),
+            );
             self
         }
 
@@ -13733,6 +13911,9 @@ mod tests {
             ),
         );
         scene.runner.script([HERDR, "pane", "run"], Response::ok());
+        scene
+            .runner
+            .script([HERDR, "pane", "report-agent-session"], Response::ok());
         scene.runner.script([HERDR], Response::exited(1));
         line.into_iter().map(str::to_owned).collect()
     }
@@ -13791,6 +13972,28 @@ mod tests {
                 crate::shell::join(line.iter().map(String::as_str))
             ]
         );
+        // The typed `dl` reports no line, so the recreate reports the one it
+        // typed: without it the next recreate finds none and ends the agent.
+        let reported = at(&|argv| {
+            argv.get(1..4)
+                == Some(&[
+                    "pane".to_owned(),
+                    "report-agent-session".to_owned(),
+                    "w1:p1".to_owned(),
+                ])
+        });
+        assert!(
+            typed < reported,
+            "the line was reported before it was typed"
+        );
+        assert_eq!(argvs[reported][11..], line[..]);
+        assert!(
+            !parts.said.contains(&LaunchNotice::AgentSessionLineNotKept {
+                pane_id: "w1:p1".to_owned(),
+            }),
+            "{:?}",
+            parts.said
+        );
         assert!(
             parts.said.contains(&LaunchNotice::AgentSessionsHeld {
                 workspace_id: "myws".to_owned(),
@@ -13801,6 +14004,52 @@ mod tests {
         );
         assert!(
             parts.said.contains(&LaunchNotice::AgentSessionRestarted {
+                pane_id: "w1:p1".to_owned(),
+            }),
+            "{:?}",
+            parts.said
+        );
+    }
+
+    /// herdr refuses the report of the typed line, so the next recreate would
+    /// find no line for the pane. The recreate says so, rather than that all went
+    /// well.
+    #[test]
+    fn a_recreate_says_when_herdr_did_not_keep_a_restarted_agents_line() {
+        let mut scene = Scene::new().with_running("myws");
+        scene.runner.script(
+            ["/opt/herdr/bin/herdr", "pane", "report-agent-session"],
+            Response::failed(1, r#"{"error":{"code":"pane_not_found"}}"#),
+        );
+        in_herdr_beside_claude(&mut scene);
+        let updater = SelfInvocation::new("dl");
+        let completion = scene.cache_dir().join("completion.json");
+        let mut parts = launching(&scene.runner, &updater, &completion);
+        let mut cold = NeverCold;
+        {
+            let mut launch = Launch::new(
+                &mut parts.context,
+                &mut parts.refresh,
+                &mut cold,
+                &parts.provision,
+                &scene.host,
+                &mut parts.chatter,
+                &mut parts.said,
+            );
+            launch
+                .run("myws", &LaunchVerb::Recreate, None)
+                .expect("a launch");
+        }
+
+        assert!(
+            parts.said.contains(&LaunchNotice::AgentSessionLineNotKept {
+                pane_id: "w1:p1".to_owned(),
+            }),
+            "{:?}",
+            parts.said
+        );
+        assert!(
+            !parts.said.contains(&LaunchNotice::AgentSessionRestarted {
                 pane_id: "w1:p1".to_owned(),
             }),
             "{:?}",
@@ -13944,6 +14193,131 @@ mod tests {
             }),
             "{:?}",
             parts.said
+        );
+    }
+
+    fn recreate(
+        scene: &Scene,
+        verb: &LaunchVerb,
+    ) -> (Result<Launched, LaunchAborted>, Vec<LaunchNotice>) {
+        let updater = SelfInvocation::new("dl");
+        let completion = scene.cache_dir().join("completion.json");
+        let mut parts = launching(&scene.runner, &updater, &completion);
+        let mut cold = NeverCold;
+        let launched = {
+            let mut launch = Launch::new(
+                &mut parts.context,
+                &mut parts.refresh,
+                &mut cold,
+                &parts.provision,
+                &scene.host,
+                &mut parts.chatter,
+                &mut parts.said,
+            );
+            launch.run("myws", verb, None)
+        };
+        (launched, parts.said)
+    }
+
+    const UNTAG: [&str; 5] = ["docker", "image", "rm", "--force", "proj-8260d:devpod-9409"];
+
+    /// devpod reuses the tag it built a workspace's image under, so a recreate
+    /// of a stale workspace removes that tag first, and devpod builds the image
+    /// again from the newer reference.
+    #[test]
+    fn a_recreate_of_a_stale_derived_image_removes_devpods_tag_before_the_up() {
+        let scene = Scene::new()
+            .with_running("myws")
+            .with_stale_derived_image("myws");
+        scene.runner.script(UNTAG, Response::ok());
+
+        let (launched, said) = recreate(&scene, &LaunchVerb::RecreateUnattended);
+
+        assert_eq!(launched, Ok(Launched::Ready));
+        let argvs = scene.runner.argvs();
+        let at = |wanted: &dyn Fn(&[String]) -> bool| {
+            argvs
+                .iter()
+                .position(|argv| wanted(argv))
+                .unwrap_or_else(|| panic!("not run: {argvs:?}"))
+        };
+        let untagged = at(&|argv| argv == UNTAG);
+        let up = at(&|argv| argv.get(1).map(String::as_str) == Some("up"));
+        assert!(untagged < up, "the tag was removed after the up");
+        assert!(
+            said.contains(&LaunchNotice::DerivedImageRemoved {
+                workspace_id: "myws".to_owned(),
+                image: "proj-8260d:devpod-9409".to_owned(),
+            }),
+            "{said:?}"
+        );
+    }
+
+    /// A tag that stays would make `dl --refresh-stale` recreate the workspace
+    /// on every run and never make it current, so it does not recreate it.
+    #[test]
+    fn an_unattended_recreate_that_cannot_remove_devpods_tag_does_not_run() {
+        let scene = Scene::new()
+            .with_running("myws")
+            .with_stale_derived_image("myws");
+        scene.runner.script(
+            UNTAG,
+            Response::failed(1, "Error response from daemon: busy\n"),
+        );
+
+        let (launched, _) = recreate(&scene, &LaunchVerb::RecreateUnattended);
+
+        assert_eq!(
+            launched,
+            Ok(Launched::Refused(LaunchRefusal::DerivedImageKept {
+                workspace_id: "myws".to_owned(),
+                image: "proj-8260d:devpod-9409".to_owned(),
+                why: "Error response from daemon: busy".to_owned(),
+            }))
+        );
+        assert!(
+            !scene
+                .runner
+                .argvs()
+                .iter()
+                .any(|argv| argv.get(1).map(String::as_str) == Some("up")),
+            "the recreate ran"
+        );
+    }
+
+    /// A recreate the user asked for goes ahead, and says the workspace stays
+    /// on the older image.
+    #[test]
+    fn a_recreate_that_cannot_remove_devpods_tag_goes_ahead_and_says_so() {
+        let scene = Scene::new()
+            .with_running("myws")
+            .with_stale_derived_image("myws");
+        scene.runner.script(
+            UNTAG,
+            Response::failed(1, "Error response from daemon: busy\n"),
+        );
+
+        let (launched, said) = recreate(&scene, &LaunchVerb::Recreate);
+
+        assert_eq!(
+            launched,
+            Ok(Launched::Session(Session::RemoteExit { status: 0 }))
+        );
+        assert!(
+            scene
+                .runner
+                .argvs()
+                .iter()
+                .any(|argv| argv.get(1).map(String::as_str) == Some("up")),
+            "the recreate did not run"
+        );
+        assert!(
+            said.contains(&LaunchNotice::DerivedImageKept {
+                workspace_id: "myws".to_owned(),
+                image: "proj-8260d:devpod-9409".to_owned(),
+                why: "Error response from daemon: busy".to_owned(),
+            }),
+            "{said:?}"
         );
     }
 

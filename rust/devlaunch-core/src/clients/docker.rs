@@ -89,6 +89,18 @@ pub(crate) fn remove_volumes(runner: &dyn Runner, names: &NonEmpty<String>) -> A
     answer(runner.capture(&spec))
 }
 
+/// Remove one tag, and the image under it only when nothing uses that image.
+///
+/// `--force` because the container that runs the image is still there when this
+/// is asked: without it docker refuses the tag of an image any container uses.
+/// With it, and a tag rather than an id, docker removes the tag and keeps the
+/// image for the container. Callers pass only a tag dl knows devpod made.
+pub(crate) fn untag_image(runner: &dyn Runner, reference: &str) -> Answer {
+    let spec =
+        SpawnSpec::from(Invocation::new(PROGRAM).with_args(["image", "rm", "--force", reference]));
+    answer(runner.capture(&spec))
+}
+
 /// The containers one compose project has running, or why docker could not say.
 ///
 /// Its own type rather than an [`Answer`] carrying stdout, because this is the

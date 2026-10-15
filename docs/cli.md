@@ -930,11 +930,19 @@ to bring each agent back (devlaunch#673):
 2. After the `up` succeeds, `dl` types each pane's line back into that pane with
    `herdr pane run`. herdr refuses a pane until the old session in it has exited and its
    shell is back, so `dl` asks again every half second, for up to ten seconds per pane.
-3. Then `dl` attaches to the new container as a recreate always did.
+3. `dl` reports each line it typed to herdr again, as that pane's saved line, and reads
+   herdr's saved session to check that herdr kept it. The `dl` that the line runs saves
+   no line of its own, and herdr drops the old line when the old agent ends. Without
+   this step, the next recreate finds no line and ends the agent. herdr refuses the
+   report until it sees the new agent, so `dl` asks again every second, for up to
+   twenty seconds. All panes are asked at the same time.
+4. Then `dl` attaches to the new container as a recreate always did.
 
 Each line is the one herdr saved for the pane, for example
 `dl <ws> -- ... claude ... --remote-control=<ws> --resume <uuid>`. It holds the session
-the pane is in now, because the container hook reports a new id after `/clear`.
+the pane is in now, because the container hook reports a new id after `/clear`. An
+agent started again from a line has no container hook, so after a `/clear` in it the
+saved line still names the session it was started with.
 
 Nothing here can refuse the recreate. Each failure is one line on stderr, and the
 recreate goes ahead:
@@ -948,6 +956,24 @@ recreate goes ahead:
   fails, gets the line printed, to run there by hand.
 - The pane that `dl` itself runs in is never typed into, because its foreground is that
   `dl`. Its line is printed instead.
+- A pane whose line herdr did not keep gets its agent back, and `dl` says that the next
+  recreate ends it.
+
+#### A workspace on an image that devpod built
+
+With `"features"` (or anything else that makes devpod build), the container does not
+run the reference itself but an image devpod built on it, tagged
+`<prefix>:devpod-<hash>`. devpod names that tag by a hash of the config, not of the
+reference, and uses a tag it finds. So a recreate alone builds nothing, and the
+workspace stays on the older image.
+
+When the workspace is stale (as `dl --ls` reports it), and its container runs a
+`:devpod-` tag that differs from the reference, `dl <ws> recreate` first removes that
+tag with `docker image rm --force <tag>`. devpod then builds the image again from the
+newer reference. `--force` is necessary because the old container still uses the
+image; with a tag, it removes only the tag, and the old container keeps its image until
+the `up` replaces it. `dl` removes no tag that devpod did not make. If the removal
+fails, `dl` says so and the recreate goes ahead on the older image.
 
 `reset` and `code` do none of this. A `reset` drops the volumes, and `code` keeps the
 container when nothing changed.
@@ -997,6 +1023,11 @@ is not a failure.
 - More agent sessions run in the container than herdr's panes hold, counting agents
   of every kind on both sides. A session that was started from a terminal outside
   herdr has no line to start it again.
+
+A workspace on an image that devpod built is refreshed as `dl <ws> recreate` does it,
+by removing devpod's tag first. If the removal fails, the refresh does not recreate
+that workspace, because it would stay stale and be recreated again on every run. It
+counts as a failed recreate.
 
 The second check is taken a moment before the recreate. An agent that starts work in
 that moment ends with the recreate, the same as with `dl <ws> recreate`.
