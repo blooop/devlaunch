@@ -6953,6 +6953,34 @@ fi
     }
 
     #[test]
+    fn a_stage_that_calls_exit_ends_only_itself() {
+        let scratch = scratch();
+        let stages = [
+            Stage::new(FIRST_STAGE, in_subshell("exit 3")),
+            Stage::new(SECOND_STAGE, in_subshell("true")),
+        ];
+        let report = run_stages(scratch.path(), &stages);
+        assert_eq!(
+            stage_outcomes(&report, &stages),
+            vec![
+                StageOutcome {
+                    stage: FIRST_STAGE,
+                    result: StageResult::Failed { status: 3 },
+                },
+                StageOutcome {
+                    stage: SECOND_STAGE,
+                    result: StageResult::Ok,
+                },
+            ],
+            "{report}"
+        );
+        assert!(
+            report.contains(&format!("{PROBE_MARK} tools ")),
+            "the probe did not answer:\n{report}"
+        );
+    }
+
+    #[test]
     fn a_stage_that_sets_u_and_c_keeps_them_to_itself() {
         let scratch = scratch();
         let existing = scratch.path().join("existing");
