@@ -3674,11 +3674,6 @@ pub(crate) fn is_binary_missing(aborted: &LaunchAborted) -> bool {
     }
 }
 
-/// Why a launch will not go ahead, in the words `_run_cli` refused it with.
-///
-/// `None` is a refusal with nothing to say: `devpod up` and `devpod stop` write
-/// their own diagnostics to this process's stderr — the calls inherit the streams —
-/// so dl has nothing to add but the exit code.
 /// devpod's tag for a stale workspace's image stayed, so a recreate keeps the
 /// older image.
 fn derived_image_kept(workspace_id: &str, image: &str, why: &str) -> String {
@@ -3689,6 +3684,11 @@ fn derived_image_kept(workspace_id: &str, image: &str, why: &str) -> String {
     )
 }
 
+/// Why a launch will not go ahead, in the words `_run_cli` refused it with.
+///
+/// `None` is a refusal with nothing to say: `devpod up` and `devpod stop` write
+/// their own diagnostics to this process's stderr — the calls inherit the streams —
+/// so dl has nothing to add but the exit code.
 pub(crate) fn launch_refusal(refused: &LaunchRefusal) -> Option<String> {
     match refused {
         LaunchRefusal::UnsafeSpec(name) => Some(unsafe_name(name)),
