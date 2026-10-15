@@ -1807,7 +1807,7 @@ pub enum AgentStatus {
     Working,
     /// Waiting on a permission prompt.
     Blocked,
-    /// The agent has ended. herdr keeps a finished agent queryable in its pane.
+    /// The agent finished its turn and nobody has looked at it yet. It is idle, not ended.
     Done,
     Unknown,
 }
