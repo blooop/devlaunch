@@ -1894,11 +1894,14 @@ impl Stage {
 /// slower, measured over six cold launches of that image. The subshell inherits the environment the pass already loaded,
 /// which is the environment the stages were reading anyway.
 ///
-/// The trade: a function or alias that the login profile defines now reaches the
-/// stages, where a nested bash did not get profile functions. A profile `zellij()`
-/// wrapper, for example, makes `command -v zellij` succeed, so the stage skips
-/// its install. That is accepted as unlikely, because a profile wrapper with no
-/// binary behind it is rare.
+/// The trade: a stage does not start in a clean shell. It inherits everything the
+/// login profile left in the pass: shell options (`set -u`, `set -C`,
+/// `pipefail`), unexported and readonly variables, functions and aliases. So a
+/// stage must assign a variable before it reads it (or read it as `${X:-}`), must
+/// not assign a name a profile may make readonly, and must not trust
+/// `command -v` alone: a profile `zellij()` wrapper makes it succeed, so the
+/// stage skips its install. That last case is accepted as unlikely, because a
+/// profile wrapper with no binary behind it is rare.
 ///
 /// `eval` of one quoted word, rather than the script pasted between parentheses,
 /// keeps what the nested bash gave each stage: the script is parsed when the stage
