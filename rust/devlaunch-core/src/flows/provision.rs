@@ -1190,7 +1190,7 @@ pub(crate) fn onboarding_script() -> String {
         //
         // `printf` with the JSON as an *argument* in the second, so the stage stays
         // one line's worth of quoting (see [`Stage`]) and no heredoc has to survive
-        // being read by the pass's shell before the nested one sees it. The first
+        // being read by the pass's shell before `eval` reads it again. The first
         // puts the JSON in the *format* and the path in the argument, which is what
         // keeps a path out of the position where it could be read as a format.
         "if [ -n \"$ws\" ]; then".to_owned(),
@@ -1368,7 +1368,7 @@ pub(crate) fn trust_script() -> String {
     lines.extend([
         "if [ -z \"$ws\" ]; then exit 0; fi".to_owned(),
         // The program through a variable rather than inline, so the `-c` argument is
-        // one word to the nested shell whatever the program contains, and the two
+        // one word to `python3` whatever the program contains, and the two
         // paths stay `argv` rather than becoming text in it.
         format!("prog={}", quote(TRUST_MERGE_PY)),
         "python3 -c \"$prog\" \"$file\" \"$ws\"".to_owned(),
