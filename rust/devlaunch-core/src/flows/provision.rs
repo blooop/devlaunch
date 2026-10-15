@@ -1887,11 +1887,11 @@ impl Stage {
 ///
 /// A subshell and not a nested `bash -c`, because a new bash reads `$BASH_ENV`
 /// when it starts and the subshell does not. An image may point that variable at
-/// a whole ROS bashrc: kinisi_ros's does, and inside a `devpod ssh` session one
-/// read costs about 1.1s. A default cold launch there runs four stages (session
-/// name, title, onboarding and trust; zellij and codex are off by default), and
-/// a bash for each made the setup trip about 4.2s slower, measured over six cold
-/// launches. The subshell inherits the environment the pass already loaded,
+/// a heavy shell profile (for example a ROS environment). On one such image a
+/// read inside a `devpod ssh` session costs about 1.1s. A default cold launch
+/// runs four stages (session name, title, onboarding and trust; zellij and codex
+/// are off by default), and a bash for each made the setup trip about 4.2s
+/// slower, measured over six cold launches of that image. The subshell inherits the environment the pass already loaded,
 /// which is the environment the stages were reading anyway.
 ///
 /// The trade: a function or alias that the login profile defines now reaches the
@@ -6794,8 +6794,9 @@ fi
     #[test]
     fn the_pass_reads_the_images_bash_env_once_however_many_stages_it_runs() {
         // A non-interactive bash sources `$BASH_ENV` on startup, and an image may
-        // point it at a whole ROS bashrc: kinisi_ros's does, at about 1.1s a
-        // read inside a `devpod ssh` session. A stage that started its own bash
+        // point it at a heavy shell profile (for example a ROS environment).
+        // One such image costs about 1.1s a read inside a `devpod ssh`
+        // session. A stage that started its own bash
         // paid that again, four times on a default cold launch. The stages run in
         // subshells of the pass, so the one read is the pass's own.
         let scratch = scratch();

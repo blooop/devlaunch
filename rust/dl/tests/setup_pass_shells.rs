@@ -2,8 +2,8 @@
 //!
 //! The pass is one `devpod ssh --command` trip carrying dl's stages and then the
 //! probe. Every new bash in it reads the image's `$BASH_ENV`, and an image may point
-//! that at a whole ROS bashrc: kinisi_ros's does, at about 1.1s a read inside a
-//! `devpod ssh` session. When each stage was a nested `bash -c`, a cold launch paid
+//! that at a heavy shell profile (for example a ROS environment). One such image
+//! costs about 1.1s a read inside a `devpod ssh` session. When each stage was a nested `bash -c`, a cold launch paid
 //! that read once for the pass and once more per stage, 11s for the trip where 6.7s
 //! does the same work. The stages now run in subshells of the pass.
 //!

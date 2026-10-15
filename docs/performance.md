@@ -125,14 +125,15 @@ not be the reason a container never goes idle.
 A cold launch sends one `devpod ssh --command` trip that runs dl's setup stages
 and then the tools probe. Each stage runs in a subshell of that trip's shell, not
 in a `bash` of its own. The reason is `$BASH_ENV`: every new non-interactive bash
-reads it, and an image may point it at a whole ROS bashrc. kinisi_ros's image
-does, and inside a `devpod ssh` session one read costs about 1.1s.
+reads it, and an image may point it at a heavy shell profile (for example a ROS
+environment). On the image measured below, one read inside a `devpod ssh`
+session costs about 1.1s.
 
 Measured on 2026-10-12, on one host with the local docker provider and devpod
-0.26.3, over six cold launches of `kinisi-robotics/kinisi_ros` on six fresh
-branches. With a `bash -c` per stage the trip took 10.90s to 11.14s. With
-subshells it took 6.66s to 6.90s, so about 4.2s comes off every cold launch of
-that repo. The saving on an image with no `$BASH_ENV` is not measured. It should
+0.26.3, over six cold launches of a large ROS repository whose image sets
+`$BASH_ENV`, on six fresh branches. With a `bash -c` per stage the trip took
+10.90s to 11.14s. With subshells it took 6.66s to 6.90s, so about 4.2s comes
+off every cold launch of that repo. The saving on an image with no `$BASH_ENV` is not measured. It should
 be the cost of starting a bash per stage, which is small. A warm launch makes no setup trip, so it is not affected.
 
 `the_pass_reads_the_images_bash_env_once_however_many_stages_it_runs` and
