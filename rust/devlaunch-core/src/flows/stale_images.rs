@@ -137,10 +137,10 @@ struct Created {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Image {
     id: String,
-    /// docker's `Created`, cut to whole seconds: `YYYY-MM-DDTHH:MM:SS`. docker
-    /// writes it in UTC with a varying count of fractional digits, so the cut is
-    /// what makes two of them compare in time order as strings.
-    created: String,
+    /// docker's `Created`, parsed. docker does not always write it in UTC: with
+    /// the containerd image store a pulled image reads `...Z` and a local build
+    /// `...+01:00`, so a cut-and-compare of the text is off by the offset.
+    created: jiff::Timestamp,
     layers: Vec<String>,
 }
 
@@ -177,9 +177,17 @@ pub fn stale_images<'w>(
     let by_workspace = created
         .into_iter()
         .filter_map(|(id, created)| {
-            let running = running_images.get(running.get(&created.container)?)?;
+            let running_id = running.get(&created.container)?;
             let current = references.get(&created.reference)?;
-            is_stale(&created, running, current).then(|| {
+            let stale = match running_images.get(running_id) {
+                Some(running) => is_stale(&created, running, current),
+                // With the containerd image store, a local build whose only tag
+                // moved is gone from `docker image inspect` while a container
+                // still runs it. Its id is enough when the container was made
+                // from the reference itself; a derived image needs its layers.
+                None => created.created_from == created.reference && *running_id != current.id,
+            };
+            stale.then(|| {
                 (
                     id.to_owned(),
                     StaleImage {
@@ -269,7 +277,7 @@ fn images(runner: &dyn Runner, names: impl IntoIterator<Item = String>) -> BTree
                 id.to_owned(),
                 Image {
                     id: id.to_owned(),
-                    created: created.get(..19)?.to_owned(),
+                    created: created.parse().ok()?,
                     layers,
                 },
             ))
@@ -580,6 +588,75 @@ mod tests {
         inspect_image(&fake, "ghcr.io/o/img:latest", line("sha256:new", &["l1"]));
 
         assert!(stale_images(&fake, Some(&home), ["ws"]).is_empty());
+    }
+
+    /// With the containerd image store, a local build whose only tag moved is
+    /// gone from `docker image inspect` while the container still runs it.
+    fn running_image_gone(fake: &FakeRunner, id: &str) {
+        fake.script(
+            [
+                "docker",
+                "inspect",
+                "--type",
+                "image",
+                "--format",
+                IMAGE_FORMAT,
+                id,
+            ],
+            Response::failed(1, format!("Error: No such image: {id}\n")),
+        );
+    }
+
+    #[test]
+    fn a_container_made_from_the_reference_is_stale_after_its_image_left_the_store() {
+        let home = home_with("ws", "dl-test:latest", Some("dl-test:latest"));
+        let fake = FakeRunner::new();
+        inspect_container(&fake, "sha256:old");
+        running_image_gone(&fake, "sha256:old");
+        inspect_image(&fake, "dl-test:latest", line("sha256:new", &["l1", "l2"]));
+
+        let stale = stale_images(&fake, Some(&home), ["ws"]);
+
+        assert_eq!(
+            stale.of("ws").map(StaleImage::reference),
+            Some("dl-test:latest")
+        );
+    }
+
+    #[test]
+    fn a_derived_image_that_left_the_store_is_not_judged_without_its_layers() {
+        let home = home_with("ws", "devpod-abc", Some("ghcr.io/o/img:latest"));
+        let fake = FakeRunner::new();
+        inspect_container(&fake, "sha256:derived");
+        running_image_gone(&fake, "sha256:derived");
+        inspect_image(&fake, "ghcr.io/o/img:latest", line("sha256:base2", &["l1"]));
+
+        assert!(stale_images(&fake, Some(&home), ["ws"]).is_empty());
+    }
+
+    /// 10:10 at +01:00 is 09:10 UTC, so a base pulled at 09:30 UTC is the newer
+    /// one. Compared as text, "10:10" sorts after "09:30" and hid it.
+    #[test]
+    fn created_times_compare_across_utc_offsets() {
+        let home = home_with("ws", "devpod-abc", Some("ghcr.io/o/img:latest"));
+        let fake = FakeRunner::new();
+        inspect_container(&fake, "sha256:derived");
+        inspect_image(
+            &fake,
+            "sha256:derived",
+            line_at(
+                "sha256:derived",
+                "2026-10-08T10:10:00.5+01:00",
+                &["l1", "f1"],
+            ),
+        );
+        inspect_image(
+            &fake,
+            "ghcr.io/o/img:latest",
+            line_at("sha256:base2", "2026-10-08T09:30:00Z", &["l2"]),
+        );
+
+        assert!(stale_images(&fake, Some(&home), ["ws"]).of("ws").is_some());
     }
 
     #[test]
