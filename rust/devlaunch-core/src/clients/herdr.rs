@@ -2100,7 +2100,9 @@ pub(crate) enum Saved {
 /// an internal number that `public_pane_numbers` maps to the public one.
 pub(crate) fn saved_argv(session_json: &str, pane_id: &str) -> Option<Option<Vec<String>>> {
     let (workspace_id, public) = pane_id.split_once(":p")?;
-    let public: u64 = public.parse().ok()?;
+    let public: u64 = public.chars().try_fold(0u64, |n, c| {
+        "0123456789ABCDEFGHJKMNPQRSTVWXYZ".find(c.to_ascii_uppercase()).map(|d| n * 32 + d as u64)
+    })?;
     let session: serde_json::Value = serde_json::from_str(session_json).ok()?;
     let Some(workspace) = session
         .get("workspaces")?
@@ -2409,6 +2411,18 @@ mod resume_tests {
         let report = report();
         assert_eq!(report.saved_in(&session(r#"["dl","ws"]"#)), Saved::Holds);
         assert_eq!(report.saved_in(&session(r#"["dl","other"]"#)), Saved::Other);
+    }
+
+    /// herdr numbers panes in Crockford base32: `w3:pAX` is public number 349,
+    /// as a live herdr's `session.json` showed (`"226": 349`). Ids up to `p9`
+    /// read the same in base 10, which is how a decimal parse passed the tests above.
+    #[test]
+    fn a_pane_id_is_read_as_herdrs_base32_number() {
+        let json = session(r#"["dl","ws"]"#)
+            .replace(r#""id":"w1","public_pane_numbers":{"1":1,"4":3}"#, r#""id":"w3","public_pane_numbers":{"1":1,"4":349}"#);
+        assert_eq!(saved_argv(&json, "w3:pAX"), Some(Some(vec!["dl".to_owned(), "ws".to_owned()])));
+        assert_eq!(saved_argv(&json, "w3:pax"), Some(Some(vec!["dl".to_owned(), "ws".to_owned()])));
+        assert_eq!(saved_argv(&json, "w3:pAY"), Some(None));
     }
 
     #[test]

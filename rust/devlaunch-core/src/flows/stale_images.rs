@@ -213,7 +213,7 @@ fn created(devpod_home: Option<&DevpodHome>, workspace_id: &str) -> Option<Creat
     let details = &document["ContainerDetails"];
     let created_from = text(&details["Config"]["Image"])?;
     Some(Created {
-        container: text(&details["Id"])?,
+        container: text(&details["ID"])?,
         reference: text(&document["MergedConfig"]["image"]).unwrap_or_else(|| created_from.clone()),
         created_from,
     })
@@ -309,7 +309,7 @@ mod tests {
         std::fs::write(
             home.result("default", workspace_id),
             serde_json::json!({
-                "ContainerDetails": { "Id": container, "Config": { "Image": created_from } },
+                "ContainerDetails": { "ID": container, "Config": { "Image": created_from } },
                 "MergedConfig": merged,
             })
             .to_string(),

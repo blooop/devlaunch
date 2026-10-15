@@ -423,7 +423,7 @@ fn world_with_a_stale_workspace() -> World {
     std::fs::write(
         records.join("workspace_result.json"),
         format!(
-            r#"{{"ContainerDetails": {{"Id": "c1", "Config": {{"Image": "{STALE_REFERENCE}"}}}}, "MergedConfig": {{}}}}"#
+            r#"{{"ContainerDetails": {{"ID": "c1", "Config": {{"Image": "{STALE_REFERENCE}"}}}}, "MergedConfig": {{}}}}"#
         ),
     )
     .expect("a create result");
@@ -962,7 +962,7 @@ fn world_with_stale(stale: &[(&str, &str, &str)]) -> World {
         std::fs::write(
             records.join("workspace_result.json"),
             format!(
-                r#"{{"ContainerDetails": {{"Id": "{container}", "Config": {{"Image": "{STALE_REFERENCE}"}}}}, "MergedConfig": {{}}}}"#
+                r#"{{"ContainerDetails": {{"ID": "{container}", "Config": {{"Image": "{STALE_REFERENCE}"}}}}, "MergedConfig": {{}}}}"#
             ),
         )
         .expect("a create result");
