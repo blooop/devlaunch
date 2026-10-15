@@ -6200,6 +6200,56 @@ fi
     }
 
     #[test]
+    fn the_setup_pass_records_trust_for_the_workspace_it_stands_in() {
+        let world = TrustWorld::new(Some(r#"{"hasCompletedOnboarding":true}"#));
+        let stages: Vec<Stage> = setup_stages(
+            "devlaunch-nb99-hicj",
+            ToolsSwitch::Skip,
+            ZellijSwitch::Skip,
+            CodexSwitch::Skip,
+            None,
+        )
+        .into_iter()
+        .filter(|stage| stage.name == ONBOARDING_STAGE || stage.name == TRUST_STAGE)
+        .collect();
+        assert_eq!(stages.len(), 2, "both stages are in the pass");
+        let ran = std::process::Command::new("bash")
+            .arg("-c")
+            .arg(setup_script(&stages))
+            .current_dir(&world.workspace)
+            .env("HOME", &world.home)
+            .env_remove("CLAUDE_CONFIG_DIR")
+            .output()
+            .expect("bash ran");
+        assert!(
+            ran.status.success(),
+            "{}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+        let report = String::from_utf8_lossy(&ran.stdout);
+        assert_eq!(
+            stage_outcomes(&report, &stages),
+            vec![
+                StageOutcome {
+                    stage: ONBOARDING_STAGE,
+                    result: StageResult::Ok,
+                },
+                StageOutcome {
+                    stage: TRUST_STAGE,
+                    result: StageResult::Ok,
+                },
+            ],
+            "{report}\n{}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+        assert_eq!(world.trusts(&world.keyed), Some(true.into()));
+        assert_eq!(
+            world.parsed().get("hasCompletedOnboarding"),
+            Some(&true.into())
+        );
+    }
+
+    #[test]
     fn onboarding_seeds_nothing_when_there_is_no_home_to_seed() {
         // No `CLAUDE_CONFIG_DIR` and no `$HOME` is a container that can say where
         // nothing belongs, so nothing is written and the stage still exits clean.
