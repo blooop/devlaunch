@@ -809,8 +809,10 @@ fn a_cold_triple_prepares_a_clone_creates_the_workspace_and_attaches() {
             &format!(
                 "Creating workspace clone at {{ROOT}}/cache/devlaunch/repos/blooop/devlaunch/{COLD}"
             ),
-            "dotfiles: none set in devpod context options, so this up asked for none. 'devpod \
-             context set-options -o DOTFILES_URL=<repo>' is the only place dl reads it from.",
+            // Not a Python line: dl's own `[dotfiles]` setting replaced the devpod
+            // context option as the place dl reads the repository from.
+            "dotfiles: none set, so this up asked for none. Set [dotfiles] url = \"<repo>\" \
+             in dl's config.toml.",
             // `env_clear()` above is a host with no agent, and the up says so.
             "ssh-agent: none on this host (SSH_AUTH_SOCK is unset), so this workspace has no \
              SSH key to push with. GitHub still works over HTTPS with the forwarded gh token. \
@@ -1127,26 +1129,92 @@ fn recreate_and_reset_each_pass_their_own_flag_and_then_attach() {
 
 #[test]
 fn an_up_says_which_dotfiles_it_asked_devpod_for_and_the_argv_agrees() {
-    // blooop/devlaunch#560's second section. dl forwards `--dotfiles` from `devpod
-    // context options` and from nowhere else — not the process environment, and not
-    // `~/.devpod/config.yaml`, which dl only ever stats — and it used to do that
-    // silently either way. Three plausible causes and no observation to cut between
-    // them is what made "the dotfiles never landed" a fortnight rather than an
-    // afternoon.
+    // blooop/devlaunch#560's second section. dl used to forward `--dotfiles`
+    // silently, and three plausible causes with no observation to cut between them
+    // is what made "the dotfiles never landed" a fortnight rather than an afternoon.
     //
     // The line and the flag are asserted in one test on purpose: what a reader
     // needs is not a sentence but a *checkable* one, and the two can only be
     // trusted to agree if a single test fails when they stop agreeing.
+    //
+    // This world has the URL only in devpod's context, which is the machine dl
+    // moves it off: devpod reads that option on every `up` and re-runs the
+    // install, so dl saves it in its own config and blanks devpod's copy before
+    // the `up` that a create needs it for.
     const URL: &str = "https://github.com/blooop/dotfiles";
     let world = World::with(&["--dotfiles"]);
     let run = world.dl(&["blooop/devlaunch@cold"]);
     run.exited(0);
 
+    let lines = run.stderr_lines();
+    assert!(
+        lines.contains(
+            &format!(
+                "Moved the dotfiles repository {URL} from devpod's DOTFILES_URL context option \
+                 into {{ROOT}}/config/devlaunch/config.toml [dotfiles]. devpod re-ran the \
+                 dotfiles install on every up while it was set there; dl now passes it only \
+                 when it makes a container. A bare 'devpod up' no longer installs dotfiles."
+            )
+            .as_str()
+        ),
+        "{lines:?}"
+    );
+    assert!(
+        lines.contains(
+            &format!(
+                "dotfiles: {URL} (dl config [dotfiles]), passed to devpod up because this up \
+                 makes the container."
+            )
+            .as_str()
+        ),
+        "{lines:?}"
+    );
+    assert!(
+        up_argv(&world).contains(&format!("--dotfiles {URL}")),
+        "the line said it was passed: {}",
+        up_argv(&world)
+    );
+    let calls = world.calls().exact(&world.root);
+    let cleared = calls
+        .iter()
+        .position(|call| call == "devpod context set-options -o DOTFILES_URL=")
+        .unwrap_or_else(|| panic!("devpod's copy was not cleared: {calls:?}"));
+    let up = calls
+        .iter()
+        .position(|call| call.starts_with("devpod up "))
+        .expect("an up");
+    assert!(
+        cleared < up,
+        "cleared before the up, or devpod runs it anyway"
+    );
+    let config = std::fs::read_to_string(world.root.join("config/devlaunch/config.toml"))
+        .expect("dl's config was written");
+    assert!(config.contains(&format!("url = \"{URL}\"")), "{config}");
+}
+
+#[test]
+fn starting_a_stopped_workspace_passes_no_dotfiles() {
+    // The other half of the flag choice, at the binary: the container exists, so
+    // it keeps the dotfiles it was made with, and devpod is not asked to run the
+    // install again (3-5s, and a rewrite of ~/.profile on every start).
+    const URL: &str = "https://github.com/blooop/dotfiles";
+    let world = World::with(&["--stopped"]);
+    let config = world.root.join("config/devlaunch/config.toml");
+    std::fs::create_dir_all(config.parent().expect("a parent")).expect("a config dir");
+    std::fs::write(&config, format!("[dotfiles]\nurl = \"{URL}\"\n")).expect("a config");
+    let run = world.dl(&[MAIN, "up"]);
+    run.exited(0);
+
+    assert!(
+        !up_argv(&world).contains("--dotfiles "),
+        "a start carried --dotfiles: {}",
+        up_argv(&world)
+    );
     assert!(
         run.stderr_lines().contains(
             &format!(
-                "dotfiles: {URL} (devpod context options), passed to devpod up; devpod installs \
-                 them when it creates the container."
+                "dotfiles: {URL} (dl config [dotfiles]), not passed: this up starts a \
+                 container that already has them. 'dl <ws> dotfiles' refreshes them."
             )
             .as_str()
         ),
@@ -1154,9 +1222,12 @@ fn an_up_says_which_dotfiles_it_asked_devpod_for_and_the_argv_agrees() {
         run.stderr_lines()
     );
     assert!(
-        up_argv(&world).contains(&format!("--dotfiles {URL}")),
-        "the line said it was passed: {}",
-        up_argv(&world)
+        !world
+            .calls()
+            .exact(&world.root)
+            .iter()
+            .any(|call| call.contains("set-options")),
+        "nothing in devpod's context to move, so nothing touched"
     );
 }
 
@@ -1679,8 +1750,10 @@ fn a_devpod_up_that_refuses_hands_its_own_status_back_and_adds_nothing() {
     assert_eq!(
         run.stderr_lines(),
         [
-            "dotfiles: none set in devpod context options, so this up asked for none. 'devpod \
-             context set-options -o DOTFILES_URL=<repo>' is the only place dl reads it from.",
+            // Not a Python line: dl's own `[dotfiles]` setting replaced the devpod
+            // context option as the place dl reads the repository from.
+            "dotfiles: none set, so this up asked for none. Set [dotfiles] url = \"<repo>\" \
+             in dl's config.toml.",
             // `env_clear()` above is a host with no agent, and the up says so.
             "ssh-agent: none on this host (SSH_AUTH_SOCK is unset), so this workspace has no \
              SSH key to push with. GitHub still works over HTTPS with the forwarded gh token. \

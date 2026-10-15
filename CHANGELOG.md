@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Starting an existing container no longer re-runs the dotfiles install.** devpod
+  reads its `DOTFILES_URL` context option on every `up` and runs the install script
+  each time, a plain start included: 3-5s per `up` and `restart`, and a rewrite of
+  `~/.profile` on each run. `dl` now keeps the repository in its own config, the
+  `[dotfiles]` table of `config.toml`, and passes `--dotfiles` only to an `up` that
+  makes a container (create, `recreate`, `reset`, or a workspace whose container is
+  gone). On the first `up`, a URL that only devpod's context holds is written to
+  `config.toml` and then cleared from the context, with one warning. A later `up`
+  clears the same URL again if something puts it back (a dotfiles `post-sync`
+  hook does, on each sync). After that, a bare `devpod up` run by hand installs
+  no dotfiles; pass it `--dotfiles`. A different URL put in the context is left
+  alone, and devpod re-runs that install on every `up`.
+
 ## [0.59.4] - 2026-10-05
 
 ### Fixed

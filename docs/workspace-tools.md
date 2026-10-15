@@ -1898,30 +1898,74 @@ user's own again.
 
 ### Where the dotfiles setting comes from, and how to see it
 
-`dl` forwards `--dotfiles` and `--dotfiles-script` to `devpod up` from
-`devpod context options` and from nowhere else. Not from the process environment:
-exporting `DOTFILES_URL` in your shell sets nothing. Not from
-`~/.devpod/config.yaml` either, which `dl` only ever stats, to decide when its own
-copy of those options has gone stale. And `~/.cache/devlaunch/context-options.json`
-is that copy rather than an input, so hand-writing devpod's nested shape into it
-sets nothing and reports nothing: the read fails silently and `dl` asks devpod,
-which is the only answer that ever counted.
+`dl` keeps the dotfiles repository in its own config, the `[dotfiles]` table of
+`~/.config/devlaunch/config.toml`:
+
+```toml
+[dotfiles]
+url = "https://github.com/you/dotfiles"
+# script = "install.sh"   # optional; devpod guesses when it is not set
+```
+
+`dl` passes `--dotfiles` (and `--dotfiles-script`) to `devpod up` only when that
+`up` makes a container: a create, `recreate`, `reset`, or a workspace whose
+container is gone. Starting a container that exists (`up`, `restart`, or an
+attach to a stopped workspace) passes neither. The container keeps the dotfiles
+it was made with, and `dl <ws> dotfiles` refreshes them.
+
+**Why not devpod's `DOTFILES_URL` context option.** devpod reads that option on
+*every* `up`, a plain start of a stopped container included, and runs the install
+script again each time (devpod 0.26.3, `pkg/dotfiles/dotfiles.go`). On a typical
+dotfiles repository that is 3-5 seconds per start, and the script rewrites
+`~/.profile` on each run. Nothing that `dl` passes on the command line turns that
+off: an absent or empty `--dotfiles` falls back to the context option.
+
+**The move.** When `dl`'s config names no repository and devpod's context does,
+the first `up` moves it: `dl` writes the URL (and script) into `config.toml`
+first, then clears devpod's copy with
+`devpod context set-options -o DOTFILES_URL=`, and says so once:
+
+```
+Moved the dotfiles repository https://github.com/you/dotfiles from devpod's DOTFILES_URL context option into ~/.config/devlaunch/config.toml [dotfiles]. ...
+```
+
+The order means a failure leaves the URL in both places, never in neither. A
+`config.toml` that `dl` cannot parse is not written, and devpod's copy stays.
+When the context and `config.toml` name the *same* repository, a later `up`
+clears the context copy again without a second warning: that is a move that
+could not finish, or a tool that put the option back (see below). A
+*different* repository in the context is yours, and `dl` leaves it alone.
+
+**The trade-off.** After the move, a bare `devpod up` you run by hand installs
+no dotfiles, because the context no longer names any. Pass `--dotfiles <url>` to
+it. Putting the option back does not stick when it names the same repository as
+`dl`'s config: the next `dl` up clears it again, which is also what happens when
+a dotfiles `post-sync` hook sets the option on each sync. Point such a hook at
+`dl`'s `[dotfiles]` table instead, and the next `up` has nothing to clear. A
+*different* repository in the context stays where you put it; devpod then re-runs
+that install on every `up`, and every `up` line says so.
 
 ```bash
-devpod context set-options -o DOTFILES_URL=https://github.com/you/dotfiles
-devpod context options --output json      # the one question dl asks
+devpod context options --output json      # what devpod's context holds now
+devpod context set-options -o DOTFILES_URL=https://github.com/you/dotfiles   # put it back
+devpod context set-options -o DOTFILES_URL=   # clear it again, as dl does
 ```
 
-Every `devpod up` `dl` runs now says which of the two it did, so the flag and the
-line cannot disagree:
+Not from the process environment: exporting `DOTFILES_URL` in your shell sets
+nothing. `~/.cache/devlaunch/context-options.json` is `dl`'s copy of devpod's
+options rather than an input, so hand-writing into it sets nothing.
+
+Every `devpod up` `dl` runs says which case it was, so the flag and the line
+cannot disagree:
 
 ```
-dotfiles: https://github.com/you/dotfiles (devpod context options), passed to devpod up; devpod installs them when it creates the container.
-dotfiles: none set in devpod context options, so this up asked for none. 'devpod context set-options -o DOTFILES_URL=<repo>' is the only place dl reads it from.
+dotfiles: https://github.com/you/dotfiles (dl config [dotfiles]), passed to devpod up because this up makes the container.
+dotfiles: https://github.com/you/dotfiles (dl config [dotfiles]), not passed: this up starts a container that already has them. 'dl <ws> dotfiles' refreshes them.
+dotfiles: none set, so this up asked for none. Set [dotfiles] url = "<repo>" in dl's config.toml.
 ```
 
-An attach that runs no `up` prints neither, because it asked devpod for nothing
-either way.
+An attach that runs no `up` prints none of them, because it asked devpod for
+nothing either way.
 
 ### Refreshing dotfiles on attach
 
@@ -1934,8 +1978,8 @@ entry for it. It is guarded on the source directory already being a repository
 because `chezmoi init` with no repo argument would otherwise create an empty one,
 which has no upstream and can never update again.
 
-devpod applies dotfiles when it *provisions* a workspace, so a workspace that has
-been up for a fortnight still has the dotfiles it was born with. `dl <ws>
+`dl` asks devpod for dotfiles only when it makes the container, so a workspace
+that has been up for a fortnight still has the dotfiles it was born with. `dl <ws>
 dotfiles` fixes that when you think of it; `DEVLAUNCH_DOTFILES_ON_ATTACH=1` makes
 `dl` think of it for you, running the same refresh just before it hands you the
 shell.

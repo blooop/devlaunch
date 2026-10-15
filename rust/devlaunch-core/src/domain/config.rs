@@ -1,8 +1,8 @@
 //! `config.toml`: the few knobs the worktree backend reads.
 //!
-//! Ported from `devlaunch/worktree/config.py`. There is no writer — nothing in
-//! devlaunch creates or edits this file — so this is a reader with defaults, and
-//! the defaults are what almost every run uses.
+//! Ported from `devlaunch/worktree/config.py`. A reader with defaults, and the
+//! defaults are what almost every run uses. It has one writer, and that writer
+//! touches only the `[dotfiles]` table, once: see [`write_dotfiles_setting`].
 //!
 //! Two properties carry over, both about not punishing a stale file:
 //!
@@ -247,6 +247,238 @@ struct StoredWorktree {
 struct StoredCleanup {
     auto_prune: Option<bool>,
     prune_after_days: Option<u64>,
+}
+
+// ===========================================================================
+// `[dotfiles]`: the repository dl installs into the containers it creates
+// ===========================================================================
+
+/// The dotfiles repository dl passes to `devpod up` when that `up` makes a
+/// container, read from the `[dotfiles]` table of `config.toml`.
+///
+/// dl's own setting rather than devpod's `DOTFILES_URL` context option, because
+/// devpod reads that option on **every** `up` and re-runs the install script each
+/// time, a stopped container's plain start included (devpod 0.26.3,
+/// `pkg/dotfiles/dotfiles.go`). A `--dotfiles` flag dl passes only on a create
+/// cannot stop that while the context option is set, so the setting has to live
+/// somewhere devpod does not read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DotfilesRepo {
+    pub(crate) url: String,
+    /// The install script inside the repository, when one is named.
+    pub(crate) script: Option<String>,
+}
+
+/// What `config.toml` says about dotfiles.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum DotfilesSetting {
+    /// `[dotfiles] url` is set.
+    Set(DotfilesRepo),
+    /// No file, no table, or a table with no `url`.
+    Unset,
+    /// The file is there and could not be read as TOML. Its own arm, because the
+    /// one thing dl must not do with a file it cannot read is write over it.
+    Unreadable { reason: String },
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct StoredDotfilesDocument {
+    dotfiles: Option<StoredDotfiles>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct StoredDotfiles {
+    url: Option<String>,
+    script: Option<String>,
+}
+
+/// Read `[dotfiles]` out of the config file at `path`.
+pub(crate) fn dotfiles_setting_at(path: &Path) -> DotfilesSetting {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return DotfilesSetting::Unset,
+        Err(error) => {
+            return DotfilesSetting::Unreadable {
+                reason: error.to_string(),
+            };
+        }
+    };
+    parse_dotfiles_setting(&text)
+}
+
+/// Read `[dotfiles]` out of a config text. An empty `url` is no `url`, the way
+/// devpod treats an empty context option.
+pub(crate) fn parse_dotfiles_setting(text: &str) -> DotfilesSetting {
+    let document: StoredDotfilesDocument = match toml::from_str(text) {
+        Ok(document) => document,
+        Err(error) => {
+            return DotfilesSetting::Unreadable {
+                reason: error.to_string(),
+            };
+        }
+    };
+    let Some(stored) = document.dotfiles else {
+        return DotfilesSetting::Unset;
+    };
+    match stored.url.filter(|url| !url.is_empty()) {
+        Some(url) => DotfilesSetting::Set(DotfilesRepo {
+            url,
+            script: stored.script.filter(|script| !script.is_empty()),
+        }),
+        None => DotfilesSetting::Unset,
+    }
+}
+
+/// Write `repo` into the `[dotfiles]` table of the config file at `path`,
+/// keeping every other line of the file as it was.
+///
+/// The one writer `config.toml` has, and it writes once: the move of devpod's
+/// `DOTFILES_URL` into dl's own setting. It refuses rather than overwrites when
+/// the file already names a `url`, or cannot be parsed, so a value somebody typed
+/// is never replaced by one dl found elsewhere. Written to a temporary file beside
+/// the target and renamed over it, so a reader never sees half a file.
+pub(crate) fn write_dotfiles_setting(path: &Path, repo: &DotfilesRepo) -> Result<(), String> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(error.to_string()),
+    };
+    let updated = with_dotfiles_setting(&text, repo)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    // Per process, so two dl runs making the same move never share a half file.
+    let temporary = path.with_extension(format!("toml.{}.tmp", std::process::id()));
+    std::fs::write(&temporary, updated).map_err(|error| error.to_string())?;
+    std::fs::rename(&temporary, path).map_err(|error| {
+        let _ = std::fs::remove_file(&temporary);
+        error.to_string()
+    })
+}
+
+/// `text` with `[dotfiles]` set to `repo`, or why that is refused.
+pub(crate) fn with_dotfiles_setting(text: &str, repo: &DotfilesRepo) -> Result<String, String> {
+    if let DotfilesSetting::Set(existing) = parse_dotfiles_setting(text) {
+        // Already what would be written: a second dl that raced the first to the
+        // move. Nothing to change, and nothing to refuse.
+        if existing == *repo {
+            return Ok(text.to_owned());
+        }
+        return Err(format!(
+            "it already sets [dotfiles] url = {:?}",
+            existing.url
+        ));
+    }
+    let mut document = text
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|error| error.to_string())?;
+    let entry = document
+        .entry("dotfiles")
+        .or_insert(toml_edit::Item::Table(toml_edit::Table::new()));
+    let Some(table) = entry.as_table_mut() else {
+        return Err("its `dotfiles` key is not a table".to_owned());
+    };
+    table.insert("url", toml_edit::value(repo.url.as_str()));
+    match &repo.script {
+        Some(script) => {
+            table.insert("script", toml_edit::value(script.as_str()));
+        }
+        None => {
+            table.remove("script");
+        }
+    }
+    Ok(document.to_string())
+}
+
+#[cfg(test)]
+mod dotfiles_tests {
+    use super::*;
+
+    fn repo(url: &str, script: Option<&str>) -> DotfilesRepo {
+        DotfilesRepo {
+            url: url.to_owned(),
+            script: script.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn no_table_and_an_empty_url_are_both_unset() {
+        assert_eq!(parse_dotfiles_setting(""), DotfilesSetting::Unset);
+        assert_eq!(
+            parse_dotfiles_setting("[worktree]\nenabled = true\n"),
+            DotfilesSetting::Unset
+        );
+        assert_eq!(
+            parse_dotfiles_setting("[dotfiles]\nurl = \"\"\n"),
+            DotfilesSetting::Unset
+        );
+    }
+
+    #[test]
+    fn the_table_is_read_with_and_without_a_script() {
+        assert_eq!(
+            parse_dotfiles_setting("[dotfiles]\nurl = \"https://x/d\"\n"),
+            DotfilesSetting::Set(repo("https://x/d", None))
+        );
+        assert_eq!(
+            parse_dotfiles_setting("[dotfiles]\nurl = \"https://x/d\"\nscript = \"i.sh\"\n"),
+            DotfilesSetting::Set(repo("https://x/d", Some("i.sh")))
+        );
+    }
+
+    #[test]
+    fn a_file_that_is_not_toml_is_unreadable_not_unset() {
+        assert!(matches!(
+            parse_dotfiles_setting("not = = toml"),
+            DotfilesSetting::Unreadable { .. }
+        ));
+    }
+
+    #[test]
+    fn writing_keeps_the_rest_of_the_file_and_its_comments() {
+        let text = "# mine\n[worktree]\nfetch_interval = 60 # often\n";
+        let updated =
+            with_dotfiles_setting(text, &repo("https://x/d", Some("i.sh"))).expect("written");
+        assert!(updated.starts_with(text), "{updated}");
+        assert_eq!(
+            parse_dotfiles_setting(&updated),
+            DotfilesSetting::Set(repo("https://x/d", Some("i.sh")))
+        );
+        let (config, _) = parse_worktree_config(&updated, &WorktreeConfig::defaults())
+            .expect("still a readable config");
+        assert_eq!(config.fetch_interval, 60);
+    }
+
+    #[test]
+    fn writing_never_replaces_a_url_somebody_set() {
+        let text = "[dotfiles]\nurl = \"https://mine/d\"\n";
+        assert!(with_dotfiles_setting(text, &repo("https://other/d", None)).is_err());
+    }
+
+    #[test]
+    fn writing_the_same_url_again_is_a_no_op_not_a_refusal() {
+        let text = "[dotfiles]\nurl = \"https://x/d\"\n";
+        assert_eq!(
+            with_dotfiles_setting(text, &repo("https://x/d", None)).as_deref(),
+            Ok(text)
+        );
+    }
+
+    #[test]
+    fn writing_never_touches_a_file_it_cannot_parse() {
+        assert!(with_dotfiles_setting("not = = toml", &repo("https://x/d", None)).is_err());
+    }
+
+    #[test]
+    fn the_file_is_created_with_its_directory_when_there_is_none() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let path = dir.path().join("devlaunch").join("config.toml");
+        write_dotfiles_setting(&path, &repo("https://x/d", None)).expect("written");
+        assert_eq!(
+            dotfiles_setting_at(&path),
+            DotfilesSetting::Set(repo("https://x/d", None))
+        );
+    }
 }
 
 #[cfg(test)]

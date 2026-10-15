@@ -1149,11 +1149,12 @@ def test_the_dotfiles_line_in_the_docs_is_the_line_dl_prints():
     docs = (REPO_ROOT / "docs" / "workspace-tools.md").read_text()
     render = (REPO_ROOT / "rust" / "dl" / "src" / "render.rs").read_text()
 
-    quoted = re.search(r"^(dotfiles: none set in devpod context options.*)$", docs, re.M)
+    quoted = re.search(r"^(dotfiles: none set, .*)$", docs, re.M)
     assert quoted, "docs/workspace-tools.md no longer quotes the dotfiles notice"
     words = " ".join(quoted.group(1).split())
 
-    source = " ".join(render.replace("\\\n", "").split())
+    # The notice now quotes `"<repo>"`, which the Rust literal spells `\"<repo>\"`.
+    source = " ".join(render.replace("\\\n", "").replace('\\"', '"').split())
     assert words in source, (
         "the dotfiles line in docs/workspace-tools.md is not the line render.rs "
         f"prints any more:\n  docs: {words}"

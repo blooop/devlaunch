@@ -73,6 +73,7 @@ use crate::clients::devpod_home::{CreateRecord, DevpodHome, create_record};
 use crate::clients::gh::{self, GhEvent, StagedToken, Token, TokenLookup};
 use crate::clients::herdr;
 use crate::clients::ssh;
+use crate::domain::config::{self, DotfilesRepo, DotfilesSetting};
 use crate::domain::locks::{self, Contention, LockError};
 use crate::domain::metadata::{MetadataStorage, stored_as};
 use crate::domain::model::WorktreeInfo;
@@ -266,6 +267,9 @@ pub struct Host {
     pub(crate) cache_dir: PathBuf,
     /// devpod's own home, whose `config.yaml` mtime expires the options cache.
     pub(crate) devpod_home: Option<DevpodHome>,
+    /// dl's `config.toml`, whose `[dotfiles]` table names the repository a
+    /// created container gets. `None` on a machine with no config home.
+    pub(crate) config_file: Option<PathBuf>,
 }
 
 impl Host {
@@ -307,6 +311,7 @@ impl Host {
             claude_profiles_root: crate::domain::xdg::claude_profiles_root().ok(),
             cache_dir: cache_dir.into(),
             devpod_home: DevpodHome::locate(),
+            config_file: config::config_path().ok(),
         }
     }
 
@@ -520,13 +525,35 @@ pub enum LaunchNotice {
     // dotfiles when it *provisions* a container: an attach that runs no `up` is
     // making no claim about dotfiles either way, and a line there would suggest it
     // was.
-    /// This `up` carried `--dotfiles` (and `--dotfiles-script`, when the context
-    /// names one), from `devpod context options` and from nowhere else.
+    /// This `up` makes a container (a create, a `--recreate`, a `--reset`, or a
+    /// workspace whose container is gone), so it carried `--dotfiles` (and
+    /// `--dotfiles-script`, when one is named) from dl's `[dotfiles]` setting.
     DotfilesForwarded { url: String, script: Option<String> },
-    /// devpod's context options name no dotfiles repository, so this `up` asked
-    /// for none. Carries nothing: what is absent is the same absence for every
-    /// workspace.
+    /// This `up` starts a container that already exists, so it carried no
+    /// `--dotfiles`: the container keeps the dotfiles it was made with, and
+    /// `dl <ws> dotfiles` is the refresh. `devpod_context_too` is the case that
+    /// defeats this: devpod's `DOTFILES_URL` context option is set as well, and
+    /// devpod re-runs the install from it on every `up` whatever dl passes.
+    DotfilesNotRerun {
+        url: String,
+        devpod_context_too: bool,
+    },
+    /// Neither dl's `[dotfiles]` setting nor devpod's context options name a
+    /// dotfiles repository, so this `up` asked for none. Carries nothing: what is
+    /// absent is the same absence for every workspace.
     DotfilesNotConfigured,
+    /// devpod's `DOTFILES_URL` context option was moved into dl's own setting:
+    /// written to `config` first, then blanked in the devpod context. Said once,
+    /// because once it is moved dl's setting is set and nothing moves again.
+    DotfilesMoved {
+        url: String,
+        script: Option<String>,
+        config: String,
+    },
+    /// devpod's `DOTFILES_URL` could not be moved, so it stays in the devpod
+    /// context and devpod keeps re-running the install on every `up`. `reason` is
+    /// why, quoted as data. Nothing was cleared: the URL is never dropped.
+    DotfilesNotMoved { url: String, reason: String },
 
     // --- the token (gh_auth.py, memoized here)
     /// The host has no GitHub token to forward, and this is why. One per launch
@@ -778,44 +805,202 @@ impl ContextOptions {
         self.0.get("SSH_CONFIG_INCLUDE_PATH").map(String::as_str)
     }
 
-    /// What the flags above amount to, as the one line a person can check the
-    /// argv against (devlaunch#560).
+    /// The dotfiles repository the devpod context names, if any.
+    fn dotfiles_repo(&self) -> Option<DotfilesRepo> {
+        self.dotfiles_url().map(|url| DotfilesRepo {
+            url: url.to_owned(),
+            script: self.dotfiles_script().map(str::to_owned),
+        })
+    }
+
+    /// These options with the dotfiles pair blanked, as devpod reports them once
+    /// `set-options -o DOTFILES_URL=` has run: an empty value is no value.
+    fn without_dotfiles(&self) -> Self {
+        let mut options = self.0.clone();
+        options.remove("DOTFILES_URL");
+        options.remove("DOTFILES_SCRIPT");
+        Self(options)
+    }
+}
+
+// ===========================================================================
+// the dotfiles a `devpod up` asks for
+// ===========================================================================
+
+/// The context options that carry dotfiles, which the move blanks.
+const DOTFILES_CONTEXT_OPTIONS: [&str; 2] = ["DOTFILES_URL", "DOTFILES_SCRIPT"];
+
+/// Which dotfiles this launch knows of, and whether devpod's context still
+/// names one after the move below.
+///
+/// devpod runs the dotfiles install on **every** `up`, a plain start of a stopped
+/// container included, from `--dotfiles` when it is passed and otherwise from the
+/// `DOTFILES_URL` context option (devpod 0.26.3, `pkg/dotfiles/dotfiles.go`).
+/// The install takes 3-5s and rewrites `~/.profile` on each run. dl wants it
+/// once, when the container is made, so dl keeps the URL in its own setting and
+/// passes `--dotfiles` only on an `up` that makes a container; that works only
+/// while the devpod context names none.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct DotfilesPlan {
+    pub(crate) repo: Option<DotfilesRepo>,
+    /// devpod's context names a `DOTFILES_URL`, so devpod runs the install on
+    /// every `up` whatever this plan passes.
+    pub(crate) in_devpod_context: bool,
+}
+
+impl DotfilesPlan {
+    /// The `devpod up` flags this plan gives `request`, in Python's order.
     ///
-    /// Derived from the same two readers [`Self::up_args`] uses rather than from
-    /// the argv it built, which is the one thing this must not do: reading the
-    /// flags back would make the notice a restatement of the list instead of a
-    /// second reading of the same options, and the disagreement worth catching is
-    /// exactly a reader that stopped feeding the argv.
-    fn dotfiles_notice(&self) -> LaunchNotice {
-        match self.dotfiles_url() {
-            Some(url) => LaunchNotice::DotfilesForwarded {
-                url: url.to_owned(),
-                script: self.dotfiles_script().map(str::to_owned),
+    /// The script is only a flag when there is a repository for it to be a path
+    /// *in*: `--dotfiles-script` names a file inside whatever `--dotfiles` cloned,
+    /// so alone it asks devpod to run a script in a repository nobody named.
+    fn up_args(&self, request: &UpRequest<'_>) -> Vec<String> {
+        let mut args = Vec::new();
+        let Some(repo) = &self.repo else {
+            return args;
+        };
+        if !request.makes_a_container() {
+            return args;
+        }
+        args.push("--dotfiles".to_owned());
+        args.push(repo.url.clone());
+        if let Some(script) = &repo.script {
+            args.push("--dotfiles-script".to_owned());
+            args.push(script.clone());
+        }
+        args
+    }
+
+    /// What this plan amounts to for `request`, as the one line a person can
+    /// check the argv against (devlaunch#560).
+    ///
+    /// Derived from the same two inputs [`Self::up_args`] reads rather than from
+    /// the argv it built, so the line is a second reading of the decision and not
+    /// a restatement of the list.
+    fn notice(&self, request: &UpRequest<'_>) -> LaunchNotice {
+        match &self.repo {
+            Some(repo) if request.makes_a_container() => LaunchNotice::DotfilesForwarded {
+                url: repo.url.clone(),
+                script: repo.script.clone(),
+            },
+            Some(repo) => LaunchNotice::DotfilesNotRerun {
+                url: repo.url.clone(),
+                devpod_context_too: self.in_devpod_context,
             },
             None => LaunchNotice::DotfilesNotConfigured,
         }
     }
+}
 
-    /// The `devpod up` flags these options contribute, in Python's order.
-    ///
-    /// The script is only a flag when there is a repository for it to be a path
-    /// *in*: `--dotfiles-script` names a file inside whatever `--dotfiles` cloned,
-    /// so alone it asks devpod to run a script in a repository nobody named. That
-    /// used to be pushed anyway, which is the one way the argv and
-    /// [`Self::dotfiles_notice`] could disagree -- and they are meant to be two
-    /// readings of the same options, not a list and a restatement of it.
-    fn up_args(&self) -> Vec<String> {
-        let mut args = Vec::new();
-        let Some(url) = self.dotfiles_url() else {
-            return args;
-        };
-        args.push("--dotfiles".to_owned());
-        args.push(url.to_owned());
-        if let Some(script) = self.dotfiles_script() {
-            args.push("--dotfiles-script".to_owned());
-            args.push(script.to_owned());
+/// Settle where this launch's dotfiles come from, moving devpod's
+/// `DOTFILES_URL` into dl's `[dotfiles]` setting when only devpod has one.
+///
+/// The move happens at most once per machine, because its first step is what
+/// stops it happening again: the URL is written to dl's config **before** the
+/// context option is blanked, so a failure between the two leaves the URL in
+/// both places and never in neither. Once dl's setting is set, dl does not touch
+/// the devpod context again: a `DOTFILES_URL` somebody puts back there is theirs
+/// to keep, and the per-`up` line says it makes devpod re-run the install.
+///
+/// `options` is updated to what devpod now holds, and the options cache with it,
+/// so the next launch does not pay a round trip to learn what this one did.
+pub(crate) fn settle_dotfiles(
+    runner: &dyn Runner,
+    host: &Host,
+    options: &mut ContextOptions,
+    notices: &mut dyn Notices<LaunchNotice>,
+) -> DotfilesPlan {
+    let in_context = options.dotfiles_repo();
+    let setting = host
+        .config_file
+        .as_deref()
+        .map_or(DotfilesSetting::Unset, config::dotfiles_setting_at);
+    if let DotfilesSetting::Set(repo) = setting {
+        // The same repository in both places is a move that saved the URL and
+        // then could not blank devpod's copy (or a second dl that raced the
+        // first): finish it. A *different* URL there is somebody's own, and stays.
+        if in_context.as_ref() == Some(&repo) {
+            return clear_devpod_copy(runner, host, options, notices, repo, None);
         }
-        args
+        return DotfilesPlan {
+            repo: Some(repo),
+            in_devpod_context: in_context.is_some(),
+        };
+    }
+    let Some(found) = in_context else {
+        return DotfilesPlan::default();
+    };
+    let kept_in_context = DotfilesPlan {
+        repo: Some(found.clone()),
+        in_devpod_context: true,
+    };
+    // No config home to move it into: a machine with no home directory. Nothing
+    // to say that the per-`up` line does not already say.
+    let Some(config_file) = host.config_file.as_deref() else {
+        return kept_in_context;
+    };
+    if let DotfilesSetting::Unreadable { reason } = setting {
+        notices.say(LaunchNotice::DotfilesNotMoved {
+            url: found.url,
+            reason: format!("{} could not be read: {reason}", config_file.display()),
+        });
+        return kept_in_context;
+    }
+    if let Err(reason) = config::write_dotfiles_setting(config_file, &found) {
+        notices.say(LaunchNotice::DotfilesNotMoved {
+            url: found.url,
+            reason: format!("{} could not be written: {reason}", config_file.display()),
+        });
+        return kept_in_context;
+    }
+    clear_devpod_copy(runner, host, options, notices, found, Some(config_file))
+}
+
+/// Blank devpod's copy of `repo`, which dl's config already holds.
+///
+/// `saved_to` is the config file the URL was just written to, for the one-time
+/// warning; `None` is a later launch finishing a move that an earlier one could
+/// not, which says only when it fails again.
+fn clear_devpod_copy(
+    runner: &dyn Runner,
+    host: &Host,
+    options: &mut ContextOptions,
+    notices: &mut dyn Notices<LaunchNotice>,
+    repo: DotfilesRepo,
+    saved_to: Option<&Path>,
+) -> DotfilesPlan {
+    let set: Vec<&str> = DOTFILES_CONTEXT_OPTIONS
+        .into_iter()
+        .filter(|name| options.0.contains_key(*name))
+        .collect();
+    if let Err(reason) = devpod::clear_context_options(runner, &set) {
+        let saved = host.config_file.as_deref().map_or_else(
+            || "dl's config".to_owned(),
+            |path| path.display().to_string(),
+        );
+        notices.say(LaunchNotice::DotfilesNotMoved {
+            url: repo.url.clone(),
+            reason: format!(
+                "it is saved in {saved}, but devpod would not clear its own copy: {reason}"
+            ),
+        });
+        return DotfilesPlan {
+            repo: Some(repo),
+            in_devpod_context: true,
+        };
+    }
+    *options = options.without_dotfiles();
+    write_options_cache(&host.context_options_cache(), &options.0);
+    if let Some(config_file) = saved_to {
+        notices.say(LaunchNotice::DotfilesMoved {
+            url: repo.url.clone(),
+            script: repo.script.clone(),
+            config: config_file.display().to_string(),
+        });
+    }
+    DotfilesPlan {
+        repo: Some(repo),
+        in_devpod_context: false,
     }
 }
 
@@ -1206,6 +1391,24 @@ pub(crate) struct UpRequest<'a> {
     pub(crate) rebuild: Rebuild,
     /// A `devcontainer.json` path from [`spec::resolve_devcontainer_ref`].
     pub(crate) devcontainer: Option<&'a DevcontainerPath>,
+    /// Whether the container is known to be there before this `up`.
+    pub(crate) container: ContainerBeforeUp,
+}
+
+/// Whether a container exists before an `up`, which is what decides whether the
+/// `up` gets `--dotfiles`.
+///
+/// `MayBeMade` is the default and the safe side: it is what every `up` was
+/// before dl looked, and an `up` that wrongly gets `--dotfiles` costs seconds,
+/// where one that wrongly does not gets a container with no dotfiles.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum ContainerBeforeUp {
+    /// devpod reported it `Running` or `Stopped`: this `up` starts it.
+    Exists,
+    /// A create, a workspace whose container is gone, or one devpod could not
+    /// describe: this `up` may make a container.
+    #[default]
+    MayBeMade,
 }
 
 impl<'a> UpRequest<'a> {
@@ -1218,7 +1421,22 @@ impl<'a> UpRequest<'a> {
             ide: Ide::NoIde,
             rebuild: Rebuild::Reuse,
             devcontainer: None,
+            container: ContainerBeforeUp::MayBeMade,
         }
+    }
+
+    #[must_use]
+    pub(crate) fn with_container(mut self, container: ContainerBeforeUp) -> Self {
+        self.container = container;
+        self
+    }
+
+    /// Whether this `up` makes a container, so the dotfiles go in with it: a
+    /// `--recreate` or `--reset` always does, and any other `up` does unless the
+    /// container is known to be there already.
+    pub(crate) fn makes_a_container(&self) -> bool {
+        !matches!(self.rebuild, Rebuild::Reuse)
+            || matches!(self.container, ContainerBeforeUp::MayBeMade)
     }
 
     #[must_use]
@@ -1259,7 +1477,7 @@ impl<'a> UpRequest<'a> {
 /// the context manager that owns the private file it names.
 pub(crate) fn up_args(
     request: &UpRequest<'_>,
-    options: &ContextOptions,
+    dotfiles: &DotfilesPlan,
     pixi: &PixiCache,
     token: &[String],
 ) -> Vec<String> {
@@ -1281,7 +1499,7 @@ pub(crate) fn up_args(
     if let Some(flag) = request.rebuild.flag() {
         args.push(flag.to_owned());
     }
-    args.extend(options.up_args());
+    args.extend(dotfiles.up_args(request));
     args.extend(pixi.up_args());
     args.extend(token.iter().cloned());
     args
@@ -1730,7 +1948,7 @@ fn up_under_stage(
     title: Option<&str>,
     notices: &mut dyn Notices<LaunchNotice>,
 ) -> Result<UpOutcome, NotRun> {
-    let options = context_options(
+    let mut options = context_options(
         context.runner(),
         &host.context_options_cache(),
         host.devpod_config().as_deref(),
@@ -1812,12 +2030,15 @@ fn up_under_stage(
         .as_ref()
         .map(StagedToken::up_args)
         .unwrap_or_default();
-    let args = up_args(request, &options, &pixi, &token_args);
+    // Settled here, on the far side of every arm that returns without an `up`:
+    // the move out of the devpod context is for the `up` below, and it has to
+    // land before that `up` or devpod runs the install from the context anyway.
+    let dotfiles = settle_dotfiles(context.runner(), host, &mut options, notices);
+    let args = up_args(request, &dotfiles, &pixi, &token_args);
     // Said here rather than where the options are read, so the line and the argv
-    // cannot disagree: this is the one production site that turns those options
-    // into flags, and it is on the far side of every arm that returns without
-    // running an `up` at all.
-    notices.say(options.dotfiles_notice());
+    // cannot disagree: this is the one production site that turns that plan into
+    // flags.
+    notices.say(dotfiles.notice(request));
     let agent = HostAgent::of(host);
     notices.say_all(agent.notice());
     // Only on the `up`, and only when there is no agent: this is what
@@ -3363,7 +3584,16 @@ pub(crate) fn dotfiles_update(
     // A script, and named as one: it is composed here with `&&` and `$(...)` in
     // it, so quoting it as argv would run a program whose name is the whole
     // pipeline.
-    let command = RemoteCommand::Script(dotfiles_command(options.dotfiles_url(), bound));
+    let setting = session
+        .host
+        .config_file
+        .as_deref()
+        .map_or(DotfilesSetting::Unset, config::dotfiles_setting_at);
+    let url = match &setting {
+        DotfilesSetting::Set(repo) => Some(repo.url.as_str()),
+        DotfilesSetting::Unset | DotfilesSetting::Unreadable { .. } => options.dotfiles_url(),
+    };
+    let command = RemoteCommand::Script(dotfiles_command(url, bound));
     workspace_ssh(
         session,
         workspace_id,
@@ -4142,6 +4372,21 @@ impl Placement {
                 Naming::Known { workspace_id }
             }
             Self::Creating { workspace_id, .. } => Naming::Create { workspace_id },
+        }
+    }
+
+    /// Whether the container is there before an `up`, as far as devpod said.
+    ///
+    /// `Busy` is not "there": devpod may be in the middle of making it.
+    pub(crate) fn container_before_up(&self) -> ContainerBeforeUp {
+        match self {
+            Self::Known {
+                state: ContainerState::Running | ContainerState::Stopped,
+                ..
+            } => ContainerBeforeUp::Exists,
+            Self::Known { .. } | Self::Listed { .. } | Self::Creating { .. } => {
+                ContainerBeforeUp::MayBeMade
+            }
         }
     }
 
@@ -5208,7 +5453,8 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
                 Placement::Creating { workspace_id, .. } => Naming::Create { workspace_id },
                 Placement::Known { .. } | Placement::Listed { .. } => Naming::Anonymous,
             };
-            let request = UpRequest::new(placement.source(), naming);
+            let request = UpRequest::new(placement.source(), naming)
+                .with_container(self.container_before_up(placement));
             let title = self.container_title(placement.title());
             let outcome = workspace_up(
                 self.context,
@@ -5241,6 +5487,21 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
         Ok(Launched::Session(self.session(refreshed)?))
     }
 
+    /// Whether the container is there before an `up`, which decides whether the
+    /// `up` gets `--dotfiles`.
+    ///
+    /// A container devpod reports but whose create never finished counts as not
+    /// there: the create may have died before devpod's dotfiles step, and the
+    /// `up` that recovers it is the one chance to install them.
+    fn container_before_up(&self, placement: &Placement) -> ContainerBeforeUp {
+        if create_record(self.host.devpod_home.as_ref(), placement.workspace_id())
+            == CreateRecord::NeverCompleted
+        {
+            return ContainerBeforeUp::MayBeMade;
+        }
+        placement.container_before_up()
+    }
+
     /// `devpod up` for this verb, or the refusal it produced.
     fn bring_up(
         &mut self,
@@ -5251,7 +5512,8 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
         let request = UpRequest::new(placement.source(), placement.naming())
             .with_ide(verb.ide())
             .with_rebuild(verb.rebuild())
-            .with_devcontainer(devcontainer);
+            .with_devcontainer(devcontainer)
+            .with_container(self.container_before_up(placement));
         let title = self.container_title(placement.title());
         let outcome = workspace_up(
             self.context,
@@ -7888,7 +8150,7 @@ mod tests {
             },
         );
 
-        let args = up_args(&request, &ContextOptions::default(), &pixi, &[]);
+        let args = up_args(&request, &DotfilesPlan::default(), &pixi, &[]);
 
         assert_eq!(
             args,
@@ -7927,7 +8189,7 @@ mod tests {
 
         let args = up_args(
             &request,
-            &ContextOptions::default(),
+            &DotfilesPlan::default(),
             &PixiCache::NotADirectory {
                 source: PathBuf::from("/nope"),
             },
@@ -7955,7 +8217,7 @@ mod tests {
 
         let args = up_args(
             &request,
-            &ContextOptions::default(),
+            &DotfilesPlan::default(),
             &PixiCache::NotADirectory {
                 source: PathBuf::from("/nope"),
             },
@@ -7994,7 +8256,7 @@ mod tests {
         let of = |rebuild| {
             up_args(
                 &UpRequest::new("myws", Naming::Anonymous).with_rebuild(rebuild),
-                &ContextOptions::default(),
+                &DotfilesPlan::default(),
                 &nothing,
                 &[],
             )
@@ -8022,7 +8284,7 @@ mod tests {
 
         let args = up_args(
             &UpRequest::new("myws", Naming::Anonymous),
-            &options,
+            &plan_of(&options),
             &PixiCache::NotADirectory {
                 source: PathBuf::from("/nope"),
             },
@@ -8058,9 +8320,10 @@ mod tests {
             "install.sh".to_owned(),
         )]));
 
+        let request = UpRequest::new("myws", Naming::Anonymous);
         let args = up_args(
-            &UpRequest::new("myws", Naming::Anonymous),
-            &options,
+            &request,
+            &plan_of(&options),
             &PixiCache::NotADirectory {
                 source: PathBuf::from("/nope"),
             },
@@ -8072,10 +8335,296 @@ mod tests {
             "{args:?}"
         );
         assert_eq!(
-            options.dotfiles_notice(),
+            plan_of(&options).notice(&request),
             LaunchNotice::DotfilesNotConfigured,
             "and the notice says the same thing the argv does"
         );
+    }
+
+    /// The plan a launch with no dl setting and no move makes of `options`.
+    fn plan_of(options: &ContextOptions) -> DotfilesPlan {
+        DotfilesPlan {
+            repo: options.dotfiles_repo(),
+            in_devpod_context: options.dotfiles_url().is_some(),
+        }
+    }
+
+    fn dl_dotfiles() -> DotfilesPlan {
+        DotfilesPlan {
+            repo: Some(DotfilesRepo {
+                url: "https://example/dots".to_owned(),
+                script: None,
+            }),
+            in_devpod_context: false,
+        }
+    }
+
+    fn has_dotfiles_flag(request: &UpRequest<'_>) -> bool {
+        up_args(
+            request,
+            &dl_dotfiles(),
+            &PixiCache::NotADirectory {
+                source: PathBuf::from("/nope"),
+            },
+            &[],
+        )
+        .iter()
+        .any(|arg| arg == "--dotfiles")
+    }
+
+    /// The flag choice per verb: `--dotfiles` goes with an `up` that makes a
+    /// container, and with no other. devpod runs the install on every `up` it is
+    /// given the flag for, a plain start included, and the install rewrites
+    /// `~/.profile` each time.
+    #[test]
+    fn dotfiles_go_with_an_up_that_makes_a_container_and_no_other() {
+        let create = UpRequest::new("src", Naming::Create { workspace_id: "ws" });
+        let start = UpRequest::new("ws", Naming::Known { workspace_id: "ws" })
+            .with_container(ContainerBeforeUp::Exists);
+        let gone = UpRequest::new("ws", Naming::Known { workspace_id: "ws" })
+            .with_container(ContainerBeforeUp::MayBeMade);
+
+        assert!(has_dotfiles_flag(&create), "a create");
+        assert!(
+            !has_dotfiles_flag(&start),
+            "up/restart of a container that exists"
+        );
+        assert!(
+            has_dotfiles_flag(&gone),
+            "a workspace whose container is gone"
+        );
+        assert!(
+            has_dotfiles_flag(&start.with_rebuild(Rebuild::Recreate)),
+            "recreate makes a new container"
+        );
+        assert!(
+            has_dotfiles_flag(&start.with_rebuild(Rebuild::Reset)),
+            "reset makes a new container"
+        );
+        assert_eq!(
+            dl_dotfiles().notice(&start),
+            LaunchNotice::DotfilesNotRerun {
+                url: "https://example/dots".to_owned(),
+                devpod_context_too: false,
+            },
+            "and the line says what the argv did"
+        );
+    }
+
+    #[test]
+    fn only_a_running_or_stopped_container_counts_as_there() {
+        let known = |state| Placement::Known {
+            workspace_id: "ws".to_owned(),
+            title: "ws".to_owned(),
+            state,
+        };
+        assert_eq!(
+            known(ContainerState::Running).container_before_up(),
+            ContainerBeforeUp::Exists
+        );
+        assert_eq!(
+            known(ContainerState::Stopped).container_before_up(),
+            ContainerBeforeUp::Exists
+        );
+        for state in [
+            ContainerState::NotFound,
+            ContainerState::Busy,
+            ContainerState::Unknown("Odd".to_owned()),
+        ] {
+            assert_eq!(
+                known(state).container_before_up(),
+                ContainerBeforeUp::MayBeMade
+            );
+        }
+        assert_eq!(
+            Placement::Listed {
+                workspace_id: "ws".to_owned(),
+                title: "ws".to_owned()
+            }
+            .container_before_up(),
+            ContainerBeforeUp::MayBeMade
+        );
+        assert_eq!(
+            Placement::Creating {
+                workspace_id: "ws".to_owned(),
+                title: "ws".to_owned(),
+                source: "src".to_owned()
+            }
+            .container_before_up(),
+            ContainerBeforeUp::MayBeMade
+        );
+    }
+
+    fn in_context(url: &str) -> ContextOptions {
+        ContextOptions::from_map(BTreeMap::from([
+            ("DOTFILES_URL".to_owned(), url.to_owned()),
+            ("SOMETHING_ELSE".to_owned(), "1".to_owned()),
+        ]))
+    }
+
+    fn with_config(scene: &mut Scene) -> PathBuf {
+        let path = scene
+            .dir
+            .path()
+            .join("config")
+            .join("devlaunch")
+            .join("config.toml");
+        scene.host.config_file = Some(path.clone());
+        path
+    }
+
+    fn set_options_calls(scene: &Scene) -> Vec<Vec<String>> {
+        scene
+            .devpod_commands()
+            .into_iter()
+            .filter(|argv| argv.get(1).map(String::as_str) == Some("set-options"))
+            .collect()
+    }
+
+    #[test]
+    fn a_url_only_devpod_has_is_saved_in_dl_config_then_cleared_from_devpod() {
+        let mut scene = Scene::new();
+        let config = with_config(&mut scene);
+        let mut options = in_context("https://example/dots");
+        let mut notices = no_notices();
+
+        let plan = settle_dotfiles(&scene.runner, &scene.host, &mut options, &mut notices);
+
+        assert_eq!(
+            config::dotfiles_setting_at(&config),
+            DotfilesSetting::Set(DotfilesRepo {
+                url: "https://example/dots".to_owned(),
+                script: None
+            })
+        );
+        assert_eq!(
+            set_options_calls(&scene),
+            vec![vec![
+                "context".to_owned(),
+                "set-options".to_owned(),
+                "-o".to_owned(),
+                "DOTFILES_URL=".to_owned()
+            ]]
+        );
+        assert!(!plan.in_devpod_context);
+        assert_eq!(
+            options.dotfiles_url(),
+            None,
+            "the options say what devpod now holds"
+        );
+        assert_eq!(
+            options.0.get("SOMETHING_ELSE").map(String::as_str),
+            Some("1")
+        );
+        assert!(matches!(
+            notices.as_slice(),
+            [LaunchNotice::DotfilesMoved { .. }]
+        ));
+    }
+
+    #[test]
+    fn once_dl_has_a_url_the_devpod_context_is_never_touched_again() {
+        let mut scene = Scene::new();
+        let config = with_config(&mut scene);
+        std::fs::create_dir_all(config.parent().expect("a parent")).expect("a dir");
+        std::fs::write(&config, "[dotfiles]\nurl = \"https://mine/dots\"\n").expect("a config");
+        let mut options = in_context("https://example/dots");
+        let mut notices = no_notices();
+
+        let plan = settle_dotfiles(&scene.runner, &scene.host, &mut options, &mut notices);
+
+        assert_eq!(
+            plan.repo.map(|repo| repo.url).as_deref(),
+            Some("https://mine/dots")
+        );
+        assert!(
+            plan.in_devpod_context,
+            "and the line will say devpod re-runs it"
+        );
+        assert!(set_options_calls(&scene).is_empty());
+        assert!(notices.is_empty());
+    }
+
+    #[test]
+    fn a_move_an_earlier_run_could_not_finish_is_finished_quietly() {
+        // dl's config holds the URL and devpod still holds the same one: the
+        // earlier clear failed. Blank devpod's copy now, without the one-time
+        // warning a second time.
+        let mut scene = Scene::new();
+        let config = with_config(&mut scene);
+        std::fs::create_dir_all(config.parent().expect("a parent")).expect("a dir");
+        std::fs::write(&config, "[dotfiles]\nurl = \"https://example/dots\"\n").expect("a config");
+        let mut options = in_context("https://example/dots");
+        let mut notices = no_notices();
+
+        let plan = settle_dotfiles(&scene.runner, &scene.host, &mut options, &mut notices);
+
+        assert_eq!(set_options_calls(&scene).len(), 1, "devpod's copy cleared");
+        assert!(!plan.in_devpod_context);
+        assert_eq!(options.dotfiles_url(), None);
+        assert!(notices.is_empty(), "{notices:?}");
+    }
+
+    #[test]
+    fn a_config_dl_cannot_read_is_not_written_and_devpod_keeps_its_url() {
+        let mut scene = Scene::new();
+        let config = with_config(&mut scene);
+        std::fs::create_dir_all(config.parent().expect("a parent")).expect("a dir");
+        std::fs::write(&config, "not = = toml").expect("a config");
+        let mut options = in_context("https://example/dots");
+        let mut notices = no_notices();
+
+        let plan = settle_dotfiles(&scene.runner, &scene.host, &mut options, &mut notices);
+
+        assert_eq!(
+            std::fs::read_to_string(&config).expect("still there"),
+            "not = = toml"
+        );
+        assert!(set_options_calls(&scene).is_empty(), "nothing cleared");
+        assert!(plan.in_devpod_context);
+        assert!(matches!(
+            notices.as_slice(),
+            [LaunchNotice::DotfilesNotMoved { .. }]
+        ));
+    }
+
+    #[test]
+    fn a_refused_clear_keeps_the_url_in_both_places() {
+        let mut scene = Scene::new();
+        let config = with_config(&mut scene);
+        scene.runner.script(
+            ["devpod", "context", "set-options"],
+            Response::failed(1, "devpod: no"),
+        );
+        let mut options = in_context("https://example/dots");
+        let mut notices = no_notices();
+
+        let plan = settle_dotfiles(&scene.runner, &scene.host, &mut options, &mut notices);
+
+        assert!(matches!(
+            config::dotfiles_setting_at(&config),
+            DotfilesSetting::Set(_)
+        ));
+        assert!(plan.in_devpod_context);
+        assert_eq!(options.dotfiles_url(), Some("https://example/dots"));
+        assert!(matches!(
+            notices.as_slice(),
+            [LaunchNotice::DotfilesNotMoved { .. }]
+        ));
+    }
+
+    #[test]
+    fn nothing_anywhere_is_nothing_and_asks_nothing() {
+        let mut scene = Scene::new();
+        let _ = with_config(&mut scene);
+        let mut options = ContextOptions::default();
+        let mut notices = no_notices();
+
+        let plan = settle_dotfiles(&scene.runner, &scene.host, &mut options, &mut notices);
+
+        assert_eq!(plan, DotfilesPlan::default());
+        assert!(scene.devpod_commands().is_empty());
+        assert!(notices.is_empty());
     }
 
     #[test]
@@ -8084,7 +8633,7 @@ mod tests {
 
         let args = up_args(
             &UpRequest::new("myws", Naming::Anonymous).with_devcontainer(Some(&variant)),
-            &ContextOptions::default(),
+            &DotfilesPlan::default(),
             &PixiCache::NotADirectory {
                 source: PathBuf::from("/nope"),
             },
@@ -12701,6 +13250,59 @@ mod tests {
                 workspace_id: "myws".to_owned()
             }),
             "a workspace devpod never finished is not `already running`"
+        );
+    }
+
+    /// The `up` that recovers an unfinished create carries `--dotfiles`, and a
+    /// restart of a finished one does not.
+    ///
+    /// The container is there in both, so "is it there" alone would skip the
+    /// dotfiles in the first. But a create that died may have died before
+    /// devpod's dotfiles step, and the recovering `up` is the one chance to
+    /// install them.
+    #[test]
+    fn an_unfinished_create_gets_dotfiles_on_its_recovery_and_a_restart_does_not() {
+        let up_of = |aborted: bool, verb: LaunchVerb| {
+            let mut scene = Scene::new().with_running("myws");
+            if aborted {
+                scene = scene.with_create_aborted("myws");
+            }
+            let config = scene.dir.path().join("config/devlaunch/config.toml");
+            std::fs::create_dir_all(config.parent().expect("a parent")).expect("a dir");
+            std::fs::write(&config, "[dotfiles]\nurl = \"https://example/dots\"\n")
+                .expect("a config");
+            scene.host.config_file = Some(config);
+            let updater = SelfInvocation::new("dl");
+            let completion = scene.cache_dir().join("completion.json");
+            let mut parts = launching(&scene.runner, &updater, &completion);
+            let mut cold = NeverCold;
+            let mut launch = Launch::new(
+                &mut parts.context,
+                &mut parts.refresh,
+                &mut cold,
+                &parts.provision,
+                &scene.host,
+                &mut parts.chatter,
+                &mut parts.said,
+            );
+            let _ = launch.run("myws", &verb, None);
+            drop(launch);
+            scene
+                .devpod_commands()
+                .into_iter()
+                .find(|argv| argv.first().map(String::as_str) == Some("up"))
+                .unwrap_or_else(|| panic!("no up: {:?}", scene.devpod_commands()))
+        };
+
+        let recovery = up_of(true, LaunchVerb::Attach { command: None });
+        assert!(
+            recovery.iter().any(|arg| arg == "--dotfiles"),
+            "{recovery:?}"
+        );
+        let restart = up_of(false, LaunchVerb::Restart);
+        assert!(
+            !restart.iter().any(|arg| arg == "--dotfiles"),
+            "{restart:?}"
         );
     }
 

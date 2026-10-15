@@ -62,7 +62,17 @@ pub devlaunch_core::api::LaunchNotice::DevpodSessionFailed::exit: devlaunch_runn
 pub devlaunch_core::api::LaunchNotice::DotfilesForwarded
 pub devlaunch_core::api::LaunchNotice::DotfilesForwarded::script: core::option::Option<alloc::string::String>
 pub devlaunch_core::api::LaunchNotice::DotfilesForwarded::url: alloc::string::String
+pub devlaunch_core::api::LaunchNotice::DotfilesMoved
+pub devlaunch_core::api::LaunchNotice::DotfilesMoved::config: alloc::string::String
+pub devlaunch_core::api::LaunchNotice::DotfilesMoved::script: core::option::Option<alloc::string::String>
+pub devlaunch_core::api::LaunchNotice::DotfilesMoved::url: alloc::string::String
 pub devlaunch_core::api::LaunchNotice::DotfilesNotConfigured
+pub devlaunch_core::api::LaunchNotice::DotfilesNotMoved
+pub devlaunch_core::api::LaunchNotice::DotfilesNotMoved::reason: alloc::string::String
+pub devlaunch_core::api::LaunchNotice::DotfilesNotMoved::url: alloc::string::String
+pub devlaunch_core::api::LaunchNotice::DotfilesNotRerun
+pub devlaunch_core::api::LaunchNotice::DotfilesNotRerun::devpod_context_too: bool
+pub devlaunch_core::api::LaunchNotice::DotfilesNotRerun::url: alloc::string::String
 pub devlaunch_core::api::LaunchNotice::HerdrTab(devlaunch_core::flows::launch::HerdrTabRename)
 pub devlaunch_core::api::LaunchNotice::LaunchLockUnavailable
 pub devlaunch_core::api::LaunchNotice::LaunchLockUnavailable::reason: alloc::string::String
@@ -619,7 +629,17 @@ pub devlaunch_core::flows::launch::LaunchNotice::DevpodSessionFailed::exit: devl
 pub devlaunch_core::flows::launch::LaunchNotice::DotfilesForwarded
 pub devlaunch_core::flows::launch::LaunchNotice::DotfilesForwarded::script: core::option::Option<alloc::string::String>
 pub devlaunch_core::flows::launch::LaunchNotice::DotfilesForwarded::url: alloc::string::String
+pub devlaunch_core::flows::launch::LaunchNotice::DotfilesMoved
+pub devlaunch_core::flows::launch::LaunchNotice::DotfilesMoved::config: alloc::string::String
+pub devlaunch_core::flows::launch::LaunchNotice::DotfilesMoved::script: core::option::Option<alloc::string::String>
+pub devlaunch_core::flows::launch::LaunchNotice::DotfilesMoved::url: alloc::string::String
 pub devlaunch_core::flows::launch::LaunchNotice::DotfilesNotConfigured
+pub devlaunch_core::flows::launch::LaunchNotice::DotfilesNotMoved
+pub devlaunch_core::flows::launch::LaunchNotice::DotfilesNotMoved::reason: alloc::string::String
+pub devlaunch_core::flows::launch::LaunchNotice::DotfilesNotMoved::url: alloc::string::String
+pub devlaunch_core::flows::launch::LaunchNotice::DotfilesNotRerun
+pub devlaunch_core::flows::launch::LaunchNotice::DotfilesNotRerun::devpod_context_too: bool
+pub devlaunch_core::flows::launch::LaunchNotice::DotfilesNotRerun::url: alloc::string::String
 pub devlaunch_core::flows::launch::LaunchNotice::HerdrTab(devlaunch_core::flows::launch::HerdrTabRename)
 pub devlaunch_core::flows::launch::LaunchNotice::LaunchLockUnavailable
 pub devlaunch_core::flows::launch::LaunchNotice::LaunchLockUnavailable::reason: alloc::string::String

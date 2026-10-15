@@ -1238,6 +1238,30 @@ pub(crate) fn context_options(
     parse_context_options(answer.stdout())
 }
 
+/// Blank these context options in the current context:
+/// `devpod context set-options -o NAME= ...`.
+///
+/// devpod has no `unset`; an empty value is how an option is cleared, and both
+/// devpod's own reader and [`parse_context_options`] treat an empty value as no
+/// value. The error is devpod's stderr (or why it did not run), quoted as data.
+pub(crate) fn clear_context_options(runner: &dyn Runner, names: &[&str]) -> Result<(), String> {
+    let mut args = vec!["context".to_owned(), "set-options".to_owned()];
+    for name in names {
+        args.push("-o".to_owned());
+        args.push(format!("{name}="));
+    }
+    let answer = capture(runner, &Call::new(args)).map_err(|not_run| format!("{not_run:?}"))?;
+    if !answer.succeeded() {
+        let stderr = answer.stderr().trim();
+        return Err(if stderr.is_empty() {
+            format!("devpod exited {:?}", answer.exit)
+        } else {
+            stderr.to_owned()
+        });
+    }
+    Ok(())
+}
+
 /// The options in a `devpod context options --output json` answer.
 ///
 /// Silence is an empty map rather than a refusal, unlike the workspace listing:

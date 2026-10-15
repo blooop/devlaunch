@@ -353,6 +353,10 @@ def cmd_context(args):
     if args[:1] == ["options"]:
         print(json.dumps({}))
         return 0
+    if args[:1] == ["set-options"]:
+        # Accepted and forgotten: what dl does after it is the observation, and
+        # the options this shim reports come from the refusal channel anyway.
+        return 0
     print(f"devpod-shim: context: unknown subcommand {args[:1]!r}", file=sys.stderr)
     return 1
 

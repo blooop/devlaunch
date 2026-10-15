@@ -487,6 +487,9 @@ impl DevpodMachine {
     fn context(args: &[String]) -> Response {
         match args.first().map(String::as_str) {
             Some("options") => Response::stdout("{}\n"),
+            // Accepted and forgotten, as the shim does: the options this fake
+            // reports are a script's business, not a state it keeps.
+            Some("set-options") => Response::ok(),
             other => refusal(&format!(
                 "devpod-fake: context: unknown subcommand {other:?}"
             )),

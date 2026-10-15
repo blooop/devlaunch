@@ -3101,29 +3101,63 @@ pub(crate) fn launch_notice(notice: &LaunchNotice) -> Option<String> {
              .devcontainer/devcontainer.json and set the variable it names."
             .to_owned(),
 
-        // --- the dotfiles (info; devlaunch#560, no Python line)
+        // --- the dotfiles (info, but for the two moves; devlaunch#560, no Python line)
         //
-        // Both arms name where the setting comes from, because that is the half
-        // nobody could find: `DOTFILES_URL` is read out of `devpod context
-        // options` and out of nothing else -- not the process environment, and not
-        // `~/.devpod/config.yaml`, which dl only ever stats. A reader who has just
-        // exported the variable and seen no dotfiles needs the sentence to say
-        // which question was actually asked.
+        // Every arm names where the setting comes from, because that is the half
+        // nobody could find. dl reads its own `[dotfiles]` table in config.toml;
+        // devpod reads its `DOTFILES_URL` context option on *every* `up`, which is
+        // why dl moves it out of there. Exporting a variable sets neither.
         LaunchNotice::DotfilesForwarded { url, script } => {
             let with = match script {
                 Some(script) => format!(", script {script}"),
                 None => String::new(),
             };
             format!(
-                "dotfiles: {url}{with} (devpod context options), passed to devpod up; devpod \
-                 installs them when it creates the container."
+                "dotfiles: {url}{with} (dl config [dotfiles]), passed to devpod up because this \
+                 up makes the container."
             )
         }
-        LaunchNotice::DotfilesNotConfigured => "dotfiles: none set in devpod context options, so \
-                                                this up asked for none. 'devpod context \
-                                                set-options -o DOTFILES_URL=<repo>' is the only \
-                                                place dl reads it from."
+        LaunchNotice::DotfilesNotRerun {
+            url,
+            devpod_context_too: false,
+        } => format!(
+            "dotfiles: {url} (dl config [dotfiles]), not passed: this up starts a container \
+             that already has them. 'dl <ws> dotfiles' refreshes them."
+        ),
+        LaunchNotice::DotfilesNotRerun {
+            url,
+            devpod_context_too: true,
+        } => format!(
+            "dotfiles: {url} (dl config [dotfiles]), not passed; but devpod's own DOTFILES_URL \
+             context option is set too, so devpod re-runs the install on every up. 'devpod \
+             context set-options -o DOTFILES_URL=' clears it."
+        ),
+        LaunchNotice::DotfilesNotConfigured => "dotfiles: none set, so this up asked for none. \
+                                                Set [dotfiles] url = \"<repo>\" in dl's \
+                                                config.toml."
             .to_owned(),
+        // warning, said once: the move that stops devpod re-running the install
+        LaunchNotice::DotfilesMoved {
+            url,
+            script,
+            config,
+        } => {
+            let with = match script {
+                Some(script) => format!(" (script {script})"),
+                None => String::new(),
+            };
+            format!(
+                "Moved the dotfiles repository {url}{with} from devpod's DOTFILES_URL context \
+                 option into {config} [dotfiles]. devpod re-ran the dotfiles install on every \
+                 up while it was set there; dl now passes it only when it makes a container. A \
+                 bare 'devpod up' no longer installs dotfiles."
+            )
+        }
+        // warning: the URL stays where it was, and so does the slow path
+        LaunchNotice::DotfilesNotMoved { url, reason } => format!(
+            "Could not move the dotfiles repository {url} out of devpod's DOTFILES_URL context \
+             option ({reason}), so devpod still re-runs the dotfiles install on every up."
+        ),
 
         // --- the token (warning; gh_auth.py 84/94/105/139)
         LaunchNotice::NoGitHubToken(event) => no_github_token(event),
