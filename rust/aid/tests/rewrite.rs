@@ -213,6 +213,37 @@ impl Run {
 }
 
 // ===========================================================================
+// dla: aid under a second name
+// ===========================================================================
+
+#[test]
+fn dla_answers_exactly_as_aid_does() {
+    // `dla` is a second bin target over the same `main.rs` (`aid/Cargo.toml`), so
+    // it is aid in every respect, its own name in `--version` included. The two
+    // lines here are the ones aid answers without a workspace, which is enough to
+    // prove the binary is aid's and not some other program wearing the name.
+    for args in [&["--version"][..], &["--help"][..]] {
+        let aid = Command::new(env!("CARGO_BIN_EXE_aid"))
+            .args(args)
+            .keeping_coverage()
+            .output()
+            .expect("the aid binary runs");
+        let dla = Command::new(env!("CARGO_BIN_EXE_dla"))
+            .args(args)
+            .keeping_coverage()
+            .output()
+            .expect("the dla binary runs");
+        assert!(aid.status.success(), "aid {args:?}: {aid:?}");
+        assert_eq!(dla.status.code(), aid.status.code(), "dla {args:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&dla.stdout),
+            String::from_utf8_lossy(&aid.stdout),
+            "dla {args:?}"
+        );
+    }
+}
+
+// ===========================================================================
 // the three answers aid gives on its own
 // ===========================================================================
 
