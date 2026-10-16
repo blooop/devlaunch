@@ -1213,9 +1213,11 @@ impl<'a> Naming<'a> {
 /// Remove the containers a forgotten earlier incarnation of `workspace_id`
 /// left, and say so.
 ///
-/// `source` counts as the workspace's clone only when it is a directory under
-/// devlaunch's clone root: a local folder is the user's, and a compose project
-/// they started there by hand is not a leftover.
+/// `source` counts as the workspace's clone only when it is the directory
+/// devlaunch clones `workspace_id` into, `<clone root>/<owner>/<repo>/<id>`: a
+/// local folder is the user's, and a compose project they started there by hand
+/// is not a leftover; a repository's directory above the clones holds other
+/// workspaces' clones, whose containers are not this one's.
 fn sweep_leftovers(
     runner: &dyn Runner,
     host: &Host,
@@ -1224,9 +1226,21 @@ fn sweep_leftovers(
     notices: &mut dyn Notices<LaunchNotice>,
 ) {
     let source = Path::new(source);
-    let clone = (source.is_absolute()
-        && source.starts_with(crate::domain::xdg::clone_root_in(&host.cache_dir)))
-    .then_some(source);
+    let clone_root = crate::domain::xdg::clone_root_in(&host.cache_dir);
+    let clone = source
+        .strip_prefix(&clone_root)
+        .is_ok_and(|under| {
+            let parts: Vec<_> = under.components().collect();
+            matches!(
+                parts.as_slice(),
+                [
+                    std::path::Component::Normal(_),
+                    std::path::Component::Normal(_),
+                    std::path::Component::Normal(leaf),
+                ] if *leaf == std::ffi::OsStr::new(workspace_id)
+            )
+        })
+        .then_some(source);
     match crate::flows::orphan_containers::sweep(
         runner,
         host.devpod_home.as_ref(),
@@ -1318,6 +1332,36 @@ mod leftover_tests {
             &host_with(&home, Path::new("/cache/devlaunch")),
             "proj",
             "/home/me/proj",
+            &mut notices,
+        );
+
+        assert_eq!(fake.args_to("docker").len(), 1, "{:?}", fake.argvs());
+        assert!(notices.is_empty());
+    }
+
+    /// A repository's directory under the clone root holds every clone of that
+    /// repository: launched as a folder, it is not the clone of a workspace named
+    /// after its leaf, and the live workspaces' containers under it stay.
+    #[test]
+    fn a_launch_at_a_clones_parent_leaves_the_clones_containers() {
+        let home = devpod_home_with(&[]);
+        let cache = Path::new("/cache/devlaunch");
+        let repo = crate::domain::xdg::clone_root_in(cache).join("o/r");
+        let fake = FakeRunner::new();
+        fake.script(
+            ["docker", "ps"],
+            Response::stdout(format!(
+                "aaa\tdev_ws\t{dir}\t{dir}/a.yml\n",
+                dir = repo.join("ws/.devcontainer").display(),
+            )),
+        );
+        let mut notices: Vec<LaunchNotice> = Vec::new();
+
+        sweep_leftovers(
+            &fake,
+            &host_with(&home, cache),
+            "r",
+            &repo.display().to_string(),
             &mut notices,
         );
 
