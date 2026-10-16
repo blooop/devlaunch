@@ -59,20 +59,18 @@ impl Manager {
 
     /// The herdr whose pane `env` describes, or `None` outside one.
     ///
-    /// The socket is required because its directory is where herdr saves the
-    /// session, which is the one record of how each pane's agent starts again.
-    /// `binary` falls back to a `PATH` lookup, the rule every other herdr call in
-    /// dl follows.
+    /// [`herdr::Locator`] holds the rule. The socket it requires matters here
+    /// because its directory is where herdr saves the session, which is the one
+    /// record of how each pane's agent starts again.
     pub(crate) fn resolve(env: &herdr::HostEnv, binary: Option<&str>) -> Option<Self> {
-        if !crate::flows::provision::provisioning_disabled(env.in_pane.as_deref()) {
-            return None;
-        }
-        let socket = herdr::non_empty(env.socket.as_deref())?;
-        let session_file = Path::new(&socket).parent()?.join("session.json");
+        let herdr::Locator {
+            binary,
+            pane_id,
+            session_file,
+        } = herdr::Locator::resolve(env, binary)?;
         Some(Self {
-            binary: herdr::non_empty(binary)
-                .unwrap_or_else(|| crate::flows::launch::HERDR_BIN_FALLBACK.to_owned()),
-            own_pane: herdr::non_empty(env.pane_id.as_deref()),
+            binary,
+            own_pane: pane_id,
             session_file,
         })
     }

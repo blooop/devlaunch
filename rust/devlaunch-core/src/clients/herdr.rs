@@ -2073,6 +2073,38 @@ impl AgentResume {
     }
 }
 
+/// The herdr this process runs in a pane of, and where it saves its session.
+///
+/// One rule for both the per-pane report ([`ResumeReport`]) and the recreate's
+/// scan of every pane (`flows::agent_sessions`): provisioning has to be off for
+/// the pane, the socket's directory is where herdr keeps `session.json`, and the
+/// binary falls back to a `PATH` lookup, the rule every other herdr call in dl
+/// follows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Locator {
+    pub(crate) binary: String,
+    /// The pane this process runs in, when herdr named one.
+    pub(crate) pane_id: Option<String>,
+    pub(crate) session_file: PathBuf,
+}
+
+impl Locator {
+    /// The herdr `host` describes, or `None` outside one of its panes.
+    pub(crate) fn resolve(host: &HostEnv, binary: Option<&str>) -> Option<Self> {
+        if !crate::flows::provision::provisioning_disabled(host.in_pane.as_deref()) {
+            return None;
+        }
+        let socket = non_empty(host.socket.as_deref())?;
+        let session_file = Path::new(&socket).parent()?.join("session.json");
+        Some(Self {
+            binary: non_empty(binary)
+                .unwrap_or_else(|| crate::flows::launch::HERDR_BIN_FALLBACK.to_owned()),
+            pane_id: non_empty(host.pane_id.as_deref()),
+            session_file,
+        })
+    }
+}
+
 /// One pane to report a resume argv for, from the host.
 ///
 /// No consent is asked for, unlike [`Reporting`]: this costs one herdr call from
@@ -2099,16 +2131,14 @@ impl ResumeReport {
         agent: Option<&'static str>,
         argv: Option<Vec<String>>,
     ) -> Option<Self> {
-        if !crate::flows::provision::provisioning_disabled(host.in_pane.as_deref()) {
-            return None;
-        }
-        let pane_id = non_empty(host.pane_id.as_deref())?;
-        let socket = non_empty(host.socket.as_deref())?;
-        let session_file = Path::new(&socket).parent()?.join("session.json");
-        Some(Self {
-            binary: non_empty(binary)
-                .unwrap_or_else(|| crate::flows::launch::HERDR_BIN_FALLBACK.to_owned()),
+        let Locator {
+            binary,
             pane_id,
+            session_file,
+        } = Locator::resolve(host, binary)?;
+        Some(Self {
+            binary,
+            pane_id: pane_id?,
             session_file,
             agent: agent?,
             argv: argv?,
@@ -2486,6 +2516,27 @@ mod resume_tests {
         assert_eq!(
             ResumeReport::resolve(&in_a_pane(), None, Some("claude"), None),
             None
+        );
+    }
+
+    /// The scan of every pane needs no pane of its own, where the report does.
+    #[test]
+    fn a_herdr_is_located_without_a_pane_id_and_falls_back_to_path() {
+        let host = HostEnv {
+            pane_id: Some(" ".to_owned()),
+            ..in_a_pane()
+        };
+        assert_eq!(
+            Locator::resolve(&host, Some("")),
+            Some(Locator {
+                binary: "herdr".to_owned(),
+                pane_id: None,
+                session_file: PathBuf::from("/home/u/.config/herdr/sessions/s/session.json"),
+            })
+        );
+        assert_eq!(
+            Locator::resolve(&in_a_pane(), Some("/opt/herdr")).map(|at| (at.binary, at.pane_id)),
+            Some(("/opt/herdr".to_owned(), Some("w1:p3".to_owned())))
         );
     }
 
