@@ -217,6 +217,33 @@ pub(crate) fn exec_as_root(
     read(runner, &args, READ_INSIDE)
 }
 
+/// A `--format`ted `docker inspect` over these names: what it printed, whatever
+/// it exited.
+///
+/// Whatever it exited, because `docker inspect` over several names prints a line
+/// for every name it found and then exits 1 if any one of them was missing. A
+/// container removed by hand, or an image reference this machine never pulled,
+/// would otherwise cost every other name its answer. So each format the callers
+/// pass puts the name's id in the line, and the caller matches on that id and
+/// never on the line's position.
+///
+/// `None` is a docker that did not run at all, which every caller reads as "could
+/// not tell".
+pub(crate) fn inspect_formatted(
+    runner: &dyn Runner,
+    kind: &str,
+    format: &str,
+    names: &NonEmpty<String>,
+) -> Option<String> {
+    let mut args = vec!["inspect", "--type", kind, "--format", format];
+    args.extend(names.iter().map(String::as_str));
+    let spec = SpawnSpec::from(Invocation::new(PROGRAM).with_args(args.iter().copied()))
+        .with_timeout(INSPECT_THEM);
+    ran(runner.capture(&spec))
+        .ok()
+        .map(|(_, CapturedText { stdout, .. })| stdout)
+}
+
 /// One bounded docker read: its stdout when it exited 0, and otherwise words
 /// for why not.
 fn read(runner: &dyn Runner, args: &[&str], timeout: Duration) -> Result<String, String> {

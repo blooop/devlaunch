@@ -43,6 +43,8 @@ pub mod repo_manager;
 // it is one decision and no socket.
 pub mod session_manager;
 // binary surface — not part of the frozen wf API (#251 §7)
+pub mod stale_images;
+// binary surface — not part of the frozen wf API (#251 §7)
 pub mod workspace_clone;
 
 // Binary surface, outside the frozen workspace API.
