@@ -310,6 +310,11 @@ done
         """aid's first argument is a dl workspace spec, so it completes alike."""
         assert self.run_completion("aid my-") == self.run_completion("dl my-")
 
+    def test_dla_completes_exactly_as_aid(self):
+        """`dla` is aid's second name, so every line completes as aid's does."""
+        for line in ("dla my-", "dla --", "dla my-workspace ", "dla --codex my-"):
+            assert self.run_completion(line) == self.run_completion("aid" + line[3:]), line
+
     def test_aid_completes_agent_flags(self):
         """Test completion of aid's own flags."""
         completions = self.run_completion("aid --")
