@@ -45,6 +45,7 @@ use std::path::Path;
 use crate::clients::docker;
 use crate::clients::herdr;
 use crate::domain::locks;
+use crate::domain::proc_stat;
 use crate::flows::agent_sessions;
 use crate::flows::launch_locks::LaunchLocks;
 use crate::flows::stale_images::StaleImages;
@@ -295,25 +296,15 @@ fn process_table(out: &str) -> Result<Vec<Process>, String> {
         let [stat, cmdline] = pair else {
             return Err("the listing ended halfway through a process".to_owned());
         };
-        let (open, close) = stat
-            .find(" (")
-            .zip(stat.rfind(") "))
-            .ok_or_else(|| format!("a stat line did not parse: {stat}"))?;
-        let mut rest = stat[close + 2..].split(' ');
-        let state = rest.next();
-        let (Ok(pid), Some(Ok(ppid))) = (
-            stat[..open].parse::<u32>(),
-            rest.next().map(str::parse::<u32>),
-        ) else {
-            return Err(format!("a stat line did not parse: {stat}"));
-        };
-        if state == Some("Z") {
+        let stat =
+            proc_stat::parse(stat).ok_or_else(|| format!("a stat line did not parse: {stat}"))?;
+        if stat.zombie {
             continue;
         }
         table.push(Process {
-            pid,
-            ppid,
-            comm: stat[open + 2..close].to_owned(),
+            pid: stat.pid,
+            ppid: stat.ppid,
+            comm: stat.comm,
             argv: cmdline
                 .split('\u{1f}')
                 .filter(|word| !word.is_empty())

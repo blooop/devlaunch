@@ -13,7 +13,8 @@ fn stale() -> StaleImages {
 /// argv joined by unit separators.
 fn process(pid: u32, ppid: u32, comm: &str, argv: &[&str]) -> String {
     format!(
-        "{pid} ({comm}) S {ppid} {pid} {pid} 0 -1 4194560\n{}\n",
+        "{pid} ({comm}) S {ppid} {pid} {pid} 0 -1 4194560 155 0 0 0 0 0 0 0 20 0 1 0 1000 1000 10 \
+         18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 3 0 0 0 0 0\n{}\n",
         argv.join("\u{1f}")
     )
 }
@@ -111,7 +112,9 @@ fn each_build_program_is_a_reason_to_skip() {
 #[test]
 fn a_zombie_is_not_a_build() {
     let mut processes = quiet();
-    processes.push("77 (cc1plus) Z 41 77 77 0 -1 4194560\n\n".to_owned());
+    processes.push(
+        "77 (cc1plus) Z 41 77 77 0 -1 4194560 155 0 0 0 0 0 0 0 20 0 1 0 1000 0 0\n\n".to_owned(),
+    );
     let runner = runner_reading(&processes);
     let cache = cache();
 
@@ -616,5 +619,21 @@ fn each_stale_workspace_gets_its_own_verdict() {
             ),
             ("quiet".to_owned(), Verdict::Refresh),
         ]
+    );
+}
+
+#[test]
+fn a_command_name_that_holds_a_closing_parenthesis_reads_whole() {
+    // A process may name itself anything up to 15 bytes, `) ` included, so the
+    // name ends at the last `)` on the line.
+    let out = table(&[process(1234, 1, "a) b", &["a"])]);
+
+    let read = process_table(&out).expect("the line reads");
+
+    assert_eq!(
+        read.iter()
+            .map(|process| (process.pid, process.ppid, process.comm.as_str()))
+            .collect::<Vec<_>>(),
+        [(1234, 1, "a) b")]
     );
 }

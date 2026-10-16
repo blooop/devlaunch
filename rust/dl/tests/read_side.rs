@@ -933,9 +933,9 @@ fn a_verb_with_no_workspace_opens_the_selector_and_no_terminal_picks_nothing() {
 const SECOND_ID: &str = "devpod-upstream";
 
 /// What a quiet container's processes read as: one `sleep`.
-const QUIET: &str = r"printf '1 (sleep) S 0 1 1\nsleep\037infinity\ndevlaunch-end\n'";
+const QUIET: &str = r"printf '1 (sleep) S 0 1 1 0 -1 4194560 155 0 0 0 0 0 0 0 20 0 1 0 1000 1000 10\nsleep\037infinity\ndevlaunch-end\n'";
 /// What a container with a build in it reads as: a `cc1plus` beside the `sleep`.
-const BUILDING: &str = r"printf '1 (sleep) S 0 1 1\nsleep\037infinity\n77 (cc1plus) R 1 1 1\ncc1plus\ndevlaunch-end\n'";
+const BUILDING: &str = r"printf '1 (sleep) S 0 1 1 0 -1 4194560 155 0 0 0 0 0 0 0 20 0 1 0 1000 1000 10\nsleep\037infinity\n77 (cc1plus) R 1 1 1 0 -1 4194560 155 0 0 0 0 0 0 0 20 0 1 0 1000 1000 10\ncc1plus\ndevlaunch-end\n'";
 
 /// The full scenario with each `(workspace, container, answer)` stale: its
 /// container created from [`STALE_REFERENCE`], and a docker that says the
