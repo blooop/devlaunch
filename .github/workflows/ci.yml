@@ -635,7 +635,7 @@ jobs:
           # asserts contents and version and says nothing about the tag.
           container: off
           args: --release --locked --out dist
-      - name: The wheel is the two binaries, at the version rust/Cargo.toml names
+      - name: The wheel is the binaries, at the version rust/Cargo.toml names
         run: |
           set -euo pipefail
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' rust/Cargo.toml | head -1)
