@@ -283,6 +283,36 @@ mod tests {
         );
     }
 
+    /// A project whose compose files all sit elsewhere still names the
+    /// workspace when compose ran it from devpod's directory for the id.
+    #[test]
+    fn a_working_dir_in_the_devpod_directory_alone_is_enough() {
+        let home = devpod_home_with(&[]);
+        let agent_dir = agent_compose_file(&home, "default", WS)
+            .parent()
+            .expect("the compose override's directory")
+            .to_path_buf();
+        let fake = FakeRunner::new();
+        fake.script(
+            ["docker", "ps"],
+            Response::stdout(row(
+                "aaa",
+                "dev",
+                &agent_dir,
+                &[Path::new("/srv/elsewhere/compose.yml")],
+            )),
+        );
+
+        assert_eq!(
+            sweep(&fake, Some(&home), WS, None),
+            OrphanSweep::Removed(vec!["dev".to_owned()])
+        );
+        assert_eq!(
+            fake.args_to("docker").last().expect("a removal"),
+            &["rm", "--force", "aaa"]
+        );
+    }
+
     #[test]
     fn no_devpod_home_means_nothing_to_check_against() {
         let fake = FakeRunner::new();
