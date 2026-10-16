@@ -1038,21 +1038,7 @@ const LEFTOVER_LISTING: &str = "ps --all --no-trunc --filter label=com.docker.co
 #[test]
 fn rm_removes_the_containers_devpod_left_behind() {
     let world = World::base();
-    let root = world.root.display().to_string();
-    let clone = format!("{root}/cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-legacy");
-    let agent = format!(
-        "{root}/devpod/agent/contexts/default/workspaces/devlaunch-main-legacy/.docker-compose/\
-         docker-compose.devcontainer.containerFeatures-0.yml"
-    );
-    std::fs::write(
-        world.path("docker-ps"),
-        format!(
-            "aaa\tdev_devlaunch-main-legacy\t{clone}/.devcontainer\t{clone}/.devcontainer/a.yml,{agent}\n\
-             bbb\tsidecar_devlaunch-main-legacy\t{clone}/.devcontainer\t{clone}/.devcontainer/b.yml\n\
-             ccc\tsomeone_else\t/srv/other\t/srv/other/compose.yml\n"
-        ),
-    )
-    .expect("a docker listing");
+    leave_containers_behind(&world);
 
     let run = world.dl(&["devlaunch-main-legacy", "rm"]);
 
@@ -1069,6 +1055,88 @@ fn rm_removes_the_containers_devpod_left_behind() {
         "{}",
         run.err
     );
+}
+
+/// The ordinary shape: devpod held a record for the workspace until its own
+/// delete dropped it, so the sweep runs after the delete and not instead of it.
+/// The volume removal after it shows the record was there to name them from.
+#[test]
+fn rm_removes_the_leftovers_once_devpods_delete_drops_its_record() {
+    let world = World::with(&["--devcontainer-volumes", "--record-dropping-delete"]);
+    leave_containers_behind(&world);
+    assert!(
+        world.exists("devpod/contexts/default/workspaces/devlaunch-main-legacy/workspace.json")
+    );
+
+    let run = world.dl(&["devlaunch-main-legacy", "rm"]);
+
+    run.exited(0);
+    assert!(!world.exists("devpod/contexts/default/workspaces/devlaunch-main-legacy"));
+    assert_eq!(
+        world.docker_calls(),
+        [
+            LEFTOVER_LISTING,
+            "rm --force aaa bbb",
+            "volume rm --force devlaunch-main-legacy-pixi dind-var-lib-docker-0f4b2c1d",
+        ]
+    );
+    assert!(
+        run.err.contains(
+            "Removed containers devlaunch-main-legacy left behind: \
+             dev_devlaunch-main-legacy, sidecar_devlaunch-main-legacy\n"
+        ),
+        "{}",
+        run.err
+    );
+}
+
+/// `kill` ends in the same delete, so it sweeps the same leftovers. The calls
+/// before the sweep are `kill`'s own hunt for what holds the workspace.
+#[test]
+fn kill_removes_the_leftovers_once_devpods_delete_drops_its_record() {
+    let world = World::with(&["--devcontainer-volumes", "--record-dropping-delete"]);
+    leave_containers_behind(&world);
+
+    let run = world.dl(&["devlaunch-main-legacy", "kill"]);
+
+    run.exited(0);
+    let calls = world.docker_calls();
+    assert!(
+        calls.ends_with(&[
+            LEFTOVER_LISTING.to_owned(),
+            "rm --force aaa bbb".to_owned(),
+            "volume rm --force devlaunch-main-legacy-pixi dind-var-lib-docker-0f4b2c1d".to_owned(),
+        ]),
+        "{calls:?}"
+    );
+    assert!(
+        run.err.contains(
+            "Removed containers devlaunch-main-legacy left behind: \
+             dev_devlaunch-main-legacy, sidecar_devlaunch-main-legacy\n"
+        ),
+        "{}",
+        run.err
+    );
+}
+
+/// Put three compose containers on the world's docker: two left by
+/// `devlaunch-main-legacy` (`aaa`, `bbb`), and one of somebody else's.
+fn leave_containers_behind(world: &World) {
+    let root = world.root.display().to_string();
+    let clone = format!("{root}/cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-legacy");
+    let agent = format!(
+        "{root}/devpod/agent/contexts/default/workspaces/devlaunch-main-legacy/.docker-compose/\
+         docker-compose.devcontainer.containerFeatures-0.yml"
+    );
+    std::fs::write(
+        world.path("docker-ps"),
+        format!(
+            "aaa\tdev_devlaunch-main-legacy\t{clone}/.devcontainer\t{clone}/.devcontainer/a.yml,{agent}\n\
+             bbb\tsidecar_devlaunch-main-legacy\t{clone}/.devcontainer\t{clone}/.devcontainer/b.yml\n\
+             ccc\tsomeone_else\t/srv/other\t/srv/other/compose.yml\n"
+        ),
+    )
+    .expect("a docker listing");
 }
 
 #[test]

@@ -192,7 +192,21 @@ def build(root: pathlib.Path, shim: pathlib.Path, wanted: set) -> None:
         path.mkdir(parents=True, exist_ok=True)
 
     devpod = root / "bin" / "devpod"
-    devpod.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{shim}" "$@"\n', encoding="utf-8")
+    if "record-dropping-delete" in wanted:
+        # A delete that also drops devpod's own record of the workspace, the way
+        # real devpod's does, so that what a test sees afterwards is a devpod
+        # holding no record for the id. The shim keeps its state in its own file
+        # and never touches `contexts/`.
+        devpod.write_text(
+            f'#!/bin/sh\n"{sys.executable}" "{shim}" "$@"\nstatus=$?\n'
+            'if [ "$1" = delete ] && [ "$status" = 0 ]; then\n'
+            '  rm -rf "$DEVPOD_HOME/contexts/default/workspaces/$2"\n'
+            "fi\n"
+            'exit "$status"\n',
+            encoding="utf-8",
+        )
+    else:
+        devpod.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{shim}" "$@"\n', encoding="utf-8")
     devpod.chmod(0o755)
 
     # A fake docker, in *every* world and not only the one that asserts about it:
@@ -570,7 +584,7 @@ if __name__ == "__main__":
             "[--stranded-clone] "
             "[--tagged-release] "
             "[--sealed-cache] [--symlinked-cache] [--v1-cache] "
-            "[--devcontainer-volumes]"
+            "[--devcontainer-volumes] [--record-dropping-delete]"
         )
     flags = {argument.lstrip("-") for argument in sys.argv[3:]}
     unknown = flags - {
@@ -590,6 +604,7 @@ if __name__ == "__main__":
         "symlinked-cache",
         "v1-cache",
         "devcontainer-volumes",
+        "record-dropping-delete",
     }
     if unknown:
         raise SystemExit(f"lifecycle_scenario.py: unknown fixture(s): {sorted(unknown)}")
