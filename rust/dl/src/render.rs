@@ -56,7 +56,7 @@ use devlaunch_core::flows::migration::{Listing, MigrationReport};
 use devlaunch_core::flows::provision::{BundleFailed, FailureLevel, ProvisionEvent};
 use devlaunch_core::flows::pull_request::Refusal as PullRequestRefusal;
 use devlaunch_core::flows::records::{RecordsNotice, StartupError};
-use devlaunch_core::flows::refresh_stale::{AgentState, Planned, Skip, Verdict};
+use devlaunch_core::flows::refresh_stale::{AgentState, Planned, Skip, Tally, Verdict};
 use devlaunch_core::flows::repo_manager::{
     CacheNotice, Cleanup, CloneError, EnsureRepoError, NotRefreshed, Refusal, RefusalReason,
     RemoveTreeError, WrongRepoLock,
@@ -399,18 +399,9 @@ fn skip_reason(skip: &Skip) -> String {
     }
 }
 
-/// How many stale workspaces `dl --refresh-stale` refreshed, skipped, and failed
-/// to refresh.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct RefreshTally {
-    pub(crate) refreshed: usize,
-    pub(crate) skipped: usize,
-    pub(crate) failed: usize,
-}
-
 /// The last line of `dl --refresh-stale`.
-pub(crate) fn refresh_stale_summary(tally: RefreshTally) -> String {
-    let RefreshTally {
+pub(crate) fn refresh_stale_summary(tally: Tally) -> String {
+    let Tally {
         refreshed,
         skipped,
         failed,
@@ -7257,7 +7248,7 @@ mod tests {
     #[test]
     fn the_refresh_summary_counts_what_happened() {
         assert_eq!(
-            refresh_stale_summary(RefreshTally {
+            refresh_stale_summary(Tally {
                 refreshed: 2,
                 skipped: 1,
                 failed: 1
@@ -7265,7 +7256,7 @@ mod tests {
             "Refreshed 2 stale workspaces, skipped 1, and 1 failed."
         );
         assert_eq!(
-            refresh_stale_summary(RefreshTally {
+            refresh_stale_summary(Tally {
                 refreshed: 1,
                 skipped: 0,
                 failed: 0

@@ -637,3 +637,145 @@ fn a_command_name_that_holds_a_closing_parenthesis_reads_whole() {
         [(1234, 1, "a) b")]
     );
 }
+
+// --- the run: a second look before each recreate, and the tally
+
+/// A [`Refresher`] that records what it was told, fails the recreates it is
+/// told to, and, when one named workspace is recreated, takes the launch lock
+/// of another, as a second `dl` starting a launch meanwhile would.
+struct Scripted<'l> {
+    locks: &'l LaunchLocks,
+    lock_on_recreate: Option<(&'static str, &'static str)>,
+    failing: &'static [&'static str],
+    held: Vec<locks::LockGuard>,
+    said: Vec<String>,
+}
+
+impl<'l> Scripted<'l> {
+    fn new(locks: &'l LaunchLocks) -> Self {
+        Self {
+            locks,
+            lock_on_recreate: None,
+            failing: &[],
+            held: Vec::new(),
+            said: Vec::new(),
+        }
+    }
+}
+
+impl Refresher for Scripted<'_> {
+    fn planned(&mut self, plan: &[Planned]) {
+        for planned in plan {
+            self.said.push(format!(
+                "plan {} {:?}",
+                planned.workspace_id, planned.verdict
+            ));
+        }
+    }
+
+    fn left_alone(&mut self, workspace_id: &str, skip: &Skip) {
+        self.said
+            .push(format!("left alone {workspace_id} {skip:?}"));
+    }
+
+    fn recreate(&mut self, workspace_id: &str) -> bool {
+        self.said.push(format!("recreate {workspace_id}"));
+        if let Some((when, lock)) = self.lock_on_recreate
+            && when == workspace_id
+        {
+            self.held
+                .push(locks::hold_lock(&self.locks.path_for(lock)).expect("the lock"));
+        }
+        !self.failing.contains(&workspace_id)
+    }
+}
+
+fn quiet_runner(ids: &[&str]) -> ScriptedRunner {
+    ids.iter().fold(ScriptedRunner::new(), |runner, id| {
+        runner.with_script(
+            ["docker", "exec", "--user", "0", id, "sh", "-c"],
+            Response::stdout(table(&quiet())),
+        )
+    })
+}
+
+fn stale_of(ids: &[&'static str]) -> StaleImages {
+    StaleImages::of_pairs(ids.iter().map(|id| (*id, "ghcr.io/o/img:latest")))
+}
+
+#[test]
+fn a_workspace_that_turns_busy_after_the_plan_is_left_alone_not_recreated() {
+    let ids = ["first", "second"];
+    let runner = quiet_runner(&ids);
+    let cache = cache();
+    let launch_locks = LaunchLocks::under(cache.path());
+    let mut refresher = Scripted::new(&launch_locks);
+    refresher.lock_on_recreate = Some(("first", "second"));
+
+    let tally = run(
+        &runner,
+        &stale_of(&ids),
+        ids,
+        None,
+        &launch_locks,
+        &|_| None,
+        &mut refresher,
+    );
+
+    assert_eq!(
+        refresher.said,
+        vec![
+            "plan first Refresh",
+            "plan second Refresh",
+            "recreate first",
+            "left alone second LaunchUnderWay",
+        ]
+    );
+    assert_eq!(
+        tally,
+        Tally {
+            refreshed: 1,
+            skipped: 1,
+            failed: 0,
+        }
+    );
+}
+
+#[test]
+fn the_tally_counts_each_workspace_once_as_refreshed_skipped_or_failed() {
+    let ids = ["locked", "fine", "broken", "also_fine", "turns_busy"];
+    let runner = quiet_runner(&ids);
+    let cache = cache();
+    let launch_locks = LaunchLocks::under(cache.path());
+    let _held = locks::hold_lock(&launch_locks.path_for("locked")).expect("the lock");
+    let mut refresher = Scripted::new(&launch_locks);
+    refresher.failing = &["broken"];
+    refresher.lock_on_recreate = Some(("also_fine", "turns_busy"));
+
+    let tally = run(
+        &runner,
+        &stale_of(&ids),
+        ids.iter().copied().chain(["current"]),
+        None,
+        &launch_locks,
+        &|_| None,
+        &mut refresher,
+    );
+
+    assert_eq!(
+        tally,
+        Tally {
+            refreshed: 2,
+            skipped: 2,
+            failed: 1,
+        }
+    );
+    assert_eq!(
+        refresher
+            .said
+            .iter()
+            .filter(|line| line.starts_with("recreate "))
+            .collect::<Vec<_>>(),
+        vec!["recreate fine", "recreate broken", "recreate also_fine"]
+    );
+}

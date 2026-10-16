@@ -1275,10 +1275,9 @@ impl Cleanup {
 /// It runs unattended, after a pull, so it asks nothing and attaches nothing.
 /// It says the whole plan first, one line per stale workspace, so the skips are
 /// on the screen before the recreates start to scroll it away. Which workspaces
-/// are safe is core's ([`refresh_stale::plan`]); each recreate is the launch
-/// flow's own, with its own notices. The recreates before one can take minutes,
-/// so each workspace the plan would refresh is judged again just before its
-/// recreate, and left alone, with a line, if that verdict is a skip.
+/// are safe, and the second look before each recreate, are core's
+/// ([`refresh_stale::run`]); each recreate is the launch flow's own, with its
+/// own notices.
 ///
 /// A recreate that fails is said by its launch and counted, and the loop goes on
 /// to the next. The exit status is 1 when any recreate failed. A skip is not a
@@ -1304,50 +1303,60 @@ fn render_refresh_stale<'r>(
     }
     let host = Host::from_process(cache);
     let manager = agent_sessions::HerdrPanes::from_host(&host);
-    let launch_locks = LaunchLocks::under(cache);
-    let judge = |ids: &mut dyn Iterator<Item = &str>| {
-        refresh_stale::plan(
-            runner,
-            &stale,
-            ids,
-            manager.as_ref(),
-            &launch_locks,
-            &|path| std::fs::read_to_string(path).ok(),
-        )
-    };
-    let planned = judge(&mut ids.iter().copied());
-    for line in planned.iter().map(render::refresh_stale_line) {
-        println!("{line}");
-    }
     let mut opening = render::Saying;
-    let mut cold = ColdPath::new(runner, &mut opening);
-    let mut tally = render::RefreshTally::default();
-    for planned in &planned {
-        if let refresh_stale::Verdict::Skip(_) = planned.verdict {
-            tally.skipped += 1;
-            continue;
+    let mut recreates = Recreates {
+        context,
+        cache,
+        refresh,
+        cold: ColdPath::new(runner, &mut opening),
+    };
+    let tally = refresh_stale::run(
+        runner,
+        &stale,
+        ids.iter().copied(),
+        manager.as_ref(),
+        &LaunchLocks::under(cache),
+        &|path| std::fs::read_to_string(path).ok(),
+        &mut recreates,
+    );
+    println!("{}", render::refresh_stale_summary(tally));
+    if tally.failed == 0 {
+        Ending::Done
+    } else {
+        Ending::Refused
+    }
+}
+
+/// The binary's side of `dl --refresh-stale`: it says the plan and each
+/// second-look skip, and runs each recreate as the launch flow's own.
+struct Recreates<'c, 'r, 'f, 'o> {
+    context: &'c mut CommandContext<'r>,
+    cache: &'c Path,
+    refresh: &'c mut Refresh<'f>,
+    cold: ColdPath<'r, 'o>,
+}
+
+impl refresh_stale::Refresher for Recreates<'_, '_, '_, '_> {
+    fn planned(&mut self, plan: &[refresh_stale::Planned]) {
+        for line in plan.iter().map(render::refresh_stale_line) {
+            println!("{line}");
         }
-        // The plan was read before the recreates ahead of this one, which can
-        // take minutes. Judged again now, a skip wins.
-        let id = planned.workspace_id.as_str();
-        match judge(&mut std::iter::once(id)).pop().map(|now| now.verdict) {
-            Some(refresh_stale::Verdict::Refresh) => {}
-            Some(refresh_stale::Verdict::Skip(skip)) => {
-                println!("{}", render::refresh_stale_rejudged_line(id, &skip));
-                tally.skipped += 1;
-                continue;
-            }
-            None => {
-                tally.skipped += 1;
-                continue;
-            }
-        }
+    }
+
+    fn left_alone(&mut self, workspace_id: &str, skip: &refresh_stale::Skip) {
+        println!(
+            "{}",
+            render::refresh_stale_rejudged_line(workspace_id, skip)
+        );
+    }
+
+    fn recreate(&mut self, workspace_id: &str) -> bool {
         let ran = launch::render_launch(
-            context,
-            cache,
-            refresh,
-            &mut cold,
-            &planned.workspace_id,
+            self.context,
+            self.cache,
+            self.refresh,
+            &mut self.cold,
+            workspace_id,
             &LaunchVerb::RecreateUnattended,
             None,
             None,
@@ -1356,17 +1365,7 @@ fn render_refresh_stale<'r>(
         );
         // No `refresh.rearm()`: a recreate keeps the workspace's id, so the
         // completion cache the first one refreshed holds for the rest.
-        if ran.ending == Ending::Done {
-            tally.refreshed += 1;
-        } else {
-            tally.failed += 1;
-        }
-    }
-    println!("{}", render::refresh_stale_summary(tally));
-    if tally.failed == 0 {
-        Ending::Done
-    } else {
-        Ending::Refused
+        ran.ending == Ending::Done
     }
 }
 

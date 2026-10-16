@@ -6,7 +6,8 @@
 //! container. [`crate::flows::agent_sessions`] brings the agents back, so what is
 //! left to lose is work in flight: an agent in the middle of a turn, a command
 //! an agent started, a build. This module decides, per stale workspace, whether
-//! there is any. It decides and does nothing; the binary runs the recreates.
+//! there is any. [`plan`] decides and does nothing; [`run`] judges each
+//! workspace again before its recreate, and the binary runs the recreates.
 //!
 //! # The rule
 //!
@@ -154,6 +155,70 @@ pub fn plan<'w>(
             })
         })
         .collect()
+}
+
+/// What `dl --refresh-stale` did with its stale workspaces: each one is counted
+/// once, as refreshed, skipped, or failed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Tally {
+    pub refreshed: usize,
+    pub skipped: usize,
+    pub failed: usize,
+}
+
+/// The side of a refresh that [`run`] leaves to its caller: saying the plan,
+/// saying a second-look skip, and running each recreate.
+pub trait Refresher {
+    /// The whole plan, before the first recreate.
+    fn planned(&mut self, plan: &[Planned]);
+    /// A workspace the plan would refresh, left alone on its second look.
+    fn left_alone(&mut self, workspace_id: &str, skip: &Skip);
+    /// Recreate the workspace; `true` when the recreate succeeded.
+    fn recreate(&mut self, workspace_id: &str) -> bool;
+}
+
+/// Plan the refresh of the stale workspaces among `workspace_ids` (as [`plan`]
+/// does, with the same inputs), then recreate each one the plan would refresh.
+///
+/// The recreates before one can take minutes, so each workspace is judged
+/// again just before its recreate, and a skip found then wins: it is left
+/// alone and said through [`Refresher::left_alone`]. A failed recreate is
+/// counted and the run goes on to the next.
+pub fn run<'w>(
+    runner: &dyn Runner,
+    stale: &StaleImages,
+    workspace_ids: impl IntoIterator<Item = &'w str>,
+    manager: Option<&agent_sessions::HerdrPanes>,
+    launch_locks: &LaunchLocks,
+    read: &dyn Fn(&Path) -> Option<String>,
+    refresher: &mut dyn Refresher,
+) -> Tally {
+    let planned = plan(runner, stale, workspace_ids, manager, launch_locks, read);
+    refresher.planned(&planned);
+    let mut tally = Tally::default();
+    for planned in &planned {
+        if let Verdict::Skip(_) = planned.verdict {
+            tally.skipped += 1;
+            continue;
+        }
+        let id = planned.workspace_id.as_str();
+        // The plan named it, so `stale` does.
+        let Some(image) = stale.of(id) else {
+            tally.skipped += 1;
+            continue;
+        };
+        if let Some(skip) = judge(runner, id, image.container(), manager, launch_locks, read) {
+            refresher.left_alone(id, &skip);
+            tally.skipped += 1;
+            continue;
+        }
+        if refresher.recreate(id) {
+            tally.refreshed += 1;
+        } else {
+            tally.failed += 1;
+        }
+    }
+    tally
 }
 
 /// The first rule this workspace fails, or `None` when it may be refreshed.
