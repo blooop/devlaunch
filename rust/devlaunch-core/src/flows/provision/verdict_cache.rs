@@ -172,6 +172,7 @@ impl VerdictCache {
             claude: match claude {
                 Some(ClaudeConfig::Ours) => MemoWord::Ours,
                 Some(ClaudeConfig::Foreign) => MemoWord::Foreign,
+                Some(ClaudeConfig::Bound) => MemoWord::Bound,
                 None => MemoWord::Unknown,
             },
             result_mtime,
@@ -207,6 +208,7 @@ impl VerdictCache {
         match self.read_memo(workspace_id)? {
             MemoWord::Ours => Some(ClaudeConfig::Ours),
             MemoWord::Foreign => Some(ClaudeConfig::Foreign),
+            MemoWord::Bound => Some(ClaudeConfig::Bound),
             MemoWord::Unknown => None,
         }
     }
@@ -358,20 +360,26 @@ struct Memo {
     result_mtime: Stamp,
 }
 
-/// The three things a pass can have concluded about the config directory.
+/// The four things a pass can have concluded about the config directory.
 ///
-/// An enum with serde's spelling rather than a `String` matched against three
+/// An enum with serde's spelling rather than a `String` matched against the
 /// literals, for the reason [`Verdict`] is one: the check is the parse, so a word a
 /// later build writes, or a hand-edit, fails to deserialize and reads as no memo at
 /// all. `Unknown` is a recorded answer and not the absence of one --
 /// [`VerdictCache::has_claude_memo`] says why the two must stay apart -- which is
 /// why it is an arm here and `None` at the call site.
+///
+/// `Bound` carries [`ClaudeConfig::Bound`] through the on-disk memo, which would
+/// otherwise have remembered a bound workspace as `Unknown` and sent every later
+/// launch back through a pass just to relearn what this cache exists to skip.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 enum MemoWord {
     #[serde(rename = "ours")]
     Ours,
     #[serde(rename = "foreign")]
     Foreign,
+    #[serde(rename = "bound")]
+    Bound,
     #[serde(rename = "unknown")]
     Unknown,
 }
@@ -583,6 +591,7 @@ mod tests {
         for (seen, expected) in [
             (Some(ClaudeConfig::Ours), Some(ClaudeConfig::Ours)),
             (Some(ClaudeConfig::Foreign), Some(ClaudeConfig::Foreign)),
+            (Some(ClaudeConfig::Bound), Some(ClaudeConfig::Bound)),
             (None, None),
         ] {
             let (_cache, _home, verdicts) = anchored();

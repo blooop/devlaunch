@@ -172,9 +172,10 @@ logged in while holding a perfectly good login.
 
 ### Naming a profile
 
-`--claude-profile <name>` forwards a named login instead of the default one, for the
-case the order above cannot serve: two accounts on one machine, and a workspace
-that wants the one your host is not signed in to.
+`--claude-profile <name>` binds a named configuration directory into the container
+instead of forwarding the default login, for the case the order above cannot
+serve: two accounts on one machine, and a workspace that wants the one your host
+is not signed in to.
 
 ```bash
 dl owner/repo --claude-profile work
@@ -182,7 +183,13 @@ dl owner/repo --claude-profile work
 
 The name is one directory under `~/.claude-profiles/`, holding the
 `.credentials.json` a `claude` login writes. Each such directory is a
-`CLAUDE_CONFIG_DIR` of its own, which is what makes the logins independent.
+`CLAUDE_CONFIG_DIR` of its own, which is what makes the logins independent. The
+whole directory is bound in, not only the credential, so a `CLAUDE.md`, agents,
+skills or hooks living beside it reach the container too, and a token
+refresh in there lands back in the profile on disk rather than going stale. A
+bind lands only when the container is created, so switching to a different
+profile on a workspace that already exists is a `recreate`; a `restart` keeps
+whichever profile the container was created with.
 
 **That is somebody else's directory and `dl` only reads it.** The layout and the
 `CLAUDE_PROFILES_DIR` variable belong to the tool that manages them, honoured here
@@ -208,6 +215,11 @@ next.
 `--claude-profile default` resolves the login you would get anyway and never consults
 a `default/` directory. It exists as a word because a picker needs something to
 select, and a recalled line needs a way to say "not the profile I used last time".
+It still binds that login's own configuration directory into the container,
+read-write, the same as a named profile does, whenever a credential file sits
+in it; a host whose Claude login is not a credential file in that directory
+falls back to forwarding the login with nothing mounted, silently, since
+there is no name here for a launch to refuse over.
 
 ### Seeing which account a profile actually holds
 

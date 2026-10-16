@@ -2788,6 +2788,7 @@ impl core::fmt::Debug for devlaunch_core::flows::provision::BundleFailed
 pub fn devlaunch_core::flows::provision::BundleFailed::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::provision::BundleFailed
 pub enum devlaunch_core::flows::provision::ClaudeConfig
+pub devlaunch_core::flows::provision::ClaudeConfig::Bound
 pub devlaunch_core::flows::provision::ClaudeConfig::Foreign
 pub devlaunch_core::flows::provision::ClaudeConfig::Ours
 impl core::clone::Clone for devlaunch_core::flows::provision::ClaudeConfig
@@ -2884,6 +2885,24 @@ impl core::fmt::Debug for devlaunch_core::flows::provision::ZellijSwitch
 pub fn devlaunch_core::flows::provision::ZellijSwitch::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Copy for devlaunch_core::flows::provision::ZellijSwitch
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::provision::ZellijSwitch
+pub struct devlaunch_core::flows::provision::ClaudeMountFacts
+impl devlaunch_core::flows::provision::ClaudeMountFacts
+pub fn devlaunch_core::flows::provision::ClaudeMountFacts::container_uid(&self) -> core::option::Option<u32>
+pub fn devlaunch_core::flows::provision::ClaudeMountFacts::dir(&self) -> core::option::Option<&str>
+pub fn devlaunch_core::flows::provision::ClaudeMountFacts::dir_uid(&self) -> core::option::Option<u32>
+pub fn devlaunch_core::flows::provision::ClaudeMountFacts::target_mounted(&self) -> core::option::Option<bool>
+pub fn devlaunch_core::flows::provision::ClaudeMountFacts::target_source(&self) -> core::option::Option<&str>
+pub fn devlaunch_core::flows::provision::ClaudeMountFacts::writable(&self) -> core::option::Option<bool>
+impl core::clone::Clone for devlaunch_core::flows::provision::ClaudeMountFacts
+pub fn devlaunch_core::flows::provision::ClaudeMountFacts::clone(&self) -> devlaunch_core::flows::provision::ClaudeMountFacts
+impl core::cmp::Eq for devlaunch_core::flows::provision::ClaudeMountFacts
+impl core::cmp::PartialEq for devlaunch_core::flows::provision::ClaudeMountFacts
+pub fn devlaunch_core::flows::provision::ClaudeMountFacts::eq(&self, &devlaunch_core::flows::provision::ClaudeMountFacts) -> bool
+impl core::default::Default for devlaunch_core::flows::provision::ClaudeMountFacts
+pub fn devlaunch_core::flows::provision::ClaudeMountFacts::default() -> devlaunch_core::flows::provision::ClaudeMountFacts
+impl core::fmt::Debug for devlaunch_core::flows::provision::ClaudeMountFacts
+pub fn devlaunch_core::flows::provision::ClaudeMountFacts::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::provision::ClaudeMountFacts
 pub struct devlaunch_core::flows::provision::DevpodMissing
 impl core::clone::Clone for devlaunch_core::flows::provision::DevpodMissing
 pub fn devlaunch_core::flows::provision::DevpodMissing::clone(&self) -> devlaunch_core::flows::provision::DevpodMissing
@@ -2908,6 +2927,7 @@ pub struct devlaunch_core::flows::provision::Pass
 pub devlaunch_core::flows::provision::Pass::provisioning: devlaunch_core::flows::provision::Provisioning
 impl devlaunch_core::flows::provision::Pass
 pub fn devlaunch_core::flows::provision::Pass::claude(&self) -> core::option::Option<devlaunch_core::flows::provision::ClaudeConfig>
+pub fn devlaunch_core::flows::provision::Pass::claude_mount(&self) -> &devlaunch_core::flows::provision::ClaudeMountFacts
 impl core::clone::Clone for devlaunch_core::flows::provision::Pass
 pub fn devlaunch_core::flows::provision::Pass::clone(&self) -> devlaunch_core::flows::provision::Pass
 impl core::cmp::Eq for devlaunch_core::flows::provision::Pass

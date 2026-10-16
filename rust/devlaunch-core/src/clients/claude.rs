@@ -91,7 +91,12 @@ const CONFIG_DIR_VAR: &str = "CLAUDE_CONFIG_DIR";
 const CONFIG_RELPATH: &str = ".claude";
 
 /// The credential file's name inside whichever directory the above resolves to.
-const CREDENTIALS_FILENAME: &str = ".credentials.json";
+///
+/// Shared with [`crate::flows::provision`], which needs the same name to decide
+/// whether a mount covers the credential rather than merely something beside it.
+/// One definition rather than two: a second spelling of this is a second copy of
+/// a fact, and the two would decide different things.
+pub(crate) const CREDENTIALS_FILENAME: &str = ".credentials.json";
 
 /// The key the OAuth credential sits under, and the field wanted from it.
 const OAUTH_KEY: &str = "claudeAiOauth";
@@ -337,7 +342,51 @@ pub(crate) fn resolve_token(
 /// `<root>/default/`, even if one exists. Worth having as a word rather than as the
 /// absence of a flag, because a picker needs something to select and a recalled line
 /// needs a way to say "not the profile I used last time".
-const DEFAULT_PROFILE: &str = "default";
+///
+/// `pub(crate)` so [`crate::flows::launch::ClaudeProfileMount::ensure`] can apply
+/// the same exclusion this module applies above (`resolve_token`) and below
+/// ([`profile_name_is_offerable`]) -- one constant read by three call sites
+/// rather than the string `"default"` typed a third time, free to drift from the
+/// other two.
+pub(crate) const DEFAULT_PROFILE: &str = "default";
+
+/// Why [`profile_dir`] found nowhere to look.
+///
+/// Kept distinct rather than folded into an `Option`, matching how
+/// [`from_profile`]'s own two refusals stay distinguishable: a caller that
+/// collapsed both into one "not a name" outcome would tell a user with a
+/// perfectly good name, on a host with no home directory, that their name was
+/// the problem.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ProfileDirProblem {
+    /// The name is not one [`ProfileName::parse`] accepts.
+    NotAName,
+    /// The name is fine, but this host names no profiles root to look under.
+    NoRoot,
+}
+
+/// Where a named profile's configuration directory is, if the name is one and a
+/// root resolved.
+///
+/// One definition, because two consumers need the same answer for different
+/// reasons: [`from_profile`] reads the credential inside it, and
+/// [`crate::flows::launch::ClaudeProfileMount`] binds the directory itself into a
+/// container so Claude Code there reads and writes the same files the host does.
+/// A second spelling of this join is a second copy of a fact, and the two could
+/// name different directories.
+///
+/// **Does not apply [`DEFAULT_PROFILE`]'s exclusion.** That is a policy decision
+/// about what `--claude-profile default` *means* --see the constant's own doc--
+/// and belongs to the caller deciding whether to ask this at all, not to a
+/// function about where a name's directory sits on disk.
+pub(crate) fn profile_dir(
+    profiles_root: Option<&Path>,
+    named: &str,
+) -> Result<PathBuf, ProfileDirProblem> {
+    let name = ProfileName::parse(named).ok_or(ProfileDirProblem::NotAName)?;
+    let root = profiles_root.ok_or(ProfileDirProblem::NoRoot)?;
+    Ok(root.join(name.as_str()))
+}
 
 /// The token a named profile holds, or the reason it holds none.
 ///
