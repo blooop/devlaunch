@@ -382,6 +382,9 @@ aid <user/repo>[@branch|@<pr-link>] [prompt...]
 aid resume [<workspace>]
 ```
 
+`dla` is the same program under a name that is easier to type: every `aid` line in this
+section works with `dla` in its place.
+
 `aid` is a shortcut, not a second launcher. It rewrites its command line into a `dl` one, so
 
 ```bash

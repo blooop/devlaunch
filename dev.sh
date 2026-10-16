@@ -1,6 +1,7 @@
 #!/bin/bash
 # Development installation script for DevLaunch
-# Builds this working tree and installs it as `dl-next` and `aid-next`, beside the
+# Builds this working tree and installs it as `dl-next` and `aid-next` (and
+# `dla-next`, aid's second name), beside the
 # released `dl` and `aid` rather than on top of them, so both are on PATH at once
 # and running the wrong one is not possible by accident. The released build is what
 # keeps working while this checkout is mid-change; it is installed by pixi global
@@ -159,6 +160,7 @@ echo "  dl-next --version           # prints <version>-dev; plain dl does not"
 echo "  dl-next owner/repo          # clone + DevPod workspace (default branch)"
 echo "  dl-next owner/repo@branch   # clone + DevPod workspace (specific branch)"
 echo "  aid-next owner/repo@branch  # ...with a coding agent started in it"
+echo "  dla-next owner/repo@branch  # the same as aid-next, shorter to type"
 echo ""
 echo "Against throwaway state, leaving the real workspace list alone:"
 echo "  XDG_CACHE_HOME=/tmp/dl-scratch/cache dl-next ..."

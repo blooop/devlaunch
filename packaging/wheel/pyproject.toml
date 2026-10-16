@@ -1,4 +1,4 @@
-# The PyPI artifact: a wheel whose payload is the two compiled binaries.
+# The PyPI artifact: a wheel whose payload is the compiled binaries.
 #
 # Why this is a second pyproject.toml rather than the repository's own. The root
 # `pyproject.toml` is the pixi workspace and the tool configuration; since #267 it
@@ -30,7 +30,7 @@ description = "DevLaunch - A streamlined CLI for devpod workspaces"
 readme = "README.md"
 license = "MIT"
 authors = [{ name = "Austin Gregg-Smith", email = "blooop@gmail.com" }]
-# No dependencies, and no `requires-python`. The wheel carries two statically
+# No dependencies, and no `requires-python`. The wheel carries statically
 # linked binaries; there is no Python in it to run and nothing to import. `dl`
 # needs `devpod` and `git` on PATH, which no Python metadata can express -- the
 # conda package is where those are declared (`conda.recipe/recipe.yaml`).
