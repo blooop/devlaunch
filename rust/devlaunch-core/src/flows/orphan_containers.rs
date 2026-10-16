@@ -305,7 +305,7 @@ mod tests {
 
         assert_eq!(
             sweep(&fake, Some(&home), WS, None),
-            OrphanSweep::Removed(vec!["dev".to_owned()])
+            OrphanSweep::Removed(names(["dev".to_owned()]))
         );
         assert_eq!(
             fake.args_to("docker").last().expect("a removal"),
@@ -324,8 +324,7 @@ mod tests {
         assert!(
             matches!(
                 &swept,
-                OrphanSweep::NotRemoved { names, reason }
-                    if names.is_empty() && reason.contains("daemon is down")
+                OrphanSweep::NotListed { reason } if reason.contains("daemon is down")
             ),
             "{swept:?}"
         );

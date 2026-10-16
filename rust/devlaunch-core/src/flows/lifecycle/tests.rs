@@ -2398,7 +2398,7 @@ fn a_delete_killed_at_its_deadline_still_removes_the_containers_left_behind() {
     assert!(
         notices.contains(&LifecycleNotice::LeftoverContainersRemoved {
             workspace_id: "myws".to_owned(),
-            names: vec!["myws_dev".to_owned()],
+            names: NonEmpty::one("myws_dev".to_owned()),
         }),
         "{notices:?}"
     );
