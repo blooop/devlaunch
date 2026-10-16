@@ -188,6 +188,20 @@ pub enum EnsureBranchError {
     /// The branch could not be created, which is where an empty cache is
     /// discovered: it is the first step that actually consults it.
     Branch(BranchError),
+    /// `--from <base>` named a branch that already exists. The flag only means
+    /// something when a branch is being cut, and ignoring it here would look
+    /// like it worked while the workspace opens on whatever the branch already
+    /// is — so this names the branch rather than the base.
+    BranchAlreadyExists {
+        branch: String,
+    },
+    /// `--from <base>` named a base this launch could not resolve as a
+    /// freshly-fetched remote ref. Refused rather than substituting the default
+    /// branch, which would be the "invented base" failure the no-flag path is
+    /// already guarded against, arriving through a new door.
+    BaseNotResolved {
+        base: String,
+    },
 }
 
 /// Why a workspace clone could not be prepared.
@@ -534,12 +548,40 @@ impl<'r> WorkspaceCloneManager<'r> {
     /// through preparing: `dl --prune` weighing or removing a clone still being
     /// filled, or two launches of different branches of one repository interleaving
     /// their steps. Atomicity and legibility, not speed.
+    ///
+    /// The bare form: no `--from`. Kept as its own call so this module's forty-odd
+    /// existing call sites are untouched by `--from`'s plumbing rather than each
+    /// growing a `None`; production now always goes through
+    /// [`WorkspaceCloneManager::prepare_cold_from`], so only this module's own
+    /// tests reach this one.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn prepare_cold(
         &self,
         storage: &mut MetadataStorage,
         owner: &str,
         repo: &str,
         branch: &str,
+        remote_url: &str,
+        notices: &mut dyn Notices<CacheNotice>,
+    ) -> Result<PreparedWorkspace, PrepareColdError> {
+        self.prepare_cold_from(storage, owner, repo, branch, None, remote_url, notices)
+    }
+
+    /// [`WorkspaceCloneManager::prepare_cold`], with `--from <base>` threaded to
+    /// the one place that decides what a new branch is cut from.
+    ///
+    /// Split out rather than adding the parameter to `prepare_cold` itself so
+    /// every existing call of it — every one of them a `None` — is untouched
+    /// rather than a `None` added at each: the no-flag path is provably the same
+    /// call it always was.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_cold_from(
+        &self,
+        storage: &mut MetadataStorage,
+        owner: &str,
+        repo: &str,
+        branch: &str,
+        from: Option<&str>,
         remote_url: &str,
         notices: &mut dyn Notices<CacheNotice>,
     ) -> Result<PreparedWorkspace, PrepareColdError> {
@@ -550,7 +592,7 @@ impl<'r> WorkspaceCloneManager<'r> {
             WorkspaceId::new(owner, repo, branch).map_err(PrepareColdError::UnsafeTriple)?;
 
         let mut stage = timing::stage(timing::Stage::HostPrep);
-        let prepared = self.prepare_cold_under_lock(storage, &workspace, remote_url, notices);
+        let prepared = self.prepare_cold_under_lock(storage, &workspace, from, remote_url, notices);
         if prepared.is_err() {
             stage.fail();
         }
@@ -566,6 +608,7 @@ impl<'r> WorkspaceCloneManager<'r> {
         &self,
         storage: &mut MetadataStorage,
         workspace: &WorkspaceId,
+        from: Option<&str>,
         remote_url: &str,
         notices: &mut dyn Notices<CacheNotice>,
     ) -> Result<PreparedWorkspace, PrepareColdError> {
@@ -579,7 +622,7 @@ impl<'r> WorkspaceCloneManager<'r> {
             .clone_if_missing(&lock, storage, owner, repo, remote_url, notices)?;
 
         let base = self
-            .ensure_branch(&lock, storage, owner, repo, branch, notices)
+            .ensure_branch(&lock, storage, owner, repo, branch, from, notices)
             .map_err(PrepareColdError::Branch)?;
         if let BranchBase::Stale { base: from, reason } = &base {
             // The one consequence-stating notice for the whole degraded family:
@@ -630,6 +673,7 @@ impl<'r> WorkspaceCloneManager<'r> {
     /// Takes a [`RepoLock`] rather than acquiring one: the fetch and the branch
     /// creation both write refs in the shared bare repository, and two processes
     /// doing so at once trip over git's own ref locks.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn ensure_branch(
         &self,
         lock: &RepoLock,
@@ -637,11 +681,20 @@ impl<'r> WorkspaceCloneManager<'r> {
         owner: &str,
         repo: &str,
         branch: &str,
+        from: Option<&str>,
         notices: &mut dyn Notices<CacheNotice>,
     ) -> Result<BranchBase, EnsureBranchError> {
         lock.require(owner, repo)
             .map_err(EnsureBranchError::WrongRepoLock)?;
         let bare = self.repo_manager.bare_dir(owner, repo);
+
+        // `--from` replaces the default branch as the new branch's start point
+        // and nothing else, so it is its own arm rather than a third case folded
+        // into the match below: every line under it is the sequence of git calls
+        // this method has always made when `from` is `None`, untouched.
+        if let Some(from_ref) = from {
+            return self.ensure_branch_from(&bare, owner, repo, branch, from_ref, notices);
+        }
 
         let outcome = self.repo_manager.fetch_ref(owner, repo, branch, notices);
         let default = self.resolve_default_branch(storage, owner, repo, notices);
@@ -702,6 +755,87 @@ impl<'r> WorkspaceCloneManager<'r> {
         // The request is kept rather than built inline, so the remote the notices
         // name is the remote the call used.
         let request = EnsureBranch::in_cache(&bare, branch, default.start_point());
+        let ensured = self
+            .branch_manager
+            .ensure_branch_exists(request)
+            .map_err(EnsureBranchError::Branch)?;
+        say_branch(&ensured, request.branch, request.remote, notices);
+        Ok(base)
+    }
+
+    /// [`WorkspaceCloneManager::ensure_branch`]'s `--from <base>` arm.
+    ///
+    /// Two refusals guard this, in order, and both are refusals rather than a
+    /// quiet fallback to the default branch: doing that would be the "invented
+    /// base" failure [`EnsureBranchError::Branch`]'s sibling test already forbids
+    /// for the no-flag path, arriving through a new door.
+    ///
+    /// **The branch already exists.** Checked before `from_ref` is resolved at
+    /// all, because ignoring `--from` here would look like it worked while the
+    /// workspace opens on whatever the branch already is — the operator is owed
+    /// "that branch exists", not a base that quietly did nothing. Read off a
+    /// fresh fetch of `branch` when the remote can be asked, and off the cache's
+    /// own refs when it cannot: an offline launch has no remote answer, and what
+    /// the cache already holds locally is the next best fact rather than a guess.
+    ///
+    /// **`from_ref` cannot be resolved.** Only once `branch` is confirmed new:
+    /// `from_ref` is fetched exactly as the default branch would have been, and
+    /// anything short of [`FetchOutcome::Updated`] means this launch cannot prove
+    /// the base is current, so it is named in the refusal rather than
+    /// substituted for.
+    fn ensure_branch_from(
+        &self,
+        bare: &Path,
+        owner: &str,
+        repo: &str,
+        branch: &str,
+        from_ref: &str,
+        notices: &mut dyn Notices<CacheNotice>,
+    ) -> Result<BranchBase, EnsureBranchError> {
+        let branch_outcome = self.repo_manager.fetch_ref(owner, repo, branch, notices);
+        let already_exists = match &branch_outcome {
+            Ok(FetchOutcome::Updated) => true,
+            Ok(FetchOutcome::RefMissingOnRemote) => false,
+            // The remote could not be asked, so the only fact left to decide
+            // this from is whatever the cache already holds locally — the same
+            // fact the no-`--from` path reads for this exact bare cache when a
+            // fetch fails.
+            Ok(FetchOutcome::Failed { .. }) | Err(_) => {
+                self.branch_manager.local_branch_exists(bare, branch)
+            }
+        };
+        if already_exists {
+            return Err(EnsureBranchError::BranchAlreadyExists {
+                branch: branch.to_owned(),
+            });
+        }
+
+        let base = match self.repo_manager.fetch_ref(owner, repo, from_ref, notices) {
+            Ok(FetchOutcome::Updated) => BranchBase::Fresh,
+            Ok(FetchOutcome::RefMissingOnRemote) => {
+                return Err(EnsureBranchError::BaseNotResolved {
+                    base: from_ref.to_owned(),
+                });
+            }
+            Ok(FetchOutcome::Failed { reason }) => {
+                notices.say(CacheNotice::RefNotFetched {
+                    owner: owner.to_owned(),
+                    repo: repo.to_owned(),
+                    branch: from_ref.to_owned(),
+                    reason: NotRefreshed::FetchFailed { reason },
+                });
+                return Err(EnsureBranchError::BaseNotResolved {
+                    base: from_ref.to_owned(),
+                });
+            }
+            Err(_unsafe_name) => {
+                return Err(EnsureBranchError::BaseNotResolved {
+                    base: from_ref.to_owned(),
+                });
+            }
+        };
+
+        let request = EnsureBranch::in_cache(bare, branch, from_ref);
         let ensured = self
             .branch_manager
             .ensure_branch_exists(request)
@@ -1982,6 +2116,177 @@ mod tests {
         }
     }
 
+    // ============================================================ --from <base>
+
+    #[test]
+    fn a_new_branch_with_from_is_cut_from_that_base_freshly_fetched_not_the_default() {
+        // Two guards in one test, because they are checked against the same two
+        // git calls: the base is fetched (not assumed), and the branch is created
+        // from it (not from the default). Scripted so both are false unless the
+        // implementation does both: an unscripted `show-ref` answers "there" by
+        // default, which would skip the branch creation and hide either bug.
+        let mut cache = a_cache();
+        given_cached_repo(&mut cache);
+        let fake = FakeGit::new()
+            .with_script(
+                [
+                    "git",
+                    "fetch",
+                    "origin",
+                    "+refs/heads/newbranch:refs/heads/newbranch",
+                ],
+                Response::failed(
+                    128,
+                    "fatal: couldn't find remote ref refs/heads/newbranch\n",
+                ),
+            )
+            .with_script(
+                ["git", "show-ref", "--verify", "refs/heads/newbranch"],
+                Response::exited(1),
+            );
+        let manager = a_clone_manager(&cache, Git::new(&fake), GitLfs::NotInstalled);
+
+        let (base, _) = ensure_branch_from_with(&manager, &mut cache, "newbranch", "develop");
+
+        assert_eq!(base.expect("ensured"), BranchBase::Fresh);
+        let argvs = fake.argvs();
+        let issued = as_strs(&argvs);
+        assert!(
+            issued.contains(&vec![
+                "git",
+                "fetch",
+                "origin",
+                "+refs/heads/develop:refs/heads/develop"
+            ]),
+            "the base was not fetched fresh: {issued:?}"
+        );
+        assert!(
+            issued.contains(&vec!["git", "branch", "newbranch", "develop"]),
+            "the new branch was not cut from --from's base: {issued:?}"
+        );
+        assert!(
+            !issued.iter().any(|argv| argv.contains(&"main")),
+            "the default branch was consulted even though --from named a base: {issued:?}"
+        );
+    }
+
+    #[test]
+    fn an_unresolvable_from_is_refused_and_creates_no_branch() {
+        let mut cache = a_cache();
+        given_cached_repo(&mut cache);
+        let fake = FakeGit::new()
+            .with_script(
+                [
+                    "git",
+                    "fetch",
+                    "origin",
+                    "+refs/heads/newbranch:refs/heads/newbranch",
+                ],
+                Response::failed(
+                    128,
+                    "fatal: couldn't find remote ref refs/heads/newbranch\n",
+                ),
+            )
+            .with_script(
+                [
+                    "git",
+                    "fetch",
+                    "origin",
+                    "+refs/heads/ghost:refs/heads/ghost",
+                ],
+                Response::failed(128, "fatal: couldn't find remote ref refs/heads/ghost\n"),
+            );
+        let manager = a_clone_manager(&cache, Git::new(&fake), GitLfs::NotInstalled);
+
+        let (base, _) = ensure_branch_from_with(&manager, &mut cache, "newbranch", "ghost");
+
+        assert_eq!(
+            base,
+            Err(EnsureBranchError::BaseNotResolved {
+                base: "ghost".to_owned()
+            })
+        );
+        let argvs = fake.argvs();
+        let issued = as_strs(&argvs);
+        assert!(
+            !issued.iter().any(|argv| argv.contains(&"branch")),
+            "a branch was created despite an unresolvable base: {issued:?}"
+        );
+    }
+
+    #[test]
+    fn from_against_a_branch_that_already_exists_names_the_branch_not_the_base() {
+        let mut cache = a_cache();
+        given_cached_repo(&mut cache);
+        // Unscripted: the fetch of "existing" answers success by default, which is
+        // what a branch the remote already has looks like.
+        let fake = FakeGit::new();
+        let manager = a_clone_manager(&cache, Git::new(&fake), GitLfs::NotInstalled);
+
+        let (base, _) = ensure_branch_from_with(&manager, &mut cache, "existing", "otherbase");
+
+        assert_eq!(
+            base,
+            Err(EnsureBranchError::BranchAlreadyExists {
+                branch: "existing".to_owned()
+            })
+        );
+        let argvs = fake.argvs();
+        let issued = as_strs(&argvs);
+        assert!(
+            !issued.iter().any(|argv| argv.contains(&"otherbase")),
+            "the base was fetched even though the branch already exists, so a refusal \
+             here would wrongly look like the base's fault: {issued:?}"
+        );
+    }
+
+    #[test]
+    fn from_is_absent_from_what_the_workspace_stores() {
+        // The absence a "does the flag work" test cannot make: a record this
+        // launch wrote, read back, and compared byte-for-byte against its own
+        // serialisation for a base string that would show up immediately if any
+        // field ever carried it.
+        let mut cache = a_cache();
+        given_cached_repo(&mut cache);
+        let fake = FakeGit::new()
+            .with_script(
+                [
+                    "git",
+                    "fetch",
+                    "origin",
+                    "+refs/heads/nb-from:refs/heads/nb-from",
+                ],
+                Response::failed(128, "fatal: couldn't find remote ref refs/heads/nb-from\n"),
+            )
+            .with_script(
+                ["git", "show-ref", "--verify", "refs/heads/nb-from"],
+                Response::exited(1),
+            );
+        let manager = a_clone_manager(&cache, Git::new(&fake), GitLfs::NotInstalled);
+
+        manager
+            .prepare_cold_from(
+                &mut cache.storage,
+                "owner",
+                "repo",
+                "nb-from",
+                Some("a-base-that-must-not-be-stored"),
+                REMOTE_URL,
+                &mut ignoring(),
+            )
+            .expect("prepared");
+
+        let recorded = cache
+            .storage
+            .get_worktree("owner", "repo", "nb-from")
+            .expect("a record");
+        let serialised = serde_json::to_string(&recorded).expect("a record serialises");
+        assert!(
+            !serialised.contains("a-base-that-must-not-be-stored"),
+            "the base leaked into the stored record: {serialised}"
+        );
+    }
+
     #[test]
     fn every_step_of_the_workspace_reports_what_git_said_or_its_exit_status() {
         // Four failures, each of which reported "…: None" when an uncaptured stderr
@@ -2125,8 +2430,39 @@ mod tests {
             .hold_repo_lock("owner", "repo")
             .expect("the lock");
         let mut notices = ignoring();
-        let base =
-            manager.ensure_branch(&lock, &cache.storage, "owner", "repo", branch, &mut notices);
+        let base = manager.ensure_branch(
+            &lock,
+            &cache.storage,
+            "owner",
+            "repo",
+            branch,
+            None,
+            &mut notices,
+        );
+        (base, notices)
+    }
+
+    /// [`ensure_branch_with`], with `--from <base>`.
+    fn ensure_branch_from_with(
+        manager: &WorkspaceCloneManager<'_>,
+        cache: &mut Cache,
+        branch: &str,
+        from: &str,
+    ) -> (Result<BranchBase, EnsureBranchError>, Vec<CacheNotice>) {
+        let lock = manager
+            .repo_manager()
+            .hold_repo_lock("owner", "repo")
+            .expect("the lock");
+        let mut notices = ignoring();
+        let base = manager.ensure_branch(
+            &lock,
+            &cache.storage,
+            "owner",
+            "repo",
+            branch,
+            Some(from),
+            &mut notices,
+        );
         (base, notices)
     }
 
@@ -2464,6 +2800,7 @@ mod tests {
                 "owner",
                 "other",
                 "main",
+                None,
                 &mut ignoring(),
             )
             .expect_err("a token for one repository cannot vouch for another");
