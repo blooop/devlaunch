@@ -271,6 +271,11 @@ pub(crate) enum LineKept {
     /// herdr refused the report, or never took it in the time allowed. The next
     /// recreate finds no line for the pane, and ends its agent.
     NotKept,
+    /// herdr took the report, and its session file could not be read back to
+    /// see that it kept the line. Nobody confirmed it, so it is not [`Kept`].
+    ///
+    /// [`Kept`]: LineKept::Kept
+    Unchecked,
 }
 
 /// Report a typed-back line to herdr as the pane's line again, and check that
@@ -302,9 +307,10 @@ pub(crate) fn report_again(
         session.line.clone(),
     );
     match session_manager::report_resume(runner, &report, seq, read, wait) {
-        session_manager::ResumeReported::Saved
-        | session_manager::ResumeReported::Taken
-        | session_manager::ResumeReported::Superseded => LineKept::Kept,
+        session_manager::ResumeReported::Saved | session_manager::ResumeReported::Superseded => {
+            LineKept::Kept
+        }
+        session_manager::ResumeReported::Taken => LineKept::Unchecked,
         session_manager::ResumeReported::Dropped | session_manager::ResumeReported::Stopped => {
             LineKept::NotKept
         }
@@ -1027,5 +1033,18 @@ mod tests {
         });
 
         assert_eq!(kept, LineKept::NotKept);
+    }
+
+    /// herdr takes the report, and its session file cannot be read back. Nothing
+    /// confirmed the line, so it does not read as kept.
+    #[test]
+    fn a_report_whose_session_file_cannot_be_read_back_is_unchecked() {
+        let runner = ScriptedRunner::new().with_script([HERDR], Response::ok());
+
+        let kept = report_again(&runner, &manager(), &one_held(), &|| 1, &|_| None, &|_| {
+            panic!("an unreadable file is not read again")
+        });
+
+        assert_eq!(kept, LineKept::Unchecked);
     }
 }

@@ -38,6 +38,8 @@ pub devlaunch_core::api::LaunchNotice::AgentSessionInThisPane
 pub devlaunch_core::api::LaunchNotice::AgentSessionInThisPane::line: alloc::string::String
 pub devlaunch_core::api::LaunchNotice::AgentSessionLineNotKept
 pub devlaunch_core::api::LaunchNotice::AgentSessionLineNotKept::pane_id: alloc::string::String
+pub devlaunch_core::api::LaunchNotice::AgentSessionLineUnchecked
+pub devlaunch_core::api::LaunchNotice::AgentSessionLineUnchecked::pane_id: alloc::string::String
 pub devlaunch_core::api::LaunchNotice::AgentSessionNotRestarted
 pub devlaunch_core::api::LaunchNotice::AgentSessionNotRestarted::line: alloc::string::String
 pub devlaunch_core::api::LaunchNotice::AgentSessionNotRestarted::pane_id: alloc::string::String
@@ -623,6 +625,8 @@ pub devlaunch_core::flows::launch::LaunchNotice::AgentSessionInThisPane
 pub devlaunch_core::flows::launch::LaunchNotice::AgentSessionInThisPane::line: alloc::string::String
 pub devlaunch_core::flows::launch::LaunchNotice::AgentSessionLineNotKept
 pub devlaunch_core::flows::launch::LaunchNotice::AgentSessionLineNotKept::pane_id: alloc::string::String
+pub devlaunch_core::flows::launch::LaunchNotice::AgentSessionLineUnchecked
+pub devlaunch_core::flows::launch::LaunchNotice::AgentSessionLineUnchecked::pane_id: alloc::string::String
 pub devlaunch_core::flows::launch::LaunchNotice::AgentSessionNotRestarted
 pub devlaunch_core::flows::launch::LaunchNotice::AgentSessionNotRestarted::line: alloc::string::String
 pub devlaunch_core::flows::launch::LaunchNotice::AgentSessionNotRestarted::pane_id: alloc::string::String

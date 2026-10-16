@@ -704,6 +704,9 @@ pub enum LaunchNotice {
     /// The agent was started again, and herdr did not keep its line, so the next
     /// recreate ends it.
     AgentSessionLineNotKept { pane_id: String },
+    /// The agent was started again, and herdr took its line, but dl could not
+    /// read herdr's session file back to check that herdr kept it.
+    AgentSessionLineUnchecked { pane_id: String },
     /// The workspace is stale and its image is one devpod built on the older
     /// reference, so the recreate removed devpod's tag for it first: devpod
     /// reuses a tag it finds, and builds again only when it is gone.
@@ -2963,7 +2966,7 @@ pub(crate) fn workspace_ssh(
 }
 
 /// Report each line typed back into a pane as that pane's line again, and answer
-/// the panes whose line herdr did not keep.
+/// the panes whose line nobody saw herdr keep, each with what became of it.
 ///
 /// One thread per pane, because each one waits up to seconds for herdr to see
 /// its new agent, and the waits overlap.
@@ -2972,8 +2975,8 @@ fn report_typed_lines_again(
     manager: &agent_sessions::Manager,
     held: &agent_sessions::HeldSessions,
     restarted: &[agent_sessions::Restarted],
-) -> Vec<String> {
-    lines_not_kept(held, restarted, &|session| {
+) -> Vec<(String, agent_sessions::LineKept)> {
+    unconfirmed_lines(held, restarted, &|session| {
         agent_sessions::report_again(
             runner,
             manager,
@@ -2992,16 +2995,16 @@ fn report_typed_lines_again(
     })
 }
 
-/// The panes among the typed ones whose line `report` did not see kept, one
-/// thread per pane.
+/// The panes among the typed ones whose line `report` did not see kept, each
+/// with what `report` came to, one thread per pane.
 ///
 /// A report that panics confirmed nothing, so its pane counts as not kept: the
 /// user is told, rather than left to find the agent ended at the next recreate.
-fn lines_not_kept(
+fn unconfirmed_lines(
     held: &agent_sessions::HeldSessions,
     restarted: &[agent_sessions::Restarted],
     report: &(dyn Fn(&agent_sessions::HeldSession) -> agent_sessions::LineKept + Sync),
-) -> Vec<String> {
+) -> Vec<(String, agent_sessions::LineKept)> {
     let typed: Vec<&agent_sessions::HeldSession> = held
         .sessions
         .iter()
@@ -3019,8 +3022,10 @@ fn lines_not_kept(
         reports
             .into_iter()
             .filter_map(|(session, report)| {
-                (!matches!(report.join(), Ok(agent_sessions::LineKept::Kept)))
-                    .then(|| session.pane_id.clone())
+                match report.join().unwrap_or(agent_sessions::LineKept::NotKept) {
+                    agent_sessions::LineKept::Kept => None,
+                    unconfirmed => Some((session.pane_id.clone(), unconfirmed)),
+                }
             })
             .collect()
     })
@@ -5399,14 +5404,18 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
         }
         let restarted =
             agent_sessions::restart(self.context.runner(), manager, held, &std::thread::sleep);
-        let not_kept = report_typed_lines_again(self.context.runner(), manager, held, &restarted);
+        let unconfirmed =
+            report_typed_lines_again(self.context.runner(), manager, held, &restarted);
         for outcome in restarted {
             self.notices.say(match outcome {
-                agent_sessions::Restarted::Typed { pane_id } if not_kept.contains(&pane_id) => {
-                    LaunchNotice::AgentSessionLineNotKept { pane_id }
-                }
                 agent_sessions::Restarted::Typed { pane_id } => {
-                    LaunchNotice::AgentSessionRestarted { pane_id }
+                    match unconfirmed.iter().find(|(pane, _)| *pane == pane_id) {
+                        Some((_, agent_sessions::LineKept::Unchecked)) => {
+                            LaunchNotice::AgentSessionLineUnchecked { pane_id }
+                        }
+                        Some(_) => LaunchNotice::AgentSessionLineNotKept { pane_id },
+                        None => LaunchNotice::AgentSessionRestarted { pane_id },
+                    }
                 }
                 agent_sessions::Restarted::NotTyped { pane_id, line } => {
                     LaunchNotice::AgentSessionNotRestarted { pane_id, line }
@@ -14105,12 +14114,15 @@ mod tests {
             },
         ];
 
-        let not_kept = lines_not_kept(&held, &restarted, &|session| {
+        let unconfirmed = unconfirmed_lines(&held, &restarted, &|session| {
             assert!(session.pane_id != "w3:pAX", "the report broke");
             agent_sessions::LineKept::Kept
         });
 
-        assert_eq!(not_kept, ["w3:pAX".to_owned()]);
+        assert_eq!(
+            unconfirmed,
+            [("w3:pAX".to_owned(), agent_sessions::LineKept::NotKept)]
+        );
     }
 
     /// herdr refuses the report of the typed line, so the next recreate would

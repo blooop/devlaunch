@@ -3430,6 +3430,11 @@ pub(crate) fn launch_notice(notice: &LaunchNotice) -> Option<String> {
             "Started the agent in pane {pane_id} again, and herdr did not keep the line that \
              starts it. The next recreate ends it."
         ),
+        LaunchNotice::AgentSessionLineUnchecked { pane_id } => format!(
+            "Started the agent in pane {pane_id} again, and could not read herdr's session \
+             file to check that herdr kept the line that starts it. If it did not, the next \
+             recreate ends it."
+        ),
         LaunchNotice::AgentSessionNotRestarted { pane_id, line } => format!(
             "Could not start the agent in pane {pane_id} again. Run this in that pane: {line}"
         ),
@@ -5389,6 +5394,17 @@ mod tests {
             })
             .as_deref(),
             Some("Started the agent in pane w1:p1 again.")
+        );
+        assert_eq!(
+            launch_notice(&LaunchNotice::AgentSessionLineUnchecked {
+                pane_id: "w3:pAX".to_owned(),
+            })
+            .as_deref(),
+            Some(
+                "Started the agent in pane w3:pAX again, and could not read herdr's session \
+                 file to check that herdr kept the line that starts it. If it did not, the \
+                 next recreate ends it."
+            )
         );
     }
 
