@@ -213,9 +213,9 @@ pub(crate) enum RmOnExit {
 /// What becomes of the shell that asked, once the removal is over.
 ///
 /// A named pair rather than a bool, and it rides on [`Verb::Remove`] rather than
-/// beside it, because there is exactly one verb it is defined for: `rme` is `rm`
-/// and then the shell, and every other verb hands the shell back the way it found
-/// it.
+/// beside it, because it is defined for the removal alone: `rme` is `rm` and then
+/// the shell, `rmt` ends the same way, and every other verb hands the shell back
+/// the way it found it.
 ///
 /// **This is a third thing, and not a third spelling of the two above.**
 /// [`Verb::Remove`] deletes the workspace now, [`RmOnExit`] deletes it when a
@@ -227,9 +227,9 @@ pub(crate) enum RmOnExit {
 pub(crate) enum AfterRemoval {
     /// `rm`: nothing. `dl` exits and the shell it was called from carries on.
     LeaveTheShell,
-    /// `rme`: SIGHUP to the process that started `dl`, so an interactive shell
-    /// ends and the terminal it was sitting in goes with it. Only after a removal
-    /// that worked; see [`crate::hangup`], which owns both halves of that.
+    /// `rme`, and `rmt` through the dispatcher: SIGHUP to the process that
+    /// started `dl`, so an interactive shell ends and the terminal it was sitting
+    /// in goes with it. Only after a removal that worked; see [`crate::hangup`], which owns both halves of that.
     HangUpTheShell,
 }
 

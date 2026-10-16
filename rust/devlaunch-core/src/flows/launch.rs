@@ -4334,8 +4334,8 @@ fn label_in(records: &MetadataStorage, workspace_id: &str) -> Option<String> {
 /// [`label_in`] the other way round. A launch names the herdr tab and the pane
 /// after the record (`devlaunch@main`), and that name outlives the session: the
 /// tab is closed, the container is still running, and the name is the one thing
-/// the person still has in their head. `dl devlaunch@main stop` is what they type,
-/// and this is how a lifecycle verb finds the workspace behind it.
+/// the person still has in their head. `dl rmt` typed in that tab reads the name,
+/// and this is how it finds the workspace behind it.
 ///
 /// **Only ids `listed` admits come back**, and which of a record's two ids is
 /// asked first is [`stored_as`]'s order reversed on purpose: `devpod_workspace_id`
@@ -4347,7 +4347,7 @@ fn label_in(records: &MetadataStorage, workspace_id: &str) -> Option<String> {
 /// **More than one answer is an answer.** Names need not be unique: two owners'
 /// forks of one repo on one branch carry the same label, and so do two records of
 /// one triple under different id schemes. The caller refuses rather than picks,
-/// because the verbs this serves include `rm`.
+/// because the verb this serves, `rmt`, deletes.
 #[must_use]
 pub fn recorded_ids_labelled(
     records: &MetadataStorage,
@@ -12555,7 +12555,7 @@ mod tests {
     #[test]
     fn a_tab_name_reads_back_to_the_listed_workspaces_that_carry_it() {
         // The tab says `devlaunch@main` long after the session that named it has
-        // gone, and that name is what `dl devlaunch@main stop` is typed with. The
+        // gone, and that name is what `dl rmt` reads from the tab. The
         // record that names the tab is the record that answers, and only for ids
         // devpod still lists: a stale record must not become an id to act on.
         let scene = Scene::new();

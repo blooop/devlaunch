@@ -1,6 +1,8 @@
-//! `rme`: hanging up the shell `dl` was called from, once the removal is done.
+//! `rme` and `rmt`: hanging up the shell `dl` was called from, once the removal
+//! is done.
 //!
-//! One verb reaches this module. `dl <ws> rme` deletes the workspace exactly as
+//! Two words reach this module, and `rmt` is `rme` with the herdr tab as its
+//! target, so `rme` is the one described here. `dl <ws> rme` deletes the workspace exactly as
 //! `dl <ws> rm` does, and then sends SIGHUP to `dl`'s parent process — which for
 //! the line it exists for is an interactive shell, so the shell ends and the
 //! terminal tab it was sitting in closes on its own. The workspace tab has nothing
