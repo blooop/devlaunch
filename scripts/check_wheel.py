@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Check a built devlaunch wheel before anything installs or publishes it.
 
-The wheel is not a Python package any more: since 0.1.0 it is a container for two
-compiled binaries, built by maturin from ``packaging/wheel/pyproject.toml``. That
+The wheel is not a Python package any more: since 0.1.0 it is a container for
+compiled binaries (`dl`, `aid`, and `dla`, which is aid under a second name), built by maturin from ``packaging/wheel/pyproject.toml``. That
 makes two things worth asserting mechanically, both of which are silent failures
 otherwise:
 
-* **Both binaries are in there.** They come from *one* cargo package (`rust/dl`,
-  whose second bin target sits behind the ``wheel`` feature), so a lost feature
+* **Every binary is in there.** They come from *one* cargo package (`rust/dl`,
+  whose `aid` and `dla` bin targets sit behind the ``wheel`` feature), so a lost feature
   flag or a renamed target ships a wheel with `dl` and no `aid` -- a wheel that
   installs cleanly and leaves half the tool missing.
 * **The version in the wheel is the version being released.** It is read from
@@ -30,7 +30,7 @@ import sys
 import zipfile
 from pathlib import Path
 
-# What the wheel must contain, and all it may contain beyond `.dist-info`: the two
+# What the wheel must contain, and all it may contain beyond `.dist-info`: the
 # binaries, as `.data/scripts/` entries that pip drops into the environment's bin/.
 # `dla` is `aid` under a second name, built from the same source.
 BINARIES = ("dl", "aid", "dla")

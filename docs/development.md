@@ -194,7 +194,7 @@ and `--test lock_wait` kill real process trees, and a SIGKILLed process writes n
 the `rust` job like everything else, and `pixi run coverage-rust` includes them locally.
 
 Inside this repository's devcontainer, `pixi run dl` and `pixi run aid` are `cargo run` over the
-working tree; on a host, `./dev.sh` installs it as `dl-next`/`aid-next` beside the released pair. Both
+working tree; on a host, `./dev.sh` installs it as `dl-next`/`aid-next`/`dla-next` beside the released pair. Both
 print a `-dev` version so a working-tree build is never mistaken for a released one. See
 [AGENTS.md](../AGENTS.md).
 
@@ -232,7 +232,7 @@ The two published artifacts are built from the same cargo package, both taking t
 `rust/Cargo.toml`, the only place it is written down:
 
 ```bash
-cd packaging/wheel && maturin build --release --locked -o dist    # the PyPI wheel: two binaries
+cd packaging/wheel && maturin build --release --locked -o dist    # the PyPI wheel: dl, aid and dla
 rattler-build build --experimental --recipe conda.recipe/recipe.yaml   # the conda package
 ```
 

@@ -118,8 +118,8 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           # `packaging/wheel/pyproject.toml` is the published project: maturin
-          # bin bindings over `rust/dl`, whose two bin targets are `dl` and (behind
-          # the `wheel` feature) `aid`.
+          # bin bindings over `rust/dl`, whose bin targets are `dl` and (behind
+          # the `wheel` feature) `aid` and its second name `dla`.
           working-directory: packaging/wheel
           # Built in a manylinux container rather than on the runner, because the
           # tag is computed from the glibc the binaries actually got linked
@@ -147,7 +147,7 @@ jobs:
         run: |
           set -euo pipefail
           version='${{ steps.decide.outputs.version }}'
-          # Exactly one wheel, and it is the two binaries at the version this
+          # Exactly one wheel, and it is the binaries at the version this
           # release is being cut at. A mismatch means the version was read from one
           # place and the binaries built from another, which is the failure mode
           # single-sourcing exists to remove -- so it stops here, before PyPI.
