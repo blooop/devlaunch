@@ -1071,33 +1071,112 @@ fn rmt_takes_a_tab_named_with_the_workspace_id_itself() {
         "{}",
         hung.err
     );
+    assert_eq!(
+        world.devpod_calls().last().map(String::as_str),
+        Some("devpod delete devlaunch-main-legacy"),
+        "{:?}",
+        world.devpod_calls()
+    );
 }
 
 #[test]
 fn rmt_in_a_tab_nobody_named_removes_nothing() {
-    // herdr falls back to the tab number, which names no workspace. The record of a
-    // workspace devpod has forgotten (`other@feature/x`) is refused the same way.
-    for label in ["4", "other@feature/x"] {
-        let world = World::base();
-        world.herdr_names_tab(label);
-        let run = world.dl_in_tab("w1:t7", &["rmt"]);
-        run.exited(1);
-        assert_eq!(
-            run.err,
-            format!(
-                "This tab is named '{label}', and no workspace devpod lists has that name. Use \
-                 'dl <workspace> rm' or 'dl rm'.\n"
-            )
-        );
-        assert!(
-            !world
-                .devpod_calls()
-                .iter()
-                .any(|call| call.contains("delete")),
-            "{:?}",
-            world.devpod_calls()
-        );
-    }
+    // herdr falls back to the tab number, which names no workspace.
+    let world = World::base();
+    world.herdr_names_tab("4");
+    let run = world.dl_in_tab("w1:t7", &["rmt"]);
+    run.exited(1);
+    assert_eq!(
+        run.err,
+        "This tab is named '4', and no workspace devpod lists has that name. Use 'dl \
+         <workspace> rm' or 'dl rm'.\n"
+    );
+    assert!(
+        !world
+            .devpod_calls()
+            .iter()
+            .any(|call| call.contains("delete")),
+        "{:?}",
+        world.devpod_calls()
+    );
+}
+
+#[test]
+fn rmt_in_a_tab_named_after_a_record_devpod_has_forgotten_removes_nothing() {
+    // The `orphan` fixture records `blooop/other@feature/x` under ids devpod does
+    // not list, so the record matches the label and the listing rejects it.
+    let world = World::with(&["orphan"]);
+    let devpod_state = world.read("shim-state.json");
+    let metadata = world.read("cache/devlaunch/metadata.json");
+    assert!(metadata.contains("\"other-feature-x-t0h1\""), "{metadata}");
+    assert!(
+        !devpod_state.contains("\"other-feature-x-t0h1\""),
+        "{devpod_state}"
+    );
+    world.herdr_names_tab("other@feature/x");
+    let hung = world.shell_run("export HERDR_TAB_ID=w1:t7; ", &["rmt"]);
+    hung.survived_with(1);
+    assert_eq!(
+        hung.err,
+        "This tab is named 'other@feature/x', and no workspace devpod lists has that name. \
+         Use 'dl <workspace> rm' or 'dl rm'.\n"
+    );
+    assert_eq!(world.devpod_calls(), ["devpod list --output json"]);
+}
+
+#[test]
+fn rmt_refuses_a_tab_name_two_listed_workspaces_share() {
+    // The `fork` fixture records `someone/devlaunch@main` beside
+    // `blooop/devlaunch@main`, and devpod lists both.
+    let world = World::with(&["fork"]);
+    world.herdr_names_tab("devlaunch@main");
+    let hung = world.shell_run("export HERDR_TAB_ID=w1:t7; ", &["rmt"]);
+    hung.survived_with(1);
+    assert_eq!(
+        hung.err,
+        "This tab is named 'devlaunch@main', and 2 workspaces have that name: \
+         devlaunch-main-legacy, devlaunch-main-someone. Use 'dl <workspace> rm' with one of \
+         them.\n"
+    );
+    assert_eq!(world.devpod_calls(), ["devpod list --output json"]);
+}
+
+#[test]
+fn rmt_in_a_tab_herdr_cannot_find_removes_nothing() {
+    let world = World::base();
+    let root = world.root.display();
+    let script = format!(
+        "#!/bin/sh\necho \"$*\" >> '{root}/herdr-log'\n\
+         printf '%s' '{{\"error\":{{\"code\":\"tab_not_found\"}}}}'\nexit 1\n"
+    );
+    let path = world.path("bin/herdr");
+    std::fs::write(&path, script).expect("the scratch bin is writable");
+    std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+        .expect("the fake herdr is executable");
+    let hung = world.shell_run("export HERDR_TAB_ID=w1:t7; ", &["rmt"]);
+    hung.survived_with(1);
+    assert_eq!(world.read("herdr-log"), "tab get w1:t7\n");
+    assert_eq!(
+        hung.err,
+        "herdr did not say what tab w1:t7 is called, so dl rmt has no workspace to remove. \
+         Use 'dl <workspace> rm' or 'dl rm'.\n"
+    );
+    assert!(
+        world.devpod_calls().is_empty(),
+        "{:?}",
+        world.devpod_calls()
+    );
+}
+
+#[test]
+fn rmt_that_cannot_read_the_workspace_list_removes_nothing() {
+    let world = World::base();
+    world.herdr_names_tab("devlaunch@main");
+    world.devpod_answers(&["list"], 1, "boom");
+    let hung = world.shell_run("export HERDR_TAB_ID=w1:t7; ", &["rmt"]);
+    hung.survived_with(1);
+    assert_eq!(hung.err, "error: `devpod list` exited 1: 'boom'\n");
+    assert_eq!(world.devpod_calls(), ["devpod list --output json"]);
 }
 
 #[test]

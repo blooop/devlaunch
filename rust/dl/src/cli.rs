@@ -1578,6 +1578,10 @@ mod tests {
             parse(&["rmt", "--devcontainer", "robot"]),
             Err(GrammarError::DevcontainerNotAllowed { command: "rmt" })
         );
+        assert_eq!(
+            parse(&["rmt", "--claude-profile", "p"]),
+            Err(GrammarError::ClaudeProfileNotAllowed { command: "rmt" })
+        );
     }
 
     // ============================================================ rme: rm, and out
