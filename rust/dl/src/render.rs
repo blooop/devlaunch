@@ -1434,22 +1434,25 @@ pub(crate) fn unsafe_name(refused: &UnsafeName) -> String {
 
 /// Why `dl <ws> rm` will not delete this workspace, and the way past it.
 ///
-/// `spec` is the target *as the user typed it*, because the sentence ends in a
-/// command they can run: a refusal that echoed the resolved id would print a line
-/// that works, but not the line they typed.
+/// `typed` is the command *as the user typed it*, after the `dl` and before any
+/// `--force`, because the sentence ends in a command they can run: a refusal that
+/// echoed the resolved id would print a line that works, but not the line they
+/// typed.
 ///
-/// `word` is the verb, for the same reason and one more. `rm` and `rme` refuse
+/// The verb is in it for the same reason and one more. `rm` and `rme` refuse
 /// identically, and the way past is `--force` on whichever was typed — so a line
 /// that always said `rm --force` would answer an `rme` by sending the reader back
 /// to the two-step `rme` exists to collapse: delete, wait, then close the tab by
-/// hand. Both words are offered the way past *they* asked for.
+/// hand. Both words are offered the way past *they* asked for. `rmt` takes no
+/// workspace, so its way past is `dl rmt --force` and not the id with the verb
+/// after it, which the grammar refuses.
 ///
 /// Where the remote could not be asked (devlaunch#638), a sentence says so
 /// between the finding and the way past, because it changes what the finding
 /// means: the count is as of the clone's last fetch, and some of it may already be
 /// on the remote. A refusal the remote was asked about, or was never going to be,
 /// reads exactly as it did before there was a fetch.
-pub(crate) fn removal_refusal(refused: &RemovalRefused, spec: &str, word: &str) -> String {
+pub(crate) fn removal_refusal(refused: &RemovalRefused, typed: &str) -> String {
     let workspace_id = &refused.workspace_id;
     let (finding, way_past) = match &refused.because {
         RemovalGrounds::WouldLose(holds) => (
@@ -1490,7 +1493,7 @@ pub(crate) fn removal_refusal(refused: &RemovalRefused, spec: &str, word: &str) 
                 .unwrap_or("no reason given")
         ),
     };
-    format!("{finding}{remote} {way_past}, or run: dl {spec} {word} --force")
+    format!("{finding}{remote} {way_past}, or run: dl {typed} --force")
 }
 
 /// `--rm`, at the moment the session has ended and the removal begins.
@@ -6307,7 +6310,7 @@ mod tests {
     fn a_remote_asked_or_never_asked_leaves_the_refusal_as_it_was() {
         for remote in [RemoteCheck::NotAsked, RemoteCheck::Fetched] {
             assert_eq!(
-                removal_refusal(&refused_over_unpushed(remote), "devlaunch-main", "rm"),
+                removal_refusal(&refused_over_unpushed(remote), "devlaunch-main rm"),
                 "devlaunch-main holds 1 unpushed commit(s). Push or commit it, or run: dl \
                  devlaunch-main rm --force"
             );
@@ -6320,8 +6323,7 @@ mod tests {
             &refused_over_unpushed(RemoteCheck::Unreachable {
                 reason: "\n  \nfatal: x\nmore".to_owned(),
             }),
-            "devlaunch-main",
-            "rm",
+            "devlaunch-main rm",
         );
         assert!(
             refusal.contains(" could not reach the remote to check (fatal: x), so "),
@@ -6335,8 +6337,7 @@ mod tests {
             &refused_over_unpushed(RemoteCheck::Unreachable {
                 reason: String::new(),
             }),
-            "devlaunch-main",
-            "rm",
+            "devlaunch-main rm",
         );
         assert!(
             refusal.contains(" could not reach the remote to check (no reason given), so "),

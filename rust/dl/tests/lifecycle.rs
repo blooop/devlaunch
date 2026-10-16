@@ -1101,8 +1101,25 @@ fn rmt_keeps_the_guard_rm_has() {
     // reason on screen, as it does for `rme`.
     let world = World::with(&["unpushed"]);
     world.herdr_names_tab("devlaunch@unpushed");
+    let clone = "cache/devlaunch/repos/blooop/devlaunch/devlaunch-unpushed-committed";
     let hung = world.shell_run("export HERDR_TAB_ID=w1:t7; ", &["rmt"]);
     hung.survived_with(1);
+    assert!(
+        hung.err.starts_with(
+            "This tab is named 'devlaunch@unpushed': removing workspace \
+             devlaunch-unpushed-committed.\n"
+        ),
+        "{}",
+        hung.err
+    );
+    assert!(
+        hung.err.ends_with(
+            "devlaunch-unpushed-committed holds 1 unpushed commit(s). Push or commit it, or run: \
+             dl rmt --force\n"
+        ),
+        "the way past is a line the grammar takes, and it is still rmt: {}",
+        hung.err
+    );
     assert!(
         !world
             .devpod_calls()
@@ -1110,6 +1127,31 @@ fn rmt_keeps_the_guard_rm_has() {
             .any(|call| call.contains("delete")),
         "{:?}\n{}",
         world.devpod_calls(),
+        hung.err
+    );
+    assert!(world.exists(clone), "the refused removal took the clone");
+}
+
+#[test]
+fn rmt_force_is_the_way_past_the_guard() {
+    // The line the refusal above ends on, typed in the same tab.
+    let world = World::with(&["unpushed"]);
+    world.herdr_names_tab("devlaunch@unpushed");
+    let clone = "cache/devlaunch/repos/blooop/devlaunch/devlaunch-unpushed-committed";
+    let hung = world.shell_run("export HERDR_TAB_ID=w1:t7; ", &["rmt", "--force"]);
+    hung.was_hung_up();
+    assert!(
+        world
+            .devpod_calls()
+            .iter()
+            .any(|call| call.starts_with("devpod delete devlaunch-unpushed-committed")),
+        "{:?}\n{}",
+        world.devpod_calls(),
+        hung.err
+    );
+    assert!(
+        !world.exists(clone),
+        "the clone was left behind: {}",
         hung.err
     );
 }

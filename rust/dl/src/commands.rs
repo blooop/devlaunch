@@ -1079,7 +1079,7 @@ fn render_kill<'r>(
         refresh,
         cold,
         &workspace_id,
-        target,
+        &format!("{target} {word}"),
         Removal::Wedged,
         word,
     )
@@ -1108,7 +1108,7 @@ fn render_remove<'r>(
         refresh,
         cold,
         &addressed.workspace_id,
-        target,
+        &format!("{target} {word}"),
         removal,
         word,
     )
@@ -1188,7 +1188,7 @@ fn render_remove_this_tab<'r>(
         refresh,
         &mut cold,
         &workspace_id,
-        &workspace_id,
+        crate::cli::REMOVE_THIS_TAB,
         removal,
         crate::cli::REMOVE_THIS_TAB,
     )
@@ -1210,7 +1210,7 @@ fn remove_addressed<'r>(
     refresh: &mut Refresh<'_>,
     cold: &mut ColdPath<'r, '_>,
     workspace_id: &str,
-    target: &str,
+    typed: &str,
     removal: Removal,
     word: &str,
 ) -> Ending {
@@ -1273,7 +1273,7 @@ fn remove_addressed<'r>(
         // `rm --force` never looks and `kill` says it and goes on, both of which are
         // decided inside the removal now rather than sequenced out here.
         Ok(RemoveOutcome::Refused(refusal)) => {
-            eprintln!("{}", render::removal_refusal(&refusal, target, word));
+            eprintln!("{}", render::removal_refusal(&refusal, typed));
             Ending::Refused
         }
         Ok(RemoveOutcome::DevpodRefused { exit }) => {
