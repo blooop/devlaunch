@@ -1136,6 +1136,15 @@ fn lifecycle_notice(notice: &LifecycleNotice) -> Option<String> {
             occasion,
             refusal,
         } => volumes_not_removed(workspace_id, *occasion, refusal),
+        LifecycleNotice::LeftoverContainersRemoved {
+            workspace_id,
+            names,
+        } => leftovers_removed(workspace_id, names),
+        LifecycleNotice::LeftoverContainersNotRemoved {
+            workspace_id,
+            names,
+            reason,
+        } => leftovers_not_removed(workspace_id, names, reason),
         LifecycleNotice::RecordNotDropped { path, refusal } => {
             format!(
                 "Could not drop the record for {}: {}",
@@ -1160,6 +1169,29 @@ fn lifecycle_notice(notice: &LifecycleNotice) -> Option<String> {
         LifecycleNotice::RemovingOverWork { refusal } => removing_over_work(refusal),
         LifecycleNotice::Cache(cache) => return cache_notice(cache),
     })
+}
+
+/// The line for containers a forgotten workspace left behind, removed. Shared by
+/// `rm` and the launch, which find the same leftovers at two different times.
+fn leftovers_removed(workspace_id: &str, names: &[String]) -> String {
+    format!(
+        "Removed containers {workspace_id} left behind: {}",
+        names.join(", ")
+    )
+}
+
+/// The line for leftovers docker would not remove, with the command that does
+/// it by hand when there are names to give it.
+fn leftovers_not_removed(workspace_id: &str, names: &[String], reason: &str) -> String {
+    if names.is_empty() {
+        format!("Could not check for containers {workspace_id} left behind: {reason}")
+    } else {
+        format!(
+            "Containers {workspace_id} left behind are still here ({reason}). Remove them with: \
+             docker rm -f {}",
+            names.join(" ")
+        )
+    }
 }
 
 /// One storage-flow notice, in the words the module that logged it used.
@@ -3100,6 +3132,15 @@ pub(crate) fn launch_notice(notice: &LaunchNotice) -> Option<String> {
              source and the container cannot be created. Look for `${localEnv:` in its \
              .devcontainer/devcontainer.json and set the variable it names."
             .to_owned(),
+        LaunchNotice::LeftoverContainersRemoved {
+            workspace_id,
+            names,
+        } => leftovers_removed(workspace_id, names),
+        LaunchNotice::LeftoverContainersNotRemoved {
+            workspace_id,
+            names,
+            reason,
+        } => leftovers_not_removed(workspace_id, names, reason),
 
         // --- the dotfiles (info; devlaunch#560, no Python line)
         //
@@ -5687,6 +5728,39 @@ mod tests {
             "{empty}"
         );
         assert!(empty.contains("${localEnv:"), "{empty}");
+    }
+
+    /// Leftover containers are named, and a removal docker refused hands over
+    /// the command that does it by hand.
+    #[test]
+    fn leftover_containers_are_named_and_a_refusal_gives_the_command() {
+        let removed = launch_notice(&LaunchNotice::LeftoverContainersRemoved {
+            workspace_id: "ws".to_owned(),
+            names: vec!["dev_ws".to_owned(), "side_ws".to_owned()],
+        });
+        assert_eq!(
+            removed.as_deref(),
+            Some("Removed containers ws left behind: dev_ws, side_ws")
+        );
+
+        let refused = lifecycle_notice(&LifecycleNotice::LeftoverContainersNotRemoved {
+            workspace_id: "ws".to_owned(),
+            names: vec!["dev_ws".to_owned()],
+            reason: "docker rm failed".to_owned(),
+        })
+        .expect("a line");
+        assert!(refused.ends_with("docker rm -f dev_ws"), "{refused}");
+
+        let unlisted = lifecycle_notice(&LifecycleNotice::LeftoverContainersNotRemoved {
+            workspace_id: "ws".to_owned(),
+            names: vec![],
+            reason: "docker ps did not answer in time".to_owned(),
+        })
+        .expect("a line");
+        assert_eq!(
+            unlisted,
+            "Could not check for containers ws left behind: docker ps did not answer in time"
+        );
     }
 
     #[test]

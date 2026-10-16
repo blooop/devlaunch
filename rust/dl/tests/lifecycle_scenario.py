@@ -199,10 +199,12 @@ def build(root: pathlib.Path, shim: pathlib.Path, wanted: set) -> None:
     # `bin` comes first on the test's PATH, so without this a delete would reach
     # whatever docker the machine running the suite has and remove volumes on it.
     # It logs one line per call and exits 0, which is what a removal that worked
-    # looks like.
+    # looks like. A `ps` prints `docker-ps` when a test has written one, which is
+    # how a test puts leftover containers on the machine; otherwise nothing.
     docker = root / "bin" / "docker"
     docker.write_text(
-        f'#!/bin/sh\necho "$@" >> "{root / "docker-log"}"\n',
+        f'#!/bin/sh\necho "$@" >> "{root / "docker-log"}"\n'
+        f'if [ "$1" = ps ] && [ -f "{root / "docker-ps"}" ]; then cat "{root / "docker-ps"}"; fi\n',
         encoding="utf-8",
     )
     docker.chmod(0o755)

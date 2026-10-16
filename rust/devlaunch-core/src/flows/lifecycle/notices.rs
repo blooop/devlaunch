@@ -44,6 +44,21 @@ pub enum LifecycleNotice {
         occasion: SweepOccasion,
         refusal: VolumeRefusal,
     },
+    /// Containers this workspace left behind were removed, named. devpod's own
+    /// delete finds a container by the uid of the record it is deleting, so a
+    /// compose project from an older record, or one a forced delete gave up on,
+    /// outlives it; see `flows::orphan_containers`.
+    LeftoverContainersRemoved {
+        workspace_id: String,
+        names: Vec<String>,
+    },
+    /// Containers this workspace left behind are still on this machine, and
+    /// docker said why. `names` is empty when docker would not list them at all.
+    LeftoverContainersNotRemoved {
+        workspace_id: String,
+        names: Vec<String>,
+        reason: String,
+    },
     /// A clone directory went and its `metadata.json` record could not be
     /// dropped. Named by the path, which is what the record described.
     ///
