@@ -1937,11 +1937,12 @@ fn herdr_accepts(argv: &[String]) -> bool {
 
 /// `dl [<workspace> --claude-profile <name>] -- <words>`, as herdr will type it.
 fn restore_line<'a>(
+    program: &str,
     workspace_id: &str,
     profile: Option<&str>,
     words: impl Iterator<Item = &'a String>,
 ) -> Vec<String> {
-    let mut argv = vec![RESTORE_PROGRAM.to_owned(), workspace_id.to_owned()];
+    let mut argv = vec![program.to_owned(), workspace_id.to_owned()];
     if let Some(profile) = profile {
         argv.push("--claude-profile".to_owned());
         argv.push(profile.to_owned());
@@ -1951,17 +1952,53 @@ fn restore_line<'a>(
     argv
 }
 
-/// The program a restored pane runs: `dl` by name, which is also herdr's rule.
+/// The program a restored pane runs: the `dl` this process was started as, by
+/// name, which is also herdr's rule.
 ///
-/// By name and not by path for the pane shell's reason (`dl-herdr-shell`): the
-/// directory a path names is replaced by `pixi global update`.
+/// `invoked_as` is argv\[0\] as given ([`crate::flows::launch::Host`]'s
+/// `invoked_as`), so a dev build (`dl-next`) resumes under itself and not under
+/// the released `dl` (devlaunch#677). Its file name only, for the pane shell's
+/// reason (`dl-herdr-shell`): the directory a path names is replaced by
+/// `pixi global update`, and herdr refuses a path anyway. Not `current_exe()`,
+/// which resolves pixi global's trampoline to a path that moves on upgrade.
+/// `aid` runs dl in process, so its `aid-next` resumes under `dl-next`. A name a
+/// line cannot carry (empty, an option, a space or an apostrophe) falls back to
+/// `dl`. Pinned by `a_restored_pane_runs_the_dl_that_was_started`.
+pub(crate) fn restore_program(invoked_as: Option<&str>) -> String {
+    let name = invoked_as
+        .and_then(|path| path.rsplit('/').next())
+        .map(|name| match name.strip_prefix("aid") {
+            Some(rest) => format!("{RESTORE_PROGRAM}{rest}"),
+            None => name.to_owned(),
+        });
+    match name {
+        Some(name)
+            if !name.is_empty()
+                && !name.starts_with('-')
+                && !name.contains('\'')
+                && !name.contains(char::is_whitespace) =>
+        {
+            name
+        }
+        _ => RESTORE_PROGRAM.to_owned(),
+    }
+}
+
+/// The released `dl`, which a restored pane runs when nothing better is known.
 const RESTORE_PROGRAM: &str = "dl";
 
 impl AgentResume {
     /// The argv herdr types into the restored pane, or `None` when herdr would
     /// refuse it.
-    pub(crate) fn argv(&self, workspace_id: &str, profile: Option<&str>) -> Option<Vec<String>> {
-        let argv = restore_line(workspace_id, profile, self.line.iter());
+    ///
+    /// `program` is [`restore_program`]'s answer.
+    pub(crate) fn argv(
+        &self,
+        program: &str,
+        workspace_id: &str,
+        profile: Option<&str>,
+    ) -> Option<Vec<String>> {
+        let argv = restore_line(program, workspace_id, profile, self.line.iter());
         herdr_accepts(&argv).then_some(argv)
     }
 
@@ -1971,9 +2008,14 @@ impl AgentResume {
     /// apostrophe, because the hook can split on neither safely. Checked with a
     /// UUID's worth of id on the end, so a line the id would push over herdr's
     /// limits is not handed to a hook that will then be refused.
-    pub(crate) fn hook_prefix(&self, workspace_id: &str, profile: Option<&str>) -> Option<String> {
+    pub(crate) fn hook_prefix(
+        &self,
+        program: &str,
+        workspace_id: &str,
+        profile: Option<&str>,
+    ) -> Option<String> {
         let by_id = self.by_id.as_ref()?;
-        let prefix = restore_line(workspace_id, profile, by_id.iter());
+        let prefix = restore_line(program, workspace_id, profile, by_id.iter());
         if prefix
             .iter()
             .any(|word| word.is_empty() || word.contains(char::is_whitespace))
@@ -2200,7 +2242,7 @@ mod resume_tests {
     #[test]
     fn a_restored_pane_runs_dl_on_the_workspace_it_left() {
         assert_eq!(
-            claude_resume().argv("ws-id", None),
+            claude_resume().argv("dl", "ws-id", None),
             Some(
                 [
                     "dl",
@@ -2217,11 +2259,35 @@ mod resume_tests {
         );
     }
 
+    /// The dl a restored pane runs is the one that was run, by file name: a path
+    /// is one herdr refuses and `pixi global update` moves, `aid` resumes under
+    /// its own `dl`, and a name no shell can type falls back to the released `dl`.
+    #[test]
+    fn a_restored_pane_runs_the_dl_that_was_started() {
+        let cases = [
+            (Some("dl"), "dl"),
+            (Some("dl-next"), "dl-next"),
+            (Some("/home/u/.local/bin/dl-next"), "dl-next"),
+            (Some("aid"), "dl"),
+            (Some("/home/u/.pixi/bin/aid-next"), "dl-next"),
+            (Some("./target/debug/dl"), "dl"),
+            (None, "dl"),
+            (Some(""), "dl"),
+            (Some("/usr/bin/"), "dl"),
+            (Some("-dl"), "dl"),
+            (Some("my dl"), "dl"),
+            (Some("it's"), "dl"),
+        ];
+        for (invoked_as, program) in cases {
+            assert_eq!(restore_program(invoked_as), program, "{invoked_as:?}");
+        }
+    }
+
     /// A profile is per launch and stored nowhere, so the restored line has to say it.
     #[test]
     fn the_profile_this_launch_forwarded_is_named_again() {
         let argv = claude_resume()
-            .argv("ws-id", Some("work"))
+            .argv("dl", "ws-id", Some("work"))
             .expect("acceptable");
         assert_eq!(argv[..5], ["dl", "ws-id", "--claude-profile", "work", "--"]);
     }
@@ -2230,17 +2296,17 @@ mod resume_tests {
     #[test]
     fn a_line_herdr_would_refuse_is_not_offered() {
         let apostrophe = resume_of(words(&["claude", "it's"]), None);
-        assert_eq!(apostrophe.argv("ws", None), None);
+        assert_eq!(apostrophe.argv("dl", "ws", None), None);
 
         // `dl ws --` is three of the 64.
         let long = resume_of(words(&vec!["x"; 62]), None);
-        assert_eq!(long.argv("ws", None).map(|argv| argv.len()), None);
+        assert_eq!(long.argv("dl", "ws", None).map(|argv| argv.len()), None);
         let fits = resume_of(words(&vec!["x"; 61]), None);
-        assert_eq!(fits.argv("ws", None).map(|argv| argv.len()), Some(64));
+        assert_eq!(fits.argv("dl", "ws", None).map(|argv| argv.len()), Some(64));
 
         let big = "y".repeat(RESUME_MAX_BYTES);
         let heavy = resume_of(words(&["claude", &big]), None);
-        assert_eq!(heavy.argv("ws", None), None);
+        assert_eq!(heavy.argv("dl", "ws", None), None);
 
         assert!(!herdr_accepts(&["/usr/bin/dl".to_owned()]));
         assert!(!herdr_accepts(&[]));
@@ -2252,11 +2318,11 @@ mod resume_tests {
         let head: usize = ["dl", "ws", "--", "claude"].iter().map(|w| w.len()).sum();
         let at_limit = "y".repeat(RESUME_MAX_BYTES - head);
         let fits = resume_of(words(&["claude", &at_limit]), None);
-        assert!(fits.argv("ws", None).is_some(), "exactly the limit");
+        assert!(fits.argv("dl", "ws", None).is_some(), "exactly the limit");
 
         let over = format!("{at_limit}y");
         let heavy = resume_of(words(&["claude", &over]), None);
-        assert_eq!(heavy.argv("ws", None), None, "one byte over");
+        assert_eq!(heavy.argv("dl", "ws", None), None, "one byte over");
     }
 
     /// A `by_id` line that fits alone can still be pushed over by the id.
@@ -2276,27 +2342,28 @@ mod resume_tests {
 
         let room = "y".repeat(RESUME_MAX_BYTES - head - UUID);
         assert!(
-            with_id(&room).hook_prefix("ws", None).is_some(),
+            with_id(&room).hook_prefix("dl", "ws", None).is_some(),
             "the id lands exactly on the limit"
         );
 
         let crowded = format!("{room}y");
         assert!(herdr_accepts(&restore_line(
+            "dl",
             "ws",
             None,
             words(&["claude", &crowded, "--resume"]).iter()
         )));
-        assert_eq!(with_id(&crowded).hook_prefix("ws", None), None);
+        assert_eq!(with_id(&crowded).hook_prefix("dl", "ws", None), None);
     }
 
     #[test]
     fn the_hook_gets_the_line_an_id_completes() {
         assert_eq!(
-            claude_resume().hook_prefix("ws-id", None).as_deref(),
+            claude_resume().hook_prefix("dl", "ws-id", None).as_deref(),
             Some("dl ws-id -- IS_SANDBOX=1 claude --resume")
         );
         let no_hook = resume_of(words(&["codex", "resume", "--last"]), None);
-        assert_eq!(no_hook.hook_prefix("ws-id", None), None);
+        assert_eq!(no_hook.hook_prefix("dl", "ws-id", None), None);
     }
 
     /// The hook splits on spaces, so a word holding one would arrive as two.
@@ -2306,9 +2373,9 @@ mod resume_tests {
             words(&["claude", "--resume", "u"]),
             Some(words(&["claude", "--name", "a b", "--resume"])),
         );
-        assert_eq!(spaced.hook_prefix("ws", None), None);
+        assert_eq!(spaced.hook_prefix("dl", "ws", None), None);
         assert_eq!(
-            spaced.argv("ws", None).map(|argv| argv.len()),
+            spaced.argv("dl", "ws", None).map(|argv| argv.len()),
             Some(6),
             "the host's own report does not split, so it still goes"
         );

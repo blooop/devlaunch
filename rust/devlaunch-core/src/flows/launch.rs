@@ -223,6 +223,9 @@ pub struct Host {
     pub(crate) herdr_tab_id: Option<String>,
     /// `HERDR_BIN_PATH`: which herdr to ask, falling back to `PATH`.
     pub(crate) herdr_bin: Option<String>,
+    /// argv\[0\] as this process was started: the `dl` a resume line names
+    /// ([`herdr::restore_program`]). `None` reads as the released `dl`.
+    pub(crate) invoked_as: Option<String>,
     /// How the agent this launch starts is started again after herdr restarts,
     /// when the caller knows. Not read from the environment: `aid` knows it because
     /// it wrote the agent's line, and hands it over with [`Self::with_agent_resume`].
@@ -298,6 +301,7 @@ impl Host {
             no_title: crate::osext::env_str(TITLE_DISABLE_VAR),
             herdr_tab_id: crate::osext::env_str(HERDR_TAB_VAR),
             herdr_bin: herdr::binary_from_process(),
+            invoked_as: std::env::args().next(),
             agent_resume: None,
             stdin_tty: is_a_terminal(libc::STDIN_FILENO),
             stdout_tty: is_a_terminal(libc::STDOUT_FILENO),
@@ -2882,8 +2886,13 @@ pub(crate) fn workspace_ssh(
     // session turns out to take.
     // With the line the container hook completes when the agent reports a new
     // session id, so a restart after `/clear` reopens the session in the pane.
+    let program = herdr::restore_program(session.host.invoked_as.as_deref());
     let hook_prefix = session.host.agent_resume.as_ref().and_then(|resume| {
-        resume.hook_prefix(workspace_id, session.host.claude.profile.as_deref())
+        resume.hook_prefix(
+            &program,
+            workspace_id,
+            session.host.claude.profile.as_deref(),
+        )
     });
     let relay = herdr::Reporting::resolve(&session.host.herdr)
         .map(|reporting| reporting.with_resume_prefix(hook_prefix))
@@ -2905,7 +2914,11 @@ pub(crate) fn workspace_ssh(
             &session.host.herdr,
             session.host.herdr_bin.as_deref(),
             agent,
-            resume.argv(workspace_id, session.host.claude.profile.as_deref()),
+            resume.argv(
+                &program,
+                workspace_id,
+                session.host.claude.profile.as_deref(),
+            ),
         )
     });
     let session_outcome = beside_resume_report(session.runner, resume.as_ref(), || {
@@ -9809,6 +9822,48 @@ mod tests {
         assert_eq!(
             report[argv_at..],
             ["dl", "myws", "--", "claude", "--resume", "u-1"]
+        );
+    }
+
+    /// A dev build resumes under itself: the line names the `dl` this process was
+    /// started as, by file name, so `dl-next` does not come back as the released `dl`
+    /// (devlaunch#677). Both lines: the one reported now and the hook's prefix.
+    #[test]
+    fn a_resume_line_names_the_dl_that_was_run() {
+        let mut scene = in_a_pane_resuming(
+            Scene::new().on_a_terminal(&["myws"]).with_running("myws"),
+            &["claude", "--resume", "u-1"],
+        );
+        scene.host.invoked_as = Some("/home/u/.local/bin/dl-next".to_owned());
+        let _ = a_session(&scene, Some(&RemoteCommand::argv(&["claude"])));
+        let reports = resume_reports(&scene);
+        let report = reports.first().expect("a resume report");
+        let argv_at = report
+            .iter()
+            .position(|word| word == "--")
+            .expect("an argv")
+            + 1;
+        assert_eq!(
+            report[argv_at..],
+            ["dl-next", "myws", "--", "claude", "--resume", "u-1"]
+        );
+
+        let line = ["claude", "--resume", "u-1"];
+        let by_id: &[&str] = &["claude", "--resume"];
+        let mut scene = consenting_and_resuming(
+            Scene::new().on_a_terminal(&["myws"]).with_running("myws"),
+            &line,
+            Some(by_id),
+        );
+        scene.host.invoked_as = Some("aid-next".to_owned());
+        let _ = a_session(&scene, Some(&RemoteCommand::argv(&["claude"])));
+        assert_eq!(
+            coordinated_ssh(&scene)
+                .env
+                .entries
+                .get(herdr::RESUME_PREFIX_VAR)
+                .map(String::as_str),
+            Some("dl-next myws -- claude --resume")
         );
     }
 
