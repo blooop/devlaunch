@@ -164,23 +164,22 @@ pub fn collect(
             .and_then(|json| herdr::saved_argv(json, &pane.pane_id))
             .flatten()
             .filter(|argv| starts_an_agent(argv, workspace_id));
-        let live_agent = match agent_reading(runner, manager, &pane.pane_id) {
-            herdr::AgentReading::Unanswered => None,
-            herdr::AgentReading::NoAgent => Some(None),
-            // Every status, `done` included: herdr's `done` is an agent ready for
-            // input that nobody has looked at yet, not one that has exited.
-            herdr::AgentReading::Agent(agent) => Some(Some(agent.agent)),
-        };
-        match (line, live_agent) {
-            (Some(line), Some(Some(_)) | None) => held.sessions.push(HeldSession {
+        // Every status counts as a live agent, `done` included: herdr's `done` is
+        // an agent ready for input that nobody has looked at yet, not one that
+        // has exited.
+        match (line, agent_reading(runner, manager, &pane.pane_id)) {
+            (Some(line), herdr::AgentReading::Agent(_) | herdr::AgentReading::Unanswered) => {
+                held.sessions.push(HeldSession {
+                    pane_id: pane.pane_id,
+                    line,
+                });
+            }
+            (None, herdr::AgentReading::Agent(agent)) => held.unresumable.push(UnresumablePane {
                 pane_id: pane.pane_id,
-                line,
+                agent: agent.agent,
             }),
-            (None, Some(Some(agent))) => held.unresumable.push(UnresumablePane {
-                pane_id: pane.pane_id,
-                agent,
-            }),
-            (Some(_) | None, _) => {}
+            (Some(_), herdr::AgentReading::NoAgent)
+            | (None, herdr::AgentReading::NoAgent | herdr::AgentReading::Unanswered) => {}
         }
     }
     Some(held)
