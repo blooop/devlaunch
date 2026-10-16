@@ -4779,6 +4779,18 @@ impl LaunchVerb {
         matches!(self, Self::Up | Self::Code)
     }
 
+    /// Whether this verb rebuilds the container in place: `recreate`, and the
+    /// unattended recreate `dl --refresh-stale` runs.
+    fn is_recreate(&self) -> bool {
+        matches!(self, Self::Recreate | Self::RecreateUnattended)
+    }
+
+    /// Whether nobody is there to read a notice or take a session: the recreate
+    /// `dl --refresh-stale` runs after a daily pull.
+    fn is_unattended(&self) -> bool {
+        matches!(self, Self::RecreateUnattended)
+    }
+
     /// Whether this verb hands the user a session at the end.
     fn attaches(&self) -> bool {
         matches!(
@@ -5250,25 +5262,15 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
         devcontainer: Option<&DevcontainerPath>,
         placement: &Placement,
     ) -> Result<Launched, LaunchAborted> {
-        if matches!(verb, LaunchVerb::Recreate | LaunchVerb::RecreateUnattended)
-            && let Some(refused) = self.drop_derived_image(
-                placement.workspace_id(),
-                matches!(verb, LaunchVerb::RecreateUnattended),
-            )
+        if verb.is_recreate()
+            && let Some(refused) = self.drop_derived_image(placement.workspace_id(), verb)
         {
             return Ok(Launched::Refused(refused));
         }
         // Only a recreate: `code` keeps the container when nothing changed, and a
         // `reset` drops the volumes, so neither is the case this is for.
-        let held = if matches!(verb, LaunchVerb::Recreate | LaunchVerb::RecreateUnattended)
-            && placement.is_running()
-        {
-            // Outside herdr the unattended recreate warns of nothing: `dl
-            // --refresh-stale` recreates there only a container it saw no Claude in.
-            self.hold_agent_sessions(
-                placement.workspace_id(),
-                matches!(verb, LaunchVerb::Recreate),
-            )
+        let held = if verb.is_recreate() && placement.is_running() {
+            self.hold_agent_sessions(placement.workspace_id(), verb)
         } else {
             None
         };
@@ -5306,7 +5308,7 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
     fn drop_derived_image(
         &mut self,
         workspace_id: &str,
-        unattended: bool,
+        verb: &LaunchVerb,
     ) -> Option<LaunchRefusal> {
         let stale = crate::flows::stale_images::stale_images(
             self.context.runner(),
@@ -5329,7 +5331,7 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
             }
         };
         let workspace_id = workspace_id.to_owned();
-        if unattended {
+        if verb.is_unattended() {
             return Some(LaunchRefusal::DerivedImageKept {
                 workspace_id,
                 image,
@@ -5351,11 +5353,13 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
     fn hold_agent_sessions(
         &mut self,
         workspace_id: &str,
-        warn_unseen: bool,
+        verb: &LaunchVerb,
     ) -> Option<(agent_sessions::Manager, agent_sessions::HeldSessions)> {
         let workspace_id = workspace_id.to_owned();
         let Some(manager) = agent_sessions::Manager::from_host(self.host) else {
-            if warn_unseen {
+            // Outside herdr the unattended recreate warns of nothing: `dl
+            // --refresh-stale` recreates there only a container it saw no Claude in.
+            if !verb.is_unattended() {
                 self.notices
                     .say(LaunchNotice::AgentSessionsUnseen { workspace_id });
             }
@@ -14669,6 +14673,24 @@ mod tests {
             .find(|argv| argv.first().map(String::as_str) == Some("up"))
             .expect("an up");
         assert!(up.contains(&"--reset".to_owned()), "{up:?}");
+    }
+
+    #[test]
+    fn only_the_two_recreates_recreate_and_only_refresh_stale_runs_unattended() {
+        // (verb, is_recreate, is_unattended)
+        for (verb, recreate, unattended) in [
+            (LaunchVerb::Attach { command: None }, false, false),
+            (LaunchVerb::Up, false, false),
+            (LaunchVerb::Code, false, false),
+            (LaunchVerb::Recreate, true, false),
+            (LaunchVerb::RecreateUnattended, true, true),
+            (LaunchVerb::Reset, false, false),
+            (LaunchVerb::Restart, false, false),
+            (LaunchVerb::Dotfiles, false, false),
+        ] {
+            assert_eq!(verb.is_recreate(), recreate, "{verb:?}");
+            assert_eq!(verb.is_unattended(), unattended, "{verb:?}");
+        }
     }
 
     #[test]
