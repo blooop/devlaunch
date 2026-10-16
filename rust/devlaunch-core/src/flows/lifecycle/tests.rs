@@ -3171,10 +3171,20 @@ fn commit_locally(clone: &Path, count: usize) {
 /// the HTTPS URL. The commits land on the remote and `refs/remotes/origin/*` in
 /// the clone does not move, which is the whole of devlaunch#638.
 fn push_by_url(world: &World, clone: &Path) {
-    run_git(
-        clone,
-        &["push", &world.origin.display().to_string(), "HEAD:main"],
-    );
+    run_git(clone, &["push", &origin_by_url(world), "HEAD:main"]);
+}
+
+/// The remote under a URL that is not `origin`'s own spelling of it.
+///
+/// `origin` is the bare path, so this is the `file://` URL of the same
+/// repository — as the HTTPS URL an agent falls back to is a different
+/// spelling of the SSH `origin`. The spelling has to differ: git 2.56 matches
+/// a push URL against the configured remotes and, on an exact match, moves
+/// that remote's tracking refs as if the push had gone through `origin`.
+/// Pushing to the bare path itself left the clone's tracking refs current on
+/// that git, and the trap these tests set was never set.
+fn origin_by_url(world: &World) -> String {
+    format!("file://{}", world.origin.display())
 }
 
 /// `dl r-main-aa <removal>`, through the one call the binary makes.
@@ -3270,10 +3280,7 @@ fn a_host_that_prunes_on_fetch_does_not_turn_a_merged_branch_into_unpushed_work(
     commit(&clone, "side");
     run_git(&clone, &["push", "-u", "origin", "side"]);
     run_git(&clone, &["checkout", "main"]);
-    run_git(
-        &clone,
-        &["push", &world.origin.display().to_string(), ":side"],
-    );
+    run_git(&clone, &["push", &origin_by_url(&world), ":side"]);
     run_git(&clone, &["config", "fetch.prune", "true"]);
     commit_locally(&clone, 2);
     push_by_url(&world, &clone);
@@ -3456,14 +3463,7 @@ fn a_site_pushed_by_url_does_not_stop_a_plain_rm() {
     let (mut world, clone) = a_world_ready_to_remove();
     let site = a_site_in(&clone);
     commit_locally(&site, 2);
-    run_git(
-        &site,
-        &[
-            "push",
-            &world.origin.display().to_string(),
-            "HEAD:agent-one",
-        ],
-    );
+    run_git(&site, &["push", &origin_by_url(&world), "HEAD:agent-one"]);
     as_a_host_sees_them(&clone);
     assert!(
         run_git(&world.bare, &["branch", "--list", "agent-one"])

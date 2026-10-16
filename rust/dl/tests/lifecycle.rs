@@ -1086,7 +1086,11 @@ fn a_commit_pushed_by_url_does_not_stop_rm() {
     // with no `--force`.
     let world = World::with(&["--unpushed"]);
     let clone = "cache/devlaunch/repos/blooop/devlaunch/devlaunch-unpushed-committed";
-    let origin = world.path("origin.git").display().to_string();
+    // `file://`, not the bare path `origin` is set to: git 2.56 moves the
+    // tracking refs of a remote whose URL the push URL matches exactly, which
+    // would leave nothing stale to find. An agent's HTTPS fallback is likewise
+    // a different spelling of its SSH `origin`.
+    let origin = format!("file://{}", world.path("origin.git").display());
     world.git_in(clone, &["push", "-q", &origin, "HEAD:refs/heads/unpushed"]);
 
     let run = world.dl(&["devlaunch-unpushed-committed", "rm"]);
