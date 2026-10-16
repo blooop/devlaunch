@@ -34,6 +34,24 @@ pub fn devlaunch_core::flows::lifecycle::Insistence::fmt(&self, &mut core::fmt::
 impl core::marker::Copy for devlaunch_core::flows::lifecycle::Insistence
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::lifecycle::Insistence
 pub enum devlaunch_core::api::LaunchNotice
+pub devlaunch_core::api::LaunchNotice::AgentSessionInThisPane
+pub devlaunch_core::api::LaunchNotice::AgentSessionInThisPane::line: alloc::string::String
+pub devlaunch_core::api::LaunchNotice::AgentSessionNotRestarted
+pub devlaunch_core::api::LaunchNotice::AgentSessionNotRestarted::line: alloc::string::String
+pub devlaunch_core::api::LaunchNotice::AgentSessionNotRestarted::pane_id: alloc::string::String
+pub devlaunch_core::api::LaunchNotice::AgentSessionRestarted
+pub devlaunch_core::api::LaunchNotice::AgentSessionRestarted::pane_id: alloc::string::String
+pub devlaunch_core::api::LaunchNotice::AgentSessionUnresumable
+pub devlaunch_core::api::LaunchNotice::AgentSessionUnresumable::agent: alloc::string::String
+pub devlaunch_core::api::LaunchNotice::AgentSessionUnresumable::pane_id: alloc::string::String
+pub devlaunch_core::api::LaunchNotice::AgentSessionUnresumable::workspace_id: alloc::string::String
+pub devlaunch_core::api::LaunchNotice::AgentSessionsHeld
+pub devlaunch_core::api::LaunchNotice::AgentSessionsHeld::panes: alloc::vec::Vec<alloc::string::String>
+pub devlaunch_core::api::LaunchNotice::AgentSessionsHeld::workspace_id: alloc::string::String
+pub devlaunch_core::api::LaunchNotice::AgentSessionsUnanswered
+pub devlaunch_core::api::LaunchNotice::AgentSessionsUnanswered::workspace_id: alloc::string::String
+pub devlaunch_core::api::LaunchNotice::AgentSessionsUnseen
+pub devlaunch_core::api::LaunchNotice::AgentSessionsUnseen::workspace_id: alloc::string::String
 pub devlaunch_core::api::LaunchNotice::AlreadyRunning
 pub devlaunch_core::api::LaunchNotice::AlreadyRunning::workspace_id: alloc::string::String
 pub devlaunch_core::api::LaunchNotice::AlreadyRunningAttaching
@@ -591,6 +609,24 @@ impl core::fmt::Debug for devlaunch_core::flows::launch::ColdRefused
 pub fn devlaunch_core::flows::launch::ColdRefused::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::launch::ColdRefused
 pub enum devlaunch_core::flows::launch::LaunchNotice
+pub devlaunch_core::flows::launch::LaunchNotice::AgentSessionInThisPane
+pub devlaunch_core::flows::launch::LaunchNotice::AgentSessionInThisPane::line: alloc::string::String
+pub devlaunch_core::flows::launch::LaunchNotice::AgentSessionNotRestarted
+pub devlaunch_core::flows::launch::LaunchNotice::AgentSessionNotRestarted::line: alloc::string::String
+pub devlaunch_core::flows::launch::LaunchNotice::AgentSessionNotRestarted::pane_id: alloc::string::String
+pub devlaunch_core::flows::launch::LaunchNotice::AgentSessionRestarted
+pub devlaunch_core::flows::launch::LaunchNotice::AgentSessionRestarted::pane_id: alloc::string::String
+pub devlaunch_core::flows::launch::LaunchNotice::AgentSessionUnresumable
+pub devlaunch_core::flows::launch::LaunchNotice::AgentSessionUnresumable::agent: alloc::string::String
+pub devlaunch_core::flows::launch::LaunchNotice::AgentSessionUnresumable::pane_id: alloc::string::String
+pub devlaunch_core::flows::launch::LaunchNotice::AgentSessionUnresumable::workspace_id: alloc::string::String
+pub devlaunch_core::flows::launch::LaunchNotice::AgentSessionsHeld
+pub devlaunch_core::flows::launch::LaunchNotice::AgentSessionsHeld::panes: alloc::vec::Vec<alloc::string::String>
+pub devlaunch_core::flows::launch::LaunchNotice::AgentSessionsHeld::workspace_id: alloc::string::String
+pub devlaunch_core::flows::launch::LaunchNotice::AgentSessionsUnanswered
+pub devlaunch_core::flows::launch::LaunchNotice::AgentSessionsUnanswered::workspace_id: alloc::string::String
+pub devlaunch_core::flows::launch::LaunchNotice::AgentSessionsUnseen
+pub devlaunch_core::flows::launch::LaunchNotice::AgentSessionsUnseen::workspace_id: alloc::string::String
 pub devlaunch_core::flows::launch::LaunchNotice::AlreadyRunning
 pub devlaunch_core::flows::launch::LaunchNotice::AlreadyRunning::workspace_id: alloc::string::String
 pub devlaunch_core::flows::launch::LaunchNotice::AlreadyRunningAttaching

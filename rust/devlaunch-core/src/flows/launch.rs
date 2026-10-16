@@ -81,6 +81,7 @@ use crate::domain::workspace_id::{
     NamePart, UnsafeName, WorkspaceId, identity_of, validate_ref_name,
 };
 use crate::domain::workspace_state::NonEmpty;
+use crate::flows::agent_sessions;
 use crate::flows::kept_copies::KeptCopies;
 use crate::flows::kill;
 use crate::flows::launch_locks::LaunchLocks;
@@ -671,6 +672,36 @@ pub enum LaunchNotice {
     /// A `--devcontainer` choice cannot be honoured: the workspace is already
     /// running, and switching config means recreating it.
     DevcontainerIgnoredRunning { workspace_id: String, spec: String },
+
+    // --- the agents a recreate ends (devlaunch#673, `flows::agent_sessions`)
+    /// This `dl` is not in a herdr pane, so it cannot see which agents run in the
+    /// workspace, and the recreate ends them with nothing to start them again.
+    AgentSessionsUnseen { workspace_id: String },
+    /// herdr did not say which panes it has, so the same as
+    /// [`Self::AgentSessionsUnseen`].
+    AgentSessionsUnanswered { workspace_id: String },
+    /// These panes hold an agent in the workspace, and each will be started again
+    /// in its pane once the new container is up. Said before the recreate.
+    AgentSessionsHeld {
+        workspace_id: String,
+        panes: Vec<String>,
+    },
+    /// This pane holds a live agent in the workspace, and herdr saved no line to
+    /// start it again. The recreate ends it.
+    AgentSessionUnresumable {
+        workspace_id: String,
+        pane_id: String,
+        /// herdr's name for the agent in the pane: `claude`, `codex`, ...
+        agent: String,
+    },
+    /// The agent's line was typed back into its pane.
+    AgentSessionRestarted { pane_id: String },
+    /// The agent's line could not be typed into its pane; `line` is what to run
+    /// there by hand.
+    AgentSessionNotRestarted { pane_id: String, line: String },
+    /// The agent's pane is the one this `dl` runs in; `line` is what to run there
+    /// once this session ends.
+    AgentSessionInThisPane { line: String },
 
     // --- devpod's own lock (devlaunch#600, devlaunch#602)
     /// This launch's `devpod up` is waiting on devpod's workspace lock, which
@@ -5103,7 +5134,23 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
         devcontainer: Option<&DevcontainerPath>,
         placement: &Placement,
     ) -> Result<Launched, LaunchAborted> {
-        if let Some(refused) = self.bring_up(verb, devcontainer, placement)? {
+        // Only a recreate: `code` keeps the container when nothing changed, and a
+        // `reset` drops the volumes, so neither is the case this is for.
+        let held = if matches!(verb, LaunchVerb::Recreate) && placement.is_running() {
+            self.hold_agent_sessions(placement.workspace_id())
+        } else {
+            None
+        };
+        let up = self.bring_up(verb, devcontainer, placement);
+        // `Blocked` comes only from the OS refusing to start `devpod up`, so the old
+        // container and its agents still run. `NotInstalled` is not here: it also
+        // stands for a devpod gone after an `up` that did recreate, and a refusal
+        // is a devpod that ran and may have removed the container before failing.
+        let untouched = matches!(up, Err(LaunchAborted::DevpodNotRun(NotRun::Blocked(_))));
+        if let Some((manager, held)) = held.filter(|_| !untouched) {
+            self.restart_agent_sessions(&manager, &held, matches!(up, Ok(None)));
+        }
+        if let Some(refused) = up? {
             return Ok(Launched::Refused(refused));
         }
         if !verb.attaches() {
@@ -5113,6 +5160,83 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
         let session = self.attach(placement, verb.command());
         self.forced_refresh();
         session
+    }
+
+    /// Find the agents a recreate of `workspace_id` is about to end, and say what
+    /// will become of each (devlaunch#673).
+    ///
+    /// Every way this cannot find them is a notice. The recreate goes ahead.
+    fn hold_agent_sessions(
+        &mut self,
+        workspace_id: &str,
+    ) -> Option<(agent_sessions::Manager, agent_sessions::HeldSessions)> {
+        let workspace_id = workspace_id.to_owned();
+        let Some(manager) = agent_sessions::Manager::from_host(self.host) else {
+            self.notices
+                .say(LaunchNotice::AgentSessionsUnseen { workspace_id });
+            return None;
+        };
+        let Some(held) =
+            agent_sessions::collect(self.context.runner(), &manager, &workspace_id, &|path| {
+                std::fs::read_to_string(path).ok()
+            })
+        else {
+            self.notices
+                .say(LaunchNotice::AgentSessionsUnanswered { workspace_id });
+            return None;
+        };
+        for pane in &held.unresumable {
+            self.notices.say(LaunchNotice::AgentSessionUnresumable {
+                workspace_id: workspace_id.clone(),
+                pane_id: pane.pane_id.clone(),
+                agent: pane.agent.clone(),
+            });
+        }
+        if !held.sessions.is_empty() {
+            self.notices.say(LaunchNotice::AgentSessionsHeld {
+                workspace_id,
+                panes: held
+                    .sessions
+                    .iter()
+                    .map(|session| session.pane_id.clone())
+                    .collect(),
+            });
+        }
+        Some((manager, held))
+    }
+
+    /// Start each held agent again in its pane, or, when the recreate's `up` did
+    /// not finish, hand each one's line to the user to run by hand.
+    fn restart_agent_sessions(
+        &mut self,
+        manager: &agent_sessions::Manager,
+        held: &agent_sessions::HeldSessions,
+        up: bool,
+    ) {
+        if !up {
+            for session in &held.sessions {
+                self.notices.say(LaunchNotice::AgentSessionNotRestarted {
+                    pane_id: session.pane_id.clone(),
+                    line: crate::shell::join(session.line.iter().map(String::as_str)),
+                });
+            }
+            return;
+        }
+        let restarted =
+            agent_sessions::restart(self.context.runner(), manager, held, &std::thread::sleep);
+        for outcome in restarted {
+            self.notices.say(match outcome {
+                agent_sessions::Restarted::Typed { pane_id } => {
+                    LaunchNotice::AgentSessionRestarted { pane_id }
+                }
+                agent_sessions::Restarted::NotTyped { pane_id, line } => {
+                    LaunchNotice::AgentSessionNotRestarted { pane_id, line }
+                }
+                agent_sessions::Restarted::OwnPane { line, .. } => {
+                    LaunchNotice::AgentSessionInThisPane { line }
+                }
+            });
+        }
     }
 
     /// `dl <ws> restart`: stop and start without rebuilding.
@@ -13543,6 +13667,381 @@ mod tests {
             .find(|argv| argv.first().map(String::as_str) == Some("up"))
             .expect("an up");
         assert!(up.contains(&"--recreate".to_owned()), "{up:?}");
+    }
+
+    /// A scene whose launch runs in herdr pane `w1:p9`, with one other pane, `w1:p1`,
+    /// running Claude in `myws` and a saved line to start it again (devlaunch#673).
+    fn in_herdr_beside_claude(scene: &mut Scene) -> Vec<String> {
+        const HERDR: &str = "/opt/herdr/bin/herdr";
+        let socket = scene.cache_dir().join("herdr.sock");
+        scene.host.herdr = herdr::HostEnv {
+            in_pane: Some("1".to_owned()),
+            pane_id: Some("w1:p9".to_owned()),
+            socket: Some(socket.display().to_string()),
+            ..herdr::HostEnv::default()
+        };
+        scene.host.herdr_bin = Some(HERDR.to_owned());
+        let line = vec![
+            "dl",
+            "myws",
+            "--",
+            "claude",
+            "--remote-control=myws",
+            "--resume",
+            "4b1e",
+        ];
+        std::fs::write(
+            scene.cache_dir().join("session.json"),
+            format!(
+                r#"{{"workspaces":[{{"id":"w1","public_pane_numbers":{{"1":1}},"tabs":[{{"panes":{{"1":{{"agent_resume":{{"argv":{}}}}}}}}}]}}]}}"#,
+                serde_json::to_string(&line).expect("json")
+            ),
+        )
+        .expect("a session file");
+        scene.runner.script(
+            [HERDR, "pane", "list"],
+            Response::stdout(
+                r#"{"id":"l","result":{"type":"pane_list","panes":[{"pane_id":"w1:p1","tab_id":"w1:t1","focused":false},{"pane_id":"w1:p9","tab_id":"w1:t2","focused":true}]}}"#,
+            ),
+        );
+        scene.runner.script(
+            [HERDR, "pane", "process-info", "--pane", "w1:p1"],
+            Response::stdout(
+                r#"{"id":"p","result":{"type":"pane_process_info","process_info":{"foreground_processes":[{"argv":["devpod","ssh","myws"]}]}}}"#,
+            ),
+        );
+        scene.runner.script(
+            [HERDR, "agent", "get", "w1:p1"],
+            Response::stdout(
+                r#"{"id":"a","result":{"type":"agent","agent":{"agent":"claude","agent_status":"idle"}}}"#,
+            ),
+        );
+        scene.runner.script([HERDR, "pane", "run"], Response::ok());
+        scene.runner.script([HERDR], Response::exited(1));
+        line.into_iter().map(str::to_owned).collect()
+    }
+
+    /// The recreate ends the agent in `w1:p1`, and the launch types its line back
+    /// in once the new container is up and before its own shell takes this pane.
+    #[test]
+    fn a_recreate_starts_the_agents_it_ended_again_in_their_panes() {
+        let mut scene = Scene::new().with_running("myws");
+        let line = in_herdr_beside_claude(&mut scene);
+        let updater = SelfInvocation::new("dl");
+        let completion = scene.cache_dir().join("completion.json");
+        let mut parts = launching(&scene.runner, &updater, &completion);
+        let mut cold = NeverCold;
+        let launched = {
+            let mut launch = Launch::new(
+                &mut parts.context,
+                &mut parts.refresh,
+                &mut cold,
+                &parts.provision,
+                &scene.host,
+                &mut parts.chatter,
+                &mut parts.said,
+            );
+            launch.run("myws", &LaunchVerb::Recreate, None)
+        };
+
+        assert_eq!(
+            launched,
+            Ok(Launched::Session(Session::RemoteExit { status: 0 }))
+        );
+        let argvs = scene.runner.argvs();
+        let at = |wanted: &dyn Fn(&[String]) -> bool| {
+            argvs
+                .iter()
+                .position(|argv| wanted(argv))
+                .unwrap_or_else(|| panic!("not run: {argvs:?}"))
+        };
+        let up = at(&|argv| argv.get(1).map(String::as_str) == Some("up"));
+        let listed = at(&|argv| argv.get(1..3) == Some(&["pane".to_owned(), "list".to_owned()]));
+        let typed = at(&|argv| argv.get(1..3) == Some(&["pane".to_owned(), "run".to_owned()]));
+        let session = at(&|argv| {
+            argv.first().map(String::as_str) == Some("devpod")
+                && argv.get(1).map(String::as_str) == Some("ssh")
+        });
+        assert!(listed < up, "the panes were read after the container went");
+        assert!(
+            up < typed,
+            "the line was typed before the new container was up"
+        );
+        assert!(typed < session, "the line waited behind this pane's shell");
+        assert_eq!(
+            argvs[typed][3..],
+            [
+                "w1:p1".to_owned(),
+                crate::shell::join(line.iter().map(String::as_str))
+            ]
+        );
+        assert!(
+            parts.said.contains(&LaunchNotice::AgentSessionsHeld {
+                workspace_id: "myws".to_owned(),
+                panes: vec!["w1:p1".to_owned()],
+            }),
+            "{:?}",
+            parts.said
+        );
+        assert!(
+            parts.said.contains(&LaunchNotice::AgentSessionRestarted {
+                pane_id: "w1:p1".to_owned(),
+            }),
+            "{:?}",
+            parts.said
+        );
+    }
+
+    /// Outside herdr there are no panes to read, so the recreate says it ends the
+    /// agents and goes ahead.
+    #[test]
+    fn a_recreate_outside_herdr_says_it_cannot_see_the_agents_and_goes_ahead() {
+        let scene = Scene::new().with_running("myws");
+        let updater = SelfInvocation::new("dl");
+        let completion = scene.cache_dir().join("completion.json");
+        let mut parts = launching(&scene.runner, &updater, &completion);
+        let mut cold = NeverCold;
+        let launched = {
+            let mut launch = Launch::new(
+                &mut parts.context,
+                &mut parts.refresh,
+                &mut cold,
+                &parts.provision,
+                &scene.host,
+                &mut parts.chatter,
+                &mut parts.said,
+            );
+            launch.run("myws", &LaunchVerb::Recreate, None)
+        };
+
+        assert_eq!(
+            launched,
+            Ok(Launched::Session(Session::RemoteExit { status: 0 }))
+        );
+        assert!(
+            parts.said.contains(&LaunchNotice::AgentSessionsUnseen {
+                workspace_id: "myws".to_owned(),
+            }),
+            "{:?}",
+            parts.said
+        );
+    }
+
+    /// A recreate whose `up` fails types nothing, and hands each line over to be
+    /// run by hand.
+    #[test]
+    fn a_recreate_that_fails_hands_over_the_lines_it_did_not_type() {
+        let mut scene = Scene::new().with_running("myws");
+        let line = in_herdr_beside_claude(&mut scene);
+        scene
+            .runner
+            .script(["devpod", "up"], Response::failed(7, "devpod: no\n"));
+        let updater = SelfInvocation::new("dl");
+        let completion = scene.cache_dir().join("completion.json");
+        let mut parts = launching(&scene.runner, &updater, &completion);
+        let mut cold = NeverCold;
+        let launched = {
+            let mut launch = Launch::new(
+                &mut parts.context,
+                &mut parts.refresh,
+                &mut cold,
+                &parts.provision,
+                &scene.host,
+                &mut parts.chatter,
+                &mut parts.said,
+            );
+            launch.run("myws", &LaunchVerb::Recreate, None)
+        };
+
+        assert_eq!(
+            launched,
+            Ok(Launched::Refused(LaunchRefusal::UpRefused {
+                exit: Exit::Code(7)
+            }))
+        );
+        assert!(
+            !scene
+                .runner
+                .argvs()
+                .iter()
+                .any(|argv| argv.get(1..3) == Some(&["pane".to_owned(), "run".to_owned()])),
+            "a line was typed after a failed recreate"
+        );
+        assert!(
+            parts
+                .said
+                .contains(&LaunchNotice::AgentSessionNotRestarted {
+                    pane_id: "w1:p1".to_owned(),
+                    line: crate::shell::join(line.iter().map(String::as_str)),
+                }),
+            "{:?}",
+            parts.said
+        );
+    }
+
+    /// A recreate whose `devpod up` the OS would not start never touched the
+    /// container, so the agent in `w1:p1` still runs: nothing is typed and no line
+    /// is handed over to start a second one.
+    #[test]
+    fn a_recreate_whose_up_never_started_leaves_the_agents_alone() {
+        let mut scene = Scene::new().with_running("myws");
+        in_herdr_beside_claude(&mut scene);
+        let failure = crate::runner::OsFailure {
+            kind: std::io::ErrorKind::PermissionDenied,
+            errno: Some(13),
+        };
+        scene
+            .runner
+            .script(["devpod", "up"], Response::NotStarted(failure));
+        let updater = SelfInvocation::new("dl");
+        let completion = scene.cache_dir().join("completion.json");
+        let mut parts = launching(&scene.runner, &updater, &completion);
+        let mut cold = NeverCold;
+        let launched = {
+            let mut launch = Launch::new(
+                &mut parts.context,
+                &mut parts.refresh,
+                &mut cold,
+                &parts.provision,
+                &scene.host,
+                &mut parts.chatter,
+                &mut parts.said,
+            );
+            launch.run("myws", &LaunchVerb::Recreate, None)
+        };
+
+        assert_eq!(
+            launched,
+            Err(LaunchAborted::DevpodNotRun(NotRun::Blocked(failure)))
+        );
+        assert!(
+            !scene
+                .runner
+                .argvs()
+                .iter()
+                .any(|argv| argv.get(1..3) == Some(&["pane".to_owned(), "run".to_owned()])),
+            "a line was typed into a pane whose agent still runs"
+        );
+        assert!(
+            !parts.said.iter().any(|notice| matches!(
+                notice,
+                LaunchNotice::AgentSessionNotRestarted { .. }
+                    | LaunchNotice::AgentSessionInThisPane { .. }
+            )),
+            "{:?}",
+            parts.said
+        );
+    }
+
+    /// A `code` or a `reset` is not a recreate: herdr is not asked.
+    #[test]
+    fn only_a_recreate_asks_herdr_for_the_agents_it_would_end() {
+        for verb in [LaunchVerb::Code, LaunchVerb::Reset] {
+            let mut scene = Scene::new().with_running("myws");
+            in_herdr_beside_claude(&mut scene);
+            let updater = SelfInvocation::new("dl");
+            let completion = scene.cache_dir().join("completion.json");
+            let mut parts = launching(&scene.runner, &updater, &completion);
+            let mut cold = NeverCold;
+            let mut launch = Launch::new(
+                &mut parts.context,
+                &mut parts.refresh,
+                &mut cold,
+                &parts.provision,
+                &scene.host,
+                &mut parts.chatter,
+                &mut parts.said,
+            );
+            let _ = launch.run("myws", &verb, None);
+
+            assert!(
+                !scene
+                    .runner
+                    .argvs()
+                    .iter()
+                    .any(|argv| argv.get(1).map(String::as_str) == Some("pane")),
+                "{verb:?}: {:?}",
+                scene.runner.argvs()
+            );
+        }
+    }
+
+    /// A stopped workspace has no container for an agent to run in, so there is
+    /// nothing a recreate ends and herdr is not asked.
+    #[test]
+    fn a_recreate_of_a_stopped_workspace_asks_herdr_nothing() {
+        let mut scene = Scene::new().with_stopped("myws");
+        in_herdr_beside_claude(&mut scene);
+        let updater = SelfInvocation::new("dl");
+        let completion = scene.cache_dir().join("completion.json");
+        let mut parts = launching(&scene.runner, &updater, &completion);
+        let mut cold = NeverCold;
+        let mut launch = Launch::new(
+            &mut parts.context,
+            &mut parts.refresh,
+            &mut cold,
+            &parts.provision,
+            &scene.host,
+            &mut parts.chatter,
+            &mut parts.said,
+        );
+        let _ = launch.run("myws", &LaunchVerb::Recreate, None);
+
+        assert!(
+            !scene
+                .runner
+                .argvs()
+                .iter()
+                .any(|argv| argv.get(1).map(String::as_str) == Some("pane")),
+            "{:?}",
+            scene.runner.argvs()
+        );
+    }
+
+    /// herdr that will not list its panes is a recreate that cannot see the
+    /// agents, said as such, and the recreate goes ahead.
+    #[test]
+    fn a_recreate_whose_herdr_will_not_list_its_panes_says_so_and_goes_ahead() {
+        const HERDR: &str = "/opt/herdr/bin/herdr";
+        let mut scene = Scene::new().with_running("myws");
+        scene.host.herdr = herdr::HostEnv {
+            in_pane: Some("1".to_owned()),
+            pane_id: Some("w1:p9".to_owned()),
+            socket: Some(scene.cache_dir().join("herdr.sock").display().to_string()),
+            ..herdr::HostEnv::default()
+        };
+        scene.host.herdr_bin = Some(HERDR.to_owned());
+        scene
+            .runner
+            .script([HERDR, "pane", "list"], Response::exited(1));
+        let updater = SelfInvocation::new("dl");
+        let completion = scene.cache_dir().join("completion.json");
+        let mut parts = launching(&scene.runner, &updater, &completion);
+        let mut cold = NeverCold;
+        let launched = {
+            let mut launch = Launch::new(
+                &mut parts.context,
+                &mut parts.refresh,
+                &mut cold,
+                &parts.provision,
+                &scene.host,
+                &mut parts.chatter,
+                &mut parts.said,
+            );
+            launch.run("myws", &LaunchVerb::Recreate, None)
+        };
+
+        assert_eq!(
+            launched,
+            Ok(Launched::Session(Session::RemoteExit { status: 0 }))
+        );
+        assert!(
+            parts.said.contains(&LaunchNotice::AgentSessionsUnanswered {
+                workspace_id: "myws".to_owned(),
+            }),
+            "{:?}",
+            parts.said
+        );
     }
 
     #[test]

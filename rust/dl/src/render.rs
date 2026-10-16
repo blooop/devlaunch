@@ -3266,6 +3266,61 @@ pub(crate) fn launch_notice(notice: &LaunchNotice) -> Option<String> {
              --devcontainer ...' to switch config."
         ),
 
+        // --- the agents a recreate ends (devlaunch#673; no Python line)
+        LaunchNotice::AgentSessionsUnseen { workspace_id } => format!(
+            "This dl is not in a herdr pane, so it cannot see the agents running in \
+             {workspace_id}. The recreate ends them. Run 'claude --resume' in the new \
+             container to pick a conversation up again."
+        ),
+        LaunchNotice::AgentSessionsUnanswered { workspace_id } => format!(
+            "herdr did not say which panes it has, so the agents running in {workspace_id} \
+             end with the recreate. Run 'claude --resume' in the new container to pick a \
+             conversation up again."
+        ),
+        LaunchNotice::AgentSessionsHeld {
+            workspace_id,
+            panes,
+        } => {
+            let (noun, pronoun) = if panes.len() == 1 {
+                ("pane", "it")
+            } else {
+                ("panes", "each")
+            };
+            format!(
+                "The recreate ends the agent in {noun} {} of {workspace_id}; dl starts {pronoun} \
+                 again, resumed, once the new container is up.",
+                panes.join(", ")
+            )
+        }
+        LaunchNotice::AgentSessionUnresumable {
+            workspace_id,
+            pane_id,
+            agent,
+        } if agent == "claude" => format!(
+            "Pane {pane_id} runs an agent in {workspace_id}, and herdr saved no line to start \
+             it again. The recreate ends it. Run 'claude --resume' there to pick the \
+             conversation up again."
+        ),
+        LaunchNotice::AgentSessionUnresumable {
+            workspace_id,
+            pane_id,
+            agent,
+        } => format!(
+            "Pane {pane_id} runs {agent} in {workspace_id}, and herdr saved no line to start \
+             it again. The recreate ends it. Start {agent} there again to pick the \
+             conversation up."
+        ),
+        LaunchNotice::AgentSessionRestarted { pane_id } => {
+            format!("Started the agent in pane {pane_id} again.")
+        }
+        LaunchNotice::AgentSessionNotRestarted { pane_id, line } => format!(
+            "Could not start the agent in pane {pane_id} again. Run this in that pane: {line}"
+        ),
+        LaunchNotice::AgentSessionInThisPane { line } => format!(
+            "The agent that ran in this pane ended with the recreate. Run this here to start it \
+             again: {line}"
+        ),
+
         // --- devpod's own lock (devlaunch#600, devlaunch#602; no Python line,
         // Python never watched)
         //
@@ -5088,6 +5143,117 @@ mod tests {
         assert_eq!(
             launch_notice(&LaunchNotice::HerdrTab(HerdrTabRename::Off)),
             None
+        );
+    }
+
+    /// devlaunch#673. A line dl could not type is only worth anything if it can be
+    /// pasted, so it is given whole, at the end, with nothing after it.
+    #[test]
+    fn an_agent_line_dl_could_not_type_is_handed_over_whole() {
+        let line = "dl myws -- claude --remote-control=myws --resume 4b1e";
+        let said = launch_notice(&LaunchNotice::AgentSessionNotRestarted {
+            pane_id: "w1:p3".to_owned(),
+            line: line.to_owned(),
+        })
+        .expect("a sentence");
+        assert!(said.contains("pane w1:p3"), "{said}");
+        assert!(said.ends_with(&format!(": {line}")), "{said}");
+
+        let here = launch_notice(&LaunchNotice::AgentSessionInThisPane {
+            line: line.to_owned(),
+        })
+        .expect("a sentence");
+        assert!(here.ends_with(&format!(": {line}")), "{here}");
+    }
+
+    /// devlaunch#673. A pane herdr says runs codex is not told to run
+    /// 'claude --resume'; claude's own pane keeps the words it had.
+    #[test]
+    fn a_pane_with_no_line_is_told_about_the_agent_it_runs() {
+        let unresumable = |agent: &str| {
+            launch_notice(&LaunchNotice::AgentSessionUnresumable {
+                workspace_id: "myws".to_owned(),
+                pane_id: "w1:p2".to_owned(),
+                agent: agent.to_owned(),
+            })
+            .expect("a sentence")
+        };
+        let codex = unresumable("codex");
+        assert!(codex.contains("codex"), "{codex}");
+        assert!(!codex.contains("claude"), "{codex}");
+        assert_eq!(
+            unresumable("claude"),
+            "Pane w1:p2 runs an agent in myws, and herdr saved no line to start it again. \
+             The recreate ends it. Run 'claude --resume' there to pick the conversation up again."
+        );
+    }
+
+    #[test]
+    fn the_agents_a_recreate_will_start_again_are_named_by_pane() {
+        let said = launch_notice(&LaunchNotice::AgentSessionsHeld {
+            workspace_id: "myws".to_owned(),
+            panes: vec!["w1:p1".to_owned(), "w1:p4".to_owned()],
+        })
+        .expect("a sentence");
+        assert!(said.contains("panes w1:p1, w1:p4 of myws"), "{said}");
+        assert!(said.contains("starts each again"), "{said}");
+    }
+
+    #[test]
+    fn the_agents_a_recreate_cannot_start_again_are_said_word_for_word() {
+        assert_eq!(
+            launch_notice(&LaunchNotice::AgentSessionsUnseen {
+                workspace_id: "myws".to_owned(),
+            })
+            .as_deref(),
+            Some(
+                "This dl is not in a herdr pane, so it cannot see the agents running in myws. \
+                 The recreate ends them. Run 'claude --resume' in the new container to pick a \
+                 conversation up again."
+            )
+        );
+        assert_eq!(
+            launch_notice(&LaunchNotice::AgentSessionsUnanswered {
+                workspace_id: "myws".to_owned(),
+            })
+            .as_deref(),
+            Some(
+                "herdr did not say which panes it has, so the agents running in myws end with \
+                 the recreate. Run 'claude --resume' in the new container to pick a \
+                 conversation up again."
+            )
+        );
+        assert_eq!(
+            launch_notice(&LaunchNotice::AgentSessionUnresumable {
+                workspace_id: "myws".to_owned(),
+                pane_id: "w1:p2".to_owned(),
+                agent: "claude".to_owned(),
+            })
+            .as_deref(),
+            Some(
+                "Pane w1:p2 runs an agent in myws, and herdr saved no line to start it again. \
+                 The recreate ends it. Run 'claude --resume' there to pick the conversation up \
+                 again."
+            )
+        );
+        assert_eq!(
+            launch_notice(&LaunchNotice::AgentSessionUnresumable {
+                workspace_id: "myws".to_owned(),
+                pane_id: "w1:p2".to_owned(),
+                agent: "codex".to_owned(),
+            })
+            .as_deref(),
+            Some(
+                "Pane w1:p2 runs codex in myws, and herdr saved no line to start it again. \
+                 The recreate ends it. Start codex there again to pick the conversation up."
+            )
+        );
+        assert_eq!(
+            launch_notice(&LaunchNotice::AgentSessionRestarted {
+                pane_id: "w1:p1".to_owned(),
+            })
+            .as_deref(),
+            Some("Started the agent in pane w1:p1 again.")
         );
     }
 
