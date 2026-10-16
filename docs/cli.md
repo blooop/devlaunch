@@ -509,7 +509,7 @@ tab's name (`herdr tab get $HERDR_TAB_ID`) and deletes that workspace:
 
 ```
 $ dl rmt
-This tab is named 'devlaunch@main': removing workspace devlaunch-main-3j1t.
+This tab is named 'devlaunch@main', which is workspace devlaunch-main-3j1t.
 Removing workspace devlaunch-main-3j1t...
 ...
 Hanging up the shell dl was called from (pid 4242).

@@ -1007,7 +1007,7 @@ fn rmt_removes_the_workspace_its_herdr_tab_is_named_after() {
     assert_eq!(world.read("herdr-log"), "tab get w1:t7\n");
     assert!(
         hung.err.starts_with(
-            "This tab is named 'devlaunch@main': removing workspace devlaunch-main-legacy.\n\
+            "This tab is named 'devlaunch@main', which is workspace devlaunch-main-legacy.\n\
              Removing workspace devlaunch-main-legacy...\n"
         ),
         "the id goes on screen before anything is removed: {}",
@@ -1041,7 +1041,7 @@ fn rmt_takes_a_tab_named_with_the_workspace_id_itself() {
     hung.was_hung_up();
     assert!(
         hung.err.starts_with(
-            "This tab is named 'devlaunch-main-legacy': removing workspace devlaunch-main-legacy.\n"
+            "This tab is named 'devlaunch-main-legacy', which is workspace devlaunch-main-legacy.\n"
         ),
         "{}",
         hung.err
@@ -1106,7 +1106,7 @@ fn rmt_keeps_the_guard_rm_has() {
     hung.survived_with(1);
     assert!(
         hung.err.starts_with(
-            "This tab is named 'devlaunch@unpushed': removing workspace \
+            "This tab is named 'devlaunch@unpushed', which is workspace \
              devlaunch-unpushed-committed.\n"
         ),
         "{}",

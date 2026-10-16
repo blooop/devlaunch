@@ -1768,9 +1768,10 @@ pub(crate) fn rmt_names_several(label: &str, workspace_ids: &[String]) -> String
     )
 }
 
-/// Said before anything is removed, so the id this tab led to is on screen first.
+/// Said before the guard decides, so the id this tab led to is on screen first and
+/// the line is true whether the removal goes ahead or is refused.
 pub(crate) fn rmt_removing(label: &str, workspace_id: &str) -> String {
-    format!("This tab is named '{label}': removing workspace {workspace_id}.")
+    format!("This tab is named '{label}', which is workspace {workspace_id}.")
 }
 
 pub(crate) fn unknown_workspace(target: &str) -> String {
