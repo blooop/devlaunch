@@ -1032,6 +1032,31 @@ fn rmt_removes_the_workspace_its_herdr_tab_is_named_after() {
 }
 
 #[test]
+fn rmt_under_nohup_names_rmt_and_leaves_the_terminal() {
+    let world = World::base();
+    world.herdr_names_tab("devlaunch@main");
+    let clone = "cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-legacy";
+
+    let ran = world.shell_run("trap \"\" HUP; export HERDR_TAB_ID=w1:t7; ", &["rmt"]);
+
+    ran.survived_with(0);
+    assert!(!world.exists(clone), "the removal did not happen");
+    assert!(
+        ran.err.contains(
+            "rmt: SIGHUP was already ignored when dl started, so the shell stays. The removal is \
+             done."
+        ),
+        "the line names a verb other than the one typed: {}",
+        ran.err
+    );
+    assert!(
+        !ran.err.contains("Hanging up"),
+        "dl sent the signal it had itself been told to ignore: {}",
+        ran.err
+    );
+}
+
+#[test]
 fn rmt_takes_a_tab_named_with_the_workspace_id_itself() {
     // A workspace dl holds no record for is launched under its id, and the tab is
     // named with the id, so an id devpod lists is an answer without the records.

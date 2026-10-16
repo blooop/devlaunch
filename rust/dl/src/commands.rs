@@ -142,6 +142,7 @@ pub(crate) fn dispatch(
         // Only after a removal that worked; see [`crate::hangup`].
         Command::RemoveThisTab { force } => hangup::after_the_command(
             AfterRemoval::HangUpTheShell,
+            cli::REMOVE_THIS_TAB,
             render_remove_this_tab(runner, &mut context, cache, refresh, removal_of(force)),
         ),
         Command::HerdrEnv { action, workspace } => {
@@ -193,6 +194,7 @@ pub(crate) fn dispatch(
             claude_profile,
         } => {
             let after = verb.after_removal();
+            let word = verb.word();
             let ending = render_select(
                 runner,
                 &mut context,
@@ -202,7 +204,7 @@ pub(crate) fn dispatch(
                 devcontainer.as_ref(),
                 claude_profile.as_deref(),
             );
-            hangup::after_the_command(after, ending)
+            hangup::after_the_command(after, word, ending)
         }
         Command::Workspace {
             target,
@@ -225,6 +227,7 @@ pub(crate) fn dispatch(
                 crate::herdr_editor::start(agent);
             }
             let after = verb.after_removal();
+            let word = verb.word();
             let ending = render_workspace(
                 runner,
                 &mut context,
@@ -239,7 +242,7 @@ pub(crate) fn dispatch(
                 None,
                 resume,
             );
-            hangup::after_the_command(after, ending)
+            hangup::after_the_command(after, word, ending)
         }
     }
 }

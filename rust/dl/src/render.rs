@@ -1647,9 +1647,11 @@ pub(crate) fn hanging_up(parent: i32) -> String {
 /// as the cause, because it is not the only one: `setsid` sets no `SIG_IGN` and does
 /// not reach this, but a wrapper script or a supervisor that disarmed the signal
 /// does, and a sentence naming the wrong tool is worse than one naming none.
-pub(crate) fn hangup_disarmed() -> String {
-    "rme: SIGHUP was already ignored when dl started, so the shell stays. The removal is done."
-        .to_owned()
+pub(crate) fn hangup_disarmed(word: &str) -> String {
+    format!(
+        "{word}: SIGHUP was already ignored when dl started, so the shell stays. The removal is \
+         done."
+    )
 }
 
 /// `rme` on a run whose parent has already gone: the removal happened, the hangup
@@ -1658,10 +1660,11 @@ pub(crate) fn hangup_disarmed() -> String {
 /// Says the removal is done, because this is the one `rme` line printed *instead*
 /// of the signal rather than beside it, and a sentence that only said what did not
 /// happen would read like a failed delete.
-pub(crate) fn nothing_to_hang_up() -> String {
-    "rme: dl's parent process has already gone, so there is no shell to hang up. The removal is \
-     done."
-        .to_owned()
+pub(crate) fn nothing_to_hang_up(word: &str) -> String {
+    format!(
+        "{word}: dl's parent process has already gone, so there is no shell to hang up. The \
+         removal is done."
+    )
 }
 
 /// `rme` whose signal was refused: a parent that exited in the meantime, or one
@@ -1670,8 +1673,8 @@ pub(crate) fn nothing_to_hang_up() -> String {
 /// The removal is named for [`nothing_to_hang_up`]'s reason, and the OS error is
 /// quoted because the two causes are told apart by nothing else — a terminal left
 /// standing looks the same either way.
-pub(crate) fn could_not_hang_up(parent: i32, why: &str) -> String {
-    format!("rme: could not hang up pid {parent} ({why}). The removal is done.")
+pub(crate) fn could_not_hang_up(word: &str, parent: i32, why: &str) -> String {
+    format!("{word}: could not hang up pid {parent} ({why}). The removal is done.")
 }
 
 /// Whether the delete that was refused had `kill`'s sweep standing in front of it.
