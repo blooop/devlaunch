@@ -431,6 +431,12 @@ fn sweep_leftovers(
             workspace_id: workspace_id.to_owned(),
             names,
         }),
+        OrphanSweep::NotListed { reason } => {
+            notices.say(LifecycleNotice::LeftoverContainersNotListed {
+                workspace_id: workspace_id.to_owned(),
+                reason,
+            })
+        }
         OrphanSweep::NotRemoved { names, reason } => {
             notices.say(LifecycleNotice::LeftoverContainersNotRemoved {
                 workspace_id: workspace_id.to_owned(),

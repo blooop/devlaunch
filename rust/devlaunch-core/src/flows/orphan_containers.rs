@@ -44,9 +44,9 @@ use crate::domain::workspace_state::NonEmpty;
 
 /// What a sweep for one workspace's leftover containers came to.
 ///
-/// Two silent arms and two that are worth a line, on the line every other docker
-/// cleanup in dl draws: nothing to do and no docker to do it with are silent; a
-/// removal, or a docker that would not deliver, is said.
+/// Two silent arms and three that are worth a line, on the line every other
+/// docker cleanup in dl draws: nothing to do and no docker to do it with are
+/// silent; a removal, or a docker that would not deliver, is said.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum OrphanSweep {
     /// Nothing to remove: devpod still holds the workspace, no container names
@@ -55,10 +55,14 @@ pub(crate) enum OrphanSweep {
     /// No docker on this machine, so nothing was made to be left.
     NoDocker,
     /// These containers were removed, by name.
-    Removed(Vec<String>),
-    /// docker would not list or remove them. `names` is what was found, and is
-    /// empty when the listing itself failed; `reason` is docker's own words.
-    NotRemoved { names: Vec<String>, reason: String },
+    Removed(NonEmpty<String>),
+    /// docker would not list the containers, in its own words.
+    NotListed { reason: String },
+    /// docker would not remove these containers, in its own words.
+    NotRemoved {
+        names: NonEmpty<String>,
+        reason: String,
+    },
 }
 
 /// Remove the containers this workspace left behind, if devpod has forgotten it.
@@ -84,21 +88,17 @@ pub(crate) fn sweep(
     let containers = match docker::compose_containers(runner) {
         Ok(containers) => containers,
         Err(Unlisted::NotInstalled) => return OrphanSweep::NoDocker,
-        Err(Unlisted::Failed(reason)) => {
-            return OrphanSweep::NotRemoved {
-                names: Vec::new(),
-                reason,
-            };
-        }
+        Err(Unlisted::Failed(reason)) => return OrphanSweep::NotListed { reason },
     };
-    let left: Vec<&ComposeContainer> = containers
-        .iter()
-        .filter(|container| left_by(container, home, workspace_id, clone))
-        .collect();
-    let names: Vec<String> = left.iter().map(|c| c.name.clone()).collect();
-    let Some(ids) = NonEmpty::of(left.iter().map(|c| c.id.clone())) else {
+    let Some(left) = NonEmpty::of(
+        containers
+            .iter()
+            .filter(|container| left_by(container, home, workspace_id, clone)),
+    ) else {
         return OrphanSweep::Nothing;
     };
+    let names = left.map(|c| c.name.clone());
+    let ids = left.map(|c| c.id.clone());
     match docker::remove_containers(runner, &ids) {
         docker::Answer::Ran { exit, .. } if exit.is_success() => OrphanSweep::Removed(names),
         docker::Answer::Ran { exit, stderr } => OrphanSweep::NotRemoved {
@@ -136,6 +136,10 @@ mod tests {
     use crate::clients::devpod_home::{agent_compose_file, devpod_home_with};
 
     const WS: &str = "kinisi-ros-ci-sim-shard-rebalance-cd1e";
+
+    fn names<const N: usize>(names: [String; N]) -> NonEmpty<String> {
+        NonEmpty::of(names).expect("at least one name")
+    }
 
     /// One `docker ps` row in the template `compose_containers` asks for.
     fn row(id: &str, name: &str, working_dir: &Path, config_files: &[&Path]) -> String {
@@ -191,10 +195,10 @@ mod tests {
 
         assert_eq!(
             swept,
-            OrphanSweep::Removed(vec![
+            OrphanSweep::Removed(names([
                 format!("kinisi_jazzy_{WS}"),
                 format!("kinisi_unreal_runtime_1.6.1_{WS}"),
-            ])
+            ]))
         );
         assert_eq!(
             fake.args_to("docker").last().expect("a removal"),
@@ -275,7 +279,7 @@ mod tests {
 
         assert_eq!(
             sweep(&fake, Some(&home), "project", None),
-            OrphanSweep::Removed(vec!["project_dev".to_owned()])
+            OrphanSweep::Removed(names(["project_dev".to_owned()]))
         );
     }
 
@@ -310,7 +314,7 @@ mod tests {
         assert_eq!(
             sweep(&fake, Some(&home), WS, None),
             OrphanSweep::NotRemoved {
-                names: vec!["dev".to_owned()],
+                names: names(["dev".to_owned()]),
                 reason: "docker rm failed (Code(1)): daemon said no".to_owned(),
             }
         );

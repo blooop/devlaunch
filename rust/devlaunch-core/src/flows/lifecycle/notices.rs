@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use super::delete::{SweepOccasion, VolumeRefusal};
 use super::delete_guard::RemovalRefused;
 use crate::domain::metadata::{self};
+use crate::domain::workspace_state::NonEmpty;
 use crate::flows::repo_manager::CacheNotice;
 use crate::flows::workspace_clone::RemoveWorkspaceError;
 use crate::notices::{Notices, Wrapped};
@@ -50,13 +51,19 @@ pub enum LifecycleNotice {
     /// outlives it; see `flows::orphan_containers`.
     LeftoverContainersRemoved {
         workspace_id: String,
-        names: Vec<String>,
+        names: NonEmpty<String>,
+    },
+    /// docker would not list containers, so whether this workspace left any
+    /// behind is not known; docker said why.
+    LeftoverContainersNotListed {
+        workspace_id: String,
+        reason: String,
     },
     /// Containers this workspace left behind are still on this machine, and
-    /// docker said why. `names` is empty when docker would not list them at all.
+    /// docker said why.
     LeftoverContainersNotRemoved {
         workspace_id: String,
-        names: Vec<String>,
+        names: NonEmpty<String>,
         reason: String,
     },
     /// A clone directory went and its `metadata.json` record could not be

@@ -516,13 +516,19 @@ pub enum LaunchNotice {
     /// `flows::orphan_containers`.
     LeftoverContainersRemoved {
         workspace_id: String,
-        names: Vec<String>,
+        names: NonEmpty<String>,
     },
-    /// Leftover containers docker would not list or remove, in its own words.
-    /// The `up` goes ahead, and will name the container it trips over.
+    /// docker would not list containers, in its own words, so leftovers were not
+    /// looked for. The `up` goes ahead, and will name the container it trips over.
+    LeftoverContainersNotListed {
+        workspace_id: String,
+        reason: String,
+    },
+    /// Leftover containers docker would not remove, in its own words. The `up`
+    /// goes ahead, and will name the container it trips over.
     LeftoverContainersNotRemoved {
         workspace_id: String,
-        names: Vec<String>,
+        names: NonEmpty<String>,
         reason: String,
     },
 
@@ -1251,6 +1257,12 @@ fn sweep_leftovers(
             workspace_id: workspace_id.to_owned(),
             names,
         }),
+        OrphanSweep::NotListed { reason } => {
+            notices.say(LaunchNotice::LeftoverContainersNotListed {
+                workspace_id: workspace_id.to_owned(),
+                reason,
+            })
+        }
         OrphanSweep::NotRemoved { names, reason } => {
             notices.say(LaunchNotice::LeftoverContainersNotRemoved {
                 workspace_id: workspace_id.to_owned(),
@@ -1310,7 +1322,8 @@ mod leftover_tests {
             notices,
             [LaunchNotice::LeftoverContainersRemoved {
                 workspace_id: "ws".to_owned(),
-                names: vec!["dev_ws".to_owned(), "side_ws".to_owned()],
+                names: NonEmpty::of(["dev_ws".to_owned(), "side_ws".to_owned()])
+                    .expect("two names"),
             }]
         );
     }

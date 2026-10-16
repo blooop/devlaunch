@@ -1140,6 +1140,10 @@ fn lifecycle_notice(notice: &LifecycleNotice) -> Option<String> {
             workspace_id,
             names,
         } => leftovers_removed(workspace_id, names),
+        LifecycleNotice::LeftoverContainersNotListed {
+            workspace_id,
+            reason,
+        } => leftovers_not_listed(workspace_id, reason),
         LifecycleNotice::LeftoverContainersNotRemoved {
             workspace_id,
             names,
@@ -1173,25 +1177,35 @@ fn lifecycle_notice(notice: &LifecycleNotice) -> Option<String> {
 
 /// The line for containers a forgotten workspace left behind, removed. Shared by
 /// `rm` and the launch, which find the same leftovers at two different times.
-fn leftovers_removed(workspace_id: &str, names: &[String]) -> String {
+fn leftovers_removed(workspace_id: &str, names: &NonEmpty<String>) -> String {
     format!(
         "Removed containers {workspace_id} left behind: {}",
-        names.join(", ")
+        joined(names, ", ")
     )
 }
 
+/// The line for a docker that would not list containers, so leftovers were not
+/// looked for.
+fn leftovers_not_listed(workspace_id: &str, reason: &str) -> String {
+    format!("Could not check for containers {workspace_id} left behind: {reason}")
+}
+
 /// The line for leftovers docker would not remove, with the command that does
-/// it by hand when there are names to give it.
-fn leftovers_not_removed(workspace_id: &str, names: &[String], reason: &str) -> String {
-    if names.is_empty() {
-        format!("Could not check for containers {workspace_id} left behind: {reason}")
-    } else {
-        format!(
-            "Containers {workspace_id} left behind are still here ({reason}). Remove them with: \
-             docker rm -f {}",
-            names.join(" ")
-        )
-    }
+/// it by hand.
+fn leftovers_not_removed(workspace_id: &str, names: &NonEmpty<String>, reason: &str) -> String {
+    format!(
+        "Containers {workspace_id} left behind are still here ({reason}). Remove them with: \
+         docker rm -f {}",
+        joined(names, " ")
+    )
+}
+
+fn joined(names: &NonEmpty<String>, separator: &str) -> String {
+    names
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(separator)
 }
 
 /// One storage-flow notice, in the words the module that logged it used.
@@ -3136,6 +3150,10 @@ pub(crate) fn launch_notice(notice: &LaunchNotice) -> Option<String> {
             workspace_id,
             names,
         } => leftovers_removed(workspace_id, names),
+        LaunchNotice::LeftoverContainersNotListed {
+            workspace_id,
+            reason,
+        } => leftovers_not_listed(workspace_id, reason),
         LaunchNotice::LeftoverContainersNotRemoved {
             workspace_id,
             names,
@@ -5736,7 +5754,7 @@ mod tests {
     fn leftover_containers_are_named_and_a_refusal_gives_the_command() {
         let removed = launch_notice(&LaunchNotice::LeftoverContainersRemoved {
             workspace_id: "ws".to_owned(),
-            names: vec!["dev_ws".to_owned(), "side_ws".to_owned()],
+            names: NonEmpty::of(["dev_ws".to_owned(), "side_ws".to_owned()]).expect("two names"),
         });
         assert_eq!(
             removed.as_deref(),
@@ -5745,15 +5763,14 @@ mod tests {
 
         let refused = lifecycle_notice(&LifecycleNotice::LeftoverContainersNotRemoved {
             workspace_id: "ws".to_owned(),
-            names: vec!["dev_ws".to_owned()],
+            names: NonEmpty::of(["dev_ws".to_owned()]).expect("a name"),
             reason: "docker rm failed".to_owned(),
         })
         .expect("a line");
         assert!(refused.ends_with("docker rm -f dev_ws"), "{refused}");
 
-        let unlisted = lifecycle_notice(&LifecycleNotice::LeftoverContainersNotRemoved {
+        let unlisted = lifecycle_notice(&LifecycleNotice::LeftoverContainersNotListed {
             workspace_id: "ws".to_owned(),
-            names: vec![],
             reason: "docker ps did not answer in time".to_owned(),
         })
         .expect("a line");
