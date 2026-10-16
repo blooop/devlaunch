@@ -645,6 +645,7 @@ jobs:
           /tmp/wheel-check/bin/pip install --quiet "$wheel"
           test "$(/tmp/wheel-check/bin/dl --version)" = "dl $version"
           test "$(/tmp/wheel-check/bin/aid --version)" = "aid $version"
+          test "$(/tmp/wheel-check/bin/dla --version)" = "aid $version"
       - uses: prefix-dev/setup-pixi@v0.10.2
         with:
           run-install: false

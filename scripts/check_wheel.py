@@ -32,7 +32,8 @@ from pathlib import Path
 
 # What the wheel must contain, and all it may contain beyond `.dist-info`: the two
 # binaries, as `.data/scripts/` entries that pip drops into the environment's bin/.
-BINARIES = ("dl", "aid")
+# `dla` is `aid` under a second name, built from the same source.
+BINARIES = ("dl", "aid", "dla")
 
 
 def check(wheel: Path, version: str) -> list[str]:

@@ -164,6 +164,7 @@ jobs:
           /tmp/wheel-check/bin/pip install --quiet "$wheel"
           test "$(/tmp/wheel-check/bin/dl --version)" = "dl $version"
           test "$(/tmp/wheel-check/bin/aid --version)" = "aid $version"
+          test "$(/tmp/wheel-check/bin/dla --version)" = "aid $version"
 
       - name: Publish to PyPI
         if: steps.decide.outputs.publish == 'true'

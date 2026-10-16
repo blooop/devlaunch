@@ -58,6 +58,13 @@ name = "aid"
 path = "../aid/src/main.rs"
 required-features = ["wheel"]
 
+# `aid`'s second name, for the same reason it has one in `aid/Cargo.toml`.
+[[bin]]
+name = "dla"
+path = "../aid/src/main.rs"
+required-features = ["wheel"]
+test = false
+
 [dev-dependencies]
 devlaunch-test-support = { workspace = true }
 tempfile = { workspace = true }

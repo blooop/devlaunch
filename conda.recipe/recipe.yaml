@@ -64,6 +64,8 @@ tests:
       # package was built and named under.
       - test "$(dl --version)" = "dl ${{ version }}"
       - test "$(aid --version)" = "aid ${{ version }}"
+      # `dla` is aid under a second name, so it answers as aid.
+      - test "$(dla --version)" = "aid ${{ version }}"
 
 about:
   homepage: https://github.com/blooop/devlaunch
