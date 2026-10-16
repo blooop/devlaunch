@@ -1479,8 +1479,8 @@ dl <workspace id> -- CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 IS_SANDBOX=1 claude --
 ```
 
 The line starts with the `dl` that was run, by its file name, so a pane started with the
-dev build `dl-next` (or `aid-next`) comes back under `dl-next` and not under the released
-`dl`.
+dev build `dl-next` (or `aid-next`, or `dla-next`) comes back under `dl-next` and not under
+the released `dl`.
 
 So after a herdr server restart, or a reboot, every such pane comes back into its own
 conversation with no `aid resume` and no pickers. The workspace starts if it is stopped.

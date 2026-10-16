@@ -2006,15 +2006,21 @@ fn restore_line<'a>(
 /// reason (`dl-herdr-shell`): the directory a path names is replaced by
 /// `pixi global update`, and herdr refuses a path anyway. Not `current_exe()`,
 /// which resolves pixi global's trampoline to a path that moves on upgrade.
-/// `aid` runs dl in process, so its `aid-next` resumes under `dl-next`. A name a
+/// `aid` runs dl in process, so its `aid-next` resumes under `dl-next`, and
+/// `dla`, which is aid under a second name, maps the same way. A name a
 /// line cannot carry (empty, an option, a space or an apostrophe) falls back to
 /// `dl`. Pinned by `a_restored_pane_runs_the_dl_that_was_started`.
 pub(crate) fn restore_program(invoked_as: Option<&str>) -> String {
     let name = invoked_as
         .and_then(|path| path.rsplit('/').next())
-        .map(|name| match name.strip_prefix("aid") {
-            Some(rest) => format!("{RESTORE_PROGRAM}{rest}"),
-            None => name.to_owned(),
+        .map(|name| {
+            match name
+                .strip_prefix("aid")
+                .or_else(|| name.strip_prefix("dla"))
+            {
+                Some(rest) => format!("{RESTORE_PROGRAM}{rest}"),
+                None => name.to_owned(),
+            }
         });
     match name {
         Some(name)
@@ -2335,8 +2341,8 @@ mod resume_tests {
     }
 
     /// The dl a restored pane runs is the one that was run, by file name: a path
-    /// is one herdr refuses and `pixi global update` moves, `aid` resumes under
-    /// its own `dl`, and a name no shell can type falls back to the released `dl`.
+    /// is one herdr refuses and `pixi global update` moves, `aid` (or `dla`) resumes
+    /// under its own `dl`, and a name no shell can type falls back to the released `dl`.
     #[test]
     fn a_restored_pane_runs_the_dl_that_was_started() {
         let cases = [
@@ -2345,6 +2351,8 @@ mod resume_tests {
             (Some("/home/u/.local/bin/dl-next"), "dl-next"),
             (Some("aid"), "dl"),
             (Some("/home/u/.pixi/bin/aid-next"), "dl-next"),
+            (Some("dla"), "dl"),
+            (Some("/home/u/.local/bin/dla-next"), "dl-next"),
             (Some("./target/debug/dl"), "dl"),
             (None, "dl"),
             (Some(""), "dl"),
