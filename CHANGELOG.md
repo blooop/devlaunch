@@ -7,9 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.60.1] - 2026-10-16
+
 ### Changed
 
-- **A cold launch's setup pass starts one shell, not one per stage.** Each stage (session
+- **A cold launch's setup pass starts one shell, not one per stage** (#678). Each stage (session
   name, zellij, codex, title, onboarding, trust) ran in a nested `bash -c`, and every new
   bash reads the image's `$BASH_ENV`. An image that points it at a heavy shell profile
   (for example a ROS environment) can pay about 1.1s a read inside `devpod ssh`, so the
