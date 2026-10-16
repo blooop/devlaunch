@@ -5,9 +5,9 @@
 # table whose version was read out of `rust/Cargo.toml` -- served a Python `dl`
 # that no longer exists.
 #
-# What ships is a linux-64 wheel of the two compiled binaries, built by maturin
-# from `packaging/wheel/pyproject.toml`, and a conda package of the same two
-# binaries from `conda.recipe/recipe.yaml`. Both read their version from
+# What ships is a linux-64 wheel of the compiled binaries (`dl`, `aid`, `dla`),
+# built by maturin from `packaging/wheel/pyproject.toml`, and a conda package of
+# the same binaries from `conda.recipe/recipe.yaml`. Both read their version from
 # `rust/Cargo.toml`, which is the one place it lives; a release is one edit.
 # Neither is built from here, and the `rust` feature below is not what builds them
 # either: it is for building the crates under `rust/` from inside a container.

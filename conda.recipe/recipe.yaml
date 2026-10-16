@@ -27,7 +27,7 @@ build:
     # (and `dla`, its second name) compiled from `rust/aid/src/main.rs` behind the
     # `wheel` feature, which is
     # the arrangement `rust/dl/Cargo.toml` explains and the one the PyPI wheel
-    # ships from too. One `cargo install` for both, so the two channels cannot
+    # ships from too. One `cargo install` for all of them, so the two channels cannot
     # ship different sets.
     #
     # `--locked` is the point of building from a tag: the dependency versions are

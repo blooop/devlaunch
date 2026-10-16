@@ -12,7 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`dla` is a second name for `aid`.** It is easier to type: `dl` and one letter. It is the
   same program, built from the same source, so it takes the same flags, prints the same
   messages and answers `dla --version` as `aid <version>`. The wheel, the conda package and
-  `./dev.sh` (as `dla-next`) ship it, and bash completion treats it as `aid`.
+  `./dev.sh` (as `dla-next`) ship it, and bash completion treats it as `aid`. An existing
+  install gets `dla` completion after it runs `dl --install` again.
 
 ## [0.59.4] - 2026-10-05
 
