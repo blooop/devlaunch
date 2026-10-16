@@ -5403,7 +5403,7 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
             for session in &held.sessions {
                 self.notices.say(LaunchNotice::AgentSessionNotRestarted {
                     pane_id: session.pane_id.clone(),
-                    line: crate::shell::join(session.line.iter().map(String::as_str)),
+                    line: session.shell_line(),
                 });
             }
             return;

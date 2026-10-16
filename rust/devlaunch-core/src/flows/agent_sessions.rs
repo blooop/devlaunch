@@ -95,6 +95,14 @@ pub struct HeldSession {
     pub line: Vec<String>,
 }
 
+impl HeldSession {
+    /// The line as one shell line: what is typed into the pane, or handed to
+    /// the user to run there.
+    pub fn shell_line(&self) -> String {
+        crate::shell::join(self.line.iter().map(String::as_str))
+    }
+}
+
 /// What [`collect`] found in herdr's panes for one workspace.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HeldSessions {
@@ -246,7 +254,7 @@ pub fn restart(
         .iter()
         .map(|session| {
             let pane_id = session.pane_id.clone();
-            let line = crate::shell::join(session.line.iter().map(String::as_str));
+            let line = session.shell_line();
             if manager.own_pane.as_deref() == Some(pane_id.as_str()) {
                 return Restarted::OwnPane { pane_id, line };
             }
