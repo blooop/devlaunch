@@ -23,10 +23,11 @@ serde_json = { workspace = true }
 skim = { workspace = true }
 term = { workspace = true }
 
-# The released package ships two binaries, and a maturin bin-wheel ships the bin
+# The released package ships three binaries (`dl`, `aid`, and `dla`, which is aid
+# under a second name), and a maturin bin-wheel ships the bin
 # targets of exactly *one* cargo package (maturin 1.14 asks cargo metadata for
 # `root_package()` and takes its targets; there is no cross-package collection).
-# So the package the wheel is built from has to own both bin targets, and this is
+# So the package the wheel is built from has to own every bin target, and this is
 # that package -- see `packaging/wheel/pyproject.toml`.
 #
 # Nothing forks: the bin below compiles the very `aid/src/main.rs` the `aid`
@@ -57,6 +58,13 @@ dev-build = []
 name = "aid"
 path = "../aid/src/main.rs"
 required-features = ["wheel"]
+
+# `aid`'s second name, for the same reason it has one in `aid/Cargo.toml`.
+[[bin]]
+name = "dla"
+path = "../aid/src/main.rs"
+required-features = ["wheel"]
+test = false
 
 [dev-dependencies]
 devlaunch-test-support = { workspace = true }

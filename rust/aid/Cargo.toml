@@ -6,6 +6,29 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+# Two names for one program. `dla` is `aid` under a name that is easier to type
+# (`dl` plus one letter), built from the same `main.rs`, so there is nothing for
+# the two to disagree about: same flags, same messages, and `dla --version` still
+# answers `aid <version>`. A copy rather than a symlink because a bin-wheel and a
+# conda package ship files, and neither can carry a link. Naming the bins at all
+# turns off cargo's discovery of `src/main.rs`, which is why `aid` is listed too.
+#
+# Cargo warns that `main.rs` is "present in multiple build targets". That warning
+# is the arrangement, not a mistake in it. The ways around it cost more: a
+# `dla.rs` that loads `main.rs` as a module breaks the `crate::` paths in the
+# submodules, and `include!` refuses `main.rs`'s `//!` docs. `test = false`
+# keeps a plain `cargo test` from running `main.rs`'s unit tests twice; an
+# explicit `--bins`, which CI passes, selects `dla` anyway, and the second run
+# costs a link and well under a second.
+[[bin]]
+name = "aid"
+path = "src/main.rs"
+
+[[bin]]
+name = "dla"
+path = "src/main.rs"
+test = false
+
 [dependencies]
 # The only devlaunch crate named here, and deliberately: aid is a command-line
 # rewrite that hands the result to dl, so what it can reach is whatever dl makes

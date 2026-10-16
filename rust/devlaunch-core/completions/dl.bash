@@ -11,7 +11,8 @@
 #
 # The same function serves `aid`, whose first argument is a dl workspace spec
 # too. Only the flag list and what follows the spec differ, so the two places
-# that care branch on $cmd rather than the script being copied for aid.
+# that care branch on $cmd rather than the script being copied for aid. `dla` is
+# aid under a second name and completes as aid.
 _dl_completion() {
     local cur prev opts
     COMPREPLY=()
@@ -48,10 +49,13 @@ _dl_completion() {
         fi
     fi
 
-    # The command being completed: dl or aid.
+    # The command being completed: dl or aid. `dla` is aid's second name.
     local cmd=""
     if (( ${#words[@]} > 0 )); then
         cmd="${words[0]##*/}"
+    fi
+    if [[ "$cmd" == dla ]]; then
+        cmd=aid
     fi
 
     # The options offered where a workspace spec goes.
@@ -375,4 +379,5 @@ _dl_completion() {
 # Use -o default for better completion behavior
 complete -o default -F _dl_completion dl
 complete -o default -F _dl_completion aid
+complete -o default -F _dl_completion dla
 # end dl completion
