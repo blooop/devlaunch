@@ -5281,7 +5281,11 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
         // is a devpod that ran and may have removed the container before failing.
         let untouched = matches!(up, Err(LaunchAborted::DevpodNotRun(NotRun::Blocked(_))));
         if let Some((manager, held)) = held.filter(|_| !untouched) {
-            self.restart_agent_sessions(&manager, &held, matches!(up, Ok(None)));
+            if matches!(up, Ok(None)) {
+                self.restart_agent_sessions(&manager, &held);
+            } else {
+                self.hand_back_agent_sessions(&held);
+            }
         }
         if let Some(refused) = up? {
             return Ok(Launched::Refused(refused));
@@ -5395,23 +5399,23 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
         Some((manager, held))
     }
 
-    /// Start each held agent again in its pane, or, when the recreate's `up` did
-    /// not finish, hand each one's line to the user to run by hand.
+    /// When the recreate's `up` did not finish, hand each held agent's line to
+    /// the user to run by hand.
+    fn hand_back_agent_sessions(&mut self, held: &agent_sessions::HeldSessions) {
+        for session in &held.sessions {
+            self.notices.say(LaunchNotice::AgentSessionNotRestarted {
+                pane_id: session.pane_id.clone(),
+                line: session.shell_line(),
+            });
+        }
+    }
+
+    /// Start each held agent again in its pane, after the recreate's `up` finished.
     fn restart_agent_sessions(
         &mut self,
         manager: &agent_sessions::Manager,
         held: &agent_sessions::HeldSessions,
-        up: bool,
     ) {
-        if !up {
-            for session in &held.sessions {
-                self.notices.say(LaunchNotice::AgentSessionNotRestarted {
-                    pane_id: session.pane_id.clone(),
-                    line: session.shell_line(),
-                });
-            }
-            return;
-        }
         let restarted =
             agent_sessions::restart(self.context.runner(), manager, held, &std::thread::sleep);
         let unconfirmed =
