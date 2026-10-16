@@ -41,8 +41,8 @@ use devlaunch_core::flows::kill::{
     Marker, NoSignal, Released, Standing, StillHeld, Sweep, TableUnreadable,
 };
 use devlaunch_core::flows::launch::{
-    BranchNotNamed, ClaudeProfileProblem, ColdRefused, LaunchAborted, LaunchNotice, LaunchRefusal,
-    NotPrepared, SessionRefused,
+    BranchNotNamed, ClaudeProfileProblem, ColdRefused, DerivedImageKept, LaunchAborted,
+    LaunchNotice, LaunchRefusal, NotPrepared, SessionRefused,
 };
 use devlaunch_core::flows::lifecycle::{
     Insistence, KeptBecause, LifecycleNotice, LockKeptBecause, NotAdopted, Promotion, PrunePlan,
@@ -3409,11 +3409,11 @@ pub(crate) fn launch_notice(notice: &LaunchNotice) -> Option<String> {
             "{workspace_id} runs an older image. Removed the tag {image} that devpod built it \
              under, so the recreate builds the image again from the newer one."
         ),
-        LaunchNotice::DerivedImageKept {
+        LaunchNotice::DerivedImageKept(DerivedImageKept {
             workspace_id,
             image,
             why,
-        } => derived_image_kept(workspace_id, image, why),
+        }) => derived_image_kept(workspace_id, image, why),
         LaunchNotice::AgentSessionLineNotKept { pane_id } => format!(
             "Started the agent in pane {pane_id} again, and herdr did not keep the line that \
              starts it. The next recreate ends it."
@@ -3717,11 +3717,11 @@ pub(crate) fn launch_refusal(refused: &LaunchRefusal) -> Option<String> {
             &format!("{owner}/{repo}@{branch}"),
             &format!("{recorded_owner}/{recorded_repo}@{recorded_branch}"),
         )),
-        LaunchRefusal::DerivedImageKept {
+        LaunchRefusal::DerivedImageKept(DerivedImageKept {
             workspace_id,
             image,
             why,
-        } => Some(format!(
+        }) => Some(format!(
             "{} The refresh does not recreate it.",
             derived_image_kept(workspace_id, image, why)
         )),

@@ -76,10 +76,7 @@ pub devlaunch_core::api::LaunchNotice::CodexStageMissing
 pub devlaunch_core::api::LaunchNotice::CodexStageMissing::workspace_id: alloc::string::String
 pub devlaunch_core::api::LaunchNotice::CreateNeverFinished
 pub devlaunch_core::api::LaunchNotice::CreateNeverFinished::workspace_id: alloc::string::String
-pub devlaunch_core::api::LaunchNotice::DerivedImageKept
-pub devlaunch_core::api::LaunchNotice::DerivedImageKept::image: alloc::string::String
-pub devlaunch_core::api::LaunchNotice::DerivedImageKept::why: alloc::string::String
-pub devlaunch_core::api::LaunchNotice::DerivedImageKept::workspace_id: alloc::string::String
+pub devlaunch_core::api::LaunchNotice::DerivedImageKept(devlaunch_core::flows::launch::DerivedImageKept)
 pub devlaunch_core::api::LaunchNotice::DerivedImageRemoved
 pub devlaunch_core::api::LaunchNotice::DerivedImageRemoved::image: alloc::string::String
 pub devlaunch_core::api::LaunchNotice::DerivedImageRemoved::workspace_id: alloc::string::String
@@ -663,10 +660,7 @@ pub devlaunch_core::flows::launch::LaunchNotice::CodexStageMissing
 pub devlaunch_core::flows::launch::LaunchNotice::CodexStageMissing::workspace_id: alloc::string::String
 pub devlaunch_core::flows::launch::LaunchNotice::CreateNeverFinished
 pub devlaunch_core::flows::launch::LaunchNotice::CreateNeverFinished::workspace_id: alloc::string::String
-pub devlaunch_core::flows::launch::LaunchNotice::DerivedImageKept
-pub devlaunch_core::flows::launch::LaunchNotice::DerivedImageKept::image: alloc::string::String
-pub devlaunch_core::flows::launch::LaunchNotice::DerivedImageKept::why: alloc::string::String
-pub devlaunch_core::flows::launch::LaunchNotice::DerivedImageKept::workspace_id: alloc::string::String
+pub devlaunch_core::flows::launch::LaunchNotice::DerivedImageKept(devlaunch_core::flows::launch::DerivedImageKept)
 pub devlaunch_core::flows::launch::LaunchNotice::DerivedImageRemoved
 pub devlaunch_core::flows::launch::LaunchNotice::DerivedImageRemoved::image: alloc::string::String
 pub devlaunch_core::flows::launch::LaunchNotice::DerivedImageRemoved::workspace_id: alloc::string::String

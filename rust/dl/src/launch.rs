@@ -318,7 +318,7 @@ fn ran(outcome: Result<Launched, LaunchAborted>, cache: &Path) -> Ran {
                 | LaunchRefusal::IdCollision { .. }
                 | LaunchRefusal::BranchNotNamed { .. }
                 | LaunchRefusal::NotPrepared { .. }
-                | LaunchRefusal::DerivedImageKept { .. } => Ran {
+                | LaunchRefusal::DerivedImageKept(_) => Ran {
                     ending: Ending::Refused,
                     reached: Reached::Nothing,
                 },

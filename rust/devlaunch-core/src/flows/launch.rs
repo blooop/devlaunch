@@ -438,6 +438,19 @@ fn switched_on(value: Option<&str>) -> bool {
 // the notices
 // ===========================================================================
 
+/// A stale workspace whose image devpod built, and devpod's tag for that image
+/// could not be removed: a recreate would build the container from the older
+/// image again. [`LaunchNotice::DerivedImageKept`] says it when the recreate
+/// goes ahead; [`LaunchRefusal::DerivedImageKept`] when it does not run.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DerivedImageKept {
+    pub workspace_id: String,
+    /// devpod's tag for the image.
+    pub image: String,
+    /// Why the tag could not be removed.
+    pub why: String,
+}
+
 /// Something the launch did that the `dl` binary may want to report.
 ///
 /// One vocabulary for the whole flow, because a single launch produces notices
@@ -713,11 +726,7 @@ pub enum LaunchNotice {
     DerivedImageRemoved { workspace_id: String, image: String },
     /// The tag could not be removed, so the recreate builds the container from
     /// the older image again and the workspace stays stale.
-    DerivedImageKept {
-        workspace_id: String,
-        image: String,
-        why: String,
-    },
+    DerivedImageKept(DerivedImageKept),
     /// The agent's line could not be typed into its pane; `line` is what to run
     /// there by hand.
     AgentSessionNotRestarted { pane_id: String, line: String },
@@ -4850,11 +4859,7 @@ pub enum LaunchRefusal {
     /// An unattended recreate of a stale workspace whose image devpod built, and
     /// devpod's tag for it could not be removed. The recreate would build the
     /// container from the older image again, so it does not run.
-    DerivedImageKept {
-        workspace_id: String,
-        image: String,
-        why: String,
-    },
+    DerivedImageKept(DerivedImageKept),
     /// A bare `owner/repo` whose default branch could not be named.
     BranchNotNamed {
         owner: String,
@@ -5334,19 +5339,15 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
                 format!("docker did not start ({:?})", failure.kind)
             }
         };
-        let workspace_id = workspace_id.to_owned();
-        if verb.is_unattended() {
-            return Some(LaunchRefusal::DerivedImageKept {
-                workspace_id,
-                image,
-                why,
-            });
-        }
-        self.notices.say(LaunchNotice::DerivedImageKept {
-            workspace_id,
+        let kept = DerivedImageKept {
+            workspace_id: workspace_id.to_owned(),
             image,
             why,
-        });
+        };
+        if verb.is_unattended() {
+            return Some(LaunchRefusal::DerivedImageKept(kept));
+        }
+        self.notices.say(LaunchNotice::DerivedImageKept(kept));
         None
     }
 
@@ -14397,11 +14398,13 @@ mod tests {
 
         assert_eq!(
             launched,
-            Ok(Launched::Refused(LaunchRefusal::DerivedImageKept {
-                workspace_id: "myws".to_owned(),
-                image: "proj-8260d:devpod-9409".to_owned(),
-                why: "Error response from daemon: busy".to_owned(),
-            }))
+            Ok(Launched::Refused(LaunchRefusal::DerivedImageKept(
+                DerivedImageKept {
+                    workspace_id: "myws".to_owned(),
+                    image: "proj-8260d:devpod-9409".to_owned(),
+                    why: "Error response from daemon: busy".to_owned(),
+                }
+            )))
         );
         assert!(
             !scene
@@ -14440,11 +14443,11 @@ mod tests {
             "the recreate did not run"
         );
         assert!(
-            said.contains(&LaunchNotice::DerivedImageKept {
+            said.contains(&LaunchNotice::DerivedImageKept(DerivedImageKept {
                 workspace_id: "myws".to_owned(),
                 image: "proj-8260d:devpod-9409".to_owned(),
                 why: "Error response from daemon: busy".to_owned(),
-            }),
+            })),
             "{said:?}"
         );
     }
