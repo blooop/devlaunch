@@ -62,6 +62,13 @@ use crate::runner::Runner;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StaleImage {
     reference: String,
+    /// The container devpod recorded for the workspace: the one that runs the
+    /// older image.
+    container: String,
+    /// The tag devpod built the container's image under, from the reference:
+    /// `<prefix>:devpod-<hash>`. devpod names it by a hash of the config, not of
+    /// the reference, so a recreate reuses it and stays stale until it is gone.
+    derived: Option<String>,
 }
 
 impl StaleImage {
@@ -70,6 +77,16 @@ impl StaleImage {
     /// none.
     pub fn reference(&self) -> &str {
         &self.reference
+    }
+
+    /// The id of the container that runs the older image.
+    pub fn container(&self) -> &str {
+        &self.container
+    }
+
+    /// The tag devpod built the older image under, when it built one.
+    pub fn derived_image(&self) -> Option<&str> {
+        self.derived.as_deref()
     }
 }
 
@@ -104,6 +121,8 @@ impl StaleImages {
                         id.to_owned(),
                         StaleImage {
                             reference: reference.to_owned(),
+                            container: id.to_owned(),
+                            derived: None,
                         },
                     )
                 })
@@ -128,10 +147,10 @@ struct Created {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Image {
     id: String,
-    /// docker's `Created`, cut to whole seconds: `YYYY-MM-DDTHH:MM:SS`. docker
-    /// writes it in UTC with a varying count of fractional digits, so the cut is
-    /// what makes two of them compare in time order as strings.
-    created: String,
+    /// docker's `Created`, parsed. docker does not always write it in UTC: with
+    /// the containerd image store a pulled image reads `...Z` and a local build
+    /// `...+01:00`, so a cut-and-compare of the text is off by the offset.
+    created: jiff::Timestamp,
     layers: Vec<String>,
 }
 
@@ -168,19 +187,39 @@ pub fn stale_images<'w>(
     let by_workspace = created
         .into_iter()
         .filter_map(|(id, created)| {
-            let running = running_images.get(running.get(&created.container)?)?;
+            let running_id = running.get(&created.container)?;
             let current = references.get(&created.reference)?;
-            is_stale(&created, running, current).then(|| {
+            let stale = match running_images.get(running_id) {
+                Some(running) => is_stale(&created, running, current),
+                // With the containerd image store, a local build whose only tag
+                // moved is gone from `docker image inspect` while a container
+                // still runs it. Its id is enough when the container was made
+                // from the reference itself; a derived image needs its layers.
+                None => created.created_from == created.reference && *running_id != current.id,
+            };
+            stale.then(|| {
+                let derived = (created.created_from != created.reference
+                    && is_devpod_tag(&created.created_from))
+                .then_some(created.created_from);
                 (
                     id.to_owned(),
                     StaleImage {
                         reference: created.reference,
+                        container: created.container,
+                        derived,
                     },
                 )
             })
         })
         .collect();
     StaleImages { by_workspace }
+}
+
+/// Whether `reference` is a tag devpod built: `<prefix>:devpod-<hash>`.
+fn is_devpod_tag(reference: &str) -> bool {
+    reference
+        .rsplit_once(':')
+        .is_some_and(|(name, tag)| !name.is_empty() && tag.starts_with("devpod-"))
 }
 
 /// Whether a container created as `created` and running `running` is behind
@@ -203,7 +242,7 @@ fn created(devpod_home: Option<&DevpodHome>, workspace_id: &str) -> Option<Creat
     let details = &document["ContainerDetails"];
     let created_from = text(&details["Config"]["Image"])?;
     Some(Created {
-        container: text(&details["Id"])?,
+        container: text(&details["ID"])?,
         reference: text(&document["MergedConfig"]["image"]).unwrap_or_else(|| created_from.clone()),
         created_from,
     })
@@ -259,7 +298,7 @@ fn images(runner: &dyn Runner, names: impl IntoIterator<Item = String>) -> BTree
                 id.to_owned(),
                 Image {
                     id: id.to_owned(),
-                    created: created.get(..19)?.to_owned(),
+                    created: created.parse().ok()?,
                     layers,
                 },
             ))
@@ -299,7 +338,7 @@ mod tests {
         std::fs::write(
             home.result("default", workspace_id),
             serde_json::json!({
-                "ContainerDetails": { "Id": container, "Config": { "Image": created_from } },
+                "ContainerDetails": { "ID": container, "Config": { "Image": created_from } },
                 "MergedConfig": merged,
             })
             .to_string(),
@@ -365,6 +404,8 @@ mod tests {
             stale.of("ws").map(StaleImage::reference),
             Some("ghcr.io/o/img:latest")
         );
+        // The container is what `dl --refresh-stale` reads the processes of.
+        assert_eq!(stale.of("ws").map(StaleImage::container), Some("c1"));
     }
 
     #[test]
@@ -570,6 +611,75 @@ mod tests {
         assert!(stale_images(&fake, Some(&home), ["ws"]).is_empty());
     }
 
+    /// With the containerd image store, a local build whose only tag moved is
+    /// gone from `docker image inspect` while the container still runs it.
+    fn running_image_gone(fake: &FakeRunner, id: &str) {
+        fake.script(
+            [
+                "docker",
+                "inspect",
+                "--type",
+                "image",
+                "--format",
+                IMAGE_FORMAT,
+                id,
+            ],
+            Response::failed(1, format!("Error: No such image: {id}\n")),
+        );
+    }
+
+    #[test]
+    fn a_container_made_from_the_reference_is_stale_after_its_image_left_the_store() {
+        let home = home_with("ws", "dl-test:latest", Some("dl-test:latest"));
+        let fake = FakeRunner::new();
+        inspect_container(&fake, "sha256:old");
+        running_image_gone(&fake, "sha256:old");
+        inspect_image(&fake, "dl-test:latest", line("sha256:new", &["l1", "l2"]));
+
+        let stale = stale_images(&fake, Some(&home), ["ws"]);
+
+        assert_eq!(
+            stale.of("ws").map(StaleImage::reference),
+            Some("dl-test:latest")
+        );
+    }
+
+    #[test]
+    fn a_derived_image_that_left_the_store_is_not_judged_without_its_layers() {
+        let home = home_with("ws", "devpod-abc", Some("ghcr.io/o/img:latest"));
+        let fake = FakeRunner::new();
+        inspect_container(&fake, "sha256:derived");
+        running_image_gone(&fake, "sha256:derived");
+        inspect_image(&fake, "ghcr.io/o/img:latest", line("sha256:base2", &["l1"]));
+
+        assert!(stale_images(&fake, Some(&home), ["ws"]).is_empty());
+    }
+
+    /// 10:10 at +01:00 is 09:10 UTC, so a base pulled at 09:30 UTC is the newer
+    /// one. Compared as text, "10:10" sorts after "09:30" and hid it.
+    #[test]
+    fn created_times_compare_across_utc_offsets() {
+        let home = home_with("ws", "devpod-abc", Some("ghcr.io/o/img:latest"));
+        let fake = FakeRunner::new();
+        inspect_container(&fake, "sha256:derived");
+        inspect_image(
+            &fake,
+            "sha256:derived",
+            line_at(
+                "sha256:derived",
+                "2026-10-08T10:10:00.5+01:00",
+                &["l1", "f1"],
+            ),
+        );
+        inspect_image(
+            &fake,
+            "ghcr.io/o/img:latest",
+            line_at("sha256:base2", "2026-10-08T09:30:00Z", &["l2"]),
+        );
+
+        assert!(stale_images(&fake, Some(&home), ["ws"]).of("ws").is_some());
+    }
+
     #[test]
     fn a_missing_container_costs_the_others_nothing() {
         // docker prints a line for every container it found and exits 1 for the
@@ -602,5 +712,58 @@ mod tests {
 
         assert!(stale_images(&fake, Some(&home), ["ws"]).is_empty());
         assert!(fake.argvs().is_empty());
+    }
+
+    /// A stale derived image whose base moved, as devpod names it on a real host.
+    fn stale_derived(created_from: &str) -> StaleImages {
+        let home = home_with("ws", created_from, Some("ghcr.io/o/img:latest"));
+        let fake = FakeRunner::new();
+        inspect_container(&fake, "sha256:derived");
+        inspect_image(
+            &fake,
+            "sha256:derived",
+            line("sha256:derived", &["l1", "l2", "f1"]),
+        );
+        inspect_image(
+            &fake,
+            "ghcr.io/o/img:latest",
+            line_at("sha256:base2", "2026-10-05T09:00:00Z", &["l1", "l3"]),
+        );
+        stale_images(&fake, Some(&home), ["ws"])
+    }
+
+    /// devpod tags the image it builds by a hash of the config, so a recreate
+    /// reuses it. The tag is named so that the recreate can remove it first.
+    #[test]
+    fn a_stale_derived_image_names_the_tag_devpod_built_it_under() {
+        let stale = stale_derived("proj-8260d:devpod-9409a1b2");
+
+        assert_eq!(
+            stale.of("ws").and_then(StaleImage::derived_image),
+            Some("proj-8260d:devpod-9409a1b2")
+        );
+    }
+
+    /// Only a tag devpod made is named: dl removes what it names.
+    #[test]
+    fn an_image_devpod_did_not_tag_is_not_named_as_derived() {
+        let stale = stale_derived("ghcr.io/o/other:latest");
+
+        assert!(stale.of("ws").is_some());
+        assert_eq!(stale.of("ws").and_then(StaleImage::derived_image), None);
+    }
+
+    #[test]
+    fn a_container_made_from_the_reference_names_no_derived_image() {
+        let home = home_with("ws", "ghcr.io/o/img:latest", Some("ghcr.io/o/img:latest"));
+        let fake = FakeRunner::new();
+        inspect_container(&fake, "sha256:old");
+        inspect_image(&fake, "sha256:old", line("sha256:old", &["l1"]));
+        inspect_image(&fake, "ghcr.io/o/img:latest", line("sha256:new", &["l2"]));
+
+        let stale = stale_images(&fake, Some(&home), ["ws"]);
+
+        assert!(stale.of("ws").is_some());
+        assert_eq!(stale.of("ws").and_then(StaleImage::derived_image), None);
     }
 }

@@ -36,6 +36,10 @@ impl core::marker::StructuralPartialEq for devlaunch_core::flows::lifecycle::Ins
 pub enum devlaunch_core::api::LaunchNotice
 pub devlaunch_core::api::LaunchNotice::AgentSessionInThisPane
 pub devlaunch_core::api::LaunchNotice::AgentSessionInThisPane::line: alloc::string::String
+pub devlaunch_core::api::LaunchNotice::AgentSessionLineNotKept
+pub devlaunch_core::api::LaunchNotice::AgentSessionLineNotKept::pane_id: alloc::string::String
+pub devlaunch_core::api::LaunchNotice::AgentSessionLineUnchecked
+pub devlaunch_core::api::LaunchNotice::AgentSessionLineUnchecked::pane_id: alloc::string::String
 pub devlaunch_core::api::LaunchNotice::AgentSessionNotRestarted
 pub devlaunch_core::api::LaunchNotice::AgentSessionNotRestarted::line: alloc::string::String
 pub devlaunch_core::api::LaunchNotice::AgentSessionNotRestarted::pane_id: alloc::string::String
@@ -72,6 +76,10 @@ pub devlaunch_core::api::LaunchNotice::CodexStageMissing
 pub devlaunch_core::api::LaunchNotice::CodexStageMissing::workspace_id: alloc::string::String
 pub devlaunch_core::api::LaunchNotice::CreateNeverFinished
 pub devlaunch_core::api::LaunchNotice::CreateNeverFinished::workspace_id: alloc::string::String
+pub devlaunch_core::api::LaunchNotice::DerivedImageKept(devlaunch_core::flows::launch::DerivedImageKept)
+pub devlaunch_core::api::LaunchNotice::DerivedImageRemoved
+pub devlaunch_core::api::LaunchNotice::DerivedImageRemoved::image: alloc::string::String
+pub devlaunch_core::api::LaunchNotice::DerivedImageRemoved::workspace_id: alloc::string::String
 pub devlaunch_core::api::LaunchNotice::DevcontainerIgnoredRunning
 pub devlaunch_core::api::LaunchNotice::DevcontainerIgnoredRunning::spec: alloc::string::String
 pub devlaunch_core::api::LaunchNotice::DevcontainerIgnoredRunning::workspace_id: alloc::string::String
@@ -142,6 +150,7 @@ pub devlaunch_core::api::LaunchVerb::Attach::command: core::option::Option<devla
 pub devlaunch_core::api::LaunchVerb::Code
 pub devlaunch_core::api::LaunchVerb::Dotfiles
 pub devlaunch_core::api::LaunchVerb::Recreate
+pub devlaunch_core::api::LaunchVerb::RecreateUnattended
 pub devlaunch_core::api::LaunchVerb::Reset
 pub devlaunch_core::api::LaunchVerb::Restart
 pub devlaunch_core::api::LaunchVerb::Up
@@ -611,6 +620,10 @@ impl core::marker::StructuralPartialEq for devlaunch_core::flows::launch::ColdRe
 pub enum devlaunch_core::flows::launch::LaunchNotice
 pub devlaunch_core::flows::launch::LaunchNotice::AgentSessionInThisPane
 pub devlaunch_core::flows::launch::LaunchNotice::AgentSessionInThisPane::line: alloc::string::String
+pub devlaunch_core::flows::launch::LaunchNotice::AgentSessionLineNotKept
+pub devlaunch_core::flows::launch::LaunchNotice::AgentSessionLineNotKept::pane_id: alloc::string::String
+pub devlaunch_core::flows::launch::LaunchNotice::AgentSessionLineUnchecked
+pub devlaunch_core::flows::launch::LaunchNotice::AgentSessionLineUnchecked::pane_id: alloc::string::String
 pub devlaunch_core::flows::launch::LaunchNotice::AgentSessionNotRestarted
 pub devlaunch_core::flows::launch::LaunchNotice::AgentSessionNotRestarted::line: alloc::string::String
 pub devlaunch_core::flows::launch::LaunchNotice::AgentSessionNotRestarted::pane_id: alloc::string::String
@@ -647,6 +660,10 @@ pub devlaunch_core::flows::launch::LaunchNotice::CodexStageMissing
 pub devlaunch_core::flows::launch::LaunchNotice::CodexStageMissing::workspace_id: alloc::string::String
 pub devlaunch_core::flows::launch::LaunchNotice::CreateNeverFinished
 pub devlaunch_core::flows::launch::LaunchNotice::CreateNeverFinished::workspace_id: alloc::string::String
+pub devlaunch_core::flows::launch::LaunchNotice::DerivedImageKept(devlaunch_core::flows::launch::DerivedImageKept)
+pub devlaunch_core::flows::launch::LaunchNotice::DerivedImageRemoved
+pub devlaunch_core::flows::launch::LaunchNotice::DerivedImageRemoved::image: alloc::string::String
+pub devlaunch_core::flows::launch::LaunchNotice::DerivedImageRemoved::workspace_id: alloc::string::String
 pub devlaunch_core::flows::launch::LaunchNotice::DevcontainerIgnoredRunning
 pub devlaunch_core::flows::launch::LaunchNotice::DevcontainerIgnoredRunning::spec: alloc::string::String
 pub devlaunch_core::flows::launch::LaunchNotice::DevcontainerIgnoredRunning::workspace_id: alloc::string::String
@@ -717,6 +734,7 @@ pub devlaunch_core::flows::launch::LaunchVerb::Attach::command: core::option::Op
 pub devlaunch_core::flows::launch::LaunchVerb::Code
 pub devlaunch_core::flows::launch::LaunchVerb::Dotfiles
 pub devlaunch_core::flows::launch::LaunchVerb::Recreate
+pub devlaunch_core::flows::launch::LaunchVerb::RecreateUnattended
 pub devlaunch_core::flows::launch::LaunchVerb::Reset
 pub devlaunch_core::flows::launch::LaunchVerb::Restart
 pub devlaunch_core::flows::launch::LaunchVerb::Up

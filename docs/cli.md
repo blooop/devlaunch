@@ -930,11 +930,19 @@ to bring each agent back (devlaunch#673):
 2. After the `up` succeeds, `dl` types each pane's line back into that pane with
    `herdr pane run`. herdr refuses a pane until the old session in it has exited and its
    shell is back, so `dl` asks again every half second, for up to ten seconds per pane.
-3. Then `dl` attaches to the new container as a recreate always did.
+3. `dl` reports each line it typed to herdr again, as that pane's saved line, and reads
+   herdr's saved session to check that herdr kept it. The `dl` that the line runs saves
+   no line of its own, and herdr drops the old line when the old agent ends. Without
+   this step, the next recreate finds no line and ends the agent. herdr refuses the
+   report until it sees the new agent, so `dl` asks again every second, for up to
+   twenty seconds. All panes are asked at the same time.
+4. Then `dl` attaches to the new container as a recreate always did.
 
 Each line is the one herdr saved for the pane, for example
 `dl <ws> -- ... claude ... --remote-control=<ws> --resume <uuid>`. It holds the session
-the pane is in now, because the container hook reports a new id after `/clear`.
+the pane is in now, because the container hook reports a new id after `/clear`. An
+agent started again from a line has no container hook, so after a `/clear` in it the
+saved line still names the session it was started with.
 
 Nothing here can refuse the recreate. Each failure is one line on stderr, and the
 recreate goes ahead:
@@ -948,9 +956,81 @@ recreate goes ahead:
   fails, gets the line printed, to run there by hand.
 - The pane that `dl` itself runs in is never typed into, because its foreground is that
   `dl`. Its line is printed instead.
+- A pane whose line herdr did not keep gets its agent back, and `dl` says that the next
+  recreate ends it.
+
+#### A workspace on an image that devpod built
+
+With `"features"` (or anything else that makes devpod build), the container does not
+run the reference itself but an image devpod built on it, tagged
+`<prefix>:devpod-<hash>`. devpod names that tag by a hash of the config, not of the
+reference, and uses a tag it finds. So a recreate alone builds nothing, and the
+workspace stays on the older image.
+
+When the workspace is stale (as `dl --ls` reports it), and its container runs a
+`:devpod-` tag that differs from the reference, `dl <ws> recreate` first removes that
+tag with `docker image rm --force <tag>`. devpod then builds the image again from the
+newer reference. `--force` is necessary because the old container still uses the
+image; with a tag, it removes only the tag, and the old container keeps its image until
+the `up` replaces it. `dl` removes no tag that devpod did not make. If the removal
+fails, `dl` says so and the recreate goes ahead on the older image.
 
 `reset` and `code` do none of this. A `reset` drops the volumes, and `code` keeps the
 container when nothing changed.
+
+### `--refresh-stale`: recreate the stale workspaces that are idle
+
+`dl --ls` names each workspace whose container runs an older image than its reference
+now names. `dl --refresh-stale` recreates those workspaces, but only the ones where a
+recreate ends nothing that is in progress, and starts their agents again as
+`dl <ws> recreate` does (devlaunch#673). It asks no question and attaches to nothing,
+so it can run after the daily pull:
+
+```bash
+docker pull ghcr.io/owner/image:latest && dl --refresh-stale
+```
+
+It prints one line for each stale workspace before it starts: `Refreshing <ws>`, or
+`Skipping <ws>` with the reason. Then it takes each workspace it did not skip in turn.
+It checks the workspace again just before its recreate, because the recreates before
+it can take minutes. If the workspace is now to be skipped, it prints
+`Skipping <ws> after all` with the reason and leaves it alone. Otherwise it recreates
+it, with the recreate's own lines. It ends with a count. A recreate that fails does not
+stop the others. The exit status is 1 when a recreate failed, and 0 otherwise. A skip
+is not a failure.
+
+`dl` skips a stale workspace when any of these is true, and names the first that is:
+
+- Another `dl` holds the workspace's launch lock.
+- The container is stopped. A recreate would also start it, which a refresh does not
+  do. `dl <ws> recreate` starts it on the new image.
+- `dl` cannot read the processes in the container. It reads them with one
+  `docker exec` as root.
+- A build runs in the container: a process named `bazel`, `bazelisk`, `cargo`, `rustc`,
+  `cc1`, `cc1plus`, `make`, `gmake`, `ninja`, `cmake`, `colcon`, `gcc`, `g++`,
+  `clang`, `clang++`, `ld`, `ld.lld`, `ld.gold` or `collect2`. `pixi` is not on the
+  list: an open `pixi shell` is not a build, and a build that `pixi run` starts runs one
+  of the programs above.
+- An agent process has a shell as its child. An agent is any of the agents `dl`
+  knows by name: `claude`, `codex` and `gemini`, run directly or by `node`. The agents
+  run their tool calls and background tasks through a shell, and Claude starts its MCP
+  servers directly, so a shell under an agent is work in progress and an MCP server
+  is not.
+- An agent runs in the container and `dl` is not in a herdr pane, so it cannot see the
+  sessions to start them again. A container with no agent process needs no herdr.
+- herdr does not answer, a pane holds a live agent and no saved line, or an agent is
+  not `idle` or `done` (it is `working`, or `blocked` on a permission prompt).
+- More agent sessions run in the container than herdr's panes hold, counting agents
+  of every kind on both sides. A session that was started from a terminal outside
+  herdr has no line to start it again.
+
+A workspace on an image that devpod built is refreshed as `dl <ws> recreate` does it,
+by removing devpod's tag first. If the removal fails, the refresh does not recreate
+that workspace, because it would stay stale and be recreated again on every run. It
+counts as a failed recreate.
+
+The second check is taken a moment before the recreate. An agent that starts work in
+that moment ends with the recreate, the same as with `dl <ws> recreate`.
 
 ## `kill`: the workspace that will not answer
 

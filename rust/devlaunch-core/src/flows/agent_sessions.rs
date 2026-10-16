@@ -43,7 +43,7 @@ const ASK_WITHIN: Duration = Duration::from_secs(2);
 
 /// The herdr this process can ask, and where it keeps its saved session.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Manager {
+pub struct HerdrPanes {
     binary: String,
     /// The pane this process runs in. Nothing types into it: its foreground is
     /// this `dl`.
@@ -51,7 +51,7 @@ pub struct Manager {
     session_file: PathBuf,
 }
 
-impl Manager {
+impl HerdrPanes {
     /// The herdr whose pane `host` runs in, or `None` outside one.
     pub fn from_host(host: &crate::flows::launch::Host) -> Option<Self> {
         Self::resolve(&host.herdr, host.herdr_bin.as_deref())
@@ -59,20 +59,18 @@ impl Manager {
 
     /// The herdr whose pane `env` describes, or `None` outside one.
     ///
-    /// The socket is required because its directory is where herdr saves the
-    /// session, which is the one record of how each pane's agent starts again.
-    /// `binary` falls back to a `PATH` lookup, the rule every other herdr call in
-    /// dl follows.
+    /// [`herdr::Locator`] holds the rule. The socket it requires matters here
+    /// because its directory is where herdr saves the session, which is the one
+    /// record of how each pane's agent starts again.
     pub(crate) fn resolve(env: &herdr::HostEnv, binary: Option<&str>) -> Option<Self> {
-        if !crate::flows::provision::provisioning_disabled(env.in_pane.as_deref()) {
-            return None;
-        }
-        let socket = herdr::non_empty(env.socket.as_deref())?;
-        let session_file = Path::new(&socket).parent()?.join("session.json");
+        let herdr::Locator {
+            binary,
+            pane_id,
+            session_file,
+        } = herdr::Locator::resolve(env, binary)?;
         Some(Self {
-            binary: herdr::non_empty(binary)
-                .unwrap_or_else(|| crate::flows::launch::HERDR_BIN_FALLBACK.to_owned()),
-            own_pane: herdr::non_empty(env.pane_id.as_deref()),
+            binary,
+            own_pane: pane_id,
             session_file,
         })
     }
@@ -93,6 +91,14 @@ pub struct HeldSession {
     pub pane_id: String,
     /// herdr's saved resume argv for the pane, as herdr would type it.
     pub line: Vec<String>,
+}
+
+impl HeldSession {
+    /// The line as one shell line: what is typed into the pane, or handed to
+    /// the user to run there.
+    pub fn shell_line(&self) -> String {
+        crate::shell::join(self.line.iter().map(String::as_str))
+    }
 }
 
 /// What [`collect`] found in herdr's panes for one workspace.
@@ -130,7 +136,7 @@ pub struct UnresumablePane {
 /// `agent get` is no reason to drop a line it saved.
 pub fn collect(
     runner: &dyn Runner,
-    manager: &Manager,
+    manager: &HerdrPanes,
     workspace_id: &str,
     read: &dyn Fn(&Path) -> Option<String>,
 ) -> Option<HeldSessions> {
@@ -156,30 +162,33 @@ pub fn collect(
             .and_then(|json| herdr::saved_argv(json, &pane.pane_id))
             .flatten()
             .filter(|argv| starts_an_agent(argv, workspace_id));
-        let live_agent = match agent_reading(runner, manager, &pane.pane_id) {
-            herdr::AgentReading::Unanswered => None,
-            herdr::AgentReading::NoAgent => Some(None),
-            // Every status, `done` included: herdr's `done` is an agent ready for
-            // input that nobody has looked at yet, not one that has exited.
-            herdr::AgentReading::Agent(agent) => Some(Some(agent.agent)),
-        };
-        match (line, live_agent) {
-            (Some(line), Some(Some(_)) | None) => held.sessions.push(HeldSession {
+        // Every status counts as a live agent, `done` included: herdr's `done` is
+        // an agent ready for input that nobody has looked at yet, not one that
+        // has exited.
+        match (line, agent_reading(runner, manager, &pane.pane_id)) {
+            (Some(line), herdr::AgentReading::Agent(_) | herdr::AgentReading::Unanswered) => {
+                held.sessions.push(HeldSession {
+                    pane_id: pane.pane_id,
+                    line,
+                });
+            }
+            (None, herdr::AgentReading::Agent(agent)) => held.unresumable.push(UnresumablePane {
                 pane_id: pane.pane_id,
-                line,
+                agent: agent.agent,
             }),
-            (None, Some(Some(agent))) => held.unresumable.push(UnresumablePane {
-                pane_id: pane.pane_id,
-                agent,
-            }),
-            (Some(_) | None, _) => {}
+            (Some(_), herdr::AgentReading::NoAgent)
+            | (None, herdr::AgentReading::NoAgent | herdr::AgentReading::Unanswered) => {}
         }
     }
     Some(held)
 }
 
 /// What herdr says one pane's agent is doing.
-pub fn agent_reading(runner: &dyn Runner, manager: &Manager, pane_id: &str) -> herdr::AgentReading {
+pub(crate) fn agent_reading(
+    runner: &dyn Runner,
+    manager: &HerdrPanes,
+    pane_id: &str,
+) -> herdr::AgentReading {
     manager
         .ask(runner, &herdr::agent_get_argv(pane_id))
         .as_deref()
@@ -194,13 +203,16 @@ pub fn agent_reading(runner: &dyn Runner, manager: &Manager, pane_id: &str) -> h
 /// another workspace was saved by an earlier session in the same pane, and would
 /// start its agent there.
 fn starts_an_agent(argv: &[String], workspace_id: &str) -> bool {
-    argv.get(1).map(String::as_str) == Some(workspace_id)
-        && argv
-            .iter()
-            .skip_while(|word| *word != "--")
-            .skip(1)
-            .find(|word| !herdr::is_assignment(word))
-            .is_some_and(|program| herdr::agent_named(program).is_some())
+    argv.get(1).map(String::as_str) == Some(workspace_id) && agent_started_by(argv).is_some()
+}
+
+/// The agent the words after a line's `--` start, by herdr's name for it.
+fn agent_started_by(argv: &[String]) -> Option<&'static str> {
+    argv.iter()
+        .skip_while(|word| *word != "--")
+        .skip(1)
+        .find(|word| !herdr::is_assignment(word))
+        .and_then(|program| herdr::agent_named(program))
 }
 
 /// What became of one held session after the recreate.
@@ -235,7 +247,7 @@ pub(crate) const RUN_TICK: Duration = Duration::from_millis(500);
 /// is handed back for the caller to say.
 pub fn restart(
     runner: &dyn Runner,
-    manager: &Manager,
+    manager: &HerdrPanes,
     held: &HeldSessions,
     wait: &dyn Fn(Duration),
 ) -> Vec<Restarted> {
@@ -243,7 +255,7 @@ pub fn restart(
         .iter()
         .map(|session| {
             let pane_id = session.pane_id.clone();
-            let line = crate::shell::join(session.line.iter().map(String::as_str));
+            let line = session.shell_line();
             if manager.own_pane.as_deref() == Some(pane_id.as_str()) {
                 return Restarted::OwnPane { pane_id, line };
             }
@@ -259,6 +271,59 @@ pub fn restart(
             Restarted::NotTyped { pane_id, line }
         })
         .collect()
+}
+
+/// Whether herdr kept the line of an agent that [`restart`] typed back.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LineKept {
+    Kept,
+    /// herdr refused the report, or never took it in the time allowed. The next
+    /// recreate finds no line for the pane, and ends its agent.
+    NotKept,
+    /// herdr took the report, and its session file could not be read back to
+    /// see that it kept the line. Nobody confirmed it, so it is not [`Kept`].
+    ///
+    /// [`Kept`]: LineKept::Kept
+    Unchecked,
+}
+
+/// Report a typed-back line to herdr as the pane's line again, and check that
+/// herdr kept it.
+///
+/// The `dl` the line runs is given no line to report: only `aid` hands one over,
+/// and dl does not guess another program's flags from a command. Without this,
+/// herdr drops the old line once the old agent ends, and the agent can be
+/// started again once only. The line is the one herdr saved, so it is already a
+/// line herdr accepts. `seq`, `read` and `wait` are as for
+/// [`session_manager::report_resume`]; `wait` answers `true` here, because
+/// nothing ends the wait early.
+pub(crate) fn report_again(
+    runner: &dyn Runner,
+    manager: &HerdrPanes,
+    session: &HeldSession,
+    seq: &dyn Fn() -> u128,
+    read: &dyn Fn(&Path) -> Option<String>,
+    wait: &dyn Fn(Duration) -> bool,
+) -> LineKept {
+    let Some(agent) = agent_started_by(&session.line) else {
+        return LineKept::NotKept;
+    };
+    let report = herdr::ResumeReport::for_pane(
+        &manager.binary,
+        &session.pane_id,
+        &manager.session_file,
+        agent,
+        session.line.clone(),
+    );
+    match session_manager::report_resume(runner, &report, seq, read, wait) {
+        session_manager::ResumeReported::Saved | session_manager::ResumeReported::Superseded => {
+            LineKept::Kept
+        }
+        session_manager::ResumeReported::Taken => LineKept::Unchecked,
+        session_manager::ResumeReported::Dropped | session_manager::ResumeReported::Stopped => {
+            LineKept::NotKept
+        }
+    }
 }
 
 #[cfg(test)]
@@ -279,8 +344,8 @@ mod tests {
         }
     }
 
-    fn manager() -> Manager {
-        Manager::resolve(&env("w1:p9"), Some(HERDR)).expect("a herdr pane")
+    fn manager() -> HerdrPanes {
+        HerdrPanes::resolve(&env("w1:p9"), Some(HERDR)).expect("a herdr pane")
     }
 
     fn pane_list(panes: &[&str]) -> String {
@@ -883,9 +948,112 @@ mod tests {
     fn outside_a_herdr_pane_there_is_no_manager_to_ask() {
         let mut outside = env("w1:p9");
         outside.in_pane = None;
-        assert_eq!(Manager::resolve(&outside, Some(HERDR)), None);
+        assert_eq!(HerdrPanes::resolve(&outside, Some(HERDR)), None);
         let mut no_socket = env("w1:p9");
         no_socket.socket = None;
-        assert_eq!(Manager::resolve(&no_socket, Some(HERDR)), None);
+        assert_eq!(HerdrPanes::resolve(&no_socket, Some(HERDR)), None);
+    }
+
+    fn one_held() -> HeldSession {
+        HeldSession {
+            pane_id: "w1:p1".to_owned(),
+            line: words(CLAUDE_LINE),
+        }
+    }
+
+    /// The `dl` a typed line runs reports no line of its own, so the recreate
+    /// reports the one it typed, as the pane's line, and reads it back.
+    #[test]
+    fn a_typed_line_is_reported_to_herdr_again_as_the_panes_line() {
+        let runner = ScriptedRunner::new().with_script([HERDR], Response::ok());
+
+        let kept = report_again(
+            &runner,
+            &manager(),
+            &one_held(),
+            &|| 7,
+            &|path| {
+                assert_eq!(path, Path::new("/run/herdr/session.json"));
+                Some(saved(&[Some(CLAUDE_LINE)]))
+            },
+            &|_| panic!("herdr kept it at once"),
+        );
+
+        assert_eq!(kept, LineKept::Kept);
+        let mut expected: Vec<String> = [
+            "pane",
+            "report-agent-session",
+            "w1:p1",
+            "--source",
+            "devlaunch:claude",
+            "--agent",
+            "claude",
+            "--seq",
+            "7",
+            "--",
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        expected.extend(words(CLAUDE_LINE));
+        assert_eq!(runner.args_to(HERDR), vec![expected]);
+    }
+
+    /// herdr refuses a report until it sees the new agent in the pane, and the
+    /// typed `dl` takes seconds to start one.
+    #[test]
+    fn a_report_sent_before_the_new_agent_is_seen_is_sent_again() {
+        let runner = ScriptedRunner::new().with_script(
+            [HERDR],
+            Response::failed(
+                1,
+                r#"{"error":{"code":"resume_not_accepted","message":"report its state first"}}"#,
+            ),
+        );
+        let waits = std::cell::Cell::new(0);
+
+        let kept = report_again(
+            &runner,
+            &manager(),
+            &one_held(),
+            &|| 1,
+            &|_| Some(saved(&[Some(CLAUDE_LINE)])),
+            &|_| {
+                waits.set(waits.get() + 1);
+                if waits.get() == 2 {
+                    runner.clear_scripts().script([HERDR], Response::ok());
+                }
+                true
+            },
+        );
+
+        assert_eq!(kept, LineKept::Kept);
+        assert_eq!(runner.args_to(HERDR).len(), 3);
+    }
+
+    #[test]
+    fn a_report_herdr_refuses_for_good_is_a_line_not_kept() {
+        let runner = ScriptedRunner::new().with_script(
+            [HERDR],
+            Response::failed(1, r#"{"error":{"code":"pane_not_found"}}"#),
+        );
+
+        let kept = report_again(&runner, &manager(), &one_held(), &|| 1, &|_| None, &|_| {
+            panic!("a refusal for good is not asked again")
+        });
+
+        assert_eq!(kept, LineKept::NotKept);
+    }
+
+    /// herdr takes the report, and its session file cannot be read back. Nothing
+    /// confirmed the line, so it does not read as kept.
+    #[test]
+    fn a_report_whose_session_file_cannot_be_read_back_is_unchecked() {
+        let runner = ScriptedRunner::new().with_script([HERDR], Response::ok());
+
+        let kept = report_again(&runner, &manager(), &one_held(), &|| 1, &|_| None, &|_| {
+            panic!("an unreadable file is not read again")
+        });
+
+        assert_eq!(kept, LineKept::Unchecked);
     }
 }

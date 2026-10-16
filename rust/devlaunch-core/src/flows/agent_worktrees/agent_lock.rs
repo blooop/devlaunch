@@ -83,6 +83,7 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use crate::clients::docker;
+use crate::domain::proc_stat::{self, ProcStat, digits};
 use crate::domain::workspace_state::NonEmpty;
 use crate::runner::Runner;
 
@@ -115,11 +116,6 @@ pub(crate) fn parse(reason: &str) -> Option<AgentLock> {
     let pid: u32 = digits(pid, 10)?.parse().ok().filter(|pid| *pid > 0)?;
     let start: u64 = digits(start, 20)?.parse().ok()?;
     Some(AgentLock { pid, start })
-}
-
-fn digits(text: &str, at_most: usize) -> Option<&str> {
-    (!text.is_empty() && text.len() <= at_most && text.bytes().all(|it| it.is_ascii_digit()))
-        .then_some(text)
 }
 
 /// What became of a lock's agent.
@@ -361,6 +357,7 @@ impl<'r> Owners<'r> {
                     &container.id,
                     &["sh", "-c", READ_THE_TABLE],
                 )
+                .map_err(|why| why.to_string())
                 .and_then(|out| container_table(&out))
                 {
                     Ok(table) => decide(&table, lock),
@@ -647,10 +644,6 @@ fn the_whole_machine(table: &[Process]) -> bool {
     table.iter().any(|process| process.kernel_thread)
 }
 
-/// `PF_KTHREAD`, in the flags field of `/proc/<pid>/stat`. Set by the kernel on
-/// its own threads, and nothing in user space can set it.
-const PF_KTHREAD: u64 = 0x0020_0000;
-
 /// The pid, in the table's own namespace, of the process that matched.
 fn running_as(table: &[Process], lock: &AgentLock) -> Option<u32> {
     table
@@ -661,33 +654,6 @@ fn running_as(table: &[Process], lock: &AgentLock) -> Option<u32> {
                     || process.nspid.as_ref().and_then(|it| it.last()) == Some(&lock.pid))
         })
         .map(|process| process.pid)
-}
-
-/// The fields this module reads out of one `/proc/<pid>/stat`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct StatFields {
-    pid: u32,
-    kernel_thread: bool,
-    start: u64,
-}
-
-/// The pid, whether it is a kernel thread, and the start time out of one
-/// `/proc/<pid>/stat`.
-///
-/// The command name sits in parentheses and may hold anything, spaces and
-/// parentheses included, so the fields are counted from the *last* `)`. The
-/// flags are field 9, the 7th after the name, and the start time field 22, the
-/// 20th.
-fn stat_fields(stat: &str) -> Option<StatFields> {
-    let (head, _) = stat.split_once(" (")?;
-    let pid = digits(head, 10)?.parse().ok()?;
-    let after: Vec<&str> = stat[stat.rfind(')')? + 1..].split_whitespace().collect();
-    let flags: u64 = digits(after.get(6)?, 20)?.parse().ok()?;
-    Some(StatFields {
-        pid,
-        kernel_thread: flags & PF_KTHREAD != 0,
-        start: digits(after.get(19)?, 20)?.parse().ok()?,
-    })
 }
 
 /// The pids out of a `NSpid:` line of `/proc/<pid>/status`.
@@ -738,11 +704,12 @@ fn table_of(
             Err(error) if vanished(&error) => continue,
             Err(error) => return Err(format!("could not read /proc/{name}/stat: {error}")),
         };
-        let StatFields {
+        let ProcStat {
             pid,
             kernel_thread,
             start,
-        } = stat_fields(&stat).ok_or_else(|| format!("could not read /proc/{name}/stat"))?;
+            ..
+        } = proc_stat::parse(&stat).ok_or_else(|| format!("could not read /proc/{name}/stat"))?;
         let nspid = std::fs::read_to_string(entry.join("status"))
             .ok()
             .and_then(|status| status.lines().find_map(nspid_entries));
@@ -778,11 +745,12 @@ fn container_table(out: &str) -> Result<Vec<Process>, String> {
         .ok_or("the listing stopped before its end")?;
     let mut table = Vec::new();
     for line in stats.lines() {
-        let StatFields {
+        let ProcStat {
             pid,
             kernel_thread,
             start,
-        } = stat_fields(line).ok_or_else(|| format!("a stat line did not parse: {line}"))?;
+            ..
+        } = proc_stat::parse(line).ok_or_else(|| format!("a stat line did not parse: {line}"))?;
         table.push(Process {
             pid,
             kernel_thread,
