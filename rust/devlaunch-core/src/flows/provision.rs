@@ -27,7 +27,8 @@
 //!    ticket of its own.
 //! 2. **A quoting layer.** The scripts are interpolated into `devpod ssh
 //!    --command`, and one of them is interpolated into another (the zellij stage
-//!    is a `bash -c <script>` inside the setup pass). [`quote`] is CPython's
+//!    runs as `( eval <script> )` in a subshell of the setup pass, see
+//!    [`in_subshell`]). [`quote`] is CPython's
 //!    `shlex.quote`, reproduced rather than delegated — see its own note.
 //! 3. **A three-trip flow.** [`provision_tools`] probes, lends and installs, and
 //!    each trip earns the next: a provisioned workspace pays one, a lendable or
@@ -1189,7 +1190,7 @@ pub(crate) fn onboarding_script() -> String {
         //
         // `printf` with the JSON as an *argument* in the second, so the stage stays
         // one line's worth of quoting (see [`Stage`]) and no heredoc has to survive
-        // being read by the pass's shell before the nested one sees it. The first
+        // being read by the pass's shell before `eval` reads it again. The first
         // puts the JSON in the *format* and the path in the argument, which is what
         // keeps a path out of the position where it could be read as a format.
         "if [ -n \"$ws\" ]; then".to_owned(),
@@ -1367,7 +1368,7 @@ pub(crate) fn trust_script() -> String {
     lines.extend([
         "if [ -z \"$ws\" ]; then exit 0; fi".to_owned(),
         // The program through a variable rather than inline, so the `-c` argument is
-        // one word to the nested shell whatever the program contains, and the two
+        // one word to `python3` whatever the program contains, and the two
         // paths stay `argv` rather than becoming text in it.
         format!("prog={}", quote(TRUST_MERGE_PY)),
         "python3 -c \"$prog\" \"$file\" \"$ws\"".to_owned(),
@@ -1882,6 +1883,36 @@ impl Stage {
     }
 }
 
+/// A multi-line stage script as one command, run in a subshell of the pass.
+///
+/// A subshell and not a nested `bash -c`, because a new bash reads `$BASH_ENV`
+/// when it starts and the subshell does not. An image may point that variable at
+/// a heavy shell profile (for example a ROS environment). On one such image a
+/// read inside a `devpod ssh` session costs about 1.1s. A default cold launch
+/// runs four stages (session name, title, onboarding and trust; zellij and codex
+/// are off by default), and a bash for each made the setup trip about 4.2s
+/// slower, measured over six cold launches of that image. The subshell inherits the environment the pass already loaded,
+/// which is the environment the stages were reading anyway.
+///
+/// The trade: a stage does not start in a clean shell. It inherits everything the
+/// login profile left in the pass: shell options (`set -u`, `set -C`,
+/// `pipefail`), unexported and readonly variables, functions and aliases. So a
+/// stage must assign a variable before it reads it (or read it as `${X:-}`), must
+/// not assign a name a profile may make readonly, and must not trust
+/// `command -v` alone: a profile `zellij()` wrapper makes it succeed, so the
+/// stage skips its install. That last case is accepted as unlikely, because a
+/// profile wrapper with no binary behind it is rare.
+///
+/// `eval` of one quoted word, rather than the script pasted between parentheses,
+/// keeps what the nested bash gave each stage: the script is parsed when the stage
+/// runs, so a script that will not parse fails its own stage and not the whole
+/// pass, and an `exit`, a `set -u` or a `set -C` in it ends at the closing
+/// parenthesis. `the_pass_reads_the_images_bash_env_once_however_many_stages_it_runs`
+/// pins the count.
+fn in_subshell(script: &str) -> String {
+    format!("( eval {} )", quote(script))
+}
+
 /// The stages one setup pass runs in `workspace`, in order.
 ///
 /// Built per pass rather than declared as a constant because a stage's command
@@ -1951,19 +1982,16 @@ pub(crate) fn setup_stages(
         // and the stage above usually cannot set one. Gated on nothing, like the
         // hostname and unlike the title: `DEVLAUNCH_NO_TITLE` turns off what dl
         // puts on the terminal, and did not ask for a session other agents cannot
-        // find. A nested `bash -c` for the title stage's reason, a stage being one
-        // line and this being several.
+        // find. In a subshell for the title stage's reason, a stage being one line
+        // and this being several.
         Stage::new(
             SESSION_NAME_STAGE,
-            format!(
-                "bash -c {}",
-                quote(
-                    &[
-                        profile_resolution("$HOME"),
-                        profile_prepend(&remote_control_prefix_line(workspace), None),
-                    ]
-                    .join("\n")
-                )
+            in_subshell(
+                &[
+                    profile_resolution("$HOME"),
+                    profile_prepend(&remote_control_prefix_line(workspace), None),
+                ]
+                .join("\n"),
             ),
         )
         // Quieter for the title stage's reason: a profile that cannot be written
@@ -1973,9 +2001,10 @@ pub(crate) fn setup_stages(
     if let (ToolsSwitch::Install, ZellijSwitch::Install) = (tools, zellij) {
         stages.push(Stage::new(
             ZELLIJ_STAGE,
-            // A nested `bash -c` because a stage is interpolated into
-            // `if <command>; then`, which is one line, and this script is not. It
-            // inherits the pass's exported PATH rather than sourcing the profile
+            // In a subshell because a stage is interpolated into
+            // `if <command>; then`, which is one line, and this script is not
+            // ([`in_subshell`] says why not a nested bash). It inherits the pass's
+            // exported PATH rather than sourcing the profile
             // again: the pass is already a login shell, so an installed zellij is
             // on PATH here, and a second `-l` would re-run a chatty image's
             // profile on every launch.
@@ -1987,11 +2016,11 @@ pub(crate) fn setup_stages(
             // /dev/null because the setup pass captures stdout: an install
             // redirected into that buffer is a cold launch that looks hung with
             // nothing to show for it.
-            format!("bash -c {} >&2", quote(&zellij_script())),
+            format!("{} >&2", in_subshell(&zellij_script())),
         ));
     }
     if let (ToolsSwitch::Install, CodexSwitch::Install) = (tools, codex) {
-        // Nested `bash -c`, redirected whole to stderr, for the zellij stage's two
+        // In a subshell, redirected whole to stderr, for the zellij stage's two
         // reasons: a stage is interpolated into `if <command>; then` and this script
         // is more than one line, and pixi is loud enough that its progress on the
         // probe's stdout is one unlucky line from being read as protocol.
@@ -2001,14 +2030,14 @@ pub(crate) fn setup_stages(
         // override a machine that has turned provisioning off.
         stages.push(Stage::new(
             CODEX_STAGE,
-            format!("bash -c {} >&2", quote(&codex_script())),
+            format!("{} >&2", in_subshell(&codex_script())),
         ));
     }
     if let Some(title) = title {
         stages.push(
             Stage::new(
                 TITLE_STAGE,
-                // Several statements, so a nested `bash -c` for the reason the
+                // Several statements, so a subshell for the reason the
                 // zellij stage has one: a stage is interpolated into
                 // `if <command>; then`, which is one line. The profile is resolved
                 // and appended to exactly as the PATH writers do it, so every edit
@@ -2020,16 +2049,13 @@ pub(crate) fn setup_stages(
                 // `DEVLAUNCH_NO_TITLE` is the honest owner of all three. Somebody
                 // who turned dl's naming off did not ask for claude's to go with
                 // it, and nothing in a container would tell them why it had.
-                format!(
-                    "bash -c {}",
-                    quote(
-                        &[
-                            profile_resolution("$HOME"),
-                            profile_prepend(&profile_title_line(title), None),
-                            profile_prepend(CLAUDE_TITLE_EXPORT, None),
-                        ]
-                        .join("\n")
-                    )
+                in_subshell(
+                    &[
+                        profile_resolution("$HOME"),
+                        profile_prepend(&profile_title_line(title), None),
+                        profile_prepend(CLAUDE_TITLE_EXPORT, None),
+                    ]
+                    .join("\n"),
                 ),
             )
             // Quieter for the hostname stage's reason: an image that will not let
@@ -2047,7 +2073,7 @@ pub(crate) fn setup_stages(
     // reaches its login screen because there is no credential rather than because
     // a flag was missing.
     //
-    // A nested `bash -c` for the zellij stage's reason: a stage is interpolated into
+    // In a subshell for the zellij stage's reason: a stage is interpolated into
     // `if <command>; then`, which is one line, and this script is not. Not
     // redirected, unlike that one, because nothing in this script writes to
     // *stdout*, which is the stream the outcome protocol shares. `mkdir` and the
@@ -2055,21 +2081,18 @@ pub(crate) fn setup_stages(
     // complaint belongs.
     stages.push(Stage::new(
         ONBOARDING_STAGE,
-        format!("bash -c {}", quote(&onboarding_script())),
+        in_subshell(&onboarding_script()),
     ));
     // Behind the seed and gated on nothing either, for the seed's reasons and one of
     // its own: the two write the same file, and this one is the half that reaches a
     // file already there. Behind, so that a file the seed just created is found here
     // with the entry already in it and this exits without a second write.
     //
-    // A nested `bash -c` for the zellij stage's reason, and unredirected for the
+    // In a subshell for the zellij stage's reason, and unredirected for the
     // seed's: nothing in this script writes to stdout, which is the stream the
     // outcome protocol shares, and python3's complaint about a file it could not
     // write belongs on stderr where a stage's complaints go.
-    stages.push(Stage::new(
-        TRUST_STAGE,
-        format!("bash -c {}", quote(&trust_script())),
-    ));
+    stages.push(Stage::new(TRUST_STAGE, in_subshell(&trust_script())));
     stages
 }
 
@@ -3413,6 +3436,10 @@ grep -qxF '# devlaunch: 63c662ba0560' "$PROFILE" 2>/dev/null || printf '%s\n' '#
     /// The hostname stage's snippet, and the zellij stage's — the second carrying a
     /// whole quoted script, which is where Python's `shlex.quote` and the `shlex`
     /// crate's disagree about bytes and this module's [`quote`] does not.
+    ///
+    /// The zellij stage's bytes are Python's quoting of its script, inside the
+    /// `( eval … )` that replaced Python's `bash -c` (see [`in_subshell`]). The
+    /// quoted word is the part these goldens exist for, and it has not moved.
     const PYTHON_HOSTNAME_STAGE: &str = r#"if sudo hostname myws; then
   echo "devlaunch-probe stage hostname ok"
 else
@@ -3421,11 +3448,11 @@ fi"#;
 
     /// The session-name stage's snippet for `myws`, spelled out. Not a `PYTHON_`
     /// golden: the stage is newer than the Python tree.
-    const SESSION_NAME_STAGE_SNIPPET: &str = r#"if bash -c 'if [ -f "$HOME/.bash_profile" ]; then PROFILE="$HOME/.bash_profile"
+    const SESSION_NAME_STAGE_SNIPPET: &str = r#"if ( eval 'if [ -f "$HOME/.bash_profile" ]; then PROFILE="$HOME/.bash_profile"
 elif [ -f "$HOME/.bash_login" ]; then PROFILE="$HOME/.bash_login"
 else PROFILE="$HOME/.profile"
 fi
-grep -qxF '"'"'# devlaunch: 52224b6588f3'"'"' "$PROFILE" 2>/dev/null || printf '"'"'%s\n'"'"' '"'"'# devlaunch: 52224b6588f3'"'"' '"'"'export CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX=myws'"'"' >> "$PROFILE"'; then
+grep -qxF '"'"'# devlaunch: 52224b6588f3'"'"' "$PROFILE" 2>/dev/null || printf '"'"'%s\n'"'"' '"'"'# devlaunch: 52224b6588f3'"'"' '"'"'export CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX=myws'"'"' >> "$PROFILE"' ); then
   echo "devlaunch-probe stage session-name ok"
 else
   echo "devlaunch-probe stage session-name failed $?"
@@ -3436,7 +3463,7 @@ fi"#;
     /// and the reason it is a literal anyway is the reason those are — it carries a
     /// whole quoted script, so a quoting layer that merely *worked* would change
     /// these bytes without failing anything else.
-    const ONBOARDING_STAGE_SNIPPET: &str = r#"if bash -c 'set -u
+    const ONBOARDING_STAGE_SNIPPET: &str = r#"if ( eval 'set -u
 dir="${CLAUDE_CONFIG_DIR:-}"
 if [ -z "$dir" ]; then
   dir="${HOME:-}"
@@ -3456,7 +3483,7 @@ if [ -n "$ws" ]; then
   printf '"'"'{"hasCompletedOnboarding":true,"projects":{"%s":{"hasTrustDialogAccepted":true}}}\n'"'"' "$ws" > "$dir/.claude.json"
 else
   printf '"'"'%s\n'"'"' '"'"'{"hasCompletedOnboarding":true}'"'"' > "$dir/.claude.json"
-fi'; then
+fi' ); then
   echo "devlaunch-probe stage onboarding ok"
 else
   echo "devlaunch-probe stage onboarding failed $?"
@@ -3466,7 +3493,7 @@ fi"#;
     /// and with more riding on it: this one carries a Python program through two
     /// quoting layers, so it is the place in this module where a quoting change is
     /// likeliest to be silently survivable and least likely to be harmless.
-    const TRUST_STAGE_SNIPPET: &str = r#"if bash -c 'set -u
+    const TRUST_STAGE_SNIPPET: &str = r#"if ( eval 'set -u
 dir="${CLAUDE_CONFIG_DIR:-}"
 if [ -z "$dir" ]; then
   dir="${HOME:-}"
@@ -3528,13 +3555,13 @@ except OSError:
             pass
     sys.exit(0)
 '"'"'
-python3 -c "$prog" "$file" "$ws"'; then
+python3 -c "$prog" "$file" "$ws"' ); then
   echo "devlaunch-probe stage trust ok"
 else
   echo "devlaunch-probe stage trust failed $?"
 fi"#;
 
-    const PYTHON_ZELLIJ_STAGE: &str = r#"if bash -c 'set -u
+    const PYTHON_ZELLIJ_STAGE: &str = r#"if ( eval 'set -u
 failed=0
 if command -v zellij >/dev/null 2>&1; then exit 0; fi
 export PIXI_HOME="$HOME/.devlaunch/pixi"
@@ -3552,7 +3579,7 @@ elif [ -f "$HOME/.bash_login" ]; then PROFILE="$HOME/.bash_login"
 else PROFILE="$HOME/.profile"
 fi
 grep -qxF '"'"'# devlaunch: 87ccd356540b'"'"' "$PROFILE" 2>/dev/null || printf '"'"'%s\n'"'"' '"'"'# devlaunch: 87ccd356540b'"'"' '"'"'export PATH="$HOME/.devlaunch/pixi/bin:$PATH"'"'"' >> "$PROFILE" || failed=1
-exit "$failed"' >&2; then
+exit "$failed"' ) >&2; then
   echo "devlaunch-probe stage zellij ok"
 else
   echo "devlaunch-probe stage zellij failed $?"
@@ -4430,7 +4457,7 @@ fi
     }
 
     #[test]
-    fn the_codex_stage_is_one_word_the_pass_shell_hands_to_a_nested_bash() {
+    fn the_codex_stage_is_one_word_the_pass_shell_evals_in_a_subshell() {
         let stages = setup_stages(
             "myws",
             ToolsSwitch::Install,
@@ -4447,9 +4474,10 @@ fi
         assert_eq!(
             words,
             vec![
-                "bash".to_owned(),
-                "-c".to_owned(),
+                "(".to_owned(),
+                "eval".to_owned(),
                 codex_script(),
+                ")".to_owned(),
                 // The stage redirects itself, because it cannot be redirected from
                 // outside: `stage_snippet` interpolates it into `if <command>; then`.
                 ">&2".to_owned(),
@@ -4458,9 +4486,9 @@ fi
     }
 
     #[test]
-    fn the_zellij_stage_is_one_word_the_pass_shell_hands_to_a_nested_bash() {
+    fn the_zellij_stage_is_one_word_the_pass_shell_evals_in_a_subshell() {
         // The stage is interpolated into `if <command>; then`, so the quoting has to
-        // survive being read by the *pass's* shell before the nested bash sees it.
+        // survive being read by the *pass's* shell before `eval` reads it again.
         let stages = setup_stages(
             "myws",
             ToolsSwitch::Install,
@@ -4477,9 +4505,10 @@ fi
         assert_eq!(
             words,
             vec![
-                "bash".to_owned(),
-                "-c".to_owned(),
+                "(".to_owned(),
+                "eval".to_owned(),
                 zellij_script(),
+                ")".to_owned(),
                 ">&2".to_owned(),
             ]
         );
@@ -5499,9 +5528,9 @@ fi
     }
 
     #[test]
-    fn the_claude_config_stages_are_one_word_the_pass_shell_hands_to_a_nested_bash() {
+    fn the_claude_config_stages_are_one_word_the_pass_shell_evals_in_a_subshell() {
         // The zellij stage's property, for the zellij stage's reason: the quoting has
-        // to survive being read by the *pass's* shell before the nested bash sees a
+        // to survive being read by the *pass's* shell before `eval` reads a
         // script with quotes and braces of its own in it. The trust stage asks more of
         // it than any other — its script carries a Python program, itself
         // single-quoted, inside the single-quoted script.
@@ -5523,7 +5552,7 @@ fi
                 .command;
             assert_eq!(
                 shlex::split(command).expect("a stage a shell can read"),
-                vec!["bash".to_owned(), "-c".to_owned(), script],
+                vec!["(".to_owned(), "eval".to_owned(), script, ")".to_owned()],
                 "{}",
                 name.as_str()
             );
@@ -6174,6 +6203,56 @@ fi
     }
 
     #[test]
+    fn the_setup_pass_records_trust_for_the_workspace_it_stands_in() {
+        let world = TrustWorld::new(Some(r#"{"hasCompletedOnboarding":true}"#));
+        let stages: Vec<Stage> = setup_stages(
+            "devlaunch-nb99-hicj",
+            ToolsSwitch::Skip,
+            ZellijSwitch::Skip,
+            CodexSwitch::Skip,
+            None,
+        )
+        .into_iter()
+        .filter(|stage| stage.name == ONBOARDING_STAGE || stage.name == TRUST_STAGE)
+        .collect();
+        assert_eq!(stages.len(), 2, "both stages are in the pass");
+        let ran = std::process::Command::new("bash")
+            .arg("-c")
+            .arg(setup_script(&stages))
+            .current_dir(&world.workspace)
+            .env("HOME", &world.home)
+            .env_remove("CLAUDE_CONFIG_DIR")
+            .output()
+            .expect("bash ran");
+        assert!(
+            ran.status.success(),
+            "{}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+        let report = String::from_utf8_lossy(&ran.stdout);
+        assert_eq!(
+            stage_outcomes(&report, &stages),
+            vec![
+                StageOutcome {
+                    stage: ONBOARDING_STAGE,
+                    result: StageResult::Ok,
+                },
+                StageOutcome {
+                    stage: TRUST_STAGE,
+                    result: StageResult::Ok,
+                },
+            ],
+            "{report}\n{}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+        assert_eq!(world.trusts(&world.keyed), Some(true.into()));
+        assert_eq!(
+            world.parsed().get("hasCompletedOnboarding"),
+            Some(&true.into())
+        );
+    }
+
+    #[test]
     fn onboarding_seeds_nothing_when_there_is_no_home_to_seed() {
         // No `CLAUDE_CONFIG_DIR` and no `$HOME` is a container that can say where
         // nothing belongs, so nothing is written and the stage still exits clean.
@@ -6763,6 +6842,181 @@ fi
         )
         .into_iter()
         .find(|outcome| outcome.stage == stage)
+    }
+
+    #[test]
+    fn the_pass_reads_the_images_bash_env_once_however_many_stages_it_runs() {
+        // A non-interactive bash sources `$BASH_ENV` on startup, and an image may
+        // point it at a heavy shell profile (for example a ROS environment).
+        // One such image costs about 1.1s a read inside a `devpod ssh`
+        // session. A stage that started its own bash
+        // paid that again, four times on a default cold launch. The stages run in
+        // subshells of the pass, so the one read is the pass's own.
+        let scratch = scratch();
+        let home = a_home(scratch.path());
+        let sysbin = sysbin(scratch.path(), &["readlink", "bash", "mkdir", "pwd"]);
+        let reads = scratch.path().join("bash-env-reads");
+        let bash_env = scratch.path().join("bash-env");
+        fs::write(
+            &bash_env,
+            format!("echo read >> \"{}\"\n", reads.to_string_lossy()),
+        )
+        .expect("a BASH_ENV");
+        let stages = setup_stages(
+            "myws",
+            ToolsSwitch::Install,
+            ZellijSwitch::Skip,
+            CodexSwitch::Skip,
+            Some("my-title"),
+        );
+        let ran = bash_with(
+            &setup_script(&stages),
+            &[
+                ("HOME", &home.to_string_lossy()),
+                ("PATH", &sysbin.to_string_lossy()),
+                ("BASH_ENV", &bash_env.to_string_lossy()),
+            ],
+        );
+        assert!(
+            ran.status.success(),
+            "{}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+        let report = String::from_utf8_lossy(&ran.stdout);
+        // Every stage still reports, so the count below is not one because the
+        // stages stopped running.
+        for stage in &stages {
+            assert!(
+                report.contains(&format!(
+                    "{PROBE_MARK} {STAGE_KEY} {} ",
+                    stage.name.as_str()
+                )),
+                "{} did not report:\n{report}",
+                stage.name.as_str()
+            );
+        }
+        let read = fs::read_to_string(&reads).expect("the pass read BASH_ENV");
+        assert_eq!(
+            read.lines().count(),
+            1,
+            "BASH_ENV was read {} times",
+            read.lines().count()
+        );
+    }
+
+    /// Two stages that exist only to be run here.
+    const FIRST_STAGE: StageName = StageName::new("first");
+    const SECOND_STAGE: StageName = StageName::new("second");
+
+    /// Run `stages` as a whole pass on a stripped PATH, and return its report.
+    fn run_stages(scratch: &Path, stages: &[Stage]) -> String {
+        let home = a_home(scratch);
+        let sysbin = sysbin(scratch, &["readlink"]);
+        let ran = bash_with(
+            &setup_script(stages),
+            &[
+                ("HOME", &home.to_string_lossy()),
+                ("PATH", &sysbin.to_string_lossy()),
+            ],
+        );
+        assert!(
+            ran.status.success(),
+            "{}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+        String::from_utf8_lossy(&ran.stdout).into_owned()
+    }
+
+    #[test]
+    fn a_stage_that_will_not_parse_fails_alone_and_the_pass_goes_on() {
+        let scratch = scratch();
+        let stages = [
+            Stage::new(FIRST_STAGE, in_subshell("if then")),
+            Stage::new(SECOND_STAGE, in_subshell("true")),
+        ];
+        let report = run_stages(scratch.path(), &stages);
+        assert_eq!(
+            stage_outcomes(&report, &stages),
+            vec![
+                StageOutcome {
+                    stage: FIRST_STAGE,
+                    result: StageResult::Failed { status: 2 },
+                },
+                StageOutcome {
+                    stage: SECOND_STAGE,
+                    result: StageResult::Ok,
+                },
+            ],
+            "{report}"
+        );
+        assert!(
+            report.contains(&format!("{PROBE_MARK} tools ")),
+            "the probe did not answer:\n{report}"
+        );
+    }
+
+    #[test]
+    fn a_stage_that_calls_exit_ends_only_itself() {
+        let scratch = scratch();
+        let stages = [
+            Stage::new(FIRST_STAGE, in_subshell("exit 3")),
+            Stage::new(SECOND_STAGE, in_subshell("true")),
+        ];
+        let report = run_stages(scratch.path(), &stages);
+        assert_eq!(
+            stage_outcomes(&report, &stages),
+            vec![
+                StageOutcome {
+                    stage: FIRST_STAGE,
+                    result: StageResult::Failed { status: 3 },
+                },
+                StageOutcome {
+                    stage: SECOND_STAGE,
+                    result: StageResult::Ok,
+                },
+            ],
+            "{report}"
+        );
+        assert!(
+            report.contains(&format!("{PROBE_MARK} tools ")),
+            "the probe did not answer:\n{report}"
+        );
+    }
+
+    #[test]
+    fn a_stage_that_sets_u_and_c_keeps_them_to_itself() {
+        let scratch = scratch();
+        let existing = scratch.path().join("existing");
+        fs::write(&existing, "old\n").expect("a file to overwrite");
+        let stages = [
+            Stage::new(FIRST_STAGE, in_subshell("set -uC; true")),
+            Stage::new(
+                SECOND_STAGE,
+                in_subshell(&format!(
+                    "echo \"$unset_var\" >/dev/null\necho new > {}",
+                    quote(&existing.to_string_lossy())
+                )),
+            ),
+        ];
+        let report = run_stages(scratch.path(), &stages);
+        assert_eq!(
+            stage_outcomes(&report, &stages),
+            vec![
+                StageOutcome {
+                    stage: FIRST_STAGE,
+                    result: StageResult::Ok,
+                },
+                StageOutcome {
+                    stage: SECOND_STAGE,
+                    result: StageResult::Ok,
+                },
+            ],
+            "{report}"
+        );
+        assert_eq!(
+            fs::read_to_string(&existing).expect("the file is still there"),
+            "new\n"
+        );
     }
 
     #[test]

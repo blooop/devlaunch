@@ -89,6 +89,18 @@ pub(crate) fn remove_volumes(runner: &dyn Runner, names: &NonEmpty<String>) -> A
     answer(runner.capture(&spec))
 }
 
+/// Remove one tag, and the image under it only when nothing uses that image.
+///
+/// `--force` because the container that runs the image is still there when this
+/// is asked: without it docker refuses the tag of an image any container uses.
+/// With it, and a tag rather than an id, docker removes the tag and keeps the
+/// image for the container. Callers pass only a tag dl knows devpod made.
+pub(crate) fn untag_image(runner: &dyn Runner, reference: &str) -> Answer {
+    let spec =
+        SpawnSpec::from(Invocation::new(PROGRAM).with_args(["image", "rm", "--force", reference]));
+    answer(runner.capture(&spec))
+}
+
 /// The containers one compose project has running, or why docker could not say.
 ///
 /// Its own type rather than an [`Answer`] carrying stdout, because this is the
@@ -211,32 +223,116 @@ pub(crate) fn exec_as_root(
     runner: &dyn Runner,
     container: &str,
     argv: &[&str],
-) -> Result<String, String> {
+) -> Result<String, ExecFailure> {
     let mut args = vec!["exec", "--user", "0", container];
     args.extend_from_slice(argv);
-    read(runner, &args, READ_INSIDE)
+    read_or(runner, &args, READ_INSIDE, |stderr| {
+        // docker's words for an exec into a stopped container, stable since
+        // docker 1.x: "container <id> is not running".
+        stderr
+            .contains("is not running")
+            .then_some(ExecFailure::NotRunning)
+    })
+    .map_err(|failure| match failure {
+        Refused::Known(failure) => failure,
+        Refused::Words(why) => ExecFailure::Other(why),
+    })
+}
+
+/// Why [`exec_as_root`] printed nothing to read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ExecFailure {
+    /// The container is not running, so there is nothing inside it to ask.
+    NotRunning,
+    /// Any other failure, in words for a person.
+    Other(String),
+}
+
+impl std::fmt::Display for ExecFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotRunning => f.write_str("the container is not running"),
+            Self::Other(why) => f.write_str(why),
+        }
+    }
+}
+
+/// A `--format`ted `docker inspect` over these names: what it printed, whatever
+/// it exited.
+///
+/// Whatever it exited, because `docker inspect` over several names prints a line
+/// for every name it found and then exits 1 if any one of them was missing. A
+/// container removed by hand, or an image reference this machine never pulled,
+/// would otherwise cost every other name its answer. So each format the callers
+/// pass puts the name's id in the line, and the caller matches on that id and
+/// never on the line's position.
+///
+/// `None` is a docker that did not run at all, which every caller reads as "could
+/// not tell".
+pub(crate) fn inspect_formatted(
+    runner: &dyn Runner,
+    kind: &str,
+    format: &str,
+    names: &NonEmpty<String>,
+) -> Option<String> {
+    let mut args = vec!["inspect", "--type", kind, "--format", format];
+    args.extend(names.iter().map(String::as_str));
+    let spec = SpawnSpec::from(Invocation::new(PROGRAM).with_args(args.iter().copied()))
+        .with_timeout(INSPECT_THEM);
+    ran(runner.capture(&spec))
+        .ok()
+        .map(|(_, CapturedText { stdout, .. })| stdout)
 }
 
 /// One bounded docker read: its stdout when it exited 0, and otherwise words
 /// for why not.
 fn read(runner: &dyn Runner, args: &[&str], timeout: Duration) -> Result<String, String> {
+    read_or(runner, args, timeout, |_| None::<std::convert::Infallible>).map_err(|failure| {
+        match failure {
+            Refused::Known(never) => match never {},
+            Refused::Words(why) => why,
+        }
+    })
+}
+
+/// Why [`read_or`] has no stdout to give: a refusal the caller knows by its
+/// stderr, or words for any other failure.
+enum Refused<K> {
+    Known(K),
+    Words(String),
+}
+
+/// [`read`], with `known` asked first about the stderr of a docker that ran and
+/// failed, so a refusal the caller tells apart is told apart here, next to the
+/// call that printed it.
+fn read_or<K>(
+    runner: &dyn Runner,
+    args: &[&str],
+    timeout: Duration,
+    known: impl FnOnce(&str) -> Option<K>,
+) -> Result<String, Refused<K>> {
     let spec = SpawnSpec::from(Invocation::new(PROGRAM).with_args(args.iter().copied()))
         .with_timeout(timeout);
     let verb = args.first().copied().unwrap_or_default();
     match ran(runner.capture(&spec)) {
         Ok((exit, CapturedText { stdout, .. })) if exit.is_success() => Ok(stdout),
-        Ok((exit, CapturedText { stderr, .. })) => Err(format!(
-            "docker {verb} failed ({exit:?}): {}",
-            stderr.trim()
+        Ok((exit, CapturedText { stderr, .. })) => Err(known(&stderr).map_or_else(
+            || {
+                Refused::Words(format!(
+                    "docker {verb} failed ({exit:?}): {}",
+                    stderr.trim()
+                ))
+            },
+            Refused::Known,
         )),
-        Err(NoAnswer::NotInstalled) => Err("docker is not installed".to_owned()),
-        Err(NoAnswer::NotStarted(failure)) if failure.kind == ErrorKind::TimedOut => {
-            Err(format!("docker {verb} did not answer in time"))
-        }
-        Err(NoAnswer::NotStarted(failure)) => Err(format!(
+        Err(NoAnswer::NotInstalled) => Err(Refused::Words("docker is not installed".to_owned())),
+        Err(NoAnswer::NotStarted(failure)) if failure.kind == ErrorKind::TimedOut => Err(
+            Refused::Words(format!("docker {verb} did not answer in time")),
+        ),
+        Err(NoAnswer::NotStarted(failure)) => Err(Refused::Words(format!(
             "docker {verb} could not start ({:?})",
             failure.kind
-        )),
+        ))),
     }
 }
 
@@ -403,6 +499,39 @@ mod tests {
                 "dind-var-lib-docker-abc",
             ]]
         );
+    }
+
+    /// docker's own words for an exec into a stopped container, as it prints
+    /// them, read as a container that is not running rather than as a fault.
+    #[test]
+    fn an_exec_into_a_stopped_container_says_it_is_not_running() {
+        let fake = FakeRunner::new();
+        fake.script(
+            ["docker", "exec"],
+            Response::failed(
+                1,
+                "Error response from daemon: container 4f1c2a9be0d3 is not running\n",
+            ),
+        );
+
+        assert_eq!(
+            exec_as_root(&fake, "4f1c2a9be0d3", &["true"]),
+            Err(ExecFailure::NotRunning)
+        );
+    }
+
+    #[test]
+    fn an_exec_docker_refused_otherwise_keeps_its_words() {
+        let fake = FakeRunner::new();
+        fake.script(
+            ["docker", "exec"],
+            Response::failed(1, "Error response from daemon: permission denied\n"),
+        );
+
+        let Err(ExecFailure::Other(why)) = exec_as_root(&fake, "c1", &["true"]) else {
+            panic!("not an Other");
+        };
+        assert!(why.contains("permission denied"), "{why}");
     }
 
     #[test]

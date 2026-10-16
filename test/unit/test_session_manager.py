@@ -62,6 +62,20 @@ class TestTheAgentsBothTablesKnow:
         )
 
 
+# The words after each agent's program that pick its last conversation up again.
+RESUMES = (("claude", "--resume"), ("codex", "resume"), ("gemini", "--resume"))
+
+
+class TestTheResumeBothTablesKnow:
+    """dl tells a user how to resume an agent a recreate ended; aid resumes it."""
+
+    def test_core_resumes_each_agent_in_its_own_words(self):
+        assert rust_source.core_agent_resumes() == RESUMES
+
+    def test_aid_resumes_each_agent_in_the_same_words(self):
+        assert rust_source.aid_agent_resumes() == RESUMES
+
+
 @pytest.mark.parametrize("name", AGENTS)
 def test_an_agent_name_is_a_bare_program_name(name):
     """A path or an argument in the list would never match what dl reads.

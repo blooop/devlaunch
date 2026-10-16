@@ -138,20 +138,6 @@ fn a_table_that_does_not_list_pid_one_proves_nothing() {
 }
 
 #[test]
-fn a_stat_line_is_read_from_its_last_parenthesis() {
-    assert_eq!(
-        stat_fields(&stat(8621, 329_153)),
-        Some(StatFields {
-            pid: 8621,
-            kernel_thread: false,
-            start: 329_153
-        })
-    );
-    assert_eq!(stat_fields("8621 (short) S 1"), None);
-    assert_eq!(stat_fields("garbage"), None);
-}
-
-#[test]
 fn the_containers_listing_is_read_whole_or_not_at_all() {
     let out = format!(
         "{}{}devlaunch-nspid\n/proc/1/status:NSpid:\t1\n/proc/40/status:NSpid:\t40\t8621\n\
@@ -803,11 +789,11 @@ fn a_kernel_thread_is_what_marks_the_whole_machine_and_a_parent_of_zero_is_not()
     // Inside a container, every process `docker exec` started reads as parent
     // 0, so a parent of 0 says nothing about which namespace this is.
     assert_eq!(
-        stat_fields(&stat_with_flags(2, KTHREADD_FLAGS, 0)).map(|it| it.kernel_thread),
+        proc_stat::parse(&stat_with_flags(2, KTHREADD_FLAGS, 0)).map(|it| it.kernel_thread),
         Some(true)
     );
     assert_eq!(
-        stat_fields(&stat_with_flags(90_718, 4_194_560, 0)).map(|it| it.kernel_thread),
+        proc_stat::parse(&stat_with_flags(90_718, 4_194_560, 0)).map(|it| it.kernel_thread),
         Some(false)
     );
 }

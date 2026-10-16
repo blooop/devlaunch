@@ -48,6 +48,36 @@ pub(crate) const AGENT_VAR: &str = "HERDR_AGENT";
 /// silence dl gives today.
 pub(crate) const AGENT_NAMES: &[&str] = &["claude", "codex", "gemini"];
 
+/// The words after each agent's program that pick its last conversation up again,
+/// one row per name in [`AGENT_NAMES`]. aid's `AGENTS` table spells the same
+/// words as each row's `resume`, and `test/unit/test_session_manager.py` diffs
+/// the two.
+const AGENT_RESUMES: &[(&str, &str)] = &[
+    ("claude", "--resume"),
+    ("codex", "resume"),
+    ("gemini", "--resume"),
+];
+
+/// The line a user types to pick a known agent's last conversation up again, such
+/// as `codex resume`. `None` for a program that is not an agent dl knows.
+/// Binary surface: `dl` names it when a recreate ends an agent it cannot restart.
+pub fn resume_line(agent: &str) -> Option<String> {
+    let agent = agent_named(agent)?;
+    AGENT_RESUMES
+        .iter()
+        .find(|(name, _)| *name == agent)
+        .map(|(name, resume)| format!("{name} {resume}"))
+}
+
+/// [`resume_line`] for every agent dl knows, in [`AGENT_NAMES`] order.
+/// Binary surface: see [`resume_line`].
+pub fn resume_lines() -> Vec<String> {
+    AGENT_NAMES
+        .iter()
+        .filter_map(|name| resume_line(name))
+        .collect()
+}
+
 /// The agent a workspace command starts, when its program is one by name.
 ///
 /// Reads the command the way a shell would begin to: leading `NAME=value`
@@ -145,6 +175,21 @@ fn inherited(env: EnvSpec) -> EnvSpec {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_known_agent_resumes_in_its_own_words() {
+        assert_eq!(resume_line("claude").as_deref(), Some("claude --resume"));
+        assert_eq!(resume_line("codex").as_deref(), Some("codex resume"));
+        assert_eq!(
+            resume_line("/usr/local/bin/gemini").as_deref(),
+            Some("gemini --resume")
+        );
+        assert_eq!(resume_line("make"), None);
+        assert_eq!(
+            resume_lines(),
+            ["claude --resume", "codex resume", "gemini --resume"]
+        );
+    }
 
     #[test]
     fn an_agent_command_names_its_agent() {
@@ -1382,7 +1427,7 @@ pub(crate) struct Visibility<'a> {
 }
 
 /// A value that is present and not just whitespace.
-fn non_empty(value: Option<&str>) -> Option<String> {
+pub(crate) fn non_empty(value: Option<&str>) -> Option<String> {
     let value = crate::osext::strip(value?);
     (!value.is_empty()).then(|| value.to_owned())
 }
@@ -1815,6 +1860,90 @@ pub(crate) fn tab_label_in(answer: &str) -> Option<String> {
     (!label.is_empty()).then(|| label.to_owned())
 }
 
+/// The argv that has herdr type `command` into one pane's shell and run it.
+///
+/// One string, as herdr takes it: herdr types it as written, so `command` is
+/// already a shell line. herdr refuses a pane whose foreground is not its shell.
+pub(crate) fn pane_run_argv(pane_id: &str, command: &str) -> Vec<String> {
+    vec![
+        "pane".to_owned(),
+        "run".to_owned(),
+        pane_id.to_owned(),
+        command.to_owned(),
+    ]
+}
+
+/// The argv that asks herdr which agent one pane holds, and in what state.
+pub(crate) fn agent_get_argv(pane_id: &str) -> Vec<String> {
+    vec!["agent".to_owned(), "get".to_owned(), pane_id.to_owned()]
+}
+
+/// An agent's state, as herdr reports it in `agent get`'s `agent_status`.
+///
+/// `Unknown` stands for herdr's own `unknown` and for any word this build does
+/// not know, so a herdr that grows a state reads as one nobody can vouch for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AgentStatus {
+    /// Waiting for the user.
+    Idle,
+    Working,
+    /// Waiting on a permission prompt.
+    Blocked,
+    /// The agent finished its turn and nobody has looked at it yet. It is idle, not ended.
+    Done,
+    Unknown,
+}
+
+/// One pane's agent, as `herdr agent get` describes it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PaneAgent {
+    /// herdr's name for the agent: `claude`, `codex`, ...
+    pub agent: String,
+    pub status: AgentStatus,
+}
+
+/// What `herdr agent get` said about one pane.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AgentReading {
+    /// No answer that reads as herdr's: a refusal, a timeout, a herdr too old for
+    /// the command, an agent named in a shape this build cannot read.
+    Unanswered,
+    /// herdr answered, and the pane holds no agent.
+    NoAgent,
+    Agent(PaneAgent),
+}
+
+/// The agent in `herdr agent get`'s answer: `/result/agent`, with its `agent`
+/// name and its `agent_status`.
+pub(crate) fn agent_reading_in(answer: &str) -> AgentReading {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(answer) else {
+        return AgentReading::Unanswered;
+    };
+    let Some(result) = value.get("result") else {
+        return AgentReading::Unanswered;
+    };
+    let Some(agent) = result.get("agent").filter(|agent| !agent.is_null()) else {
+        return AgentReading::NoAgent;
+    };
+    let Some(name) = agent.get("agent").and_then(serde_json::Value::as_str) else {
+        return AgentReading::Unanswered;
+    };
+    let status = match agent
+        .get("agent_status")
+        .and_then(serde_json::Value::as_str)
+    {
+        Some("idle") => AgentStatus::Idle,
+        Some("working") => AgentStatus::Working,
+        Some("blocked") => AgentStatus::Blocked,
+        Some("done") => AgentStatus::Done,
+        _ => AgentStatus::Unknown,
+    };
+    AgentReading::Agent(PaneAgent {
+        agent: name.to_owned(),
+        status,
+    })
+}
+
 // ===========================================================================
 // starting the agent again after herdr restarts
 // ===========================================================================
@@ -1890,11 +2019,12 @@ fn herdr_accepts(argv: &[String]) -> bool {
 
 /// `dl [<workspace> --claude-profile <name>] -- <words>`, as herdr will type it.
 fn restore_line<'a>(
+    program: &str,
     workspace_id: &str,
     profile: Option<&str>,
     words: impl Iterator<Item = &'a String>,
 ) -> Vec<String> {
-    let mut argv = vec![RESTORE_PROGRAM.to_owned(), workspace_id.to_owned()];
+    let mut argv = vec![program.to_owned(), workspace_id.to_owned()];
     if let Some(profile) = profile {
         argv.push("--claude-profile".to_owned());
         argv.push(profile.to_owned());
@@ -1904,17 +2034,59 @@ fn restore_line<'a>(
     argv
 }
 
-/// The program a restored pane runs: `dl` by name, which is also herdr's rule.
+/// The program a restored pane runs: the `dl` this process was started as, by
+/// name, which is also herdr's rule.
 ///
-/// By name and not by path for the pane shell's reason (`dl-herdr-shell`): the
-/// directory a path names is replaced by `pixi global update`.
+/// `invoked_as` is argv\[0\] as given ([`crate::flows::launch::Host`]'s
+/// `invoked_as`), so a dev build (`dl-next`) resumes under itself and not under
+/// the released `dl` (devlaunch#677). Its file name only, for the pane shell's
+/// reason (`dl-herdr-shell`): the directory a path names is replaced by
+/// `pixi global update`, and herdr refuses a path anyway. Not `current_exe()`,
+/// which resolves pixi global's trampoline to a path that moves on upgrade.
+/// `aid` runs dl in process, so its `aid-next` resumes under `dl-next`, and
+/// `dla`, which is aid under a second name, maps the same way. A name a
+/// line cannot carry (empty, an option, a space or an apostrophe) falls back to
+/// `dl`. Pinned by `a_restored_pane_runs_the_dl_that_was_started`.
+pub(crate) fn restore_program(invoked_as: Option<&str>) -> String {
+    let name = invoked_as
+        .and_then(|path| path.rsplit('/').next())
+        .map(|name| {
+            match name
+                .strip_prefix("aid")
+                .or_else(|| name.strip_prefix("dla"))
+            {
+                Some(rest) => format!("{RESTORE_PROGRAM}{rest}"),
+                None => name.to_owned(),
+            }
+        });
+    match name {
+        Some(name)
+            if !name.is_empty()
+                && !name.starts_with('-')
+                && !name.contains('\'')
+                && !name.contains(char::is_whitespace) =>
+        {
+            name
+        }
+        _ => RESTORE_PROGRAM.to_owned(),
+    }
+}
+
+/// The released `dl`, which a restored pane runs when nothing better is known.
 const RESTORE_PROGRAM: &str = "dl";
 
 impl AgentResume {
     /// The argv herdr types into the restored pane, or `None` when herdr would
     /// refuse it.
-    pub(crate) fn argv(&self, workspace_id: &str, profile: Option<&str>) -> Option<Vec<String>> {
-        let argv = restore_line(workspace_id, profile, self.line.iter());
+    ///
+    /// `program` is [`restore_program`]'s answer.
+    pub(crate) fn argv(
+        &self,
+        program: &str,
+        workspace_id: &str,
+        profile: Option<&str>,
+    ) -> Option<Vec<String>> {
+        let argv = restore_line(program, workspace_id, profile, self.line.iter());
         herdr_accepts(&argv).then_some(argv)
     }
 
@@ -1924,9 +2096,14 @@ impl AgentResume {
     /// apostrophe, because the hook can split on neither safely. Checked with a
     /// UUID's worth of id on the end, so a line the id would push over herdr's
     /// limits is not handed to a hook that will then be refused.
-    pub(crate) fn hook_prefix(&self, workspace_id: &str, profile: Option<&str>) -> Option<String> {
+    pub(crate) fn hook_prefix(
+        &self,
+        program: &str,
+        workspace_id: &str,
+        profile: Option<&str>,
+    ) -> Option<String> {
         let by_id = self.by_id.as_ref()?;
-        let prefix = restore_line(workspace_id, profile, by_id.iter());
+        let prefix = restore_line(program, workspace_id, profile, by_id.iter());
         if prefix
             .iter()
             .any(|word| word.is_empty() || word.contains(char::is_whitespace))
@@ -1936,6 +2113,38 @@ impl AgentResume {
         let mut probe = prefix.clone();
         probe.push("00000000-0000-4000-8000-000000000000".to_owned());
         herdr_accepts(&probe).then(|| prefix.join(" "))
+    }
+}
+
+/// The herdr this process runs in a pane of, and where it saves its session.
+///
+/// One rule for both the per-pane report ([`ResumeReport`]) and the recreate's
+/// scan of every pane (`flows::agent_sessions`): provisioning has to be off for
+/// the pane, the socket's directory is where herdr keeps `session.json`, and the
+/// binary falls back to a `PATH` lookup, the rule every other herdr call in dl
+/// follows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Locator {
+    pub(crate) binary: String,
+    /// The pane this process runs in, when herdr named one.
+    pub(crate) pane_id: Option<String>,
+    pub(crate) session_file: PathBuf,
+}
+
+impl Locator {
+    /// The herdr `host` describes, or `None` outside one of its panes.
+    pub(crate) fn resolve(host: &HostEnv, binary: Option<&str>) -> Option<Self> {
+        if !crate::flows::provision::provisioning_disabled(host.in_pane.as_deref()) {
+            return None;
+        }
+        let socket = non_empty(host.socket.as_deref())?;
+        let session_file = Path::new(&socket).parent()?.join("session.json");
+        Some(Self {
+            binary: non_empty(binary)
+                .unwrap_or_else(|| crate::flows::launch::HERDR_BIN_FALLBACK.to_owned()),
+            pane_id: non_empty(host.pane_id.as_deref()),
+            session_file,
+        })
     }
 }
 
@@ -1965,20 +2174,38 @@ impl ResumeReport {
         agent: Option<&'static str>,
         argv: Option<Vec<String>>,
     ) -> Option<Self> {
-        if !crate::flows::provision::provisioning_disabled(host.in_pane.as_deref()) {
-            return None;
-        }
-        let pane_id = non_empty(host.pane_id.as_deref())?;
-        let socket = non_empty(host.socket.as_deref())?;
-        let session_file = Path::new(&socket).parent()?.join("session.json");
-        Some(Self {
-            binary: non_empty(binary)
-                .unwrap_or_else(|| crate::flows::launch::HERDR_BIN_FALLBACK.to_owned()),
+        let Locator {
+            binary,
             pane_id,
+            session_file,
+        } = Locator::resolve(host, binary)?;
+        Some(Self {
+            binary,
+            pane_id: pane_id?,
             session_file,
             agent: agent?,
             argv: argv?,
         })
+    }
+
+    /// The report for a line that is already known, and the pane it belongs to.
+    ///
+    /// For the agent a recreate starts again: the `dl` that line runs is given no
+    /// line of its own to report, so the recreate reports the one it typed.
+    pub(crate) fn for_pane(
+        binary: &str,
+        pane_id: &str,
+        session_file: &Path,
+        agent: &'static str,
+        argv: Vec<String>,
+    ) -> Self {
+        Self {
+            binary: binary.to_owned(),
+            pane_id: pane_id.to_owned(),
+            session_file: session_file.to_owned(),
+            agent,
+            argv,
+        }
     }
 
     pub(crate) fn binary(&self) -> &str {
@@ -2051,9 +2278,13 @@ pub(crate) enum Saved {
 ///
 /// herdr's pane ids are `w<workspace>:p<public number>`, and the file keys panes by
 /// an internal number that `public_pane_numbers` maps to the public one.
-fn saved_argv(session_json: &str, pane_id: &str) -> Option<Option<Vec<String>>> {
+pub(crate) fn saved_argv(session_json: &str, pane_id: &str) -> Option<Option<Vec<String>>> {
     let (workspace_id, public) = pane_id.split_once(":p")?;
-    let public: u64 = public.parse().ok()?;
+    let public: u64 = public.chars().try_fold(0u64, |n, c| {
+        "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+            .find(c.to_ascii_uppercase())
+            .map(|d| n * 32 + d as u64)
+    })?;
     let session: serde_json::Value = serde_json::from_str(session_json).ok()?;
     let Some(workspace) = session
         .get("workspaces")?
@@ -2129,7 +2360,7 @@ mod resume_tests {
     #[test]
     fn a_restored_pane_runs_dl_on_the_workspace_it_left() {
         assert_eq!(
-            claude_resume().argv("ws-id", None),
+            claude_resume().argv("dl", "ws-id", None),
             Some(
                 [
                     "dl",
@@ -2146,11 +2377,37 @@ mod resume_tests {
         );
     }
 
+    /// The dl a restored pane runs is the one that was run, by file name: a path
+    /// is one herdr refuses and `pixi global update` moves, `aid` (or `dla`) resumes
+    /// under its own `dl`, and a name no shell can type falls back to the released `dl`.
+    #[test]
+    fn a_restored_pane_runs_the_dl_that_was_started() {
+        let cases = [
+            (Some("dl"), "dl"),
+            (Some("dl-next"), "dl-next"),
+            (Some("/home/u/.local/bin/dl-next"), "dl-next"),
+            (Some("aid"), "dl"),
+            (Some("/home/u/.pixi/bin/aid-next"), "dl-next"),
+            (Some("dla"), "dl"),
+            (Some("/home/u/.local/bin/dla-next"), "dl-next"),
+            (Some("./target/debug/dl"), "dl"),
+            (None, "dl"),
+            (Some(""), "dl"),
+            (Some("/usr/bin/"), "dl"),
+            (Some("-dl"), "dl"),
+            (Some("my dl"), "dl"),
+            (Some("it's"), "dl"),
+        ];
+        for (invoked_as, program) in cases {
+            assert_eq!(restore_program(invoked_as), program, "{invoked_as:?}");
+        }
+    }
+
     /// A profile is per launch and stored nowhere, so the restored line has to say it.
     #[test]
     fn the_profile_this_launch_forwarded_is_named_again() {
         let argv = claude_resume()
-            .argv("ws-id", Some("work"))
+            .argv("dl", "ws-id", Some("work"))
             .expect("acceptable");
         assert_eq!(argv[..5], ["dl", "ws-id", "--claude-profile", "work", "--"]);
     }
@@ -2159,17 +2416,17 @@ mod resume_tests {
     #[test]
     fn a_line_herdr_would_refuse_is_not_offered() {
         let apostrophe = resume_of(words(&["claude", "it's"]), None);
-        assert_eq!(apostrophe.argv("ws", None), None);
+        assert_eq!(apostrophe.argv("dl", "ws", None), None);
 
         // `dl ws --` is three of the 64.
         let long = resume_of(words(&vec!["x"; 62]), None);
-        assert_eq!(long.argv("ws", None).map(|argv| argv.len()), None);
+        assert_eq!(long.argv("dl", "ws", None).map(|argv| argv.len()), None);
         let fits = resume_of(words(&vec!["x"; 61]), None);
-        assert_eq!(fits.argv("ws", None).map(|argv| argv.len()), Some(64));
+        assert_eq!(fits.argv("dl", "ws", None).map(|argv| argv.len()), Some(64));
 
         let big = "y".repeat(RESUME_MAX_BYTES);
         let heavy = resume_of(words(&["claude", &big]), None);
-        assert_eq!(heavy.argv("ws", None), None);
+        assert_eq!(heavy.argv("dl", "ws", None), None);
 
         assert!(!herdr_accepts(&["/usr/bin/dl".to_owned()]));
         assert!(!herdr_accepts(&[]));
@@ -2181,11 +2438,11 @@ mod resume_tests {
         let head: usize = ["dl", "ws", "--", "claude"].iter().map(|w| w.len()).sum();
         let at_limit = "y".repeat(RESUME_MAX_BYTES - head);
         let fits = resume_of(words(&["claude", &at_limit]), None);
-        assert!(fits.argv("ws", None).is_some(), "exactly the limit");
+        assert!(fits.argv("dl", "ws", None).is_some(), "exactly the limit");
 
         let over = format!("{at_limit}y");
         let heavy = resume_of(words(&["claude", &over]), None);
-        assert_eq!(heavy.argv("ws", None), None, "one byte over");
+        assert_eq!(heavy.argv("dl", "ws", None), None, "one byte over");
     }
 
     /// A `by_id` line that fits alone can still be pushed over by the id.
@@ -2205,27 +2462,28 @@ mod resume_tests {
 
         let room = "y".repeat(RESUME_MAX_BYTES - head - UUID);
         assert!(
-            with_id(&room).hook_prefix("ws", None).is_some(),
+            with_id(&room).hook_prefix("dl", "ws", None).is_some(),
             "the id lands exactly on the limit"
         );
 
         let crowded = format!("{room}y");
         assert!(herdr_accepts(&restore_line(
+            "dl",
             "ws",
             None,
             words(&["claude", &crowded, "--resume"]).iter()
         )));
-        assert_eq!(with_id(&crowded).hook_prefix("ws", None), None);
+        assert_eq!(with_id(&crowded).hook_prefix("dl", "ws", None), None);
     }
 
     #[test]
     fn the_hook_gets_the_line_an_id_completes() {
         assert_eq!(
-            claude_resume().hook_prefix("ws-id", None).as_deref(),
+            claude_resume().hook_prefix("dl", "ws-id", None).as_deref(),
             Some("dl ws-id -- IS_SANDBOX=1 claude --resume")
         );
         let no_hook = resume_of(words(&["codex", "resume", "--last"]), None);
-        assert_eq!(no_hook.hook_prefix("ws-id", None), None);
+        assert_eq!(no_hook.hook_prefix("dl", "ws-id", None), None);
     }
 
     /// The hook splits on spaces, so a word holding one would arrive as two.
@@ -2235,9 +2493,9 @@ mod resume_tests {
             words(&["claude", "--resume", "u"]),
             Some(words(&["claude", "--name", "a b", "--resume"])),
         );
-        assert_eq!(spaced.hook_prefix("ws", None), None);
+        assert_eq!(spaced.hook_prefix("dl", "ws", None), None);
         assert_eq!(
-            spaced.argv("ws", None).map(|argv| argv.len()),
+            spaced.argv("dl", "ws", None).map(|argv| argv.len()),
             Some(6),
             "the host's own report does not split, so it still goes"
         );
@@ -2306,6 +2564,27 @@ mod resume_tests {
         );
     }
 
+    /// The scan of every pane needs no pane of its own, where the report does.
+    #[test]
+    fn a_herdr_is_located_without_a_pane_id_and_falls_back_to_path() {
+        let host = HostEnv {
+            pane_id: Some(" ".to_owned()),
+            ..in_a_pane()
+        };
+        assert_eq!(
+            Locator::resolve(&host, Some("")),
+            Some(Locator {
+                binary: "herdr".to_owned(),
+                pane_id: None,
+                session_file: PathBuf::from("/home/u/.config/herdr/sessions/s/session.json"),
+            })
+        );
+        assert_eq!(
+            Locator::resolve(&in_a_pane(), Some("/opt/herdr")).map(|at| (at.binary, at.pane_id)),
+            Some(("/opt/herdr".to_owned(), Some("w1:p3".to_owned())))
+        );
+    }
+
     /// The argv herdr 0.9.2 took, in the order it took it: pane first, `--` last.
     #[test]
     fn the_report_names_the_argv_and_no_state() {
@@ -2362,6 +2641,26 @@ mod resume_tests {
         let report = report();
         assert_eq!(report.saved_in(&session(r#"["dl","ws"]"#)), Saved::Holds);
         assert_eq!(report.saved_in(&session(r#"["dl","other"]"#)), Saved::Other);
+    }
+
+    /// herdr numbers panes in Crockford base32: `w3:pAX` is public number 349,
+    /// as a live herdr's `session.json` showed (`"226": 349`). Ids up to `p9`
+    /// read the same in base 10, which is how a decimal parse passed the tests above.
+    #[test]
+    fn a_pane_id_is_read_as_herdrs_base32_number() {
+        let json = session(r#"["dl","ws"]"#).replace(
+            r#""id":"w1","public_pane_numbers":{"1":1,"4":3}"#,
+            r#""id":"w3","public_pane_numbers":{"1":1,"4":349}"#,
+        );
+        assert_eq!(
+            saved_argv(&json, "w3:pAX"),
+            Some(Some(vec!["dl".to_owned(), "ws".to_owned()]))
+        );
+        assert_eq!(
+            saved_argv(&json, "w3:pax"),
+            Some(Some(vec!["dl".to_owned(), "ws".to_owned()]))
+        );
+        assert_eq!(saved_argv(&json, "w3:pAY"), Some(None));
     }
 
     #[test]

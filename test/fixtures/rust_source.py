@@ -180,6 +180,36 @@ def aid_agent_names() -> Tuple[str, ...]:
     return names
 
 
+def core_agent_resumes() -> Tuple[Tuple[str, str], ...]:
+    """Each agent and the words that resume it, as core's `AGENT_RESUMES` lists them."""
+    source = _read(HERDR_RS)
+    match = re.search(r"const AGENT_RESUMES: &\[\(&str, &str\)\] = &\[(.*?)\];", source, re.DOTALL)
+    assert match, f"{HERDR_RS.name} no longer declares `const AGENT_RESUMES`"
+    rows = tuple(re.findall(r'\("([^"]+)",\s*"([^"]+)"\)', match.group(1)))
+    assert rows, f"{HERDR_RS.name} declares AGENT_RESUMES with no rows in it"
+    return rows
+
+
+def aid_agent_resumes() -> Tuple[Tuple[str, str], ...]:
+    """Each row of aid's `AGENTS` table and its `resume` words, joined by a space."""
+    source = _read(AID_REWRITE_RS)
+    start = source.find("const AGENTS: &[(&str, Agent)] = &[")
+    assert start != -1, f"{AID_REWRITE_RS.name} no longer declares `const AGENTS`"
+    end = source.find("\n];", start)
+    assert end != -1, f"`const AGENTS` in {AID_REWRITE_RS.name} is not closed at column zero"
+    rows = []
+    for name, body in re.findall(
+        r'^\s{8}"([^"]+)",$(.*?)(?=^\s{8}"[^"]+",$|\Z)',
+        source[start:end],
+        re.MULTILINE | re.DOTALL,
+    ):
+        resume = re.search(r"^\s+resume: &\[([^\]]*)\],$", body, re.MULTILINE)
+        assert resume, f"aid's row for {name} has no `resume`"
+        rows.append((name, " ".join(re.findall(r'"([^"]+)"', resume.group(1)))))
+    assert rows, f"{AID_REWRITE_RS.name} declares AGENTS with no agent names in it"
+    return tuple(rows)
+
+
 def core_session_manager_tab_var() -> str:
     """The variable the pane shell reads to learn which tab it was spawned in.
 
