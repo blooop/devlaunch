@@ -187,7 +187,11 @@ pub fn collect(
 }
 
 /// What herdr says one pane's agent is doing.
-pub fn agent_reading(runner: &dyn Runner, manager: &Manager, pane_id: &str) -> herdr::AgentReading {
+pub(crate) fn agent_reading(
+    runner: &dyn Runner,
+    manager: &Manager,
+    pane_id: &str,
+) -> herdr::AgentReading {
     manager
         .ask(runner, &herdr::agent_get_argv(pane_id))
         .as_deref()
