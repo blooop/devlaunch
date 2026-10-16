@@ -2973,6 +2973,35 @@ fn report_typed_lines_again(
     held: &agent_sessions::HeldSessions,
     restarted: &[agent_sessions::Restarted],
 ) -> Vec<String> {
+    lines_not_kept(held, restarted, &|session| {
+        agent_sessions::report_again(
+            runner,
+            manager,
+            session,
+            &|| {
+                SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .map_or(0, |since| since.as_nanos())
+            },
+            &|path| std::fs::read_to_string(path).ok(),
+            &|pause| {
+                std::thread::sleep(pause);
+                true
+            },
+        )
+    })
+}
+
+/// The panes among the typed ones whose line `report` did not see kept, one
+/// thread per pane.
+///
+/// A report that panics confirmed nothing, so its pane counts as not kept: the
+/// user is told, rather than left to find the agent ended at the next recreate.
+fn lines_not_kept(
+    held: &agent_sessions::HeldSessions,
+    restarted: &[agent_sessions::Restarted],
+    report: &(dyn Fn(&agent_sessions::HeldSession) -> agent_sessions::LineKept + Sync),
+) -> Vec<String> {
     let typed: Vec<&agent_sessions::HeldSession> = held
         .sessions
         .iter()
@@ -2985,30 +3014,14 @@ fn report_typed_lines_again(
     std::thread::scope(|scope| {
         let reports: Vec<_> = typed
             .iter()
-            .map(|session| {
-                scope.spawn(move || {
-                    let kept = agent_sessions::report_again(
-                        runner,
-                        manager,
-                        session,
-                        &|| {
-                            SystemTime::now()
-                                .duration_since(SystemTime::UNIX_EPOCH)
-                                .map_or(0, |since| since.as_nanos())
-                        },
-                        &|path| std::fs::read_to_string(path).ok(),
-                        &|pause| {
-                            std::thread::sleep(pause);
-                            true
-                        },
-                    );
-                    (kept == agent_sessions::LineKept::NotKept).then(|| session.pane_id.clone())
-                })
-            })
+            .map(|session| (session, scope.spawn(move || report(session))))
             .collect();
         reports
             .into_iter()
-            .filter_map(|report| report.join().ok().flatten())
+            .filter_map(|(session, report)| {
+                (!matches!(report.join(), Ok(agent_sessions::LineKept::Kept)))
+                    .then(|| session.pane_id.clone())
+            })
             .collect()
     })
 }
@@ -14064,6 +14077,40 @@ mod tests {
             "{:?}",
             parts.said
         );
+    }
+
+    /// The thread that reports a typed line panics, so nothing confirmed the
+    /// line. The pane counts as not kept, the same as a refused report.
+    #[test]
+    fn a_report_that_panics_leaves_its_line_not_kept() {
+        let held = agent_sessions::HeldSessions {
+            sessions: vec![
+                agent_sessions::HeldSession {
+                    pane_id: "w3:pAX".to_owned(),
+                    line: vec!["dl".to_owned()],
+                },
+                agent_sessions::HeldSession {
+                    pane_id: "w3:pB2".to_owned(),
+                    line: vec!["dl".to_owned()],
+                },
+            ],
+            unresumable: Vec::new(),
+        };
+        let restarted = [
+            agent_sessions::Restarted::Typed {
+                pane_id: "w3:pAX".to_owned(),
+            },
+            agent_sessions::Restarted::Typed {
+                pane_id: "w3:pB2".to_owned(),
+            },
+        ];
+
+        let not_kept = lines_not_kept(&held, &restarted, &|session| {
+            assert!(session.pane_id != "w3:pAX", "the report broke");
+            agent_sessions::LineKept::Kept
+        });
+
+        assert_eq!(not_kept, ["w3:pAX".to_owned()]);
     }
 
     /// herdr refuses the report of the typed line, so the next recreate would
