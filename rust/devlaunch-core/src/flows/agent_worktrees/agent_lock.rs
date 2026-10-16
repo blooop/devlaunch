@@ -361,6 +361,7 @@ impl<'r> Owners<'r> {
                     &container.id,
                     &["sh", "-c", READ_THE_TABLE],
                 )
+                .map_err(|why| why.to_string())
                 .and_then(|out| container_table(&out))
                 {
                     Ok(table) => decide(&table, lock),

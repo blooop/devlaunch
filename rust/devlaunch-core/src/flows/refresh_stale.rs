@@ -173,14 +173,13 @@ fn judge(
             });
         }
     }
-    let table = match docker::exec_as_root(runner, container, &["sh", "-c", READ_THE_TABLE])
-        .and_then(|out| process_table(&out))
-    {
-        Ok(table) => table,
-        // docker's words for an exec into a stopped container, stable since
-        // docker 1.x: "container <id> is not running".
-        Err(why) if why.contains("is not running") => return Some(Skip::Stopped),
-        Err(why) => return Some(Skip::ProcessesUnread { why }),
+    let table = match docker::exec_as_root(runner, container, &["sh", "-c", READ_THE_TABLE]) {
+        Ok(out) => match process_table(&out) {
+            Ok(table) => table,
+            Err(why) => return Some(Skip::ProcessesUnread { why }),
+        },
+        Err(docker::ExecFailure::NotRunning) => return Some(Skip::Stopped),
+        Err(docker::ExecFailure::Other(why)) => return Some(Skip::ProcessesUnread { why }),
     };
     if let Some(build) = table
         .iter()
