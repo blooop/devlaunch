@@ -93,6 +93,16 @@ pub devlaunch_core::api::LaunchNotice::HerdrTab(devlaunch_core::flows::launch::H
 pub devlaunch_core::api::LaunchNotice::LaunchLockUnavailable
 pub devlaunch_core::api::LaunchNotice::LaunchLockUnavailable::reason: alloc::string::String
 pub devlaunch_core::api::LaunchNotice::LaunchLockUnavailable::workspace_id: alloc::string::String
+pub devlaunch_core::api::LaunchNotice::LeftoverContainersNotListed
+pub devlaunch_core::api::LaunchNotice::LeftoverContainersNotListed::reason: alloc::string::String
+pub devlaunch_core::api::LaunchNotice::LeftoverContainersNotListed::workspace_id: alloc::string::String
+pub devlaunch_core::api::LaunchNotice::LeftoverContainersNotRemoved
+pub devlaunch_core::api::LaunchNotice::LeftoverContainersNotRemoved::names: devlaunch_core::domain::workspace_state::NonEmpty<alloc::string::String>
+pub devlaunch_core::api::LaunchNotice::LeftoverContainersNotRemoved::reason: alloc::string::String
+pub devlaunch_core::api::LaunchNotice::LeftoverContainersNotRemoved::workspace_id: alloc::string::String
+pub devlaunch_core::api::LaunchNotice::LeftoverContainersRemoved
+pub devlaunch_core::api::LaunchNotice::LeftoverContainersRemoved::names: devlaunch_core::domain::workspace_state::NonEmpty<alloc::string::String>
+pub devlaunch_core::api::LaunchNotice::LeftoverContainersRemoved::workspace_id: alloc::string::String
 pub devlaunch_core::api::LaunchNotice::Lifecycle(devlaunch_core::flows::lifecycle::LifecycleNotice)
 pub devlaunch_core::api::LaunchNotice::MountSourceEmpty
 pub devlaunch_core::api::LaunchNotice::MountSourceMissing
@@ -177,6 +187,16 @@ pub devlaunch_core::api::LifecycleNotice::CloneNotRemoved::refusal: devlaunch_co
 pub devlaunch_core::api::LifecycleNotice::CloneNotRemoved::workspace_id: alloc::string::String
 pub devlaunch_core::api::LifecycleNotice::CloneRemoved
 pub devlaunch_core::api::LifecycleNotice::CloneRemoved::workspace_id: alloc::string::String
+pub devlaunch_core::api::LifecycleNotice::LeftoverContainersNotListed
+pub devlaunch_core::api::LifecycleNotice::LeftoverContainersNotListed::reason: alloc::string::String
+pub devlaunch_core::api::LifecycleNotice::LeftoverContainersNotListed::workspace_id: alloc::string::String
+pub devlaunch_core::api::LifecycleNotice::LeftoverContainersNotRemoved
+pub devlaunch_core::api::LifecycleNotice::LeftoverContainersNotRemoved::names: devlaunch_core::domain::workspace_state::NonEmpty<alloc::string::String>
+pub devlaunch_core::api::LifecycleNotice::LeftoverContainersNotRemoved::reason: alloc::string::String
+pub devlaunch_core::api::LifecycleNotice::LeftoverContainersNotRemoved::workspace_id: alloc::string::String
+pub devlaunch_core::api::LifecycleNotice::LeftoverContainersRemoved
+pub devlaunch_core::api::LifecycleNotice::LeftoverContainersRemoved::names: devlaunch_core::domain::workspace_state::NonEmpty<alloc::string::String>
+pub devlaunch_core::api::LifecycleNotice::LeftoverContainersRemoved::workspace_id: alloc::string::String
 pub devlaunch_core::api::LifecycleNotice::RecordNotDropped
 pub devlaunch_core::api::LifecycleNotice::RecordNotDropped::path: std::path::PathBuf
 pub devlaunch_core::api::LifecycleNotice::RecordNotDropped::refusal: devlaunch_core::domain::metadata::MetadataError
@@ -677,6 +697,16 @@ pub devlaunch_core::flows::launch::LaunchNotice::HerdrTab(devlaunch_core::flows:
 pub devlaunch_core::flows::launch::LaunchNotice::LaunchLockUnavailable
 pub devlaunch_core::flows::launch::LaunchNotice::LaunchLockUnavailable::reason: alloc::string::String
 pub devlaunch_core::flows::launch::LaunchNotice::LaunchLockUnavailable::workspace_id: alloc::string::String
+pub devlaunch_core::flows::launch::LaunchNotice::LeftoverContainersNotListed
+pub devlaunch_core::flows::launch::LaunchNotice::LeftoverContainersNotListed::reason: alloc::string::String
+pub devlaunch_core::flows::launch::LaunchNotice::LeftoverContainersNotListed::workspace_id: alloc::string::String
+pub devlaunch_core::flows::launch::LaunchNotice::LeftoverContainersNotRemoved
+pub devlaunch_core::flows::launch::LaunchNotice::LeftoverContainersNotRemoved::names: devlaunch_core::domain::workspace_state::NonEmpty<alloc::string::String>
+pub devlaunch_core::flows::launch::LaunchNotice::LeftoverContainersNotRemoved::reason: alloc::string::String
+pub devlaunch_core::flows::launch::LaunchNotice::LeftoverContainersNotRemoved::workspace_id: alloc::string::String
+pub devlaunch_core::flows::launch::LaunchNotice::LeftoverContainersRemoved
+pub devlaunch_core::flows::launch::LaunchNotice::LeftoverContainersRemoved::names: devlaunch_core::domain::workspace_state::NonEmpty<alloc::string::String>
+pub devlaunch_core::flows::launch::LaunchNotice::LeftoverContainersRemoved::workspace_id: alloc::string::String
 pub devlaunch_core::flows::launch::LaunchNotice::Lifecycle(devlaunch_core::flows::lifecycle::LifecycleNotice)
 pub devlaunch_core::flows::launch::LaunchNotice::MountSourceEmpty
 pub devlaunch_core::flows::launch::LaunchNotice::MountSourceMissing
@@ -839,6 +869,16 @@ pub devlaunch_core::flows::lifecycle::LifecycleNotice::CloneNotRemoved::refusal:
 pub devlaunch_core::flows::lifecycle::LifecycleNotice::CloneNotRemoved::workspace_id: alloc::string::String
 pub devlaunch_core::flows::lifecycle::LifecycleNotice::CloneRemoved
 pub devlaunch_core::flows::lifecycle::LifecycleNotice::CloneRemoved::workspace_id: alloc::string::String
+pub devlaunch_core::flows::lifecycle::LifecycleNotice::LeftoverContainersNotListed
+pub devlaunch_core::flows::lifecycle::LifecycleNotice::LeftoverContainersNotListed::reason: alloc::string::String
+pub devlaunch_core::flows::lifecycle::LifecycleNotice::LeftoverContainersNotListed::workspace_id: alloc::string::String
+pub devlaunch_core::flows::lifecycle::LifecycleNotice::LeftoverContainersNotRemoved
+pub devlaunch_core::flows::lifecycle::LifecycleNotice::LeftoverContainersNotRemoved::names: devlaunch_core::domain::workspace_state::NonEmpty<alloc::string::String>
+pub devlaunch_core::flows::lifecycle::LifecycleNotice::LeftoverContainersNotRemoved::reason: alloc::string::String
+pub devlaunch_core::flows::lifecycle::LifecycleNotice::LeftoverContainersNotRemoved::workspace_id: alloc::string::String
+pub devlaunch_core::flows::lifecycle::LifecycleNotice::LeftoverContainersRemoved
+pub devlaunch_core::flows::lifecycle::LifecycleNotice::LeftoverContainersRemoved::names: devlaunch_core::domain::workspace_state::NonEmpty<alloc::string::String>
+pub devlaunch_core::flows::lifecycle::LifecycleNotice::LeftoverContainersRemoved::workspace_id: alloc::string::String
 pub devlaunch_core::flows::lifecycle::LifecycleNotice::RecordNotDropped
 pub devlaunch_core::flows::lifecycle::LifecycleNotice::RecordNotDropped::path: std::path::PathBuf
 pub devlaunch_core::flows::lifecycle::LifecycleNotice::RecordNotDropped::refusal: devlaunch_core::domain::metadata::MetadataError

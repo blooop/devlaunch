@@ -134,6 +134,54 @@ impl DevpodHome {
             .join("workspace.lock")
     }
 
+    /// devpod's agent-side directories, one per context, each holding one
+    /// directory per workspace.
+    fn agent_contexts(&self) -> PathBuf {
+        self.root.join("agent").join("contexts")
+    }
+
+    /// Whether any context still holds a record for this workspace.
+    ///
+    /// Every context rather than [`Self::sole_context_holding`]'s single answer,
+    /// because the caller asks the opposite question: whether devpod has *no*
+    /// workspace by this id anywhere, so that nothing on the machine can still
+    /// claim the containers that name it. Two contexts holding it is a yes. A
+    /// `contexts` directory that would not read is also a yes, so that an
+    /// unreadable home counts as "a record may be there".
+    pub(crate) fn holds_any_record(&self, workspace_id: &str) -> bool {
+        let Ok(contexts) = std::fs::read_dir(self.contexts()) else {
+            return self.contexts().exists();
+        };
+        contexts.flatten().any(|context| {
+            context
+                .file_name()
+                .to_str()
+                .is_some_and(|name| self.record(name, workspace_id).is_file())
+        })
+    }
+
+    /// Whether `path` is inside devpod's agent-side directory for this workspace,
+    /// under any context.
+    ///
+    /// devpod writes its compose override for a workspace there
+    /// (`.docker-compose/docker-compose.devcontainer.containerFeatures-*.yml`), and
+    /// compose records that file in the `config_files` label of every container
+    /// the project makes. So the label names the workspace *by id*, whatever uid
+    /// devpod gave the project, which is the one handle a container keeps after
+    /// devpod has forgotten it.
+    pub(crate) fn is_in_agent_dir_of(&self, path: &Path, workspace_id: &str) -> bool {
+        let Ok(rest) = path.strip_prefix(self.agent_contexts()) else {
+            return false;
+        };
+        let mut components = rest.components().skip(1);
+        components
+            .next()
+            .is_some_and(|c| c.as_os_str() == "workspaces")
+            && components
+                .next()
+                .is_some_and(|c| c.as_os_str() == workspace_id)
+    }
+
     /// devpod's record of a *completed* create for one workspace.
     ///
     /// devpod writes this beside [`Self::record`] on its way out of a successful
@@ -426,6 +474,19 @@ pub(crate) fn devpod_home_with(entries: &[(&str, &str, Option<()>)]) -> ScratchH
         }
     }
     ScratchHome { _dir: dir, home }
+}
+
+/// A file in devpod's agent-side directory for one workspace, where devpod
+/// writes its compose override. Not created: a container label names it whether
+/// or not it is still on disk.
+#[cfg(test)]
+pub(crate) fn agent_compose_file(home: &DevpodHome, context: &str, workspace_id: &str) -> PathBuf {
+    home.agent_contexts()
+        .join(context)
+        .join("workspaces")
+        .join(workspace_id)
+        .join(".docker-compose")
+        .join("docker-compose.devcontainer.containerFeatures-0.yml")
 }
 
 /// The `flock` devpod blocks on, created empty, for the one test that has to

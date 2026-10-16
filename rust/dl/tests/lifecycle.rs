@@ -1012,15 +1012,131 @@ fn a_workspace_with_no_clone_is_still_named_going_in_and_coming_out() {
 }
 
 /// A workspace devpod never finished creating has no create result, so there is
-/// nothing to name and docker is not run at all — not run with a guessed name in
-/// it, which would be somebody else's disk.
+/// nothing to name and docker removes nothing — not a volume with a guessed name
+/// in it, which would be somebody else's disk. The one docker call is the
+/// leftover-container listing, a read, which finds nothing here.
 #[test]
-fn a_delete_with_nothing_recorded_to_name_runs_no_docker() {
+fn a_delete_with_nothing_recorded_to_name_removes_nothing() {
     let world = World::base();
 
     world.dl(&["devlaunch-main-legacy", "rm"]).exited(0);
 
-    assert_eq!(world.docker_calls(), Vec::<String>::new());
+    assert_eq!(world.docker_calls(), [LEFTOVER_LISTING]);
+}
+
+/// The leftover-container listing, as the fake docker logs its argv.
+const LEFTOVER_LISTING: &str = "ps --all --no-trunc --filter label=com.docker.compose.project \
+     --format {{.ID}}\t{{.Names}}\t{{.Label \"com.docker.compose.project.working_dir\"}}\t\
+     {{.Label \"com.docker.compose.project.config_files\"}}";
+
+/// devpod's delete finds a workspace's containers by the uid of the record it is
+/// deleting, so containers an older record left (or a forced delete gave up on)
+/// outlive it, and their fixed `container_name`s then block every later `up` of
+/// the workspace. `rm` removes them once devpod has let go: every container whose
+/// compose labels name the clone or devpod's directory for this id, and nothing
+/// else on the machine.
+#[test]
+fn rm_removes_the_containers_devpod_left_behind() {
+    let world = World::base();
+    leave_containers_behind(&world);
+
+    let run = world.dl(&["devlaunch-main-legacy", "rm"]);
+
+    run.exited(0);
+    assert_eq!(
+        world.docker_calls(),
+        [LEFTOVER_LISTING, "rm --force aaa bbb"]
+    );
+    assert!(
+        run.err.contains(
+            "Removed containers devlaunch-main-legacy left behind: \
+             dev_devlaunch-main-legacy, sidecar_devlaunch-main-legacy\n"
+        ),
+        "{}",
+        run.err
+    );
+}
+
+/// The ordinary shape: devpod held a record for the workspace until its own
+/// delete dropped it, so the sweep runs after the delete and not instead of it.
+/// The volume removal after it shows the record was there to name them from.
+#[test]
+fn rm_removes_the_leftovers_once_devpods_delete_drops_its_record() {
+    let world = World::with(&["--devcontainer-volumes", "--record-dropping-delete"]);
+    leave_containers_behind(&world);
+    assert!(
+        world.exists("devpod/contexts/default/workspaces/devlaunch-main-legacy/workspace.json")
+    );
+
+    let run = world.dl(&["devlaunch-main-legacy", "rm"]);
+
+    run.exited(0);
+    assert!(!world.exists("devpod/contexts/default/workspaces/devlaunch-main-legacy"));
+    assert_eq!(
+        world.docker_calls(),
+        [
+            LEFTOVER_LISTING,
+            "rm --force aaa bbb",
+            "volume rm --force devlaunch-main-legacy-pixi dind-var-lib-docker-0f4b2c1d",
+        ]
+    );
+    assert!(
+        run.err.contains(
+            "Removed containers devlaunch-main-legacy left behind: \
+             dev_devlaunch-main-legacy, sidecar_devlaunch-main-legacy\n"
+        ),
+        "{}",
+        run.err
+    );
+}
+
+/// `kill` ends in the same delete, so it sweeps the same leftovers. The calls
+/// before the sweep are `kill`'s own hunt for what holds the workspace.
+#[test]
+fn kill_removes_the_leftovers_once_devpods_delete_drops_its_record() {
+    let world = World::with(&["--devcontainer-volumes", "--record-dropping-delete"]);
+    leave_containers_behind(&world);
+
+    let run = world.dl(&["devlaunch-main-legacy", "kill"]);
+
+    run.exited(0);
+    let calls = world.docker_calls();
+    assert!(
+        calls.ends_with(&[
+            LEFTOVER_LISTING.to_owned(),
+            "rm --force aaa bbb".to_owned(),
+            "volume rm --force devlaunch-main-legacy-pixi dind-var-lib-docker-0f4b2c1d".to_owned(),
+        ]),
+        "{calls:?}"
+    );
+    assert!(
+        run.err.contains(
+            "Removed containers devlaunch-main-legacy left behind: \
+             dev_devlaunch-main-legacy, sidecar_devlaunch-main-legacy\n"
+        ),
+        "{}",
+        run.err
+    );
+}
+
+/// Put three compose containers on the world's docker: two left by
+/// `devlaunch-main-legacy` (`aaa`, `bbb`), and one of somebody else's.
+fn leave_containers_behind(world: &World) {
+    let root = world.root.display().to_string();
+    let clone = format!("{root}/cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-legacy");
+    let agent = format!(
+        "{root}/devpod/agent/contexts/default/workspaces/devlaunch-main-legacy/.docker-compose/\
+         docker-compose.devcontainer.containerFeatures-0.yml"
+    );
+    std::fs::write(
+        world.path("docker-ps"),
+        format!(
+            "aaa\tdev_devlaunch-main-legacy\t{clone}/.devcontainer\t{clone}/.devcontainer/a.yml,{agent}\n\
+             bbb\tsidecar_devlaunch-main-legacy\t{clone}/.devcontainer\t{clone}/.devcontainer/b.yml\n\
+             ccc\tsomeone_else\t/srv/other\t/srv/other/compose.yml\n"
+        ),
+    )
+    .expect("a docker listing");
 }
 
 #[test]
