@@ -43,7 +43,7 @@ const ASK_WITHIN: Duration = Duration::from_secs(2);
 
 /// The herdr this process can ask, and where it keeps its saved session.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Manager {
+pub struct HerdrPanes {
     binary: String,
     /// The pane this process runs in. Nothing types into it: its foreground is
     /// this `dl`.
@@ -51,7 +51,7 @@ pub struct Manager {
     session_file: PathBuf,
 }
 
-impl Manager {
+impl HerdrPanes {
     /// The herdr whose pane `host` runs in, or `None` outside one.
     pub fn from_host(host: &crate::flows::launch::Host) -> Option<Self> {
         Self::resolve(&host.herdr, host.herdr_bin.as_deref())
@@ -136,7 +136,7 @@ pub struct UnresumablePane {
 /// `agent get` is no reason to drop a line it saved.
 pub fn collect(
     runner: &dyn Runner,
-    manager: &Manager,
+    manager: &HerdrPanes,
     workspace_id: &str,
     read: &dyn Fn(&Path) -> Option<String>,
 ) -> Option<HeldSessions> {
@@ -186,7 +186,7 @@ pub fn collect(
 /// What herdr says one pane's agent is doing.
 pub(crate) fn agent_reading(
     runner: &dyn Runner,
-    manager: &Manager,
+    manager: &HerdrPanes,
     pane_id: &str,
 ) -> herdr::AgentReading {
     manager
@@ -247,7 +247,7 @@ pub(crate) const RUN_TICK: Duration = Duration::from_millis(500);
 /// is handed back for the caller to say.
 pub fn restart(
     runner: &dyn Runner,
-    manager: &Manager,
+    manager: &HerdrPanes,
     held: &HeldSessions,
     wait: &dyn Fn(Duration),
 ) -> Vec<Restarted> {
@@ -299,7 +299,7 @@ pub(crate) enum LineKept {
 /// nothing ends the wait early.
 pub(crate) fn report_again(
     runner: &dyn Runner,
-    manager: &Manager,
+    manager: &HerdrPanes,
     session: &HeldSession,
     seq: &dyn Fn() -> u128,
     read: &dyn Fn(&Path) -> Option<String>,
@@ -344,8 +344,8 @@ mod tests {
         }
     }
 
-    fn manager() -> Manager {
-        Manager::resolve(&env("w1:p9"), Some(HERDR)).expect("a herdr pane")
+    fn manager() -> HerdrPanes {
+        HerdrPanes::resolve(&env("w1:p9"), Some(HERDR)).expect("a herdr pane")
     }
 
     fn pane_list(panes: &[&str]) -> String {
@@ -948,10 +948,10 @@ mod tests {
     fn outside_a_herdr_pane_there_is_no_manager_to_ask() {
         let mut outside = env("w1:p9");
         outside.in_pane = None;
-        assert_eq!(Manager::resolve(&outside, Some(HERDR)), None);
+        assert_eq!(HerdrPanes::resolve(&outside, Some(HERDR)), None);
         let mut no_socket = env("w1:p9");
         no_socket.socket = None;
-        assert_eq!(Manager::resolve(&no_socket, Some(HERDR)), None);
+        assert_eq!(HerdrPanes::resolve(&no_socket, Some(HERDR)), None);
     }
 
     fn one_held() -> HeldSession {

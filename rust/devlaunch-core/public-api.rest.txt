@@ -875,17 +875,17 @@ pub fn devlaunch_core::flows::agent_sessions::HeldSessions::default() -> devlaun
 impl core::fmt::Debug for devlaunch_core::flows::agent_sessions::HeldSessions
 pub fn devlaunch_core::flows::agent_sessions::HeldSessions::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::agent_sessions::HeldSessions
-pub struct devlaunch_core::flows::agent_sessions::Manager
-impl devlaunch_core::flows::agent_sessions::Manager
-pub fn devlaunch_core::flows::agent_sessions::Manager::from_host(&devlaunch_core::flows::launch::Host) -> core::option::Option<Self>
-impl core::clone::Clone for devlaunch_core::flows::agent_sessions::Manager
-pub fn devlaunch_core::flows::agent_sessions::Manager::clone(&self) -> devlaunch_core::flows::agent_sessions::Manager
-impl core::cmp::Eq for devlaunch_core::flows::agent_sessions::Manager
-impl core::cmp::PartialEq for devlaunch_core::flows::agent_sessions::Manager
-pub fn devlaunch_core::flows::agent_sessions::Manager::eq(&self, &devlaunch_core::flows::agent_sessions::Manager) -> bool
-impl core::fmt::Debug for devlaunch_core::flows::agent_sessions::Manager
-pub fn devlaunch_core::flows::agent_sessions::Manager::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for devlaunch_core::flows::agent_sessions::Manager
+pub struct devlaunch_core::flows::agent_sessions::HerdrPanes
+impl devlaunch_core::flows::agent_sessions::HerdrPanes
+pub fn devlaunch_core::flows::agent_sessions::HerdrPanes::from_host(&devlaunch_core::flows::launch::Host) -> core::option::Option<Self>
+impl core::clone::Clone for devlaunch_core::flows::agent_sessions::HerdrPanes
+pub fn devlaunch_core::flows::agent_sessions::HerdrPanes::clone(&self) -> devlaunch_core::flows::agent_sessions::HerdrPanes
+impl core::cmp::Eq for devlaunch_core::flows::agent_sessions::HerdrPanes
+impl core::cmp::PartialEq for devlaunch_core::flows::agent_sessions::HerdrPanes
+pub fn devlaunch_core::flows::agent_sessions::HerdrPanes::eq(&self, &devlaunch_core::flows::agent_sessions::HerdrPanes) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::agent_sessions::HerdrPanes
+pub fn devlaunch_core::flows::agent_sessions::HerdrPanes::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::agent_sessions::HerdrPanes
 pub struct devlaunch_core::flows::agent_sessions::UnresumablePane
 pub devlaunch_core::flows::agent_sessions::UnresumablePane::agent: alloc::string::String
 pub devlaunch_core::flows::agent_sessions::UnresumablePane::pane_id: alloc::string::String
@@ -897,8 +897,8 @@ pub fn devlaunch_core::flows::agent_sessions::UnresumablePane::eq(&self, &devlau
 impl core::fmt::Debug for devlaunch_core::flows::agent_sessions::UnresumablePane
 pub fn devlaunch_core::flows::agent_sessions::UnresumablePane::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::agent_sessions::UnresumablePane
-pub fn devlaunch_core::flows::agent_sessions::collect(&dyn devlaunch_runner::Runner, &devlaunch_core::flows::agent_sessions::Manager, &str, &dyn core::ops::function::Fn(&std::path::Path) -> core::option::Option<alloc::string::String>) -> core::option::Option<devlaunch_core::flows::agent_sessions::HeldSessions>
-pub fn devlaunch_core::flows::agent_sessions::restart(&dyn devlaunch_runner::Runner, &devlaunch_core::flows::agent_sessions::Manager, &devlaunch_core::flows::agent_sessions::HeldSessions, &dyn core::ops::function::Fn(core::time::Duration)) -> alloc::vec::Vec<devlaunch_core::flows::agent_sessions::Restarted>
+pub fn devlaunch_core::flows::agent_sessions::collect(&dyn devlaunch_runner::Runner, &devlaunch_core::flows::agent_sessions::HerdrPanes, &str, &dyn core::ops::function::Fn(&std::path::Path) -> core::option::Option<alloc::string::String>) -> core::option::Option<devlaunch_core::flows::agent_sessions::HeldSessions>
+pub fn devlaunch_core::flows::agent_sessions::restart(&dyn devlaunch_runner::Runner, &devlaunch_core::flows::agent_sessions::HerdrPanes, &devlaunch_core::flows::agent_sessions::HeldSessions, &dyn core::ops::function::Fn(core::time::Duration)) -> alloc::vec::Vec<devlaunch_core::flows::agent_sessions::Restarted>
 pub mod devlaunch_core::flows::agent_worktrees
 pub enum devlaunch_core::flows::agent_worktrees::AgentOwner
 pub devlaunch_core::flows::agent_worktrees::AgentOwner::CouldNotTell(alloc::string::String)
@@ -3116,7 +3116,7 @@ impl core::fmt::Debug for devlaunch_core::flows::refresh_stale::Planned
 pub fn devlaunch_core::flows::refresh_stale::Planned::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::refresh_stale::Planned
 pub const devlaunch_core::flows::refresh_stale::BUILD_PROGRAMS: &[&str]
-pub fn devlaunch_core::flows::refresh_stale::plan<'w>(&dyn devlaunch_runner::Runner, &devlaunch_core::flows::stale_images::StaleImages, impl core::iter::traits::collect::IntoIterator<Item = &'w str>, core::option::Option<&devlaunch_core::flows::agent_sessions::Manager>, &devlaunch_core::flows::launch_locks::LaunchLocks, &dyn core::ops::function::Fn(&std::path::Path) -> core::option::Option<alloc::string::String>) -> alloc::vec::Vec<devlaunch_core::flows::refresh_stale::Planned>
+pub fn devlaunch_core::flows::refresh_stale::plan<'w>(&dyn devlaunch_runner::Runner, &devlaunch_core::flows::stale_images::StaleImages, impl core::iter::traits::collect::IntoIterator<Item = &'w str>, core::option::Option<&devlaunch_core::flows::agent_sessions::HerdrPanes>, &devlaunch_core::flows::launch_locks::LaunchLocks, &dyn core::ops::function::Fn(&std::path::Path) -> core::option::Option<alloc::string::String>) -> alloc::vec::Vec<devlaunch_core::flows::refresh_stale::Planned>
 pub mod devlaunch_core::flows::repo_manager
 pub enum devlaunch_core::flows::repo_manager::CacheNotice
 pub devlaunch_core::flows::repo_manager::CacheNotice::AdoptedBareClone

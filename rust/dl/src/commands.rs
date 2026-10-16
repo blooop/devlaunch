@@ -1303,7 +1303,7 @@ fn render_refresh_stale<'r>(
         return Ending::Done;
     }
     let host = Host::from_process(cache);
-    let manager = agent_sessions::Manager::from_host(&host);
+    let manager = agent_sessions::HerdrPanes::from_host(&host);
     let launch_locks = LaunchLocks::under(cache);
     let judge = |ids: &mut dyn Iterator<Item = &str>| {
         refresh_stale::plan(

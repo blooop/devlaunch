@@ -128,7 +128,7 @@ pub fn plan<'w>(
     runner: &dyn Runner,
     stale: &StaleImages,
     workspace_ids: impl IntoIterator<Item = &'w str>,
-    manager: Option<&agent_sessions::Manager>,
+    manager: Option<&agent_sessions::HerdrPanes>,
     launch_locks: &LaunchLocks,
     read: &dyn Fn(&Path) -> Option<String>,
 ) -> Vec<Planned> {
@@ -161,7 +161,7 @@ fn judge(
     runner: &dyn Runner,
     workspace_id: &str,
     container: &str,
-    manager: Option<&agent_sessions::Manager>,
+    manager: Option<&agent_sessions::HerdrPanes>,
     launch_locks: &LaunchLocks,
     read: &dyn Fn(&Path) -> Option<String>,
 ) -> Option<Skip> {
@@ -220,7 +220,7 @@ fn sessions_skip(
     runner: &dyn Runner,
     workspace_id: &str,
     running: usize,
-    manager: Option<&agent_sessions::Manager>,
+    manager: Option<&agent_sessions::HerdrPanes>,
     read: &dyn Fn(&Path) -> Option<String>,
 ) -> Option<Skip> {
     let Some(manager) = manager else {

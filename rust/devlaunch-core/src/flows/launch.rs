@@ -2972,7 +2972,7 @@ pub(crate) fn workspace_ssh(
 /// its new agent, and the waits overlap.
 fn report_typed_lines_again(
     runner: &dyn Runner,
-    manager: &agent_sessions::Manager,
+    manager: &agent_sessions::HerdrPanes,
     held: &agent_sessions::HeldSessions,
     restarted: &[agent_sessions::Restarted],
 ) -> Vec<(String, agent_sessions::LineKept)> {
@@ -5358,9 +5358,9 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
         &mut self,
         workspace_id: &str,
         verb: &LaunchVerb,
-    ) -> Option<(agent_sessions::Manager, agent_sessions::HeldSessions)> {
+    ) -> Option<(agent_sessions::HerdrPanes, agent_sessions::HeldSessions)> {
         let workspace_id = workspace_id.to_owned();
-        let Some(manager) = agent_sessions::Manager::from_host(self.host) else {
+        let Some(manager) = agent_sessions::HerdrPanes::from_host(self.host) else {
             // Outside herdr the unattended recreate warns of nothing: `dl
             // --refresh-stale` recreates there only a container it saw no Claude in.
             if !verb.is_unattended() {
@@ -5413,7 +5413,7 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
     /// Start each held agent again in its pane, after the recreate's `up` finished.
     fn restart_agent_sessions(
         &mut self,
-        manager: &agent_sessions::Manager,
+        manager: &agent_sessions::HerdrPanes,
         held: &agent_sessions::HeldSessions,
     ) {
         let restarted =

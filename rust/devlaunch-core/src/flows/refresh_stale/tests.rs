@@ -53,7 +53,7 @@ fn runner_reading(processes: &[String]) -> ScriptedRunner {
 
 fn plan_of(
     runner: &ScriptedRunner,
-    manager: Option<&agent_sessions::Manager>,
+    manager: Option<&agent_sessions::HerdrPanes>,
     cache: &Path,
     session: Option<String>,
 ) -> Vec<Verdict> {
@@ -278,8 +278,8 @@ fn a_workspace_another_dl_is_launching_is_skipped_before_docker_is_asked() {
 
 // --- the sessions herdr holds
 
-fn manager() -> agent_sessions::Manager {
-    agent_sessions::Manager::resolve(
+fn manager() -> agent_sessions::HerdrPanes {
+    agent_sessions::HerdrPanes::resolve(
         &herdr::HostEnv {
             enabled: None,
             in_pane: Some("1".to_owned()),
