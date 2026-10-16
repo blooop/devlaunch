@@ -48,6 +48,14 @@ const VERBS: [(&str, VerbWord); 10] = [
     ("dotfiles", VerbWord::Dotfiles),
 ];
 
+/// The word that removes the workspace this herdr tab is named after.
+///
+/// Reserved like a verb, so it can never be read as a workspace name, but not in
+/// [`VERBS`]: every verb there takes a workspace or opens the selector, and this
+/// takes neither. The tab it is typed in is the workspace, which is the point of
+/// it: the shell that asks is in the tab whose session has just closed.
+pub(crate) const REMOVE_THIS_TAB: &str = "rmt";
+
 /// Words that were verbs once and are not any more.
 ///
 /// **Recognised rather than forgotten, and that is the whole point of the table.**
@@ -435,6 +443,11 @@ pub(crate) enum Command {
         devcontainer: Option<DevcontainerPath>,
         claude_profile: Option<String>,
     },
+    /// `dl rmt [--force]`: remove the workspace this herdr tab is named after,
+    /// with the guard `rm` has. `force` is `rm --force`'s.
+    RemoveThisTab {
+        force: bool,
+    },
     /// A workspace, and what to do with it.
     Workspace {
         target: String,
@@ -496,6 +509,9 @@ pub(crate) enum GrammarError {
     RetiredVerb(RetiredWord),
     /// A flag that was a command in an earlier build and is not one now.
     RetiredFlag(RetiredFlag),
+    /// `rmt` beside a workspace name. The tab names the workspace, so a second
+    /// name is one too many.
+    TabTakesNoWorkspace,
     /// A global command was given a workspace to act on.
     TargetNotAllowed { command: &'static str },
     /// A modifier that means nothing for the command it was given to.
@@ -1148,6 +1164,9 @@ fn workspace_command(cli: Cli, argv: &[String]) -> Result<Command, GrammarError>
                     claude_profile,
                 });
             }
+            // `dl rmt --force`: the one word that takes no workspace, so the slot
+            // after it is where its modifier goes.
+            ForcePlace::VerbSlot { target } if target == REMOVE_THIS_TAB => {}
             ForcePlace::VerbSlot { target } => {
                 // A *retired* verb in the workspace slot earns the retirement's
                 // sentence instead. `dl prune --force` was the remove verb with
@@ -1167,6 +1186,9 @@ fn workspace_command(cli: Cli, argv: &[String]) -> Result<Command, GrammarError>
             // called `--force`.
             ForcePlace::Trailing => {}
         }
+    }
+    if cli.words.iter().any(|word| word == REMOVE_THIS_TAB) {
+        return remove_this_tab(&cli, devcontainer.is_some(), claude_profile.is_some());
     }
     let rm = rm_on_exit_of(&cli);
     let run = NonEmpty::of(cli.command.iter().cloned()).map(|words| Verb::Run(words, rm));
@@ -1249,6 +1271,41 @@ fn workspace_command(cli: Cli, argv: &[String]) -> Result<Command, GrammarError>
             claude_profile,
         },
     })
+}
+
+/// `dl rmt`, and every modifier a line holding it may not carry.
+///
+/// Read before the verb table, so `rmt` beside any other word is refused rather
+/// than taken as a workspace called `rmt`.
+fn remove_this_tab(
+    cli: &Cli,
+    devcontainer: bool,
+    claude_profile: bool,
+) -> Result<Command, GrammarError> {
+    if cli.words.len() > 1 {
+        return Err(GrammarError::TabTakesNoWorkspace);
+    }
+    if !cli.command.is_empty() {
+        return Err(GrammarError::CommandNotAllowed {
+            verb: REMOVE_THIS_TAB,
+        });
+    }
+    if cli.rm {
+        return Err(GrammarError::RmNotAllowed {
+            command: REMOVE_THIS_TAB,
+        });
+    }
+    if devcontainer {
+        return Err(GrammarError::DevcontainerNotAllowed {
+            command: REMOVE_THIS_TAB,
+        });
+    }
+    if claude_profile {
+        return Err(GrammarError::ClaudeProfileNotAllowed {
+            command: REMOVE_THIS_TAB,
+        });
+    }
+    Ok(Command::RemoveThisTab { force: cli.force })
 }
 
 /// Whether this line asked for the workspace to go when the session does.
@@ -1480,6 +1537,46 @@ mod tests {
         assert_eq!(
             parse(&["ws", "rm", "--force"]),
             Ok(workspace("ws", remove(true)))
+        );
+    }
+
+    // ============================================================ rmt: rm, this tab
+
+    #[test]
+    fn rmt_takes_the_tab_as_its_workspace_and_force_after_it() {
+        assert_eq!(parse(&["rmt"]), Ok(Command::RemoveThisTab { force: false }));
+        assert_eq!(
+            parse(&["rmt", "--force"]),
+            Ok(Command::RemoveThisTab { force: true })
+        );
+    }
+
+    #[test]
+    fn rmt_beside_a_workspace_is_refused_rather_than_read_as_one() {
+        // `rmt` is reserved in both positions, so neither word becomes a workspace
+        // called `rmt`, and a second name is one too many.
+        for line in [&["rmt", "ws"], &["ws", "rmt"], &["rmt", "rm"]] {
+            assert_eq!(
+                parse(line),
+                Err(GrammarError::TabTakesNoWorkspace),
+                "{line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rmt_refuses_the_modifiers_that_mean_nothing_for_it() {
+        assert_eq!(
+            parse(&["rmt", "--rm"]),
+            Err(GrammarError::RmNotAllowed { command: "rmt" })
+        );
+        assert_eq!(
+            parse(&["rmt", "--", "make"]),
+            Err(GrammarError::CommandNotAllowed { verb: "rmt" })
+        );
+        assert_eq!(
+            parse(&["rmt", "--devcontainer", "robot"]),
+            Err(GrammarError::DevcontainerNotAllowed { command: "rmt" })
         );
     }
 

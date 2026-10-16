@@ -35,7 +35,7 @@ use devlaunch_core::flows::session_manager::{self, PaneDestination};
 use devlaunch_core::osext;
 use devlaunch_core::runner::{Exit, Runner};
 
-use crate::cli::{self, Command, ListOutput, RmOnExit, Verb};
+use crate::cli::{self, AfterRemoval, Command, ListOutput, RmOnExit, Verb};
 use crate::hangup;
 use crate::launch::{self, Family, Reached};
 use crate::pane_shell::{self, become_the_host_shell};
@@ -137,6 +137,13 @@ pub(crate) fn dispatch(
         // indistinguishable from one typed by hand -- same launch, same terminal
         // title, same agent reporting, same everything a manager reads.
         Command::HerdrSetup => crate::herdr_environment::setup(),
+        // `rme`'s ending: the tab this is typed in was for this workspace, so once
+        // the workspace has gone the shell is hung up and the tab closes with it.
+        // Only after a removal that worked; see [`crate::hangup`].
+        Command::RemoveThisTab { force } => hangup::after_the_command(
+            AfterRemoval::HangUpTheShell,
+            render_remove_this_tab(runner, &mut context, cache, refresh, removal_of(force)),
+        ),
         Command::HerdrEnv { action, workspace } => {
             crate::herdr_environment::manage(&action, workspace.as_deref())
         }
@@ -1104,6 +1111,86 @@ fn render_remove<'r>(
         target,
         removal,
         word,
+    )
+}
+
+/// `dl rmt` -- the workspace this herdr tab is named after, removed.
+///
+/// **The tab is the target.** A launch renames its herdr tab after the workspace
+/// (`repo@branch`, from the record), and the rename sticks after the session ends.
+/// So a shell left in that tab has its workspace's name one `herdr tab get` away,
+/// and this reads it there instead of asking anybody to type it or pick it.
+///
+/// **The name is read back to an id, never guessed.** A label that is a workspace
+/// id devpod lists is that workspace: a workspace dl holds no record for has its
+/// tab named with the id. Otherwise the records answer with
+/// [`devlaunch_core::flows::launch::recorded_ids_labelled`], and only for ids
+/// devpod still lists. No answer and two answers are both refusals:
+/// this deletes, and a tab that nobody named or a name two forks share is not a
+/// workspace to delete.
+///
+/// **Then it is `rme`**: the id goes on screen first, and [`remove_addressed`] is
+/// the same guard and the same delete, so `rmt` refuses wherever `rm` would and
+/// `--force` is the same way past. The hangup that closes the tab is the
+/// dispatcher's, as it is for `rme`.
+fn render_remove_this_tab<'r>(
+    runner: &'r dyn Runner,
+    context: &mut CommandContext<'r>,
+    cache: &Path,
+    refresh: &mut Refresh<'_>,
+    removal: Removal,
+) -> Ending {
+    let label = match session_manager::this_tab(runner) {
+        session_manager::ThisTab::Named { label, .. } => label,
+        session_manager::ThisTab::NotInHerdr => {
+            eprintln!("{}", render::rmt_outside_herdr());
+            return Ending::Refused;
+        }
+        session_manager::ThisTab::Unanswered { tab_id } => {
+            eprintln!("{}", render::rmt_tab_unanswered(&tab_id));
+            return Ending::Refused;
+        }
+    };
+    let listed = match context.workspaces() {
+        Err(refused) => return refuse_listing(&refused),
+        Ok(listed) => listed,
+    };
+    let is_listed = |id: &str| listed.iter().any(|workspace| workspace.id == id);
+    let mut opening = render::Saying;
+    let mut cold = ColdPath::new(runner, &mut opening);
+    let mut ids = if is_listed(&label) {
+        vec![label.clone()]
+    } else {
+        match cold.records() {
+            Err(refused) => return refuse_startup(&refused),
+            Ok(records) => devlaunch_core::flows::launch::recorded_ids_labelled(
+                &records.storage,
+                &label,
+                is_listed,
+            ),
+        }
+    };
+    let workspace_id = match ids.len() {
+        0 => {
+            eprintln!("{}", render::rmt_names_nothing(&label));
+            return Ending::Refused;
+        }
+        1 => ids.remove(0),
+        _ => {
+            eprintln!("{}", render::rmt_names_several(&label, &ids));
+            return Ending::Refused;
+        }
+    };
+    eprintln!("{}", render::rmt_removing(&label, &workspace_id));
+    remove_addressed(
+        context,
+        cache,
+        refresh,
+        &mut cold,
+        &workspace_id,
+        &workspace_id,
+        removal,
+        crate::cli::REMOVE_THIS_TAB,
     )
 }
 

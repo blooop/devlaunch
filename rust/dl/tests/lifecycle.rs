@@ -83,6 +83,17 @@ impl World {
 
     /// Run `dl` with `stdin` for the `[y/N]` question to read.
     fn answering(&self, stdin: &str, args: &[&str]) -> Run {
+        self.answering_with(stdin, &[], args)
+    }
+
+    /// Run `dl` in a herdr pane of tab `tab_id`: `HERDR_TAB_ID` set, and the
+    /// `herdr` on the world's PATH is whichever [`World::herdr_names_tab`] put
+    /// there.
+    fn dl_in_tab(&self, tab_id: &str, args: &[&str]) -> Run {
+        self.answering_with("", &[("HERDR_TAB_ID", tab_id)], args)
+    }
+
+    fn answering_with(&self, stdin: &str, env: &[(&str, &str)], args: &[&str]) -> Run {
         use std::io::Write as _;
         use std::process::Stdio;
 
@@ -108,6 +119,7 @@ impl World {
             .env("GIT_SSH_COMMAND", "false")
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .envs(env.iter().copied())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -121,6 +133,23 @@ impl World {
             .expect("stdin is writable");
         let output = child.wait_with_output().expect("dl finishes");
         Run::of(&output, &self.root)
+    }
+
+    /// Put a `herdr` on the world's PATH whose `tab get` answers with `label`, in
+    /// the `tab_info` envelope herdr's API schema publishes. It logs each argv to
+    /// `herdr-log`, one line per call.
+    fn herdr_names_tab(&self, label: &str) {
+        let root = self.root.display();
+        let script = format!(
+            "#!/bin/sh\necho \"$*\" >> '{root}/herdr-log'\n[ \"$1 $2\" = 'tab get' ] || exit 2\n\
+             printf '%s' '{{\"id\":\"cli:tab:get\",\"result\":{{\"type\":\"tab_info\",\"tab\":\
+             {{\"tab_id\":\"'\"$3\"'\",\"workspace_id\":\"w1\",\"number\":4,\"label\":\"{label}\",\
+             \"focused\":true,\"pane_count\":1,\"agent_status\":\"none\"}}}}}}'\n"
+        );
+        let path = self.root.join("bin/herdr");
+        std::fs::write(&path, script).expect("the scratch bin is writable");
+        std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .expect("the fake herdr is executable");
     }
 
     /// Run `dl` from inside a shell, and report what became of *the shell*.
@@ -952,6 +981,136 @@ fn a_clean_clone_is_deleted_with_its_workspace() {
             "devpod status devlaunch-main-legacy --output json",
             "devpod delete devlaunch-main-legacy",
         ]
+    );
+}
+
+// ===========================================================================
+// dl rmt
+// ===========================================================================
+
+#[test]
+fn rmt_removes_the_workspace_its_herdr_tab_is_named_after() {
+    // Not a Python golden: Python had no herdr tab to read. The launch named this
+    // tab after the record (`devlaunch@main`), the session has closed, and the
+    // shell left in the tab asks for its workspace to go.
+    let world = World::base();
+    world.herdr_names_tab("devlaunch@main");
+    let clone = "cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-legacy";
+    assert!(world.exists(clone), "the fixture's clean clone");
+
+    // In a shell and not through `dl()`: `rmt` hangs up its parent as `rme` does,
+    // and through `dl()` the parent is the test binary.
+    let hung = world.shell_run("export HERDR_TAB_ID=w1:t7; ", &["rmt"]);
+
+    // The tab goes too: the shell it was typed in is hung up, as `rme` hangs it up.
+    hung.was_hung_up();
+    assert_eq!(world.read("herdr-log"), "tab get w1:t7\n");
+    assert!(
+        hung.err.starts_with(
+            "This tab is named 'devlaunch@main': removing workspace devlaunch-main-legacy.\n\
+             Removing workspace devlaunch-main-legacy...\n"
+        ),
+        "the id goes on screen before anything is removed: {}",
+        hung.err
+    );
+    assert!(
+        hung.err.ends_with(&format!(
+            "Hanging up the shell dl was called from (pid {}).\n",
+            hung.shell
+        )),
+        "the hangup is the last thing said, once the workspace has gone: {}",
+        hung.err
+    );
+    assert!(!world.exists(clone), "the clone was left behind");
+    assert_eq!(
+        world.devpod_calls(),
+        [
+            "devpod list --output json",
+            "devpod delete devlaunch-main-legacy",
+        ]
+    );
+}
+
+#[test]
+fn rmt_takes_a_tab_named_with_the_workspace_id_itself() {
+    // A workspace dl holds no record for is launched under its id, and the tab is
+    // named with the id, so an id devpod lists is an answer without the records.
+    let world = World::base();
+    world.herdr_names_tab("devlaunch-main-legacy");
+    let hung = world.shell_run("export HERDR_TAB_ID=w1:t7; ", &["rmt"]);
+    hung.was_hung_up();
+    assert!(
+        hung.err.starts_with(
+            "This tab is named 'devlaunch-main-legacy': removing workspace devlaunch-main-legacy.\n"
+        ),
+        "{}",
+        hung.err
+    );
+}
+
+#[test]
+fn rmt_in_a_tab_nobody_named_removes_nothing() {
+    // herdr falls back to the tab number, which names no workspace. The record of a
+    // workspace devpod has forgotten (`other@feature/x`) is refused the same way.
+    for label in ["4", "other@feature/x"] {
+        let world = World::base();
+        world.herdr_names_tab(label);
+        let run = world.dl_in_tab("w1:t7", &["rmt"]);
+        run.exited(1);
+        assert_eq!(
+            run.err,
+            format!(
+                "This tab is named '{label}', and no workspace devpod lists has that name. Use \
+                 'dl <workspace> rm' or 'dl rm'.\n"
+            )
+        );
+        assert!(
+            !world
+                .devpod_calls()
+                .iter()
+                .any(|call| call.contains("delete")),
+            "{:?}",
+            world.devpod_calls()
+        );
+    }
+}
+
+#[test]
+fn rmt_outside_herdr_asks_nobody_and_removes_nothing() {
+    let world = World::base();
+    let run = world.dl(&["rmt"]);
+    run.exited(1);
+    assert_eq!(
+        run.err,
+        "dl rmt removes the workspace a herdr tab is named after, and this shell is not in a \
+         herdr tab (HERDR_TAB_ID is not set). Use 'dl <workspace> rm' or 'dl rm'.\n"
+    );
+    assert!(
+        world.devpod_calls().is_empty(),
+        "{:?}",
+        world.devpod_calls()
+    );
+}
+
+#[test]
+fn rmt_keeps_the_guard_rm_has() {
+    // `rmt` is `rm` with the tab as the target, so unsaved work stops it as it
+    // stops `rm`. The `unpushed` fixture's tab name is `devlaunch@unpushed`.
+    // In a shell, so a guard that let the removal through would show as a hangup
+    // here rather than as a hung-up test binary. A refusal keeps the shell and the
+    // reason on screen, as it does for `rme`.
+    let world = World::with(&["unpushed"]);
+    world.herdr_names_tab("devlaunch@unpushed");
+    let hung = world.shell_run("export HERDR_TAB_ID=w1:t7; ", &["rmt"]);
+    hung.survived_with(1);
+    assert!(
+        !world
+            .devpod_calls()
+            .iter()
+            .any(|call| call.contains("delete")),
+        "{:?}\n{}",
+        world.devpod_calls(),
+        hung.err
     );
 }
 

@@ -47,7 +47,9 @@
 //!   there is. A `nohup` is the one form `dl` refuses outright, above.
 //!
 //! Nothing here is reachable from `rm`: [`crate::cli::AfterRemoval`] is the only
-//! way in, and the grammar builds `HangUpTheShell` for one word.
+//! way in, and two words reach `HangUpTheShell`. The grammar builds it for `rme`,
+//! and the dispatcher passes it for `rmt`, which is `rme` with the herdr tab as its
+//! target and so ends the same way.
 
 use std::io::Write as _;
 

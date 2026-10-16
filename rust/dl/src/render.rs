@@ -1730,6 +1730,46 @@ pub(crate) fn id_collision(workspace_id: &str, spec: &str, held_by: &str) -> Str
     )
 }
 
+// ---------------------------------------------------------------------------
+// dl rmt
+// ---------------------------------------------------------------------------
+
+pub(crate) fn rmt_outside_herdr() -> String {
+    "dl rmt removes the workspace a herdr tab is named after, and this shell is not in a \
+     herdr tab (HERDR_TAB_ID is not set). Use 'dl <workspace> rm' or 'dl rm'."
+        .to_owned()
+}
+
+pub(crate) fn rmt_tab_unanswered(tab_id: &str) -> String {
+    format!(
+        "herdr did not say what tab {tab_id} is called, so dl rmt has no workspace to remove. \
+         Use 'dl <workspace> rm' or 'dl rm'."
+    )
+}
+
+pub(crate) fn rmt_names_nothing(label: &str) -> String {
+    format!(
+        "This tab is named '{label}', and no workspace devpod lists has that name. Use 'dl \
+         <workspace> rm' or 'dl rm'."
+    )
+}
+
+/// The ids and not a picker: the person wanted to skip the picker, and any one of
+/// these is a line to type.
+pub(crate) fn rmt_names_several(label: &str, workspace_ids: &[String]) -> String {
+    format!(
+        "This tab is named '{label}', and {} workspaces have that name: {}. Use 'dl \
+         <workspace> rm' with one of them.",
+        workspace_ids.len(),
+        workspace_ids.join(", ")
+    )
+}
+
+/// Said before anything is removed, so the id this tab led to is on screen first.
+pub(crate) fn rmt_removing(label: &str, workspace_id: &str) -> String {
+    format!("This tab is named '{label}': removing workspace {workspace_id}.")
+}
+
 pub(crate) fn unknown_workspace(target: &str) -> String {
     format!(
         "Unknown workspace '{target}'. Use 'dl --ls' to list workspaces, or specify owner/repo or \
