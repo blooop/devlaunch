@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`dl rmt` deletes the workspace a herdr tab is named after.** A launch names its herdr tab
+  `repo@branch`, and the name stays after the session closes. Typed in that tab, `dl rmt` reads
+  the name with `herdr tab get`, finds the one workspace devpod lists with that name, prints its
+  id, deletes it with the guard `rm` has (`--force` as for `rm`), and then closes the tab by
+  hanging up its shell, as `rme` does. No workspace name and no selector. A tab name that
+  matches no workspace, or two, is refused, and the tab stays open.
+
 ## [0.61.0] - 2026-10-16
 
 ### Added

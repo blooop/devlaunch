@@ -1546,22 +1546,25 @@ pub(crate) fn unsafe_name(refused: &UnsafeName) -> String {
 
 /// Why `dl <ws> rm` will not delete this workspace, and the way past it.
 ///
-/// `spec` is the target *as the user typed it*, because the sentence ends in a
-/// command they can run: a refusal that echoed the resolved id would print a line
-/// that works, but not the line they typed.
+/// `typed` is the command *as the user typed it*, after the `dl` and before any
+/// `--force`, because the sentence ends in a command they can run: a refusal that
+/// echoed the resolved id would print a line that works, but not the line they
+/// typed.
 ///
-/// `word` is the verb, for the same reason and one more. `rm` and `rme` refuse
+/// The verb is in it for the same reason and one more. `rm` and `rme` refuse
 /// identically, and the way past is `--force` on whichever was typed — so a line
 /// that always said `rm --force` would answer an `rme` by sending the reader back
 /// to the two-step `rme` exists to collapse: delete, wait, then close the tab by
-/// hand. Both words are offered the way past *they* asked for.
+/// hand. Both words are offered the way past *they* asked for. `rmt` takes no
+/// workspace, so its way past is `dl rmt --force` and not the id with the verb
+/// after it, which the grammar refuses.
 ///
 /// Where the remote could not be asked (devlaunch#638), a sentence says so
 /// between the finding and the way past, because it changes what the finding
 /// means: the count is as of the clone's last fetch, and some of it may already be
 /// on the remote. A refusal the remote was asked about, or was never going to be,
 /// reads exactly as it did before there was a fetch.
-pub(crate) fn removal_refusal(refused: &RemovalRefused, spec: &str, word: &str) -> String {
+pub(crate) fn removal_refusal(refused: &RemovalRefused, typed: &str) -> String {
     let workspace_id = &refused.workspace_id;
     let (finding, way_past) = match &refused.because {
         RemovalGrounds::WouldLose(holds) => (
@@ -1602,7 +1605,7 @@ pub(crate) fn removal_refusal(refused: &RemovalRefused, spec: &str, word: &str) 
                 .unwrap_or("no reason given")
         ),
     };
-    format!("{finding}{remote} {way_past}, or run: dl {spec} {word} --force")
+    format!("{finding}{remote} {way_past}, or run: dl {typed} --force")
 }
 
 /// `--rm`, at the moment the session has ended and the removal begins.
@@ -1756,9 +1759,11 @@ pub(crate) fn hanging_up(parent: i32) -> String {
 /// as the cause, because it is not the only one: `setsid` sets no `SIG_IGN` and does
 /// not reach this, but a wrapper script or a supervisor that disarmed the signal
 /// does, and a sentence naming the wrong tool is worse than one naming none.
-pub(crate) fn hangup_disarmed() -> String {
-    "rme: SIGHUP was already ignored when dl started, so the shell stays. The removal is done."
-        .to_owned()
+pub(crate) fn hangup_disarmed(word: &str) -> String {
+    format!(
+        "{word}: SIGHUP was already ignored when dl started, so the shell stays. The removal is \
+         done."
+    )
 }
 
 /// `rme` on a run whose parent has already gone: the removal happened, the hangup
@@ -1767,10 +1772,11 @@ pub(crate) fn hangup_disarmed() -> String {
 /// Says the removal is done, because this is the one `rme` line printed *instead*
 /// of the signal rather than beside it, and a sentence that only said what did not
 /// happen would read like a failed delete.
-pub(crate) fn nothing_to_hang_up() -> String {
-    "rme: dl's parent process has already gone, so there is no shell to hang up. The removal is \
-     done."
-        .to_owned()
+pub(crate) fn nothing_to_hang_up(word: &str) -> String {
+    format!(
+        "{word}: dl's parent process has already gone, so there is no shell to hang up. The \
+         removal is done."
+    )
 }
 
 /// `rme` whose signal was refused: a parent that exited in the meantime, or one
@@ -1779,8 +1785,8 @@ pub(crate) fn nothing_to_hang_up() -> String {
 /// The removal is named for [`nothing_to_hang_up`]'s reason, and the OS error is
 /// quoted because the two causes are told apart by nothing else — a terminal left
 /// standing looks the same either way.
-pub(crate) fn could_not_hang_up(parent: i32, why: &str) -> String {
-    format!("rme: could not hang up pid {parent} ({why}). The removal is done.")
+pub(crate) fn could_not_hang_up(word: &str, parent: i32, why: &str) -> String {
+    format!("{word}: could not hang up pid {parent} ({why}). The removal is done.")
 }
 
 /// Whether the delete that was refused had `kill`'s sweep standing in front of it.
@@ -1840,6 +1846,47 @@ pub(crate) fn id_collision(workspace_id: &str, spec: &str, held_by: &str) -> Str
          other's checkout and 'dl <ws> rm' on either would delete work the other still owns. \
          Rename one of the two branches and launch it again."
     )
+}
+
+// ---------------------------------------------------------------------------
+// dl rmt
+// ---------------------------------------------------------------------------
+
+pub(crate) fn rmt_outside_herdr() -> String {
+    "dl rmt removes the workspace a herdr tab is named after, and this shell is not in a \
+     herdr tab (HERDR_TAB_ID is not set). Use 'dl <workspace> rm' or 'dl rm'."
+        .to_owned()
+}
+
+pub(crate) fn rmt_tab_unanswered(tab_id: &str) -> String {
+    format!(
+        "herdr did not say what tab {tab_id} is called, so dl rmt has no workspace to remove. \
+         Use 'dl <workspace> rm' or 'dl rm'."
+    )
+}
+
+pub(crate) fn rmt_names_nothing(label: &str) -> String {
+    format!(
+        "This tab is named '{label}', and no workspace devpod lists has that name. Use 'dl \
+         <workspace> rm' or 'dl rm'."
+    )
+}
+
+/// The ids and not a picker: the person wanted to skip the picker, and any one of
+/// these is a line to type.
+pub(crate) fn rmt_names_several(label: &str, workspace_ids: &[String]) -> String {
+    format!(
+        "This tab is named '{label}', and {} workspaces have that name: {}. Use 'dl \
+         <workspace> rm' with one of them.",
+        workspace_ids.len(),
+        workspace_ids.join(", ")
+    )
+}
+
+/// Said before the guard decides, so the id this tab led to is on screen first and
+/// the line is true whether the removal goes ahead or is refused.
+pub(crate) fn rmt_removing(label: &str, workspace_id: &str) -> String {
+    format!("This tab is named '{label}', which is workspace {workspace_id}.")
 }
 
 pub(crate) fn unknown_workspace(target: &str) -> String {
@@ -6656,7 +6703,7 @@ mod tests {
     fn a_remote_asked_or_never_asked_leaves_the_refusal_as_it_was() {
         for remote in [RemoteCheck::NotAsked, RemoteCheck::Fetched] {
             assert_eq!(
-                removal_refusal(&refused_over_unpushed(remote), "devlaunch-main", "rm"),
+                removal_refusal(&refused_over_unpushed(remote), "devlaunch-main rm"),
                 "devlaunch-main holds 1 unpushed commit(s). Push or commit it, or run: dl \
                  devlaunch-main rm --force"
             );
@@ -6669,8 +6716,7 @@ mod tests {
             &refused_over_unpushed(RemoteCheck::Unreachable {
                 reason: "\n  \nfatal: x\nmore".to_owned(),
             }),
-            "devlaunch-main",
-            "rm",
+            "devlaunch-main rm",
         );
         assert!(
             refusal.contains(" could not reach the remote to check (fatal: x), so "),
@@ -6684,8 +6730,7 @@ mod tests {
             &refused_over_unpushed(RemoteCheck::Unreachable {
                 reason: String::new(),
             }),
-            "devlaunch-main",
-            "rm",
+            "devlaunch-main rm",
         );
         assert!(
             refusal.contains(" could not reach the remote to check (no reason given), so "),

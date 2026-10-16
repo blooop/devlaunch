@@ -16,7 +16,7 @@ fixture:
                                                   [--orphan] [--unplaceable]
                                                   [--unwritable] [--no-cache]
                                                   [--no-workspaces]
-                                                  [--devcontainer-volumes]
+                                                  [--devcontainer-volumes] [--fork]
 
 The base world, under the root it is given:
 
@@ -94,6 +94,11 @@ UNWRITABLE_LEAF = "devlaunch-gone-locked"
 # --unpushed: a recorded clone holding a commit no remote has.
 UNPUSHED_LEAF = "devlaunch-unpushed-committed"
 UNPUSHED_WS = "devlaunch-unpushed-committed"
+
+# --fork: a second owner's `devlaunch@main`, so one tab label names two workspaces
+# devpod lists.
+FORK_LEAF = "devlaunch-main-someone"
+FORK_WS = "devlaunch-main-someone"
 
 # --tagged-release: a recorded clone that is clean and fully pushed, holding a tag
 # the remote carries on a branch the remote no longer has. Nothing in it is
@@ -321,6 +326,11 @@ def build(root: pathlib.Path, shim: pathlib.Path, wanted: set) -> None:
         workspaces[UNPUSHED_WS] = _workspace(
             UNPUSHED_WS, {"localFolder": str(held)}, OLDER, "Stopped"
         )
+
+    if "fork" in wanted:
+        fork = _clone(root, origin, repos / "someone" / "devlaunch" / FORK_LEAF, "main")
+        worktrees["someone/devlaunch/main"] = _record("someone", "devlaunch", "main", fork, FORK_WS)
+        workspaces[FORK_WS] = _workspace(FORK_WS, {"localFolder": str(fork)}, OLDER, "Stopped")
 
     if "tagged-release" in wanted:
         # devlaunch#485. The clone tags a release, pushes branch and tag, and then
@@ -566,7 +576,7 @@ if __name__ == "__main__":
             "[--stale-record] [--orphan] [--unplaceable] [--unwritable] "
             "[--no-cache] [--no-workspaces] [--not-a-clone] [--unpushed] "
             "[--stranded-clone] "
-            "[--tagged-release] "
+            "[--tagged-release] [--fork] "
             "[--sealed-cache] [--symlinked-cache] [--v1-cache] "
             "[--devcontainer-volumes]"
         )
@@ -583,6 +593,7 @@ if __name__ == "__main__":
         "stranded-clone",
         "unpushed",
         "tagged-release",
+        "fork",
         "local-tag",
         "sealed-cache",
         "symlinked-cache",

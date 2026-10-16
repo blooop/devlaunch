@@ -1823,6 +1823,43 @@ pub(crate) fn process_info_in(answer: &str) -> Option<PaneProcessInfo> {
         .map(|envelope| envelope.result.process_info)
 }
 
+/// The argv that asks herdr about one tab.
+///
+/// `herdr tab get <TAB_ID>`, the `tab.get` method of herdr's socket API, taken from
+/// its published schema (`docs/next/api/herdr-api.schema.json`) and its tab CLI
+/// bindings rather than measured here.
+pub(crate) fn tab_get_argv(tab_id: &str) -> Vec<String> {
+    vec!["tab".to_owned(), "get".to_owned(), tab_id.to_owned()]
+}
+
+/// The label in `herdr tab get`'s answer: `{"result":{"type":"tab_info","tab":{…}}}`.
+///
+/// The label is what `herdr tab rename` wrote, which is the name a launch gave the
+/// tab. A tab nobody renamed answers its number instead, and that is still a
+/// label: it names no workspace, and the caller finds that out by looking.
+/// A label of only whitespace is no label.
+pub(crate) fn tab_label_in(answer: &str) -> Option<String> {
+    #[derive(Deserialize)]
+    struct Envelope {
+        result: Info,
+    }
+    #[derive(Deserialize)]
+    struct Info {
+        tab: Tab,
+    }
+    #[derive(Deserialize)]
+    struct Tab {
+        label: String,
+    }
+    let label = serde_json::from_str::<Envelope>(answer)
+        .ok()?
+        .result
+        .tab
+        .label;
+    let label = label.trim();
+    (!label.is_empty()).then(|| label.to_owned())
+}
+
 /// The argv that has herdr type `command` into one pane's shell and run it.
 ///
 /// One string, as herdr takes it: herdr types it as written, so `command` is
