@@ -148,6 +148,8 @@ default = { features = ["test", "rust"], solve-group = "default" }
 # does on the host: a build of somebody's tree says so wherever it runs.
 dl = "cargo run -q --locked --manifest-path rust/Cargo.toml -p dl --bin dl --features dl/dev-build --"
 aid = "cargo run -q --locked --manifest-path rust/Cargo.toml -p aid --bin aid --features aid/dev-build --"
+# `dla` is aid under a second name (rust/aid/Cargo.toml), so it is the same task.
+dla = "cargo run -q --locked --manifest-path rust/Cargo.toml -p aid --bin dla --features aid/dev-build --"
 dev-add-docker = "python scripts/devpod_provider.py docker"
 dev = { cmd = "devpod up . --ide none && ssh pythontemplate.devpod", depends-on = ["dev-add-docker"] }
 dev-vs = { cmd = "devpod up . --ide vscode", depends-on = ["dev-add-docker"] }
