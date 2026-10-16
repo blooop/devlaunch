@@ -7,16 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.60.0] - 2026-10-16
-
-### Added
-
-- **`dla` is a second name for `aid`** (#679). It is easier to type: `dl` and one letter. It is the
-  same program, built from the same source, so it takes the same flags, prints the same
-  messages and answers `dla --version` as `aid <version>`. The wheel, the conda package and
-  `./dev.sh` (as `dla-next`) ship it, and bash completion treats it as `aid`. An existing
-  install gets `dla` completion after it runs `dl --install` again.
-
 ### Changed
 
 - **A cold launch's setup pass starts one shell, not one per stage.** Each stage (session
@@ -27,6 +17,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`( eval '<script>' )`), which keep each stage's `exit`, `set -u` and parse errors to
   itself as the nested bash did. Measured over six cold launches of such an image, the
   setup trip went from 10.9s to 11.1s down to 6.7s to 6.9s.
+
+## [0.60.0] - 2026-10-16
+
+### Added
+
+- **`dla` is a second name for `aid`** (#679). It is easier to type: `dl` and one letter. It is the
+  same program, built from the same source, so it takes the same flags, prints the same
+  messages and answers `dla --version` as `aid <version>`. The wheel, the conda package and
+  `./dev.sh` (as `dla-next`) ship it, and bash completion treats it as `aid`. An existing
+  install gets `dla` completion after it runs `dl --install` again.
 
 ## [0.59.4] - 2026-10-05
 
