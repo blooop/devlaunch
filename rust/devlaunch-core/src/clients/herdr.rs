@@ -48,6 +48,36 @@ pub(crate) const AGENT_VAR: &str = "HERDR_AGENT";
 /// silence dl gives today.
 pub(crate) const AGENT_NAMES: &[&str] = &["claude", "codex", "gemini"];
 
+/// The words after each agent's program that pick its last conversation up again,
+/// one row per name in [`AGENT_NAMES`]. aid's `AGENTS` table spells the same
+/// words as each row's `resume`, and `test/unit/test_session_manager.py` diffs
+/// the two.
+const AGENT_RESUMES: &[(&str, &str)] = &[
+    ("claude", "--resume"),
+    ("codex", "resume"),
+    ("gemini", "--resume"),
+];
+
+/// The line a user types to pick a known agent's last conversation up again, such
+/// as `codex resume`. `None` for a program that is not an agent dl knows.
+/// Binary surface: `dl` names it when a recreate ends an agent it cannot restart.
+pub fn resume_line(agent: &str) -> Option<String> {
+    let agent = agent_named(agent)?;
+    AGENT_RESUMES
+        .iter()
+        .find(|(name, _)| *name == agent)
+        .map(|(name, resume)| format!("{name} {resume}"))
+}
+
+/// [`resume_line`] for every agent dl knows, in [`AGENT_NAMES`] order.
+/// Binary surface: see [`resume_line`].
+pub fn resume_lines() -> Vec<String> {
+    AGENT_NAMES
+        .iter()
+        .filter_map(|name| resume_line(name))
+        .collect()
+}
+
 /// The agent a workspace command starts, when its program is one by name.
 ///
 /// Reads the command the way a shell would begin to: leading `NAME=value`
@@ -145,6 +175,21 @@ fn inherited(env: EnvSpec) -> EnvSpec {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_known_agent_resumes_in_its_own_words() {
+        assert_eq!(resume_line("claude").as_deref(), Some("claude --resume"));
+        assert_eq!(resume_line("codex").as_deref(), Some("codex resume"));
+        assert_eq!(
+            resume_line("/usr/local/bin/gemini").as_deref(),
+            Some("gemini --resume")
+        );
+        assert_eq!(resume_line("make"), None);
+        assert_eq!(
+            resume_lines(),
+            ["claude --resume", "codex resume", "gemini --resume"]
+        );
+    }
 
     #[test]
     fn an_agent_command_names_its_agent() {

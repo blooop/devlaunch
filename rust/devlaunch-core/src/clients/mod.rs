@@ -29,10 +29,13 @@ pub mod git;
 pub(crate) mod herdr;
 // Binary surface: `dl` uses the same agent-name reader before it arranges a
 // Herdr editor split, and the same executable repair before it asks Herdr to do
-// so. Only these decisions cross the crate boundary.
+// so, and the resume line of each known agent for the notice a recreate gives
+// when it ends one it cannot restart. Only these decisions cross the crate
+// boundary.
 pub use herdr::{
     AgentResume, agent_named as herdr_agent_named,
     binary_from_process as herdr_binary_from_process, is_assignment as herdr_is_assignment,
+    resume_line as herdr_resume_line, resume_lines as herdr_resume_lines,
 };
 // Crate-private for docker's reason: the two signals `dl <ws> kill` sends are
 // the whole of what devlaunch asks of `kill(1)`, and what they came to is

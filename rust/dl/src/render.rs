@@ -20,6 +20,7 @@ use devlaunch_core::clients::gh::{
 };
 use devlaunch_core::clients::git::Failure as GitFailure;
 use devlaunch_core::clients::ssh::{NotRun as SshNotRun, UnsafeRequest};
+use devlaunch_core::clients::{herdr_resume_line, herdr_resume_lines};
 use devlaunch_core::domain::config;
 use devlaunch_core::domain::locks::LockError;
 use devlaunch_core::domain::metadata;
@@ -3370,13 +3371,13 @@ pub(crate) fn launch_notice(notice: &LaunchNotice) -> Option<String> {
         // --- the agents a recreate ends (devlaunch#673; no Python line)
         LaunchNotice::AgentSessionsUnseen { workspace_id } => format!(
             "This dl is not in a herdr pane, so it cannot see the agents running in \
-             {workspace_id}. The recreate ends them. Run 'claude --resume' in the new \
-             container to pick a conversation up again."
+             {workspace_id}. The recreate ends them. {}",
+            every_agents_resume()
         ),
         LaunchNotice::AgentSessionsUnanswered { workspace_id } => format!(
             "herdr did not say which panes it has, so the agents running in {workspace_id} \
-             end with the recreate. Run 'claude --resume' in the new container to pick a \
-             conversation up again."
+             end with the recreate. {}",
+            every_agents_resume()
         ),
         LaunchNotice::AgentSessionsHeld {
             workspace_id,
@@ -3397,20 +3398,16 @@ pub(crate) fn launch_notice(notice: &LaunchNotice) -> Option<String> {
             workspace_id,
             pane_id,
             agent,
-        } if agent == "claude" => format!(
-            "Pane {pane_id} runs an agent in {workspace_id}, and herdr saved no line to start \
-             it again. The recreate ends it. Run 'claude --resume' there to pick the \
-             conversation up again."
-        ),
-        LaunchNotice::AgentSessionUnresumable {
-            workspace_id,
-            pane_id,
-            agent,
-        } => format!(
-            "Pane {pane_id} runs {agent} in {workspace_id}, and herdr saved no line to start \
-             it again. The recreate ends it. Start {agent} there again to pick the \
-             conversation up."
-        ),
+        } => {
+            let what_to_do = match herdr_resume_line(agent) {
+                Some(resume) => format!("Run '{resume}' there to pick the conversation up again."),
+                None => format!("Start {agent} there again to pick the conversation up."),
+            };
+            format!(
+                "Pane {pane_id} runs {agent} in {workspace_id}, and herdr saved no line to start \
+                 it again. The recreate ends it. {what_to_do}"
+            )
+        }
         LaunchNotice::AgentSessionRestarted { pane_id } => {
             format!("Started the agent in pane {pane_id} again.")
         }
@@ -3677,6 +3674,24 @@ pub(crate) fn is_binary_missing(aborted: &LaunchAborted) -> bool {
         LaunchAborted::SshNotRun(refused) => matches!(refused, SshNotRun::NotInstalled),
         LaunchAborted::ListingUnreadable(refused) => is_devpod_missing(refused),
     }
+}
+
+/// What to run to pick up a conversation an unseen recreate ended, for each agent
+/// dl knows: dl cannot say which agent a pane ran, so it names every agent's own
+/// resume rather than claude's alone.
+fn every_agents_resume() -> String {
+    let quoted: Vec<String> = herdr_resume_lines()
+        .iter()
+        .map(|line| format!("'{line}'"))
+        .collect();
+    let listed = match quoted.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{} or {last}", rest.join(", ")),
+        _ => quoted.concat(),
+    };
+    format!(
+        "To pick a conversation up again, run its agent's resume in the new container: \
+         {listed}."
+    )
 }
 
 /// devpod's tag for a stale workspace's image stayed, so a recreate keeps the
@@ -5306,8 +5321,8 @@ mod tests {
         assert!(here.ends_with(&format!(": {line}")), "{here}");
     }
 
-    /// devlaunch#673. A pane herdr says runs codex is not told to run
-    /// 'claude --resume'; claude's own pane keeps the words it had.
+    /// devlaunch#673. A pane herdr says runs codex is told codex's own resume, not
+    /// 'claude --resume'; an agent dl does not know is told to start it again.
     #[test]
     fn a_pane_with_no_line_is_told_about_the_agent_it_runs() {
         let unresumable = |agent: &str| {
@@ -5319,13 +5334,41 @@ mod tests {
             .expect("a sentence")
         };
         let codex = unresumable("codex");
-        assert!(codex.contains("codex"), "{codex}");
+        assert!(codex.contains("Run 'codex resume' there"), "{codex}");
         assert!(!codex.contains("claude"), "{codex}");
         assert_eq!(
             unresumable("claude"),
-            "Pane w1:p2 runs an agent in myws, and herdr saved no line to start it again. \
+            "Pane w1:p2 runs claude in myws, and herdr saved no line to start it again. \
              The recreate ends it. Run 'claude --resume' there to pick the conversation up again."
         );
+        assert_eq!(
+            unresumable("aider"),
+            "Pane w1:p2 runs aider in myws, and herdr saved no line to start it again. \
+             The recreate ends it. Start aider there again to pick the conversation up."
+        );
+    }
+
+    /// devlaunch#673. When dl cannot see which agents a recreate ends, it does not
+    /// tell a codex or gemini user to run 'claude --resume': it names each known
+    /// agent's own resume.
+    #[test]
+    fn agents_dl_cannot_see_are_told_every_known_agents_resume() {
+        for said in [
+            LaunchNotice::AgentSessionsUnseen {
+                workspace_id: "myws".to_owned(),
+            },
+            LaunchNotice::AgentSessionsUnanswered {
+                workspace_id: "myws".to_owned(),
+            },
+        ]
+        .iter()
+        .map(|notice| launch_notice(notice).expect("a sentence"))
+        {
+            assert!(!said.contains("Run 'claude --resume'"), "{said}");
+            for resume in ["'claude --resume'", "'codex resume'", "'gemini --resume'"] {
+                assert!(said.contains(resume), "{resume} missing: {said}");
+            }
+        }
     }
 
     #[test]
@@ -5348,8 +5391,9 @@ mod tests {
             .as_deref(),
             Some(
                 "This dl is not in a herdr pane, so it cannot see the agents running in myws. \
-                 The recreate ends them. Run 'claude --resume' in the new container to pick a \
-                 conversation up again."
+                 The recreate ends them. To pick a conversation up again, run its agent's \
+                 resume in the new container: 'claude --resume', 'codex resume' or \
+                 'gemini --resume'."
             )
         );
         assert_eq!(
@@ -5359,8 +5403,8 @@ mod tests {
             .as_deref(),
             Some(
                 "herdr did not say which panes it has, so the agents running in myws end with \
-                 the recreate. Run 'claude --resume' in the new container to pick a \
-                 conversation up again."
+                 the recreate. To pick a conversation up again, run its agent's resume in the \
+                 new container: 'claude --resume', 'codex resume' or 'gemini --resume'."
             )
         );
         assert_eq!(
@@ -5371,7 +5415,7 @@ mod tests {
             })
             .as_deref(),
             Some(
-                "Pane w1:p2 runs an agent in myws, and herdr saved no line to start it again. \
+                "Pane w1:p2 runs claude in myws, and herdr saved no line to start it again. \
                  The recreate ends it. Run 'claude --resume' there to pick the conversation up \
                  again."
             )
@@ -5385,7 +5429,8 @@ mod tests {
             .as_deref(),
             Some(
                 "Pane w1:p2 runs codex in myws, and herdr saved no line to start it again. \
-                 The recreate ends it. Start codex there again to pick the conversation up."
+                 The recreate ends it. Run 'codex resume' there to pick the conversation up \
+                 again."
             )
         );
         assert_eq!(

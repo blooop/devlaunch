@@ -353,6 +353,8 @@ impl core::marker::StructuralPartialEq for devlaunch_core::clients::ProfileName
 pub fn devlaunch_core::clients::herdr_agent_named(&str) -> core::option::Option<&'static str>
 pub fn devlaunch_core::clients::herdr_binary_from_process() -> core::option::Option<alloc::string::String>
 pub fn devlaunch_core::clients::herdr_is_assignment(&str) -> bool
+pub fn devlaunch_core::clients::herdr_resume_line(&str) -> core::option::Option<alloc::string::String>
+pub fn devlaunch_core::clients::herdr_resume_lines() -> alloc::vec::Vec<alloc::string::String>
 pub mod devlaunch_core::domain
 pub mod devlaunch_core::domain::config
 pub enum devlaunch_core::domain::config::ConfigError
