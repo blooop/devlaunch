@@ -1,4 +1,5 @@
 // binary surface — not part of the frozen wf API (#251 §7)
+pub mod agent_sessions;
 pub mod agent_worktrees;
 // binary surface — not part of the frozen wf API (#251 §7): the branch decision's
 // refusal travels inside a launch refusal, and the words for it are the binary's.
@@ -35,6 +36,8 @@ pub mod pull_request;
 // binary surface — not part of the frozen wf API (#251 §7)
 pub mod records;
 // binary surface — not part of the frozen wf API (#251 §7)
+pub mod refresh_stale;
+// binary surface — not part of the frozen wf API (#251 §7)
 pub mod repo_manager;
 // binary surface — not part of the frozen wf API (#251 §7), and only just: the
 // reporting half is crate-private like `clients::herdr` whose decisions it
@@ -44,6 +47,8 @@ pub mod repo_manager;
 // its own rather than part of a launch, and what crosses the crate boundary for
 // it is one decision and no socket.
 pub mod session_manager;
+// binary surface — not part of the frozen wf API (#251 §7)
+pub mod stale_images;
 // binary surface — not part of the frozen wf API (#251 §7)
 pub mod workspace_clone;
 

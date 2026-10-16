@@ -317,7 +317,8 @@ fn ran(outcome: Result<Launched, LaunchAborted>, cache: &Path) -> Ran {
                 | LaunchRefusal::UnknownWorkspace { .. }
                 | LaunchRefusal::IdCollision { .. }
                 | LaunchRefusal::BranchNotNamed { .. }
-                | LaunchRefusal::NotPrepared { .. } => Ran {
+                | LaunchRefusal::NotPrepared { .. }
+                | LaunchRefusal::DerivedImageKept(_) => Ran {
                     ending: Ending::Refused,
                     reached: Reached::Nothing,
                 },

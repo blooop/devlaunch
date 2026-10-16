@@ -586,12 +586,12 @@ fn send_report(runner: &dyn Runner, report: &herdr::ResumeReport, seq: u128) -> 
 /// per call and knows nothing about wall-clock instants -- which is also what
 /// makes this testable without a clock: a test reads the durations the calls were
 /// given and adds them up.
-struct Budget {
+pub(crate) struct Budget {
     left: Duration,
 }
 
 impl Budget {
-    fn of(total: Duration) -> Self {
+    pub(crate) fn of(total: Duration) -> Self {
         Self { left: total }
     }
 
@@ -618,7 +618,12 @@ impl Budget {
 /// well-formed JSON on a non-zero exit, so a caller that read those would be
 /// parsing an envelope with no `result` in it to reach the same `None` this
 /// returns for free.
-fn ask(runner: &dyn Runner, program: &str, args: &[String], budget: &mut Budget) -> Option<String> {
+pub(crate) fn ask(
+    runner: &dyn Runner,
+    program: &str,
+    args: &[String],
+    budget: &mut Budget,
+) -> Option<String> {
     let spec = SpawnSpec::new(Invocation::new(program.to_owned()).with_args(args.iter().cloned()))
         .with_timeout(budget.next()?);
     let started = Instant::now();
@@ -651,7 +656,7 @@ fn in_tab<'a>(tab_id: &str, panes: &'a [herdr::PaneInfo]) -> Vec<&'a herdr::Pane
 /// chain: the pane's own foreground process is `dl`, which names a *spec* and not
 /// an id, and the transport that names the id is its child. herdr publishes the
 /// chain, which is the same reading it does to identify an agent.
-fn workspace_among(info: &herdr::PaneProcessInfo) -> Option<String> {
+pub(crate) fn workspace_among(info: &herdr::PaneProcessInfo) -> Option<String> {
     info.foreground_processes
         .iter()
         .filter_map(|process| process.argv.as_deref())

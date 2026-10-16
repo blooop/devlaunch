@@ -93,7 +93,7 @@ fn devpod_home_recording(
     std::fs::write(
         &result,
         serde_json::json!({
-            "ContainerDetails": { "Id": "container-id" },
+            "ContainerDetails": { "ID": "container-id" },
             "MergedConfig": {},
             "SubstitutionContext": {
                 "LocalWorkspaceFolder": local_workspace_folder,

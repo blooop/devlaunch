@@ -20,6 +20,7 @@ use devlaunch_core::clients::gh::{
 };
 use devlaunch_core::clients::git::Failure as GitFailure;
 use devlaunch_core::clients::ssh::{NotRun as SshNotRun, UnsafeRequest};
+use devlaunch_core::clients::{herdr_resume_line, herdr_resume_lines};
 use devlaunch_core::domain::config;
 use devlaunch_core::domain::locks::LockError;
 use devlaunch_core::domain::metadata;
@@ -40,8 +41,8 @@ use devlaunch_core::flows::kill::{
     Marker, NoSignal, Released, Standing, StillHeld, Sweep, TableUnreadable,
 };
 use devlaunch_core::flows::launch::{
-    BranchNotNamed, ClaudeProfileProblem, ColdRefused, LaunchAborted, LaunchNotice, LaunchRefusal,
-    NotPrepared, SessionRefused,
+    BranchNotNamed, ClaudeProfileProblem, ColdRefused, DerivedImageKept, LaunchAborted,
+    LaunchNotice, LaunchRefusal, NotPrepared, SessionRefused,
 };
 use devlaunch_core::flows::lifecycle::{
     Insistence, KeptBecause, LifecycleNotice, LockKeptBecause, NotAdopted, Promotion, PrunePlan,
@@ -55,6 +56,7 @@ use devlaunch_core::flows::migration::{Listing, MigrationReport};
 use devlaunch_core::flows::provision::{BundleFailed, FailureLevel, ProvisionEvent};
 use devlaunch_core::flows::pull_request::Refusal as PullRequestRefusal;
 use devlaunch_core::flows::records::{RecordsNotice, StartupError};
+use devlaunch_core::flows::refresh_stale::{AgentState, Planned, Skip, Tally, Verdict};
 use devlaunch_core::flows::repo_manager::{
     CacheNotice, Cleanup, CloneError, EnsureRepoError, NotRefreshed, Refusal, RefusalReason,
     RemoveTreeError, WrongRepoLock,
@@ -300,6 +302,116 @@ fn shared_account_notes(rows: &[claude_profiles::ProfileSummary]) -> Vec<String>
         ));
     }
     lines
+}
+
+/// The lines `dl --ls` writes under its table for the workspaces whose container
+/// runs an older image than its reference now names (devlaunch#673).
+///
+/// One line per workspace, in the table's order, and each names the verb that
+/// moves it: a pull moves the reference and nothing else, so a person who reads
+/// the line has to be told that the container did not follow.
+pub(crate) fn stale_image_notes<'a>(
+    stale: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> Vec<String> {
+    stale
+        .into_iter()
+        .map(|(id, reference)| {
+            format!(
+                "{id} runs an older image than {reference} now names. Run `dl {id} recreate` to move it."
+            )
+        })
+        .collect()
+}
+
+/// What `dl --refresh-stale` says when no workspace is stale.
+pub(crate) const REFRESH_STALE_NOTHING: &str =
+    "No workspace runs an older image than its reference names.";
+
+/// The one line `dl --refresh-stale` says about one stale workspace, before it
+/// acts: that it will recreate it, or that it leaves it alone and why.
+pub(crate) fn refresh_stale_line(planned: &Planned) -> String {
+    let Planned {
+        workspace_id: id,
+        reference,
+        verdict,
+    } = planned;
+    match verdict {
+        Verdict::Refresh => {
+            format!("Refreshing {id}: it runs an older image than {reference} now names.")
+        }
+        Verdict::Skip(Skip::Stopped) => format!(
+            "Skipping {id}: it is stopped, and a refresh starts nothing. \
+             `dl {id} recreate` starts it on the new image."
+        ),
+        Verdict::Skip(skip) => format!(
+            "Skipping {id}: {}. Run `dl {id} recreate` once it is done.",
+            skip_reason(skip)
+        ),
+    }
+}
+
+/// The line `dl --refresh-stale` says when a workspace its plan would refresh
+/// is judged again just before its recreate, and is now to be left alone.
+pub(crate) fn refresh_stale_rejudged_line(id: &str, skip: &Skip) -> String {
+    format!(
+        "Skipping {id} after all, judged again before its recreate: {}. \
+         Run `dl {id} recreate` once it is done.",
+        skip_reason(skip)
+    )
+}
+
+/// Why `dl --refresh-stale` leaves a stale workspace alone, as a clause.
+fn skip_reason(skip: &Skip) -> String {
+    match skip {
+        Skip::LaunchUnderWay => "another dl is launching it".to_owned(),
+        Skip::Stopped => "it is stopped".to_owned(),
+        Skip::LockUnreadable { why } => format!("could not ask its launch lock ({why})"),
+        Skip::ProcessesUnread { why } => {
+            format!("could not read the processes in its container ({why})")
+        }
+        Skip::Building { program, pid } => format!("a build runs in it ({program}, pid {pid})"),
+        Skip::AgentRunsACommand { program, pid } => {
+            format!("an agent runs a command in it ({program}, pid {pid})")
+        }
+        Skip::SessionsUnseen => "an agent runs in it, and this dl is not in a herdr pane, so it \
+                                 cannot see the sessions to start them again"
+            .to_owned(),
+        Skip::HerdrUnanswered => "herdr did not say which panes it has".to_owned(),
+        Skip::Unresumable { pane_id } => {
+            format!("the agent in pane {pane_id} has no saved line to start it again")
+        }
+        Skip::AgentBusy { pane_id, state } => match state {
+            AgentState::Working => format!("the agent in pane {pane_id} is working"),
+            AgentState::Blocked => {
+                format!("the agent in pane {pane_id} waits on a permission prompt")
+            }
+            AgentState::Unknown => {
+                format!("herdr does not know what the agent in pane {pane_id} is doing")
+            }
+            AgentState::Unanswered => {
+                format!("herdr did not say what the agent in pane {pane_id} is doing")
+            }
+        },
+        Skip::SessionsOutsidePanes { running, held } => format!(
+            "{running} agent sessions run in it and herdr's panes hold {held}, so the others \
+             would end with nothing to start them again"
+        ),
+    }
+}
+
+/// The last line of `dl --refresh-stale`.
+pub(crate) fn refresh_stale_summary(tally: Tally) -> String {
+    let Tally {
+        refreshed,
+        skipped,
+        failed,
+    } = tally;
+    let noun = if refreshed == 1 {
+        "workspace"
+    } else {
+        "workspaces"
+    };
+    format!("Refreshed {refreshed} stale {noun}, skipped {skipped}, and {failed} failed.")
 }
 
 /// The lines `dl --ls` writes under its table for the repositories whose last
@@ -3306,6 +3418,78 @@ pub(crate) fn launch_notice(notice: &LaunchNotice) -> Option<String> {
              --devcontainer ...' to switch config."
         ),
 
+        // --- the agents a recreate ends (devlaunch#673; no Python line)
+        LaunchNotice::AgentSessionsUnseen { workspace_id } => format!(
+            "This dl is not in a herdr pane, so it cannot see the agents running in \
+             {workspace_id}. The recreate ends them. {}",
+            every_agents_resume()
+        ),
+        LaunchNotice::AgentSessionsUnanswered { workspace_id } => format!(
+            "herdr did not say which panes it has, so the agents running in {workspace_id} \
+             end with the recreate. {}",
+            every_agents_resume()
+        ),
+        LaunchNotice::AgentSessionsHeld {
+            workspace_id,
+            panes,
+        } => {
+            let (noun, pronoun) = if panes.len() == 1 {
+                ("pane", "it")
+            } else {
+                ("panes", "each")
+            };
+            format!(
+                "The recreate ends the agent in {noun} {} of {workspace_id}; dl starts {pronoun} \
+                 again, resumed, once the new container is up.",
+                panes.join(", ")
+            )
+        }
+        LaunchNotice::AgentSessionUnresumable {
+            workspace_id,
+            pane_id,
+            agent,
+        } => {
+            let what_to_do = match herdr_resume_line(agent) {
+                Some(resume) => format!("Run '{resume}' there to pick the conversation up again."),
+                None => format!("Start {agent} there again to pick the conversation up."),
+            };
+            format!(
+                "Pane {pane_id} runs {agent} in {workspace_id}, and herdr saved no line to start \
+                 it again. The recreate ends it. {what_to_do}"
+            )
+        }
+        LaunchNotice::AgentSessionRestarted { pane_id } => {
+            format!("Started the agent in pane {pane_id} again.")
+        }
+        LaunchNotice::DerivedImageRemoved {
+            workspace_id,
+            image,
+        } => format!(
+            "{workspace_id} runs an older image. Removed the tag {image} that devpod built it \
+             under, so the recreate builds the image again from the newer one."
+        ),
+        LaunchNotice::DerivedImageKept(DerivedImageKept {
+            workspace_id,
+            image,
+            why,
+        }) => derived_image_kept(workspace_id, image, why),
+        LaunchNotice::AgentSessionLineNotKept { pane_id } => format!(
+            "Started the agent in pane {pane_id} again, and herdr did not keep the line that \
+             starts it. The next recreate ends it."
+        ),
+        LaunchNotice::AgentSessionLineUnchecked { pane_id } => format!(
+            "Started the agent in pane {pane_id} again, and could not read herdr's session \
+             file to check that herdr kept the line that starts it. If it did not, the next \
+             recreate ends it."
+        ),
+        LaunchNotice::AgentSessionNotRestarted { pane_id, line } => format!(
+            "Could not start the agent in pane {pane_id} again. Run this in that pane: {line}"
+        ),
+        LaunchNotice::AgentSessionInThisPane { line } => format!(
+            "The agent that ran in this pane ended with the recreate. Run this here to start it \
+             again: {line}"
+        ),
+
         // --- devpod's own lock (devlaunch#600, devlaunch#602; no Python line,
         // Python never watched)
         //
@@ -3542,6 +3726,34 @@ pub(crate) fn is_binary_missing(aborted: &LaunchAborted) -> bool {
     }
 }
 
+/// What to run to pick up a conversation an unseen recreate ended, for each agent
+/// dl knows: dl cannot say which agent a pane ran, so it names every agent's own
+/// resume rather than claude's alone.
+fn every_agents_resume() -> String {
+    let quoted: Vec<String> = herdr_resume_lines()
+        .iter()
+        .map(|line| format!("'{line}'"))
+        .collect();
+    let listed = match quoted.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{} or {last}", rest.join(", ")),
+        _ => quoted.concat(),
+    };
+    format!(
+        "To pick a conversation up again, run its agent's resume in the new container: \
+         {listed}."
+    )
+}
+
+/// devpod's tag for a stale workspace's image stayed, so a recreate keeps the
+/// older image.
+fn derived_image_kept(workspace_id: &str, image: &str, why: &str) -> String {
+    format!(
+        "{workspace_id} runs an older image, and dl could not remove the tag {image} that \
+         devpod built it under ({why}). A recreate builds the container from the older image \
+         again. Remove the tag with 'docker image rm --force {image}', then recreate."
+    )
+}
+
 /// Why a launch will not go ahead, in the words `_run_cli` refused it with.
 ///
 /// `None` is a refusal with nothing to say: `devpod up` and `devpod stop` write
@@ -3563,6 +3775,14 @@ pub(crate) fn launch_refusal(refused: &LaunchRefusal) -> Option<String> {
             workspace_id,
             &format!("{owner}/{repo}@{branch}"),
             &format!("{recorded_owner}/{recorded_repo}@{recorded_branch}"),
+        )),
+        LaunchRefusal::DerivedImageKept(DerivedImageKept {
+            workspace_id,
+            image,
+            why,
+        }) => Some(format!(
+            "{} The refresh does not recreate it.",
+            derived_image_kept(workspace_id, image, why)
         )),
         LaunchRefusal::BranchNotNamed { owner, repo, error } => Some(format!(
             "Repository '{owner}/{repo}': {}",
@@ -5131,6 +5351,158 @@ mod tests {
         );
     }
 
+    /// devlaunch#673. A line dl could not type is only worth anything if it can be
+    /// pasted, so it is given whole, at the end, with nothing after it.
+    #[test]
+    fn an_agent_line_dl_could_not_type_is_handed_over_whole() {
+        let line = "dl myws -- claude --remote-control=myws --resume 4b1e";
+        let said = launch_notice(&LaunchNotice::AgentSessionNotRestarted {
+            pane_id: "w1:p3".to_owned(),
+            line: line.to_owned(),
+        })
+        .expect("a sentence");
+        assert!(said.contains("pane w1:p3"), "{said}");
+        assert!(said.ends_with(&format!(": {line}")), "{said}");
+
+        let here = launch_notice(&LaunchNotice::AgentSessionInThisPane {
+            line: line.to_owned(),
+        })
+        .expect("a sentence");
+        assert!(here.ends_with(&format!(": {line}")), "{here}");
+    }
+
+    /// devlaunch#673. A pane herdr says runs codex is told codex's own resume, not
+    /// 'claude --resume'; an agent dl does not know is told to start it again.
+    #[test]
+    fn a_pane_with_no_line_is_told_about_the_agent_it_runs() {
+        let unresumable = |agent: &str| {
+            launch_notice(&LaunchNotice::AgentSessionUnresumable {
+                workspace_id: "myws".to_owned(),
+                pane_id: "w1:p2".to_owned(),
+                agent: agent.to_owned(),
+            })
+            .expect("a sentence")
+        };
+        let codex = unresumable("codex");
+        assert!(codex.contains("Run 'codex resume' there"), "{codex}");
+        assert!(!codex.contains("claude"), "{codex}");
+        assert_eq!(
+            unresumable("claude"),
+            "Pane w1:p2 runs claude in myws, and herdr saved no line to start it again. \
+             The recreate ends it. Run 'claude --resume' there to pick the conversation up again."
+        );
+        assert_eq!(
+            unresumable("aider"),
+            "Pane w1:p2 runs aider in myws, and herdr saved no line to start it again. \
+             The recreate ends it. Start aider there again to pick the conversation up."
+        );
+    }
+
+    /// devlaunch#673. When dl cannot see which agents a recreate ends, it does not
+    /// tell a codex or gemini user to run 'claude --resume': it names each known
+    /// agent's own resume.
+    #[test]
+    fn agents_dl_cannot_see_are_told_every_known_agents_resume() {
+        for said in [
+            LaunchNotice::AgentSessionsUnseen {
+                workspace_id: "myws".to_owned(),
+            },
+            LaunchNotice::AgentSessionsUnanswered {
+                workspace_id: "myws".to_owned(),
+            },
+        ]
+        .iter()
+        .map(|notice| launch_notice(notice).expect("a sentence"))
+        {
+            assert!(!said.contains("Run 'claude --resume'"), "{said}");
+            for resume in ["'claude --resume'", "'codex resume'", "'gemini --resume'"] {
+                assert!(said.contains(resume), "{resume} missing: {said}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_agents_a_recreate_will_start_again_are_named_by_pane() {
+        let said = launch_notice(&LaunchNotice::AgentSessionsHeld {
+            workspace_id: "myws".to_owned(),
+            panes: vec!["w1:p1".to_owned(), "w1:p4".to_owned()],
+        })
+        .expect("a sentence");
+        assert!(said.contains("panes w1:p1, w1:p4 of myws"), "{said}");
+        assert!(said.contains("starts each again"), "{said}");
+    }
+
+    #[test]
+    fn the_agents_a_recreate_cannot_start_again_are_said_word_for_word() {
+        assert_eq!(
+            launch_notice(&LaunchNotice::AgentSessionsUnseen {
+                workspace_id: "myws".to_owned(),
+            })
+            .as_deref(),
+            Some(
+                "This dl is not in a herdr pane, so it cannot see the agents running in myws. \
+                 The recreate ends them. To pick a conversation up again, run its agent's \
+                 resume in the new container: 'claude --resume', 'codex resume' or \
+                 'gemini --resume'."
+            )
+        );
+        assert_eq!(
+            launch_notice(&LaunchNotice::AgentSessionsUnanswered {
+                workspace_id: "myws".to_owned(),
+            })
+            .as_deref(),
+            Some(
+                "herdr did not say which panes it has, so the agents running in myws end with \
+                 the recreate. To pick a conversation up again, run its agent's resume in the \
+                 new container: 'claude --resume', 'codex resume' or 'gemini --resume'."
+            )
+        );
+        assert_eq!(
+            launch_notice(&LaunchNotice::AgentSessionUnresumable {
+                workspace_id: "myws".to_owned(),
+                pane_id: "w1:p2".to_owned(),
+                agent: "claude".to_owned(),
+            })
+            .as_deref(),
+            Some(
+                "Pane w1:p2 runs claude in myws, and herdr saved no line to start it again. \
+                 The recreate ends it. Run 'claude --resume' there to pick the conversation up \
+                 again."
+            )
+        );
+        assert_eq!(
+            launch_notice(&LaunchNotice::AgentSessionUnresumable {
+                workspace_id: "myws".to_owned(),
+                pane_id: "w1:p2".to_owned(),
+                agent: "codex".to_owned(),
+            })
+            .as_deref(),
+            Some(
+                "Pane w1:p2 runs codex in myws, and herdr saved no line to start it again. \
+                 The recreate ends it. Run 'codex resume' there to pick the conversation up \
+                 again."
+            )
+        );
+        assert_eq!(
+            launch_notice(&LaunchNotice::AgentSessionRestarted {
+                pane_id: "w1:p1".to_owned(),
+            })
+            .as_deref(),
+            Some("Started the agent in pane w1:p1 again.")
+        );
+        assert_eq!(
+            launch_notice(&LaunchNotice::AgentSessionLineUnchecked {
+                pane_id: "w3:pAX".to_owned(),
+            })
+            .as_deref(),
+            Some(
+                "Started the agent in pane w3:pAX again, and could not read herdr's session \
+                 file to check that herdr kept the line that starts it. If it did not, the \
+                 next recreate ends it."
+            )
+        );
+    }
+
     #[test]
     fn the_stale_checkout_line_claims_the_clone_and_never_the_remote() {
         // devlaunch#560. The wording is the deliverable here: the fact was
@@ -6056,6 +6428,23 @@ mod tests {
     }
 
     #[test]
+    fn each_stale_workspace_gets_one_line_in_the_order_given() {
+        assert_eq!(
+            stale_image_notes([
+                ("zeta-main-1", "ghcr.io/o/img:latest"),
+                ("alpha-main-2", "ubuntu:24.04"),
+            ]),
+            [
+                "zeta-main-1 runs an older image than ghcr.io/o/img:latest now names. \
+                 Run `dl zeta-main-1 recreate` to move it.",
+                "alpha-main-2 runs an older image than ubuntu:24.04 now names. \
+                 Run `dl alpha-main-2 recreate` to move it.",
+            ]
+        );
+        assert!(stale_image_notes([]).is_empty());
+    }
+
+    #[test]
     fn every_sweep_trouble_has_words_of_its_own() {
         // Five arms, five sentences, and no two the same: which condition it was is
         // the whole of what the record carries when git said nothing.
@@ -6864,5 +7253,106 @@ mod tests {
             },
         ));
         assert!(line.contains("owner/repo@#579"), "{line}");
+    }
+
+    // --- dl --refresh-stale (devlaunch#673)
+
+    fn planned(verdict: Verdict) -> Planned {
+        Planned {
+            workspace_id: "myws".to_owned(),
+            reference: "ghcr.io/o/img:latest".to_owned(),
+            verdict,
+        }
+    }
+
+    #[test]
+    fn the_refresh_plan_names_the_workspace_and_what_it_will_do() {
+        assert_eq!(
+            refresh_stale_line(&planned(Verdict::Refresh)),
+            "Refreshing myws: it runs an older image than ghcr.io/o/img:latest now names."
+        );
+        assert_eq!(
+            refresh_stale_line(&planned(Verdict::Skip(Skip::Building {
+                program: "cc1plus".to_owned(),
+                pid: 77,
+            }))),
+            "Skipping myws: a build runs in it (cc1plus, pid 77). Run `dl myws recreate` once it is done."
+        );
+    }
+
+    /// Every skip says why in words of its own, so a reader can tell two apart.
+    #[test]
+    fn each_reason_to_skip_reads_differently() {
+        let reasons = [
+            Skip::LaunchUnderWay,
+            Skip::LockUnreadable {
+                why: "eacces".to_owned(),
+            },
+            Skip::ProcessesUnread {
+                why: "not running".to_owned(),
+            },
+            Skip::Building {
+                program: "make".to_owned(),
+                pid: 1,
+            },
+            Skip::AgentRunsACommand {
+                program: "bash".to_owned(),
+                pid: 1,
+            },
+            Skip::SessionsUnseen,
+            Skip::HerdrUnanswered,
+            Skip::Unresumable {
+                pane_id: "w1:p1".to_owned(),
+            },
+            Skip::AgentBusy {
+                pane_id: "w1:p1".to_owned(),
+                state: AgentState::Working,
+            },
+            Skip::AgentBusy {
+                pane_id: "w1:p1".to_owned(),
+                state: AgentState::Blocked,
+            },
+            Skip::AgentBusy {
+                pane_id: "w1:p1".to_owned(),
+                state: AgentState::Unknown,
+            },
+            Skip::AgentBusy {
+                pane_id: "w1:p1".to_owned(),
+                state: AgentState::Unanswered,
+            },
+            Skip::SessionsOutsidePanes {
+                running: 2,
+                held: 1,
+            },
+        ];
+        let lines: Vec<String> = reasons
+            .into_iter()
+            .map(|skip| refresh_stale_line(&planned(Verdict::Skip(skip))))
+            .collect();
+        for line in &lines {
+            assert!(line.starts_with("Skipping myws: "), "{line}");
+        }
+        let distinct: std::collections::BTreeSet<&String> = lines.iter().collect();
+        assert_eq!(distinct.len(), lines.len(), "{lines:#?}");
+    }
+
+    #[test]
+    fn the_refresh_summary_counts_what_happened() {
+        assert_eq!(
+            refresh_stale_summary(Tally {
+                refreshed: 2,
+                skipped: 1,
+                failed: 1
+            }),
+            "Refreshed 2 stale workspaces, skipped 1, and 1 failed."
+        );
+        assert_eq!(
+            refresh_stale_summary(Tally {
+                refreshed: 1,
+                skipped: 0,
+                failed: 0
+            }),
+            "Refreshed 1 stale workspace, skipped 0, and 0 failed."
+        );
     }
 }

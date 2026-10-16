@@ -353,6 +353,8 @@ impl core::marker::StructuralPartialEq for devlaunch_core::clients::ProfileName
 pub fn devlaunch_core::clients::herdr_agent_named(&str) -> core::option::Option<&'static str>
 pub fn devlaunch_core::clients::herdr_binary_from_process() -> core::option::Option<alloc::string::String>
 pub fn devlaunch_core::clients::herdr_is_assignment(&str) -> bool
+pub fn devlaunch_core::clients::herdr_resume_line(&str) -> core::option::Option<alloc::string::String>
+pub fn devlaunch_core::clients::herdr_resume_lines() -> alloc::vec::Vec<alloc::string::String>
 pub mod devlaunch_core::domain
 pub mod devlaunch_core::domain::config
 pub enum devlaunch_core::domain::config::ConfigError
@@ -829,6 +831,74 @@ pub fn devlaunch_core::domain::xdg::clone_root_in(&std::path::Path) -> std::path
 pub fn devlaunch_core::domain::xdg::config_home() -> core::result::Result<std::path::PathBuf, devlaunch_core::domain::xdg::NoHomeDirectory>
 pub fn devlaunch_core::domain::xdg::devlaunch_cache() -> core::result::Result<std::path::PathBuf, devlaunch_core::domain::xdg::NoHomeDirectory>
 pub mod devlaunch_core::flows
+pub mod devlaunch_core::flows::agent_sessions
+pub enum devlaunch_core::flows::agent_sessions::Restarted
+pub devlaunch_core::flows::agent_sessions::Restarted::NotTyped
+pub devlaunch_core::flows::agent_sessions::Restarted::NotTyped::line: alloc::string::String
+pub devlaunch_core::flows::agent_sessions::Restarted::NotTyped::pane_id: alloc::string::String
+pub devlaunch_core::flows::agent_sessions::Restarted::OwnPane
+pub devlaunch_core::flows::agent_sessions::Restarted::OwnPane::line: alloc::string::String
+pub devlaunch_core::flows::agent_sessions::Restarted::OwnPane::pane_id: alloc::string::String
+pub devlaunch_core::flows::agent_sessions::Restarted::Typed
+pub devlaunch_core::flows::agent_sessions::Restarted::Typed::pane_id: alloc::string::String
+impl core::clone::Clone for devlaunch_core::flows::agent_sessions::Restarted
+pub fn devlaunch_core::flows::agent_sessions::Restarted::clone(&self) -> devlaunch_core::flows::agent_sessions::Restarted
+impl core::cmp::Eq for devlaunch_core::flows::agent_sessions::Restarted
+impl core::cmp::PartialEq for devlaunch_core::flows::agent_sessions::Restarted
+pub fn devlaunch_core::flows::agent_sessions::Restarted::eq(&self, &devlaunch_core::flows::agent_sessions::Restarted) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::agent_sessions::Restarted
+pub fn devlaunch_core::flows::agent_sessions::Restarted::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::agent_sessions::Restarted
+pub struct devlaunch_core::flows::agent_sessions::HeldSession
+pub devlaunch_core::flows::agent_sessions::HeldSession::line: alloc::vec::Vec<alloc::string::String>
+pub devlaunch_core::flows::agent_sessions::HeldSession::pane_id: alloc::string::String
+impl devlaunch_core::flows::agent_sessions::HeldSession
+pub fn devlaunch_core::flows::agent_sessions::HeldSession::shell_line(&self) -> alloc::string::String
+impl core::clone::Clone for devlaunch_core::flows::agent_sessions::HeldSession
+pub fn devlaunch_core::flows::agent_sessions::HeldSession::clone(&self) -> devlaunch_core::flows::agent_sessions::HeldSession
+impl core::cmp::Eq for devlaunch_core::flows::agent_sessions::HeldSession
+impl core::cmp::PartialEq for devlaunch_core::flows::agent_sessions::HeldSession
+pub fn devlaunch_core::flows::agent_sessions::HeldSession::eq(&self, &devlaunch_core::flows::agent_sessions::HeldSession) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::agent_sessions::HeldSession
+pub fn devlaunch_core::flows::agent_sessions::HeldSession::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::agent_sessions::HeldSession
+pub struct devlaunch_core::flows::agent_sessions::HeldSessions
+pub devlaunch_core::flows::agent_sessions::HeldSessions::sessions: alloc::vec::Vec<devlaunch_core::flows::agent_sessions::HeldSession>
+pub devlaunch_core::flows::agent_sessions::HeldSessions::unresumable: alloc::vec::Vec<devlaunch_core::flows::agent_sessions::UnresumablePane>
+impl core::clone::Clone for devlaunch_core::flows::agent_sessions::HeldSessions
+pub fn devlaunch_core::flows::agent_sessions::HeldSessions::clone(&self) -> devlaunch_core::flows::agent_sessions::HeldSessions
+impl core::cmp::Eq for devlaunch_core::flows::agent_sessions::HeldSessions
+impl core::cmp::PartialEq for devlaunch_core::flows::agent_sessions::HeldSessions
+pub fn devlaunch_core::flows::agent_sessions::HeldSessions::eq(&self, &devlaunch_core::flows::agent_sessions::HeldSessions) -> bool
+impl core::default::Default for devlaunch_core::flows::agent_sessions::HeldSessions
+pub fn devlaunch_core::flows::agent_sessions::HeldSessions::default() -> devlaunch_core::flows::agent_sessions::HeldSessions
+impl core::fmt::Debug for devlaunch_core::flows::agent_sessions::HeldSessions
+pub fn devlaunch_core::flows::agent_sessions::HeldSessions::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::agent_sessions::HeldSessions
+pub struct devlaunch_core::flows::agent_sessions::HerdrPanes
+impl devlaunch_core::flows::agent_sessions::HerdrPanes
+pub fn devlaunch_core::flows::agent_sessions::HerdrPanes::from_host(&devlaunch_core::flows::launch::Host) -> core::option::Option<Self>
+impl core::clone::Clone for devlaunch_core::flows::agent_sessions::HerdrPanes
+pub fn devlaunch_core::flows::agent_sessions::HerdrPanes::clone(&self) -> devlaunch_core::flows::agent_sessions::HerdrPanes
+impl core::cmp::Eq for devlaunch_core::flows::agent_sessions::HerdrPanes
+impl core::cmp::PartialEq for devlaunch_core::flows::agent_sessions::HerdrPanes
+pub fn devlaunch_core::flows::agent_sessions::HerdrPanes::eq(&self, &devlaunch_core::flows::agent_sessions::HerdrPanes) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::agent_sessions::HerdrPanes
+pub fn devlaunch_core::flows::agent_sessions::HerdrPanes::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::agent_sessions::HerdrPanes
+pub struct devlaunch_core::flows::agent_sessions::UnresumablePane
+pub devlaunch_core::flows::agent_sessions::UnresumablePane::agent: alloc::string::String
+pub devlaunch_core::flows::agent_sessions::UnresumablePane::pane_id: alloc::string::String
+impl core::clone::Clone for devlaunch_core::flows::agent_sessions::UnresumablePane
+pub fn devlaunch_core::flows::agent_sessions::UnresumablePane::clone(&self) -> devlaunch_core::flows::agent_sessions::UnresumablePane
+impl core::cmp::Eq for devlaunch_core::flows::agent_sessions::UnresumablePane
+impl core::cmp::PartialEq for devlaunch_core::flows::agent_sessions::UnresumablePane
+pub fn devlaunch_core::flows::agent_sessions::UnresumablePane::eq(&self, &devlaunch_core::flows::agent_sessions::UnresumablePane) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::agent_sessions::UnresumablePane
+pub fn devlaunch_core::flows::agent_sessions::UnresumablePane::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::agent_sessions::UnresumablePane
+pub fn devlaunch_core::flows::agent_sessions::collect(&dyn devlaunch_runner::Runner, &devlaunch_core::flows::agent_sessions::HerdrPanes, &str, &dyn core::ops::function::Fn(&std::path::Path) -> core::option::Option<alloc::string::String>) -> core::option::Option<devlaunch_core::flows::agent_sessions::HeldSessions>
+pub fn devlaunch_core::flows::agent_sessions::restart(&dyn devlaunch_runner::Runner, &devlaunch_core::flows::agent_sessions::HerdrPanes, &devlaunch_core::flows::agent_sessions::HeldSessions, &dyn core::ops::function::Fn(core::time::Duration)) -> alloc::vec::Vec<devlaunch_core::flows::agent_sessions::Restarted>
 pub mod devlaunch_core::flows::agent_worktrees
 pub enum devlaunch_core::flows::agent_worktrees::AgentOwner
 pub devlaunch_core::flows::agent_worktrees::AgentOwner::CouldNotTell(alloc::string::String)
@@ -1815,6 +1885,7 @@ pub devlaunch_core::flows::launch::LaunchRefusal::BranchNotNamed
 pub devlaunch_core::flows::launch::LaunchRefusal::BranchNotNamed::error: devlaunch_core::flows::launch::BranchNotNamed
 pub devlaunch_core::flows::launch::LaunchRefusal::BranchNotNamed::owner: alloc::string::String
 pub devlaunch_core::flows::launch::LaunchRefusal::BranchNotNamed::repo: alloc::string::String
+pub devlaunch_core::flows::launch::LaunchRefusal::DerivedImageKept(devlaunch_core::flows::launch::DerivedImageKept)
 pub devlaunch_core::flows::launch::LaunchRefusal::IdCollision
 pub devlaunch_core::flows::launch::LaunchRefusal::IdCollision::branch: alloc::string::String
 pub devlaunch_core::flows::launch::LaunchRefusal::IdCollision::owner: alloc::string::String
@@ -1984,6 +2055,18 @@ pub fn devlaunch_core::flows::launch::TerminalTitle::eq(&self, &devlaunch_core::
 impl core::fmt::Debug for devlaunch_core::flows::launch::TerminalTitle
 pub fn devlaunch_core::flows::launch::TerminalTitle::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::launch::TerminalTitle
+pub struct devlaunch_core::flows::launch::DerivedImageKept
+pub devlaunch_core::flows::launch::DerivedImageKept::image: alloc::string::String
+pub devlaunch_core::flows::launch::DerivedImageKept::why: alloc::string::String
+pub devlaunch_core::flows::launch::DerivedImageKept::workspace_id: alloc::string::String
+impl core::clone::Clone for devlaunch_core::flows::launch::DerivedImageKept
+pub fn devlaunch_core::flows::launch::DerivedImageKept::clone(&self) -> devlaunch_core::flows::launch::DerivedImageKept
+impl core::cmp::Eq for devlaunch_core::flows::launch::DerivedImageKept
+impl core::cmp::PartialEq for devlaunch_core::flows::launch::DerivedImageKept
+pub fn devlaunch_core::flows::launch::DerivedImageKept::eq(&self, &devlaunch_core::flows::launch::DerivedImageKept) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::launch::DerivedImageKept
+pub fn devlaunch_core::flows::launch::DerivedImageKept::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::launch::DerivedImageKept
 pub struct devlaunch_core::flows::launch::UnquotableCommand
 pub devlaunch_core::flows::launch::UnquotableCommand::command: alloc::string::String
 impl core::clone::Clone for devlaunch_core::flows::launch::UnquotableCommand
@@ -2559,6 +2642,8 @@ pub devlaunch_core::flows::listing::DlView::cache_dir: &'a std::path::Path
 pub devlaunch_core::flows::listing::DlView::clones: &'a dyn devlaunch_core::flows::listing::ClonePathResolver
 pub devlaunch_core::flows::listing::DlView::storage: &'a devlaunch_core::domain::metadata::MetadataStorage
 pub struct devlaunch_core::flows::listing::ListedWorkspace
+impl devlaunch_core::flows::listing::ListedWorkspace
+pub fn devlaunch_core::flows::listing::ListedWorkspace::id(&self) -> &str
 impl core::clone::Clone for devlaunch_core::flows::listing::ListedWorkspace
 pub fn devlaunch_core::flows::listing::ListedWorkspace::clone(&self) -> devlaunch_core::flows::listing::ListedWorkspace
 impl core::cmp::Eq for devlaunch_core::flows::listing::ListedWorkspace
@@ -2652,6 +2737,7 @@ pub fn devlaunch_core::flows::listing::describe_source(&devlaunch_core::clients:
 pub fn devlaunch_core::flows::listing::discover_repos_from_workspaces(&devlaunch_core::clients::git::Git<'_>, &[devlaunch_core::clients::devpod::Workspace]) -> devlaunch_core::flows::listing::RepoDiscovery
 pub fn devlaunch_core::flows::listing::flatten_repos(&indexmap::map::IndexMap<alloc::string::String, alloc::vec::Vec<alloc::string::String>>) -> alloc::vec::Vec<alloc::string::String>
 pub fn devlaunch_core::flows::listing::head_branch_of(&devlaunch_core::clients::devpod::Workspace, &std::path::Path) -> core::option::Option<alloc::string::String>
+pub fn devlaunch_core::flows::listing::mark_stale_images(&mut [devlaunch_core::flows::listing::ListedWorkspace], &devlaunch_core::flows::stale_images::StaleImages)
 pub fn devlaunch_core::flows::listing::outstanding_sweep_notes(&devlaunch_core::domain::metadata::MetadataStorage) -> alloc::vec::Vec<devlaunch_core::flows::listing::SweptRepoNote>
 pub fn devlaunch_core::flows::listing::owner_of(&devlaunch_core::clients::devpod::Workspace, &std::path::Path) -> core::option::Option<alloc::string::String>
 pub fn devlaunch_core::flows::listing::repo_of(&devlaunch_core::clients::devpod::Workspace, &std::path::Path) -> core::option::Option<alloc::string::String>
@@ -2969,6 +3055,97 @@ pub fn devlaunch_core::flows::pull_request::resolve(&dyn devlaunch_runner::Runne
 pub mod devlaunch_core::flows::records
 pub fn devlaunch_core::flows::records::open_records<'r>(&'r dyn devlaunch_runner::Runner) -> core::result::Result<devlaunch_core::flows::records::Records<'r>, devlaunch_core::flows::records::StartupError>
 pub fn devlaunch_core::flows::records::open_storage() -> core::result::Result<(devlaunch_core::domain::metadata::MetadataStorage, alloc::vec::Vec<devlaunch_core::domain::metadata::Notice>), devlaunch_core::flows::records::StartupError>
+pub mod devlaunch_core::flows::refresh_stale
+pub enum devlaunch_core::flows::refresh_stale::AgentState
+pub devlaunch_core::flows::refresh_stale::AgentState::Blocked
+pub devlaunch_core::flows::refresh_stale::AgentState::Unanswered
+pub devlaunch_core::flows::refresh_stale::AgentState::Unknown
+pub devlaunch_core::flows::refresh_stale::AgentState::Working
+impl core::clone::Clone for devlaunch_core::flows::refresh_stale::AgentState
+pub fn devlaunch_core::flows::refresh_stale::AgentState::clone(&self) -> devlaunch_core::flows::refresh_stale::AgentState
+impl core::cmp::Eq for devlaunch_core::flows::refresh_stale::AgentState
+impl core::cmp::PartialEq for devlaunch_core::flows::refresh_stale::AgentState
+pub fn devlaunch_core::flows::refresh_stale::AgentState::eq(&self, &devlaunch_core::flows::refresh_stale::AgentState) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::refresh_stale::AgentState
+pub fn devlaunch_core::flows::refresh_stale::AgentState::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for devlaunch_core::flows::refresh_stale::AgentState
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::refresh_stale::AgentState
+pub enum devlaunch_core::flows::refresh_stale::Skip
+pub devlaunch_core::flows::refresh_stale::Skip::AgentBusy
+pub devlaunch_core::flows::refresh_stale::Skip::AgentBusy::pane_id: alloc::string::String
+pub devlaunch_core::flows::refresh_stale::Skip::AgentBusy::state: devlaunch_core::flows::refresh_stale::AgentState
+pub devlaunch_core::flows::refresh_stale::Skip::AgentRunsACommand
+pub devlaunch_core::flows::refresh_stale::Skip::AgentRunsACommand::pid: u32
+pub devlaunch_core::flows::refresh_stale::Skip::AgentRunsACommand::program: alloc::string::String
+pub devlaunch_core::flows::refresh_stale::Skip::Building
+pub devlaunch_core::flows::refresh_stale::Skip::Building::pid: u32
+pub devlaunch_core::flows::refresh_stale::Skip::Building::program: alloc::string::String
+pub devlaunch_core::flows::refresh_stale::Skip::HerdrUnanswered
+pub devlaunch_core::flows::refresh_stale::Skip::LaunchUnderWay
+pub devlaunch_core::flows::refresh_stale::Skip::LockUnreadable
+pub devlaunch_core::flows::refresh_stale::Skip::LockUnreadable::why: alloc::string::String
+pub devlaunch_core::flows::refresh_stale::Skip::ProcessesUnread
+pub devlaunch_core::flows::refresh_stale::Skip::ProcessesUnread::why: alloc::string::String
+pub devlaunch_core::flows::refresh_stale::Skip::SessionsOutsidePanes
+pub devlaunch_core::flows::refresh_stale::Skip::SessionsOutsidePanes::held: usize
+pub devlaunch_core::flows::refresh_stale::Skip::SessionsOutsidePanes::running: usize
+pub devlaunch_core::flows::refresh_stale::Skip::SessionsUnseen
+pub devlaunch_core::flows::refresh_stale::Skip::Stopped
+pub devlaunch_core::flows::refresh_stale::Skip::Unresumable
+pub devlaunch_core::flows::refresh_stale::Skip::Unresumable::pane_id: alloc::string::String
+impl core::clone::Clone for devlaunch_core::flows::refresh_stale::Skip
+pub fn devlaunch_core::flows::refresh_stale::Skip::clone(&self) -> devlaunch_core::flows::refresh_stale::Skip
+impl core::cmp::Eq for devlaunch_core::flows::refresh_stale::Skip
+impl core::cmp::PartialEq for devlaunch_core::flows::refresh_stale::Skip
+pub fn devlaunch_core::flows::refresh_stale::Skip::eq(&self, &devlaunch_core::flows::refresh_stale::Skip) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::refresh_stale::Skip
+pub fn devlaunch_core::flows::refresh_stale::Skip::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::refresh_stale::Skip
+pub enum devlaunch_core::flows::refresh_stale::Verdict
+pub devlaunch_core::flows::refresh_stale::Verdict::Refresh
+pub devlaunch_core::flows::refresh_stale::Verdict::Skip(devlaunch_core::flows::refresh_stale::Skip)
+impl core::clone::Clone for devlaunch_core::flows::refresh_stale::Verdict
+pub fn devlaunch_core::flows::refresh_stale::Verdict::clone(&self) -> devlaunch_core::flows::refresh_stale::Verdict
+impl core::cmp::Eq for devlaunch_core::flows::refresh_stale::Verdict
+impl core::cmp::PartialEq for devlaunch_core::flows::refresh_stale::Verdict
+pub fn devlaunch_core::flows::refresh_stale::Verdict::eq(&self, &devlaunch_core::flows::refresh_stale::Verdict) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::refresh_stale::Verdict
+pub fn devlaunch_core::flows::refresh_stale::Verdict::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::refresh_stale::Verdict
+pub struct devlaunch_core::flows::refresh_stale::Planned
+pub devlaunch_core::flows::refresh_stale::Planned::reference: alloc::string::String
+pub devlaunch_core::flows::refresh_stale::Planned::verdict: devlaunch_core::flows::refresh_stale::Verdict
+pub devlaunch_core::flows::refresh_stale::Planned::workspace_id: alloc::string::String
+impl core::clone::Clone for devlaunch_core::flows::refresh_stale::Planned
+pub fn devlaunch_core::flows::refresh_stale::Planned::clone(&self) -> devlaunch_core::flows::refresh_stale::Planned
+impl core::cmp::Eq for devlaunch_core::flows::refresh_stale::Planned
+impl core::cmp::PartialEq for devlaunch_core::flows::refresh_stale::Planned
+pub fn devlaunch_core::flows::refresh_stale::Planned::eq(&self, &devlaunch_core::flows::refresh_stale::Planned) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::refresh_stale::Planned
+pub fn devlaunch_core::flows::refresh_stale::Planned::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::refresh_stale::Planned
+pub struct devlaunch_core::flows::refresh_stale::Tally
+pub devlaunch_core::flows::refresh_stale::Tally::failed: usize
+pub devlaunch_core::flows::refresh_stale::Tally::refreshed: usize
+pub devlaunch_core::flows::refresh_stale::Tally::skipped: usize
+impl core::clone::Clone for devlaunch_core::flows::refresh_stale::Tally
+pub fn devlaunch_core::flows::refresh_stale::Tally::clone(&self) -> devlaunch_core::flows::refresh_stale::Tally
+impl core::cmp::Eq for devlaunch_core::flows::refresh_stale::Tally
+impl core::cmp::PartialEq for devlaunch_core::flows::refresh_stale::Tally
+pub fn devlaunch_core::flows::refresh_stale::Tally::eq(&self, &devlaunch_core::flows::refresh_stale::Tally) -> bool
+impl core::default::Default for devlaunch_core::flows::refresh_stale::Tally
+pub fn devlaunch_core::flows::refresh_stale::Tally::default() -> devlaunch_core::flows::refresh_stale::Tally
+impl core::fmt::Debug for devlaunch_core::flows::refresh_stale::Tally
+pub fn devlaunch_core::flows::refresh_stale::Tally::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for devlaunch_core::flows::refresh_stale::Tally
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::refresh_stale::Tally
+pub const devlaunch_core::flows::refresh_stale::BUILD_PROGRAMS: &[&str]
+pub trait devlaunch_core::flows::refresh_stale::Refresher
+pub fn devlaunch_core::flows::refresh_stale::Refresher::left_alone(&mut self, &str, &devlaunch_core::flows::refresh_stale::Skip)
+pub fn devlaunch_core::flows::refresh_stale::Refresher::planned(&mut self, &[devlaunch_core::flows::refresh_stale::Planned])
+pub fn devlaunch_core::flows::refresh_stale::Refresher::recreate(&mut self, &str) -> bool
+pub fn devlaunch_core::flows::refresh_stale::plan<'w>(&dyn devlaunch_runner::Runner, &devlaunch_core::flows::stale_images::StaleImages, impl core::iter::traits::collect::IntoIterator<Item = &'w str>, core::option::Option<&devlaunch_core::flows::agent_sessions::HerdrPanes>, &devlaunch_core::flows::launch_locks::LaunchLocks, &dyn core::ops::function::Fn(&std::path::Path) -> core::option::Option<alloc::string::String>) -> alloc::vec::Vec<devlaunch_core::flows::refresh_stale::Planned>
+pub fn devlaunch_core::flows::refresh_stale::run<'w>(&dyn devlaunch_runner::Runner, &devlaunch_core::flows::stale_images::StaleImages, impl core::iter::traits::collect::IntoIterator<Item = &'w str>, core::option::Option<&devlaunch_core::flows::agent_sessions::HerdrPanes>, &devlaunch_core::flows::launch_locks::LaunchLocks, &dyn core::ops::function::Fn(&std::path::Path) -> core::option::Option<alloc::string::String>, &mut dyn devlaunch_core::flows::refresh_stale::Refresher) -> devlaunch_core::flows::refresh_stale::Tally
 pub mod devlaunch_core::flows::repo_manager
 pub enum devlaunch_core::flows::repo_manager::CacheNotice
 pub devlaunch_core::flows::repo_manager::CacheNotice::AdoptedBareClone
@@ -3189,6 +3366,35 @@ impl core::fmt::Debug for devlaunch_core::flows::session_manager::PaneDestinatio
 pub fn devlaunch_core::flows::session_manager::PaneDestination::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::session_manager::PaneDestination
 pub fn devlaunch_core::flows::session_manager::pane_destination(&dyn devlaunch_runner::Runner) -> devlaunch_core::flows::session_manager::PaneDestination
+pub mod devlaunch_core::flows::stale_images
+pub struct devlaunch_core::flows::stale_images::StaleImage
+impl devlaunch_core::flows::stale_images::StaleImage
+pub fn devlaunch_core::flows::stale_images::StaleImage::container(&self) -> &str
+pub fn devlaunch_core::flows::stale_images::StaleImage::derived_image(&self) -> core::option::Option<&str>
+pub fn devlaunch_core::flows::stale_images::StaleImage::reference(&self) -> &str
+impl core::clone::Clone for devlaunch_core::flows::stale_images::StaleImage
+pub fn devlaunch_core::flows::stale_images::StaleImage::clone(&self) -> devlaunch_core::flows::stale_images::StaleImage
+impl core::cmp::Eq for devlaunch_core::flows::stale_images::StaleImage
+impl core::cmp::PartialEq for devlaunch_core::flows::stale_images::StaleImage
+pub fn devlaunch_core::flows::stale_images::StaleImage::eq(&self, &devlaunch_core::flows::stale_images::StaleImage) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::stale_images::StaleImage
+pub fn devlaunch_core::flows::stale_images::StaleImage::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::stale_images::StaleImage
+pub struct devlaunch_core::flows::stale_images::StaleImages
+impl devlaunch_core::flows::stale_images::StaleImages
+pub fn devlaunch_core::flows::stale_images::StaleImages::is_empty(&self) -> bool
+pub fn devlaunch_core::flows::stale_images::StaleImages::of(&self, &str) -> core::option::Option<&devlaunch_core::flows::stale_images::StaleImage>
+impl core::clone::Clone for devlaunch_core::flows::stale_images::StaleImages
+pub fn devlaunch_core::flows::stale_images::StaleImages::clone(&self) -> devlaunch_core::flows::stale_images::StaleImages
+impl core::cmp::Eq for devlaunch_core::flows::stale_images::StaleImages
+impl core::cmp::PartialEq for devlaunch_core::flows::stale_images::StaleImages
+pub fn devlaunch_core::flows::stale_images::StaleImages::eq(&self, &devlaunch_core::flows::stale_images::StaleImages) -> bool
+impl core::default::Default for devlaunch_core::flows::stale_images::StaleImages
+pub fn devlaunch_core::flows::stale_images::StaleImages::default() -> devlaunch_core::flows::stale_images::StaleImages
+impl core::fmt::Debug for devlaunch_core::flows::stale_images::StaleImages
+pub fn devlaunch_core::flows::stale_images::StaleImages::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::stale_images::StaleImages
+pub fn devlaunch_core::flows::stale_images::stale_images<'w>(&dyn devlaunch_runner::Runner, core::option::Option<&devlaunch_core::clients::devpod_home::DevpodHome>, impl core::iter::traits::collect::IntoIterator<Item = &'w str>) -> devlaunch_core::flows::stale_images::StaleImages
 pub mod devlaunch_core::flows::workspace_clone
 pub enum devlaunch_core::flows::workspace_clone::EnsureBranchError
 pub devlaunch_core::flows::workspace_clone::EnsureBranchError::Branch(devlaunch_core::flows::branch_manager::BranchError)

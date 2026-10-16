@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`dl --ls` says which workspaces run an older image than their reference names** (#673).
+  A pull moves an image reference and leaves every running container on the image it was
+  created from, so long-lived workspaces drifted days behind and nothing said so. `dl --ls`
+  now prints one line under the table for each such workspace, naming the reference and
+  `dl <ws> recreate`, and `dl --ls --json` appends a `staleImage` key to its row. The check
+  reads devpod's `workspace_result.json` and asks docker for the container's image and the
+  reference's current one; where devpod built a derived image on top of the declared one,
+  it compares layers. Every doubt reads as current.
+- **`dl <ws> recreate` starts the agents it ends again, in the panes they held** (#673).
+  A recreate ended every agent session in the container, which is why a stale workspace
+  was left alone. In a herdr pane, the recreate now reads which panes hold a live agent in
+  the workspace and the line herdr saved to start each one again
+  (`dl <ws> -- ... claude ... --resume <uuid>`). Once the new container is up, it types
+  each line back into its pane with `herdr pane run`, and then attaches. For a pane that
+  will not take its line, it prints the line to run by hand. Outside herdr there is no
+  line to print, so it says that the recreate ends the agents and that `claude --resume`
+  in the new container picks a conversation up again. No failure here refuses the
+  recreate. See docs/cli.md, "A recreate starts the agents it ends again".
+- **`dl --refresh-stale` recreates the stale workspaces that are idle** (#673). It runs
+  the recreate above, with no attach, on each workspace `dl --ls` calls stale, so it can
+  run after the daily pull. It skips a workspace, and says why, when another `dl` is
+  launching it, a build runs in it, an agent (`claude`, `codex` or `gemini`) runs a
+  command in it or is not idle, or it holds an agent session `dl` cannot start again
+  (outside herdr, any agent session). It prints its plan first and a count last, checks
+  each workspace again just before its recreate, and exits 1 when a recreate failed.
+  See docs/cli.md, "`--refresh-stale`: recreate the stale workspaces that are
+  idle".
+
 ### Fixed
 
 - **`rm`, `kill` and a launch remove the containers a forgotten workspace left running.**

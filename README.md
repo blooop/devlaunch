@@ -316,6 +316,7 @@ instead. [docs/cli.md](docs/cli.md) has the full `--rm` contract, including whic
 | `dl --prune` | Remove the clone directories no workspace opens any more, the agent git worktrees inside the clones it keeps, and the volumes and launch locks of workspaces devpod has forgotten |
 | `dl --reconcile` | Re-point workspaces whose recorded source folder went missing. Deletes nothing |
 | `dl --purge` | Remove devlaunch's own workspaces and caches |
+| `dl --refresh-stale` | Recreate each workspace that runs an older image than its reference, when its agents are idle and nothing builds in it. Starts the agents again and skips the rest, saying why. See [docs/cli.md](docs/cli.md) |
 | `dl --install` | Install shell completions, and the `dl-herdr-shell` name a herdr pane opens through |
 | `dl --herdr-setup` | Install and configure the Herdr pane shell |
 | `dl --herdr-env set KEY=VALUE` | Save a variable for new host shells in this Herdr workspace |
