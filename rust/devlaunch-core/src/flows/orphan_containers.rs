@@ -314,6 +314,25 @@ mod tests {
     }
 
     #[test]
+    fn a_listing_docker_refuses_removes_nothing_and_keeps_docker_words() {
+        let home = devpod_home_with(&[]);
+        let fake = FakeRunner::new();
+        fake.script(["docker", "ps"], Response::failed(1, "daemon is down\n"));
+
+        let swept = sweep(&fake, Some(&home), WS, None);
+
+        assert!(
+            matches!(
+                &swept,
+                OrphanSweep::NotRemoved { names, reason }
+                    if names.is_empty() && reason.contains("daemon is down")
+            ),
+            "{swept:?}"
+        );
+        assert_eq!(fake.args_to("docker").len(), 1, "a listing and no removal");
+    }
+
+    #[test]
     fn no_devpod_home_means_nothing_to_check_against() {
         let fake = FakeRunner::new();
 
