@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **A cold launch's setup pass starts one shell, not one per stage.** Each stage (session
+  name, zellij, codex, title, onboarding, trust) ran in a nested `bash -c`, and every new
+  bash reads the image's `$BASH_ENV`. An image that points it at a heavy shell profile
+  (for example a ROS environment) can pay about 1.1s a read inside `devpod ssh`, so the
+  trip took about 11s. The stages now run in subshells of the pass
+  (`( eval '<script>' )`), which keep each stage's `exit`, `set -u` and parse errors to
+  itself as the nested bash did. Measured over six cold launches of such an image, the
+  setup trip went from 10.9s to 11.1s down to 6.7s to 6.9s.
+
 ## [0.60.0] - 2026-10-16
 
 ### Added
