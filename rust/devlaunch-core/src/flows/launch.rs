@@ -2981,12 +2981,8 @@ fn report_typed_lines_again(
             runner,
             manager,
             session,
-            &|| {
-                SystemTime::now()
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .map_or(0, |since| since.as_nanos())
-            },
-            &|path| std::fs::read_to_string(path).ok(),
+            &report_seq,
+            &read_session_file,
             &|pause| {
                 std::thread::sleep(pause);
                 true
@@ -3051,12 +3047,8 @@ fn beside_resume_report<T>(
             session_manager::report_resume(
                 runner,
                 report,
-                &|| {
-                    SystemTime::now()
-                        .duration_since(SystemTime::UNIX_EPOCH)
-                        .map_or(0, |since| since.as_nanos())
-                },
-                &|path| std::fs::read_to_string(path).ok(),
+                &report_seq,
+                &read_session_file,
                 &|pause| stop.wait(pause),
             )
         });
@@ -3064,6 +3056,19 @@ fn beside_resume_report<T>(
         stop.now();
         outcome
     })
+}
+
+/// The number on a report to herdr: the wall clock in nanoseconds, so a later
+/// report always outnumbers an earlier one, and herdr drops the older.
+fn report_seq() -> u128 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |since| since.as_nanos())
+}
+
+/// Read herdr's session file, or nothing when it cannot be read.
+fn read_session_file(path: &std::path::Path) -> Option<String> {
+    std::fs::read_to_string(path).ok()
 }
 
 /// A flag one thread raises and another sleeps on.
@@ -5356,11 +5361,12 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
             }
             return None;
         };
-        let Some(held) =
-            agent_sessions::collect(self.context.runner(), &manager, &workspace_id, &|path| {
-                std::fs::read_to_string(path).ok()
-            })
-        else {
+        let Some(held) = agent_sessions::collect(
+            self.context.runner(),
+            &manager,
+            &workspace_id,
+            &read_session_file,
+        ) else {
             self.notices
                 .say(LaunchNotice::AgentSessionsUnanswered { workspace_id });
             return None;
