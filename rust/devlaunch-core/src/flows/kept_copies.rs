@@ -246,9 +246,10 @@ fn parse_result(bytes: &[u8]) -> Copy {
 
 /// What devpod recorded substituting into one workspace's devcontainer.
 ///
-/// Only the two fields the volume names are built from. Both optional because
-/// devpod omits an empty one, and a record written by a devpod that never learned
-/// about `${devcontainerId}` has neither.
+/// The two substituted values the volume names are built from, and the volume
+/// sources devpod recorded in the merged config's `mounts`. Both values optional
+/// because devpod omits an empty one, and a record written by a devpod that never
+/// learned about `${devcontainerId}` has neither.
 ///
 /// There is deliberately **no provenance field**, here or on the names. A
 /// `from_pattern: bool`, or a `Provenance` enum with a `Pattern` arm, would make an
@@ -268,6 +269,12 @@ pub(crate) struct Substitutions {
     /// `SubstitutionContext.DevContainerID` — what `${devcontainerId}` expanded
     /// to.
     devcontainer_id: Option<String>,
+    /// The `source` of every `type=volume` entry in `MergedConfig.mounts`, as
+    /// devpod recorded it — already substituted, so a devcontainer that declared
+    /// `myrepo-pixi-${localWorkspaceFolderBasename}` is recorded with the
+    /// workspace's basename in it. Unfiltered here; [`Self::volume_names`] keeps
+    /// only the ones scoped to this workspace.
+    recorded_volumes: Vec<String>,
 }
 
 impl Substitutions {
@@ -278,23 +285,65 @@ impl Substitutions {
     /// `docker-in-docker` feature's, which is devlaunch#325's scope; the two
     /// *values* in them are devpod's own. This is the only place either template is
     /// spelled, and `devlaunch-core/tests/volume_names.rs` holds the crate to that.
+    ///
+    /// After the two templates come the volume sources devpod recorded in the
+    /// merged config whose name holds the substituted basename or devcontainer id:
+    /// a volume any devcontainer named after *this* workspace, which no other
+    /// workspace can be using. Nothing is synthesized there either — the name is
+    /// devpod's record verbatim, and the two values only decide which recorded
+    /// names belong to the workspace, each as a whole token ([`holds_token`]). A fixed-name volume is left alone, because
+    /// a name that does not vary per workspace is a volume every workspace of the
+    /// repository shares, often on purpose.
     pub(crate) fn volume_names(&self) -> Vec<String> {
         let basename = self
             .local_workspace_folder
             .as_deref()
             .map(Path::new)
             .and_then(Path::file_name)
-            .map(|name| name.to_string_lossy().into_owned());
-        [
-            basename.map(|basename| format!("{basename}-pixi")),
+            .map(|name| name.to_string_lossy().into_owned())
+            .filter(|name| !name.is_empty());
+        let scopes: Vec<&str> = [basename.as_deref(), self.devcontainer_id.as_deref()]
+            .into_iter()
+            .flatten()
+            .collect();
+        let templated = [
+            basename.as_ref().map(|basename| format!("{basename}-pixi")),
             self.devcontainer_id
                 .as_deref()
                 .map(|id| format!("dind-var-lib-docker-{id}")),
         ]
         .into_iter()
-        .flatten()
-        .collect()
+        .flatten();
+        let scoped = self
+            .recorded_volumes
+            .iter()
+            .filter(|source| scopes.iter().any(|scope| holds_token(source, scope)))
+            .cloned();
+        let mut names: Vec<String> = Vec::new();
+        for name in templated.chain(scoped) {
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+        names
     }
+}
+
+/// Whether *token* occurs in *name* as a whole token: each end of the match is an
+/// end of *name* or a character that is not alphanumeric.
+///
+/// So the basename `kr` is found in `kr-cache` and `data.kr`, and not in
+/// `kros-cache`: a short basename or id is a substring of many names it has no
+/// part in, and each false match here is somebody's shared volume removed.
+fn holds_token(name: &str, token: &str) -> bool {
+    if token.is_empty() {
+        return false;
+    }
+    let bounded = |c: Option<char>| c.is_none_or(|c| !c.is_alphanumeric());
+    name.match_indices(token).any(|(start, _)| {
+        bounded(name[..start].chars().next_back())
+            && bounded(name[start + token.len()..].chars().next())
+    })
 }
 
 /// The two substituted values devpod's create result records.
@@ -303,7 +352,51 @@ pub(crate) fn substitutions_in(document: &serde_json::Value) -> Substitutions {
     Substitutions {
         local_workspace_folder: non_empty_string(&context["LocalWorkspaceFolder"]),
         devcontainer_id: non_empty_string(&context["DevContainerID"]),
+        recorded_volumes: recorded_volume_sources(&document["MergedConfig"]["mounts"]),
     }
+}
+
+/// The `source` of each volume mount in a recorded `mounts` array, in order.
+///
+/// A devcontainer.json mount is either an object (`{"type": "volume", "source":
+/// …}`) or a `--mount`-style string (`"source=…,target=…,type=volume"`), and devpod
+/// records whichever the config used. Anything else in the array — a bind, an
+/// entry of neither shape, a volume with no source — names nothing.
+fn recorded_volume_sources(mounts: &serde_json::Value) -> Vec<String> {
+    let Some(mounts) = mounts.as_array() else {
+        return Vec::new();
+    };
+    mounts
+        .iter()
+        .filter_map(|mount| match mount {
+            serde_json::Value::Object(fields) => (fields.get("type")?.as_str()? == "volume")
+                .then(|| non_empty_string(fields.get("source")?))
+                .flatten(),
+            serde_json::Value::String(spec) => volume_source_of_spec(spec),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The source of a `--mount`-style spec, where its `type` is `volume`.
+///
+/// `src` is docker's other spelling of `source`. A spec with no `type` is a
+/// volume to docker, but devcontainer.json specs always carry one, and guessing
+/// costs a removal, so an untyped spec names nothing.
+fn volume_source_of_spec(spec: &str) -> Option<String> {
+    let mut kind = None;
+    let mut source = None;
+    for field in spec.split(',') {
+        match field.split_once('=') {
+            Some(("type", value)) => kind = Some(value.trim()),
+            Some(("source" | "src", value)) => source = Some(value.trim()),
+            _ => {}
+        }
+    }
+    (kind? == "volume")
+        .then_some(source?)
+        .filter(|source| !source.is_empty())
+        .map(str::to_owned)
 }
 
 /// Read the two substituted values off devpod's create result.
@@ -606,6 +699,7 @@ mod tests {
         let both = Substitutions {
             local_workspace_folder: Some("/repos/o/r/repo-branch-abcd".to_owned()),
             devcontainer_id: Some("deadbeef".to_owned()),
+            recorded_volumes: Vec::new(),
         };
         assert_eq!(
             both.volume_names(),
@@ -615,6 +709,7 @@ mod tests {
         let no_id = Substitutions {
             local_workspace_folder: Some("/repos/o/r/repo-branch-abcd".to_owned()),
             devcontainer_id: None,
+            recorded_volumes: Vec::new(),
         };
         assert_eq!(no_id.volume_names(), ["repo-branch-abcd-pixi"]);
 
@@ -631,6 +726,97 @@ mod tests {
             .as_bytes(),
         );
         assert_eq!(blank.volume_names(), Vec::<String>::new());
+    }
+
+    /// A devcontainer that names its own volume after the workspace has that
+    /// volume swept with it: the source devpod recorded in the merged config's
+    /// `mounts` carries the substituted basename (or devcontainer id), so it is a
+    /// name devpod wrote down *and* one scoped to this workspace. A fixed-name
+    /// volume beside it is a cache somebody shares between workspaces on purpose,
+    /// and a bind mount is not a volume at all; neither is named.
+    ///
+    /// Both spellings of a mount are devcontainer.json's: the object, and the
+    /// `--mount`-style string.
+    #[test]
+    fn a_recorded_volume_mount_scoped_to_the_workspace_is_named() {
+        let recorded = parse_substitutions(
+            serde_json::json!({
+                "MergedConfig": { "mounts": [
+                    { "type": "volume", "source": "repo-main-ab12-pixi", "target": "/w/.pixi" },
+                    { "type": "volume", "source": "dind-var-lib-docker-deadbeef", "target": "/var/lib/docker" },
+                    "source=kinisi-ansible-pixi-repo-main-ab12,target=/w/.pixi,type=volume",
+                    { "type": "volume", "source": "cache-for-deadbeef", "target": "/c" },
+                    { "type": "volume", "source": "shared-pip-cache", "target": "/p" },
+                    "type=volume,source=shared-apt-cache,target=/a",
+                    { "type": "bind", "source": "/home/me/repo-main-ab12", "target": "/b" },
+                    "source=/home/me/repo-main-ab12-logs,target=/l,type=bind",
+                ]},
+                "SubstitutionContext": {
+                    "LocalWorkspaceFolder": "/repos/o/r/repo-main-ab12",
+                    "DevContainerID": "deadbeef",
+                },
+            })
+            .to_string()
+            .as_bytes(),
+        );
+
+        assert_eq!(
+            recorded.volume_names(),
+            [
+                "repo-main-ab12-pixi",
+                "dind-var-lib-docker-deadbeef",
+                "kinisi-ansible-pixi-repo-main-ab12",
+                "cache-for-deadbeef",
+            ]
+        );
+    }
+
+    /// A short basename is a substring of plenty of names it has nothing to do
+    /// with: a workspace opened from a folder called `kr` must not take a shared
+    /// `kros-cache` with it. The basename or id has to stand as a whole token of
+    /// the volume name, bounded by its ends or by a non-alphanumeric character.
+    #[test]
+    fn a_scope_inside_a_longer_word_names_nothing() {
+        let recorded = parse_substitutions(
+            serde_json::json!({
+                "MergedConfig": { "mounts": [
+                    { "type": "volume", "source": "kros-cache", "target": "/a" },
+                    { "type": "volume", "source": "shared-kr2-cache", "target": "/b" },
+                    { "type": "volume", "source": "beefcake-abc1", "target": "/c" },
+                    { "type": "volume", "source": "kr_data", "target": "/d" },
+                    { "type": "volume", "source": "data.kr", "target": "/e" },
+                ]},
+                "SubstitutionContext": {
+                    "LocalWorkspaceFolder": "/repos/kr",
+                    "DevContainerID": "abc",
+                },
+            })
+            .to_string()
+            .as_bytes(),
+        );
+
+        assert_eq!(
+            recorded.volume_names(),
+            ["kr-pixi", "dind-var-lib-docker-abc", "kr_data", "data.kr"]
+        );
+    }
+
+    /// With no substitution recorded there is nothing to scope a mount by, so a
+    /// recorded volume names nothing — not even one whose source happens to look
+    /// workspace-shaped.
+    #[test]
+    fn a_recorded_volume_mount_with_no_substitution_names_nothing() {
+        let recorded = parse_substitutions(
+            serde_json::json!({
+                "MergedConfig": { "mounts": [
+                    { "type": "volume", "source": "repo-main-ab12-pixi", "target": "/w/.pixi" },
+                ]},
+            })
+            .to_string()
+            .as_bytes(),
+        );
+
+        assert_eq!(recorded.volume_names(), Vec::<String>::new());
     }
 
     /// Bytes that are not JSON, and JSON of another shape, name nothing rather

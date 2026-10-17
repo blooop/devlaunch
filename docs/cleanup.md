@@ -24,13 +24,20 @@ workspaces](#cleaning-up-workspaces)), and **the named Docker volumes that
 workspace's devcontainer created**. Every path that removes a workspace does all three:
 `dl <ws> rm`, `dl <ws> rme`, `dl <ws> --rm`, and `--purge`.
 
-Two volumes per workspace, both named from what devpod recorded substituting into
-the devcontainer:
+The volumes are named from what devpod recorded substituting into the
+devcontainer:
 
 | volume | declared by |
 | --- | --- |
 | `<workspace-folder-basename>-pixi` | a `mounts` entry in the devcontainer, for the `.pixi` cache. This repo's own devcontainer has one |
 | `dind-var-lib-docker-<devcontainerId>` | the [`docker-in-docker`](https://github.com/devcontainers/features/tree/main/src/docker-in-docker) feature, for the nested daemon's `/var/lib/docker` |
+| any other `type=volume` mount whose recorded source holds the workspace's basename or devcontainer id | a `mounts` entry of any other name, such as `myrepo-pixi-${localWorkspaceFolderBasename}` |
+
+The third row is read from the merged config devpod recorded, where each mount's
+source is already substituted. A volume whose name does not vary per workspace
+(`myrepo-pip-cache`, say) is **not** removed: every workspace of that repository
+mounts the same one, and a cache shared between workspaces is usually shared on
+purpose.
 
 They used to be left behind, and that was measured rather than assumed: on one
 development machine, **39 orphaned volumes holding 37.28 GB**, not one of them

@@ -415,11 +415,12 @@ pub(super) fn sweep_volumes(runner: &dyn Runner, named: Option<NonEmpty<String>>
 /// Deriving the basename from the clone directory devlaunch chose instead would be
 /// a second answer to a question devpod has already answered, and the two can
 /// disagree — a workspace opened before a rename, say. Neither *value* is guessed:
-/// a substitution that is not in the record names no volume. The two name
-/// **templates** are still this repository's own devcontainer and the
-/// `docker-in-docker` feature's, so a `mounts` entry naming some third volume is
-/// not swept — devlaunch#325's scope, and the follow-up that would end it is
-/// reading the mount sources out of the recorded merged config instead.
+/// a substitution that is not in the record names no volume. Beyond the two
+/// templates, any `type=volume` mount the recorded merged config names is swept
+/// when its (already substituted) source holds the workspace's basename or
+/// devcontainer id — a volume a devcontainer named after this workspace. A
+/// fixed-name volume is a cache the repository's workspaces share and is left
+/// alone; `kept_copies::Substitutions::volume_names` is where that is decided.
 ///
 /// [`sole_workspace_result`] is what finds the file, rather than a contexts walk of
 /// its own: an id under two contexts must answer nothing, and `devpod delete`
