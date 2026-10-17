@@ -291,7 +291,7 @@ impl Substitutions {
     /// a volume any devcontainer named after *this* workspace, which no other
     /// workspace can be using. Nothing is synthesized there either — the name is
     /// devpod's record verbatim, and the two values only decide which recorded
-    /// names belong to the workspace. A fixed-name volume is left alone, because
+    /// names belong to the workspace, each as a whole token ([`holds_token`]). A fixed-name volume is left alone, because
     /// a name that does not vary per workspace is a volume every workspace of the
     /// repository shares, often on purpose.
     pub(crate) fn volume_names(&self) -> Vec<String> {
@@ -317,7 +317,7 @@ impl Substitutions {
         let scoped = self
             .recorded_volumes
             .iter()
-            .filter(|source| scopes.iter().any(|scope| source.contains(scope)))
+            .filter(|source| scopes.iter().any(|scope| holds_token(source, scope)))
             .cloned();
         let mut names: Vec<String> = Vec::new();
         for name in templated.chain(scoped) {
@@ -327,6 +327,23 @@ impl Substitutions {
         }
         names
     }
+}
+
+/// Whether *token* occurs in *name* as a whole token: each end of the match is an
+/// end of *name* or a character that is not alphanumeric.
+///
+/// So the basename `kr` is found in `kr-cache` and `data.kr`, and not in
+/// `kros-cache`: a short basename or id is a substring of many names it has no
+/// part in, and each false match here is somebody's shared volume removed.
+fn holds_token(name: &str, token: &str) -> bool {
+    if token.is_empty() {
+        return false;
+    }
+    let bounded = |c: Option<char>| c.is_none_or(|c| !c.is_alphanumeric());
+    name.match_indices(token).any(|(start, _)| {
+        bounded(name[..start].chars().next_back())
+            && bounded(name[start + token.len()..].chars().next())
+    })
 }
 
 /// The two substituted values devpod's create result records.
@@ -751,6 +768,36 @@ mod tests {
                 "kinisi-ansible-pixi-repo-main-ab12",
                 "cache-for-deadbeef",
             ]
+        );
+    }
+
+    /// A short basename is a substring of plenty of names it has nothing to do
+    /// with: a workspace opened from a folder called `kr` must not take a shared
+    /// `kros-cache` with it. The basename or id has to stand as a whole token of
+    /// the volume name, bounded by its ends or by a non-alphanumeric character.
+    #[test]
+    fn a_scope_inside_a_longer_word_names_nothing() {
+        let recorded = parse_substitutions(
+            serde_json::json!({
+                "MergedConfig": { "mounts": [
+                    { "type": "volume", "source": "kros-cache", "target": "/a" },
+                    { "type": "volume", "source": "shared-kr2-cache", "target": "/b" },
+                    { "type": "volume", "source": "beefcake-abc1", "target": "/c" },
+                    { "type": "volume", "source": "kr_data", "target": "/d" },
+                    { "type": "volume", "source": "data.kr", "target": "/e" },
+                ]},
+                "SubstitutionContext": {
+                    "LocalWorkspaceFolder": "/repos/kr",
+                    "DevContainerID": "abc",
+                },
+            })
+            .to_string()
+            .as_bytes(),
+        );
+
+        assert_eq!(
+            recorded.volume_names(),
+            ["kr-pixi", "dind-var-lib-docker-abc", "kr_data", "data.kr"]
         );
     }
 
