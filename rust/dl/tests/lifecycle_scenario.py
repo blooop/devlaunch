@@ -539,7 +539,16 @@ def build(root: pathlib.Path, shim: pathlib.Path, wanted: set) -> None:
             json.dumps(
                 {
                     "ContainerDetails": {"Id": "abc123def456"},
-                    "MergedConfig": {},
+                    # A third volume the devcontainer named after the workspace,
+                    # in the `--mount` string form, and a fixed-name cache every
+                    # workspace of the repository shares. devpod records both
+                    # already substituted.
+                    "MergedConfig": {
+                        "mounts": [
+                            f"source=devlaunch-cache-{CLEAN_LEAF},target=/c,type=volume",
+                            {"type": "volume", "source": "devlaunch-shared-cache", "target": "/s"},
+                        ]
+                    },
                     "SubstitutionContext": {
                         "LocalWorkspaceFolder": str(clean),
                         "ContainerWorkspaceFolder": "/workspaces/devlaunch",

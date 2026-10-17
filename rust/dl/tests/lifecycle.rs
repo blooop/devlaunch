@@ -1264,6 +1264,10 @@ fn rmt_force_is_the_way_past_the_guard() {
 /// and it is the *binary* that has to hand core the devpod home they are named
 /// from — a `None` there would leave every core test passing and every volume on
 /// disk.
+///
+/// The third name is a volume the devcontainer's `mounts` named after the
+/// workspace, read from devpod's recorded merged config; the fixed-name cache
+/// beside it in the same record is shared between workspaces and stays.
 #[test]
 fn a_removed_workspaces_devcontainer_volumes_go_with_it() {
     let world = World::with(&["--devcontainer-volumes"]);
@@ -1272,7 +1276,9 @@ fn a_removed_workspaces_devcontainer_volumes_go_with_it() {
 
     assert_eq!(
         world.docker_calls(),
-        ["volume rm --force devlaunch-main-legacy-pixi dind-var-lib-docker-0f4b2c1d"]
+        [
+            "volume rm --force devlaunch-main-legacy-pixi dind-var-lib-docker-0f4b2c1d devlaunch-cache-devlaunch-main-legacy"
+        ]
     );
 }
 
@@ -1290,7 +1296,9 @@ fn a_purge_takes_the_devcontainer_volumes_of_the_workspaces_it_deleted() {
     // never deleted.
     assert_eq!(
         world.docker_calls(),
-        ["volume rm --force devlaunch-main-legacy-pixi dind-var-lib-docker-0f4b2c1d"]
+        [
+            "volume rm --force devlaunch-main-legacy-pixi dind-var-lib-docker-0f4b2c1d devlaunch-cache-devlaunch-main-legacy"
+        ]
     );
 }
 
