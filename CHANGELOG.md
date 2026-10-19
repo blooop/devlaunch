@@ -7,9 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.62.1] - 2026-10-19
+
 ### Fixed
 
-- **`rm`, `kill` and a launch remove the containers a forgotten workspace left running.**
+- **`rm`, `kill` and a launch remove the containers a forgotten workspace left running** (#682).
   `devpod delete` finds a container only by the uid of the record it deletes, so a forced
   delete whose `compose down` failed, or a record made again under a new uid, left the old
   compose project up with nothing that owned it. Its fixed `container_name`s then failed every
