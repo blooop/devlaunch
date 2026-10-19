@@ -562,6 +562,23 @@ pub(crate) fn devpod_home_with(entries: &[(&str, &str, Option<()>)]) -> ScratchH
     ScratchHome { _dir: dir, home }
 }
 
+/// An empty record for one workspace under a context named by raw bytes, for
+/// the test that needs a context name that is not UTF-8.
+#[cfg(test)]
+pub(crate) fn record_under_context(
+    home: &DevpodHome,
+    context: &std::ffi::OsStr,
+    workspace_id: &str,
+) {
+    let dir = home
+        .contexts()
+        .join(context)
+        .join("workspaces")
+        .join(workspace_id);
+    std::fs::create_dir_all(&dir).expect("a record directory");
+    std::fs::write(dir.join("workspace.json"), "{}").expect("a record");
+}
+
 /// A file in devpod's agent-side directory for one workspace, where devpod
 /// writes its compose override. Not created: a container label names it whether
 /// or not it is still on disk.

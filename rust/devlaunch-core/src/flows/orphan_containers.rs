@@ -212,7 +212,7 @@ mod tests {
     use devlaunch_test_support::{FakeRunner, Response};
 
     use super::*;
-    use crate::clients::devpod_home::{agent_compose_file, devpod_home_with};
+    use crate::clients::devpod_home::{agent_compose_file, devpod_home_with, record_under_context};
 
     const WS: &str = "kinisi-ros-ci-sim-shard-rebalance-cd1e";
 
@@ -334,16 +334,7 @@ mod tests {
     fn a_record_under_a_context_name_that_is_not_utf8_holds_it() {
         use std::os::unix::ffi::OsStrExt;
         let home = devpod_home_with(&[]);
-        let record = home
-            .path()
-            .join("contexts")
-            .join(std::ffi::OsStr::from_bytes(b"ctx\xff"))
-            .join("workspaces")
-            .join(WS)
-            .join("workspace.json");
-        std::fs::create_dir_all(record.parent().expect("a record directory"))
-            .expect("a record directory");
-        std::fs::write(&record, "{}").expect("a record");
+        record_under_context(&home, std::ffi::OsStr::from_bytes(b"ctx\xff"), WS);
         let fake = FakeRunner::new();
 
         assert_eq!(sweep(&fake, Some(&home), WS, None), OrphanSweep::Nothing);
