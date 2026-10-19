@@ -22,7 +22,8 @@
 //!
 //! Only containers of a workspace devpod holds **no record for in any context**.
 //! With a record somewhere, devpod still owns the workspace and dl stays out of
-//! its containers. Without one, a container is this workspace's leftover when one
+//! its containers. A record dl cannot read counts as one: only a "not found"
+//! everywhere a record could be is "no record". Without one, a container is this workspace's leftover when one
 //! of its compose labels (`working_dir`, `config_files`) names a path inside:
 //!
 //! - devpod's agent-side directory for this workspace id, under any context.
@@ -43,7 +44,7 @@
 
 use std::path::Path;
 
-use crate::clients::devpod_home::DevpodHome;
+use crate::clients::devpod_home::{DevpodHome, RecordPresence};
 use crate::clients::docker::{self, ComposeContainer, Unlisted};
 use crate::domain::workspace_state::NonEmpty;
 
@@ -87,7 +88,7 @@ pub(crate) fn sweep(
     let Some(home) = devpod_home else {
         return OrphanSweep::Nothing;
     };
-    if workspace_id.is_empty() || home.holds_any_record(workspace_id) {
+    if workspace_id.is_empty() || home.record_presence(workspace_id) != RecordPresence::Absent {
         return OrphanSweep::Nothing;
     }
     let containers = match docker::compose_containers(runner) {
@@ -269,6 +270,57 @@ mod tests {
             sweep(&fake, Some(&home), WS, Some(&clone_dir())),
             OrphanSweep::Nothing
         );
+        assert!(fake.args_to("docker").is_empty(), "{:?}", fake.argvs());
+    }
+
+    /// A record dl cannot read may still be there, so it holds the workspace
+    /// as surely as one dl can read: root-owned directories from container
+    /// mounts are ordinary on real hosts.
+    #[test]
+    fn a_record_dl_cannot_read_still_holds_it() {
+        // SAFETY: `geteuid` takes nothing, returns a uid and cannot fail.
+        if unsafe { libc::geteuid() } == 0 {
+            eprintln!("skipped: root reads a directory of mode 000");
+            return;
+        }
+        use std::os::unix::fs::PermissionsExt;
+        let home = devpod_home_with(&[("default", WS, None)]);
+        let dir = home
+            .record("default", WS)
+            .parent()
+            .expect("a record directory")
+            .to_path_buf();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o000))
+            .expect("a locked record directory");
+        let fake = FakeRunner::new();
+
+        let swept = sweep(&fake, Some(&home), WS, Some(&clone_dir()));
+
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755))
+            .expect("the record directory unlocked again");
+        assert_eq!(swept, OrphanSweep::Nothing);
+        assert!(fake.args_to("docker").is_empty(), "{:?}", fake.argvs());
+    }
+
+    /// A context whose name is not UTF-8 is still a directory devpod may have
+    /// written a record into.
+    #[test]
+    fn a_record_under_a_context_name_that_is_not_utf8_holds_it() {
+        use std::os::unix::ffi::OsStrExt;
+        let home = devpod_home_with(&[]);
+        let record = home
+            .path()
+            .join("contexts")
+            .join(std::ffi::OsStr::from_bytes(b"ctx\xff"))
+            .join("workspaces")
+            .join(WS)
+            .join("workspace.json");
+        std::fs::create_dir_all(record.parent().expect("a record directory"))
+            .expect("a record directory");
+        std::fs::write(&record, "{}").expect("a record");
+        let fake = FakeRunner::new();
+
+        assert_eq!(sweep(&fake, Some(&home), WS, None), OrphanSweep::Nothing);
         assert!(fake.args_to("docker").is_empty(), "{:?}", fake.argvs());
     }
 

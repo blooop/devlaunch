@@ -126,7 +126,8 @@ project does not trip over the old names. Each removal is named on stderr:
 Removed containers <id> left behind: <name>, <name>
 ```
 
-A workspace devpod still holds is left alone, and so is a container that names
+A workspace devpod still holds is left alone (a record dl cannot read counts as
+held), and so is a container that names
 only a local folder opened with `dl ./folder`: that folder is yours, and a compose
 project you started in it by hand is not a leftover. Names are never matched.
 

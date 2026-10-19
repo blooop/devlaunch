@@ -145,19 +145,44 @@ impl DevpodHome {
     /// Every context rather than [`Self::sole_context_holding`]'s single answer,
     /// because the caller asks the opposite question: whether devpod has *no*
     /// workspace by this id anywhere, so that nothing on the machine can still
-    /// claim the containers that name it. Two contexts holding it is a yes. A
-    /// `contexts` directory that would not read is also a yes, so that an
-    /// unreadable home counts as "a record may be there".
-    pub(crate) fn holds_any_record(&self, workspace_id: &str) -> bool {
-        let Ok(contexts) = std::fs::read_dir(self.contexts()) else {
-            return self.contexts().exists();
+    /// claim the containers that name it. Two contexts holding it is
+    /// [`RecordPresence::Held`].
+    ///
+    /// Only "not found", for the `contexts` directory or for every record path
+    /// under it, is [`RecordPresence::Absent`]. Anything else that would not
+    /// read (a directory dl may not search, an entry the listing could not
+    /// return) is [`RecordPresence::Unknown`]: a record may be there. A context
+    /// name that is not UTF-8 is read like any other, by its bytes.
+    pub(crate) fn record_presence(&self, workspace_id: &str) -> RecordPresence {
+        let contexts = match std::fs::read_dir(self.contexts()) {
+            Ok(contexts) => contexts,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return RecordPresence::Absent;
+            }
+            Err(_) => return RecordPresence::Unknown,
         };
-        contexts.flatten().any(|context| {
-            context
-                .file_name()
-                .to_str()
-                .is_some_and(|name| self.record(name, workspace_id).is_file())
-        })
+        let mut unknown = false;
+        for context in contexts {
+            let Ok(context) = context else {
+                unknown = true;
+                continue;
+            };
+            let record = context
+                .path()
+                .join("workspaces")
+                .join(workspace_id)
+                .join("workspace.json");
+            match std::fs::metadata(&record) {
+                Ok(_) => return RecordPresence::Held,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => unknown = true,
+            }
+        }
+        if unknown {
+            RecordPresence::Unknown
+        } else {
+            RecordPresence::Absent
+        }
     }
 
     /// The workspace id whose devpod agent-side directory `path` is inside,
@@ -330,6 +355,20 @@ impl DevpodHome {
         }
         Ok(())
     }
+}
+
+/// Whether devpod holds a record for one workspace id, in any context.
+///
+/// Three arms, because "could not tell" must not read as "no": the one caller
+/// removes containers on [`Self::Absent`] alone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RecordPresence {
+    /// A record is there, in at least one context.
+    Held,
+    /// No context holds one, and every place one could be said so.
+    Absent,
+    /// Some place a record could be would not read.
+    Unknown,
 }
 
 /// A directory's entries; `Some(None)` when it is not there, and nothing when
