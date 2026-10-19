@@ -232,20 +232,54 @@ const COMPOSE_FORMAT: &str = "{{.ID}}\t{{.Names}}\t\
 
 /// Every container on this machine that a compose project made, running or not.
 pub(crate) fn compose_containers(runner: &dyn Runner) -> Result<Vec<ComposeContainer>, Unlisted> {
-    let spec = SpawnSpec::from(Invocation::new(PROGRAM).with_args([
-        "ps",
-        "--all",
-        "--no-trunc",
-        "--filter",
-        "label=com.docker.compose.project",
-        "--format",
-        COMPOSE_FORMAT,
-    ]))
-    .with_timeout(LIST_COMPOSE_CONTAINERS);
+    let stdout = listing(
+        runner,
+        [
+            "ps",
+            "--all",
+            "--no-trunc",
+            "--filter",
+            "label=com.docker.compose.project",
+            "--format",
+            COMPOSE_FORMAT,
+        ]
+        .map(str::to_owned),
+    )?;
+    Ok(stdout.lines().filter_map(compose_container).collect())
+}
+
+/// Which of these containers docker still has, running or not, by full id.
+///
+/// For after a removal that failed: `docker rm` exits non-zero when any one of
+/// several is already gone, and still removes the rest.
+pub(crate) fn present_containers(
+    runner: &dyn Runner,
+    ids: &NonEmpty<String>,
+) -> Result<Vec<String>, Unlisted> {
+    let mut args = ["ps", "--quiet", "--all", "--no-trunc"]
+        .map(str::to_owned)
+        .to_vec();
+    for id in ids.iter() {
+        args.push("--filter".to_owned());
+        args.push(format!("id={id}"));
+    }
+    let stdout = listing(runner, args)?;
+    Ok(stdout
+        .lines()
+        .filter_map(|line| line.split_whitespace().next())
+        .map(str::to_owned)
+        .collect())
+}
+
+/// One `docker ps`, its stdout, or why docker would not give it.
+fn listing(
+    runner: &dyn Runner,
+    args: impl IntoIterator<Item = String>,
+) -> Result<String, Unlisted> {
+    let spec = SpawnSpec::from(Invocation::new(PROGRAM).with_args(args))
+        .with_timeout(LIST_COMPOSE_CONTAINERS);
     match ran(runner.capture(&spec)) {
-        Ok((exit, CapturedText { stdout, .. })) if exit.is_success() => {
-            Ok(stdout.lines().filter_map(compose_container).collect())
-        }
+        Ok((exit, CapturedText { stdout, .. })) if exit.is_success() => Ok(stdout),
         Ok((exit, CapturedText { stderr, .. })) => Err(Unlisted::Failed(format!(
             "docker ps failed ({exit:?}): {}",
             stderr.trim()
