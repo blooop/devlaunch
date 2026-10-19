@@ -1,6 +1,6 @@
 //! `dl <ws> rm`: a workspace, its clone, and the volumes its devcontainer made.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use super::delete_guard::{
@@ -17,6 +17,7 @@ use crate::domain::workspace_state::NonEmpty;
 use crate::flows::kept_copies::{self, KeptCopies};
 use crate::flows::kill;
 use crate::flows::listing::CommandContext;
+use crate::flows::orphan_containers::{self, OrphanSweep};
 use crate::flows::workspace_clone::{RemoveWorkspaceError, Removed, WorkspaceCloneManager};
 use crate::notices::Notices;
 use crate::runner::{Exit, OsFailure, Runner};
@@ -274,6 +275,9 @@ pub(crate) fn workspace_delete(
     // names live. Named afterwards, this would find nothing every time and look
     // like a working cleanup.
     let named = devcontainer_volumes(devpod_home, workspace_id);
+    // Named before the delete for the same reason, and before the clone goes
+    // with it: the leftover sweep below matches containers by the clone's path.
+    let clone_path = managed_clone(clones, storage, workspace_id);
     // The lock line is answered the way a launch answers it (devlaunch#602): said,
     // and then *cleared*, by the same sweep `up` runs. It used to be said and
     // nothing more, with advice to run `kill` in another terminal, which left an
@@ -311,6 +315,13 @@ pub(crate) fn workspace_delete(
         // `NotRun` here used to mean devpod was missing or would not exec.
         Err(NotRun::TimedOut) => {
             context.forget_workspaces();
+            sweep_leftovers(
+                context.runner(),
+                devpod_home,
+                workspace_id,
+                clone_path.as_deref(),
+                notices,
+            );
             refresh.ask(context.runner(), RefreshReason::Forced);
             return Err(NotRun::TimedOut);
         }
@@ -319,6 +330,18 @@ pub(crate) fn workspace_delete(
     // Unconditionally: a delete that reports failure may still have got far enough
     // to change what devpod lists.
     context.forget_workspaces();
+    // On every outcome where devpod ran, and before the clone goes. The sweep
+    // acts only once devpod holds no record of this workspace in any context, so
+    // a delete devpod refused, which leaves the record, keeps its containers; a
+    // `--force` delete that gave up on `compose down` and dropped the record
+    // anyway does not leave them running.
+    sweep_leftovers(
+        context.runner(),
+        devpod_home,
+        workspace_id,
+        clone_path.as_deref(),
+        notices,
+    );
     if !exit.is_success() {
         refresh.ask(context.runner(), RefreshReason::Forced);
         return Ok(RemoveOutcome::DevpodRefused { exit });
@@ -374,6 +397,56 @@ pub(crate) fn workspace_delete(
     }
     refresh.ask(context.runner(), RefreshReason::Forced);
     Ok(RemoveOutcome::Deleted { clone, volumes })
+}
+
+/// This workspace's clone, when it is one devlaunch made, for the leftover
+/// sweep to match container labels against.
+///
+/// Only a clone in the shape devlaunch makes, `<clone root>/<owner>/<repo>/<id>`:
+/// a recorded path anywhere else is somebody's directory, or a repository's
+/// directory holding other workspaces' clones, and a compose project there is
+/// not a leftover of this workspace.
+fn managed_clone(
+    clones: &WorkspaceCloneManager<'_>,
+    storage: &MetadataStorage,
+    workspace_id: &str,
+) -> Option<PathBuf> {
+    let recorded = storage.get_worktree_by_workspace_id(workspace_id)?;
+    // The removal below says whatever naming the clone has to say; this read is
+    // silent so it is not said twice.
+    let mut unsaid = Vec::new();
+    let path = clones.resolve_clone_path(recorded, &mut unsaid)?;
+    crate::domain::xdg::is_clone_of(clones.repos_dir(), &path, workspace_id).then_some(path)
+}
+
+/// Remove the containers a deleted workspace left behind, and say so.
+fn sweep_leftovers(
+    runner: &dyn Runner,
+    devpod_home: Option<&DevpodHome>,
+    workspace_id: &str,
+    clone: Option<&Path>,
+    notices: &mut dyn Notices<LifecycleNotice>,
+) {
+    match orphan_containers::sweep(runner, devpod_home, workspace_id, clone) {
+        OrphanSweep::Removed(names) => notices.say(LifecycleNotice::LeftoverContainersRemoved {
+            workspace_id: workspace_id.to_owned(),
+            names,
+        }),
+        OrphanSweep::NotListed { reason } => {
+            notices.say(LifecycleNotice::LeftoverContainersNotListed {
+                workspace_id: workspace_id.to_owned(),
+                reason,
+            })
+        }
+        OrphanSweep::NotRemoved { names, reason } => {
+            notices.say(LifecycleNotice::LeftoverContainersNotRemoved {
+                workspace_id: workspace_id.to_owned(),
+                names,
+                reason,
+            });
+        }
+        OrphanSweep::Nothing | OrphanSweep::NoDocker => {}
+    }
 }
 
 /// Remove the volumes `named`, and say what became of them.

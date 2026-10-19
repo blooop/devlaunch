@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`rm`, `kill` and a launch remove the containers a forgotten workspace left running.**
+  `devpod delete` finds a container only by the uid of the record it deletes, so a forced
+  delete whose `compose down` failed, or a record made again under a new uid, left the old
+  compose project up with nothing that owned it. Its fixed `container_name`s then failed every
+  later `up` of that workspace with `Conflict. The container name ... is already in use`.
+  Once devpod holds no record of the workspace, dl now removes every container whose compose
+  labels name devpod's directory for that id or the clone dl made, and names each one. A
+  workspace devpod still holds (or whose record dl cannot read), a local folder's own compose
+  projects, and any container that names another workspace's devpod directory or a folder
+  devpod holds as another workspace's source, are left alone.
+
 ## [0.62.0] - 2026-10-16
 
 ### Added

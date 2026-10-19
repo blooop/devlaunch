@@ -90,6 +90,7 @@ use crate::flows::lifecycle::{
     self, KnownWorkspace, LifecycleNotice, Refresh, RefreshReason, StopOutcome,
 };
 use crate::flows::listing::CommandContext;
+use crate::flows::orphan_containers::OrphanSweep;
 use crate::flows::provision::verdict_cache::VerdictCache;
 use crate::flows::provision::{
     self, ClaudeConfig, DevpodMissing, HostLayout, PassOccasion, ProvisionEvent, Provisioning,
@@ -528,6 +529,27 @@ pub enum LaunchNotice {
     /// binds and this host does not set. docker names no variable, so neither does
     /// this -- it says where to look instead.
     MountSourceEmpty,
+    /// Containers an earlier incarnation of this workspace left behind, removed
+    /// before the `up` so it does not trip over their fixed `container_name`.
+    /// devpod held no record of the workspace, so nothing still owned them; see
+    /// `flows::orphan_containers`.
+    LeftoverContainersRemoved {
+        workspace_id: String,
+        names: NonEmpty<String>,
+    },
+    /// docker would not list containers, in its own words, so leftovers were not
+    /// looked for. The `up` goes ahead, and will name the container it trips over.
+    LeftoverContainersNotListed {
+        workspace_id: String,
+        reason: String,
+    },
+    /// Leftover containers docker would not remove, in its own words. The `up`
+    /// goes ahead, and will name the container it trips over.
+    LeftoverContainersNotRemoved {
+        workspace_id: String,
+        names: NonEmpty<String>,
+        reason: String,
+    },
 
     // --- the dotfiles this `up` asked devpod for (devlaunch#560)
     //
@@ -1256,6 +1278,222 @@ impl<'a> Naming<'a> {
     }
 }
 
+/// Remove the containers a forgotten earlier incarnation of `workspace_id`
+/// left, and say so.
+///
+/// `source` counts as the workspace's clone only when it is the directory
+/// devlaunch clones `workspace_id` into, `<clone root>/<owner>/<repo>/<id>`: a
+/// local folder is the user's, and a compose project they started there by hand
+/// is not a leftover; a repository's directory above the clones holds other
+/// workspaces' clones, whose containers are not this one's.
+fn sweep_leftovers(
+    runner: &dyn Runner,
+    host: &Host,
+    workspace_id: &str,
+    source: &str,
+    notices: &mut dyn Notices<LaunchNotice>,
+) {
+    let source = Path::new(source);
+    let clone_root = crate::domain::xdg::clone_root_in(&host.cache_dir);
+    let clone =
+        crate::domain::xdg::is_clone_of(&clone_root, source, workspace_id).then_some(source);
+    match crate::flows::orphan_containers::sweep(
+        runner,
+        host.devpod_home.as_ref(),
+        workspace_id,
+        clone,
+    ) {
+        OrphanSweep::Removed(names) => notices.say(LaunchNotice::LeftoverContainersRemoved {
+            workspace_id: workspace_id.to_owned(),
+            names,
+        }),
+        OrphanSweep::NotListed { reason } => {
+            notices.say(LaunchNotice::LeftoverContainersNotListed {
+                workspace_id: workspace_id.to_owned(),
+                reason,
+            })
+        }
+        OrphanSweep::NotRemoved { names, reason } => {
+            notices.say(LaunchNotice::LeftoverContainersNotRemoved {
+                workspace_id: workspace_id.to_owned(),
+                names,
+                reason,
+            });
+        }
+        OrphanSweep::Nothing | OrphanSweep::NoDocker => {}
+    }
+}
+
+#[cfg(test)]
+mod leftover_tests {
+    use devlaunch_test_support::{FakeRunner, Response};
+
+    use super::*;
+    use crate::clients::devpod_home::{agent_compose_file, devpod_home_with};
+
+    fn host_with(home: &DevpodHome, cache: &Path) -> Host {
+        let mut host = Host::from_process(cache);
+        host.devpod_home = Some(home.clone());
+        host
+    }
+
+    /// A workspace devpod has no record of, about to be created over containers
+    /// an older one left: they go before the `up`, and the launch names them. A
+    /// container that only names the clone counts, because the clone is dl's.
+    #[test]
+    fn leftovers_of_a_forgotten_workspace_are_removed_before_the_up() {
+        let home = devpod_home_with(&[]);
+        let cache = Path::new("/cache/devlaunch");
+        let clone = crate::domain::xdg::clone_root_in(cache).join("o/r/ws");
+        let fake = FakeRunner::new();
+        fake.script(
+            ["docker", "ps"],
+            Response::stdout(format!(
+                "aaa\tdev_ws\t{dir}\t{dir}/a.yml,{agent}\nbbb\tside_ws\t{dir}\t{dir}/b.yml\n",
+                dir = clone.join(".devcontainer").display(),
+                agent = agent_compose_file(&home, "default", "ws").display(),
+            )),
+        );
+        let mut notices: Vec<LaunchNotice> = Vec::new();
+
+        sweep_leftovers(
+            &fake,
+            &host_with(&home, cache),
+            "ws",
+            &clone.display().to_string(),
+            &mut notices,
+        );
+
+        assert_eq!(
+            fake.args_to("docker").last().expect("a removal"),
+            &["rm", "--force", "aaa", "bbb"]
+        );
+        assert_eq!(
+            notices,
+            [LaunchNotice::LeftoverContainersRemoved {
+                workspace_id: "ws".to_owned(),
+                names: NonEmpty::of(["dev_ws".to_owned(), "side_ws".to_owned()])
+                    .expect("two names"),
+            }]
+        );
+    }
+
+    /// A docker that will not list its containers is said, in its own words,
+    /// and nothing is removed.
+    #[test]
+    fn a_listing_docker_refuses_is_said_in_dockers_words() {
+        let home = devpod_home_with(&[]);
+        let fake = FakeRunner::new();
+        fake.script(["docker", "ps"], Response::failed(1, "daemon is down\n"));
+        let mut notices: Vec<LaunchNotice> = Vec::new();
+
+        sweep_leftovers(
+            &fake,
+            &host_with(&home, Path::new("/cache/devlaunch")),
+            "ws",
+            "/home/me/ws",
+            &mut notices,
+        );
+
+        assert_eq!(
+            notices,
+            [LaunchNotice::LeftoverContainersNotListed {
+                workspace_id: "ws".to_owned(),
+                reason: "docker ps failed (Code(1)): daemon is down".to_owned(),
+            }]
+        );
+        assert_eq!(fake.args_to("docker").len(), 1, "a listing and no removal");
+    }
+
+    /// A docker that will not remove the leftovers is said, with their names
+    /// and docker's words.
+    #[test]
+    fn a_removal_docker_refuses_is_said_in_dockers_words() {
+        let home = devpod_home_with(&[]);
+        let fake = FakeRunner::new();
+        fake.script(
+            ["docker", "ps"],
+            Response::stdout(format!(
+                "aaa\tdev_ws\t/x\t{}\n",
+                agent_compose_file(&home, "default", "ws").display()
+            )),
+        );
+        fake.script(["docker", "rm"], Response::failed(1, "daemon said no\n"));
+        let mut notices: Vec<LaunchNotice> = Vec::new();
+
+        sweep_leftovers(
+            &fake,
+            &host_with(&home, Path::new("/cache/devlaunch")),
+            "ws",
+            "/home/me/ws",
+            &mut notices,
+        );
+
+        assert_eq!(
+            notices,
+            [LaunchNotice::LeftoverContainersNotRemoved {
+                workspace_id: "ws".to_owned(),
+                names: NonEmpty::of(["dev_ws".to_owned()]).expect("one name"),
+                reason: "docker rm failed (Code(1)): daemon said no".to_owned(),
+            }]
+        );
+    }
+
+    /// A local folder is the user's directory: a container that names only the
+    /// folder, and not devpod's directory for the workspace, is not a leftover.
+    #[test]
+    fn a_local_folder_is_not_treated_as_a_clone() {
+        let home = devpod_home_with(&[]);
+        let fake = FakeRunner::new();
+        fake.script(
+            ["docker", "ps"],
+            Response::stdout("aaa\tmy_db\t/home/me/proj\t/home/me/proj/compose.yml\n"),
+        );
+        let mut notices: Vec<LaunchNotice> = Vec::new();
+
+        sweep_leftovers(
+            &fake,
+            &host_with(&home, Path::new("/cache/devlaunch")),
+            "proj",
+            "/home/me/proj",
+            &mut notices,
+        );
+
+        assert_eq!(fake.args_to("docker").len(), 1, "{:?}", fake.argvs());
+        assert!(notices.is_empty());
+    }
+
+    /// A repository's directory under the clone root holds every clone of that
+    /// repository: launched as a folder, it is not the clone of a workspace named
+    /// after its leaf, and the live workspaces' containers under it stay.
+    #[test]
+    fn a_launch_at_a_clones_parent_leaves_the_clones_containers() {
+        let home = devpod_home_with(&[]);
+        let cache = Path::new("/cache/devlaunch");
+        let repo = crate::domain::xdg::clone_root_in(cache).join("o/r");
+        let fake = FakeRunner::new();
+        fake.script(
+            ["docker", "ps"],
+            Response::stdout(format!(
+                "aaa\tdev_ws\t{dir}\t{dir}/a.yml\n",
+                dir = repo.join("ws/.devcontainer").display(),
+            )),
+        );
+        let mut notices: Vec<LaunchNotice> = Vec::new();
+
+        sweep_leftovers(
+            &fake,
+            &host_with(&home, cache),
+            "r",
+            &repo.display().to_string(),
+            &mut notices,
+        );
+
+        assert_eq!(fake.args_to("docker").len(), 1, "{:?}", fake.argvs());
+        assert!(notices.is_empty());
+    }
+}
+
 /// One `devpod up`, as data.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct UpRequest<'a> {
@@ -1864,6 +2102,14 @@ fn up_under_stage(
     // on the path that is already spending seconds to minutes in `devpod up`, and
     // nothing at all on the fast-attach arm, which never reaches this function.
     ensure_a_provider(context.runner(), notices);
+
+    // Inside the launch lock and in front of the `up`: a workspace devpod holds
+    // no record of gets a new compose project, and a container an older one left
+    // under a fixed `container_name` makes that project's create fail. The sweep
+    // does nothing for a workspace devpod still holds.
+    if let Some(identity) = request.naming.identity() {
+        sweep_leftovers(context.runner(), host, identity, request.source, notices);
+    }
 
     // Give every workspace the host's gh login, whatever its devcontainer.json
     // does or does not set up for itself. The file is removed when `staged` drops,

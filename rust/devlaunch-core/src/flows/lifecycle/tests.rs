@@ -50,7 +50,9 @@ use super::*;
 use crate::clients::devpod::{
     ContainerState, ListingUnreadable, NotRun, Patience, Workspace, WorkspaceSource,
 };
-use crate::clients::devpod_home::{DevpodHome, RepointFailure, ScratchHome, devpod_home_with};
+use crate::clients::devpod_home::{
+    DevpodHome, RepointFailure, ScratchHome, agent_compose_file, devpod_home_with,
+};
 use crate::clients::git::Git;
 use crate::clients::{devpod, docker};
 use crate::domain::locks;
@@ -2345,6 +2347,60 @@ fn a_delete_killed_at_its_deadline_still_invalidates_the_listing() {
         world.devpod.detached(),
         [vec!["dl", "--update-cache", "--force"]],
         "the completion cache was left offering a workspace that may be gone"
+    );
+}
+
+/// A delete killed at its deadline may still have dropped devpod's record, and
+/// the containers it was composing down with it. With no record left, the
+/// leftovers are swept on this arm too, not only when devpod answered.
+#[test]
+fn a_delete_killed_at_its_deadline_still_removes_the_containers_left_behind() {
+    let world = a_stopping_world();
+    world
+        .devpod
+        .fake
+        .script(["devpod", "delete"], Response::TimedOut);
+    let home = devpod_home_with(&[]);
+    let override_file = agent_compose_file(&home, "default", "myws");
+    world.devpod.fake.script(
+        ["docker", "ps"],
+        Response::stdout(format!(
+            "aaa\tmyws_dev\t/elsewhere\t{}\n",
+            override_file.display()
+        )),
+    );
+    let mut world_cache = World::empty();
+    let clones = clones_for(&world_cache.repos_dir, &world_cache.devpod);
+    let mut context = CommandContext::new(&world.devpod);
+    let mut refresh = Refresh::new(&world.updater, &world.cache_path);
+    let mut notices = Vec::new();
+
+    let copies = world_cache.copies();
+    let outcome = workspace_delete(
+        &mut context,
+        &mut refresh,
+        &clones,
+        &mut world_cache.storage,
+        Some(&home),
+        &copies,
+        "myws",
+        Insistence::Insisted,
+        Persistence::Wedged,
+        &mut unblocked(),
+        &mut notices,
+    );
+
+    assert_eq!(outcome, Err(NotRun::TimedOut));
+    assert_eq!(
+        world.devpod.docker_argvs().last().expect("a removal"),
+        &["rm", "--force", "aaa"]
+    );
+    assert!(
+        notices.contains(&LifecycleNotice::LeftoverContainersRemoved {
+            workspace_id: "myws".to_owned(),
+            names: NonEmpty::one("myws_dev".to_owned()),
+        }),
+        "{notices:?}"
     );
 }
 

@@ -1,11 +1,12 @@
 //! Everything devlaunch asks `docker`, and everything it reads back.
 //!
-//! Three calls, and between them they cover two commands. `dl <ws> rm` removes
-//! the named volumes a workspace's devcontainer created, once the workspace
-//! itself is gone (devlaunch#325). `dl <ws> kill` asks which containers a wedged
-//! workspace's compose project still has up, and kills them (devlaunch#484) —
-//! the one reading in the module, and the reason [`Running`] exists beside
-//! [`Answer`].
+//! `dl <ws> rm` removes the named volumes a workspace's devcontainer created,
+//! once the workspace itself is gone (devlaunch#325). `dl <ws> kill` asks which
+//! containers a wedged workspace's compose project still has up, and kills them
+//! (devlaunch#484) — the reason [`Running`] exists beside [`Answer`]. `rm` and the
+//! launch both list compose containers by their labels and remove the ones a
+//! forgotten workspace left behind ([`compose_containers`], [`remove_containers`];
+//! see [`crate::flows::orphan_containers`]).
 //!
 //! Nothing here removes an *image* — images are shared, they are expensive to
 //! rebuild, and which workspace owns one is genuinely ambiguous, so they stay
@@ -21,6 +22,7 @@
 //! apart, and these are the only spawns that can produce either.
 
 use std::io::ErrorKind;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::domain::workspace_state::NonEmpty;
@@ -171,6 +173,165 @@ pub(crate) fn kill_containers(runner: &dyn Runner, ids: &NonEmpty<String>) -> An
     let mut args = vec!["kill".to_owned()];
     args.extend(ids.iter().cloned());
     let spec = SpawnSpec::from(Invocation::new(PROGRAM).with_args(args)).with_timeout(KILL_THEM);
+    answer(runner.capture(&spec))
+}
+
+/// What listing every compose container on the machine may cost.
+const LIST_COMPOSE_CONTAINERS: Duration = Duration::from_secs(10);
+
+/// What force-removing a handful of containers may cost. A `kill` and an unlink
+/// per container, done by the daemon; bounded because the launch path calls it
+/// in front of a `devpod up`, and a daemon that never answers must not turn into
+/// a launch that never starts.
+const REMOVE_THEM: Duration = Duration::from_secs(60);
+
+/// One container docker made for a compose project, and the paths its compose
+/// labels name.
+///
+/// The paths are what devpod's own delete does *not* look at: devpod finds a
+/// workspace's container by `dev.containers.id=<uid>`, and a workspace recreated
+/// under a new uid no longer matches the containers the old one left. The
+/// compose labels still point at the clone and at devpod's per-workspace
+/// directory, whatever uid made them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ComposeContainer {
+    /// The full container id.
+    pub(crate) id: String,
+    /// The container's name, for the line that says it went.
+    pub(crate) name: String,
+    /// `com.docker.compose.project.working_dir`, when it is set.
+    pub(crate) working_dir: Option<PathBuf>,
+    /// `com.docker.compose.project.config_files`, split on its commas.
+    pub(crate) config_files: Vec<PathBuf>,
+}
+
+impl ComposeContainer {
+    /// Every path the compose labels name.
+    pub(crate) fn paths(&self) -> impl Iterator<Item = &Path> {
+        self.working_dir
+            .as_deref()
+            .into_iter()
+            .chain(self.config_files.iter().map(PathBuf::as_path))
+    }
+}
+
+/// Why docker could not list its compose containers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Unlisted {
+    /// No docker on PATH: a machine with no docker made no containers.
+    NotInstalled,
+    /// docker was there and did not answer, in these words.
+    Failed(String),
+}
+
+/// The `--format` template [`compose_containers`] reads back: one tab-separated
+/// line per container.
+const COMPOSE_FORMAT: &str = "{{.ID}}\t{{.Names}}\t\
+{{.Label \"com.docker.compose.project.working_dir\"}}\t\
+{{.Label \"com.docker.compose.project.config_files\"}}";
+
+/// Every container on this machine that a compose project made, running or not.
+pub(crate) fn compose_containers(runner: &dyn Runner) -> Result<Vec<ComposeContainer>, Unlisted> {
+    let stdout = listing(
+        runner,
+        [
+            "ps",
+            "--all",
+            "--no-trunc",
+            "--filter",
+            "label=com.docker.compose.project",
+            "--format",
+            COMPOSE_FORMAT,
+        ]
+        .map(str::to_owned),
+    )?;
+    Ok(stdout.lines().filter_map(compose_container).collect())
+}
+
+/// Which of these containers docker still has, running or not, by full id.
+///
+/// For after a removal that failed: `docker rm` exits non-zero when any one of
+/// several is already gone, and still removes the rest.
+pub(crate) fn present_containers(
+    runner: &dyn Runner,
+    ids: &NonEmpty<String>,
+) -> Result<Vec<String>, Unlisted> {
+    let mut args = ["ps", "--quiet", "--all", "--no-trunc"]
+        .map(str::to_owned)
+        .to_vec();
+    for id in ids.iter() {
+        args.push("--filter".to_owned());
+        args.push(format!("id={id}"));
+    }
+    let stdout = listing(runner, args)?;
+    Ok(stdout
+        .lines()
+        .filter_map(|line| line.split_whitespace().next())
+        .map(str::to_owned)
+        .collect())
+}
+
+/// One `docker ps`, its stdout, or why docker would not give it.
+fn listing(
+    runner: &dyn Runner,
+    args: impl IntoIterator<Item = String>,
+) -> Result<String, Unlisted> {
+    let spec = SpawnSpec::from(Invocation::new(PROGRAM).with_args(args))
+        .with_timeout(LIST_COMPOSE_CONTAINERS);
+    match ran(runner.capture(&spec)) {
+        Ok((exit, CapturedText { stdout, .. })) if exit.is_success() => Ok(stdout),
+        Ok((exit, CapturedText { stderr, .. })) => Err(Unlisted::Failed(format!(
+            "docker ps failed ({exit:?}): {}",
+            stderr.trim()
+        ))),
+        Err(NoAnswer::NotInstalled) => Err(Unlisted::NotInstalled),
+        Err(NoAnswer::NotStarted(failure)) if failure.kind == ErrorKind::TimedOut => Err(
+            Unlisted::Failed("docker ps did not answer in time".to_owned()),
+        ),
+        Err(NoAnswer::NotStarted(failure)) => Err(Unlisted::Failed(format!(
+            "docker ps could not start ({:?})",
+            failure.kind
+        ))),
+    }
+}
+
+/// One line of [`COMPOSE_FORMAT`], or nothing for a line that is not one.
+fn compose_container(line: &str) -> Option<ComposeContainer> {
+    let mut fields = line.split('\t');
+    let id = fields.next()?.trim();
+    let name = fields.next()?.trim();
+    if id.is_empty() {
+        return None;
+    }
+    let working_dir = fields
+        .next()
+        .map(str::trim)
+        .filter(|dir| !dir.is_empty())
+        .map(PathBuf::from);
+    let config_files = fields
+        .next()
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|file| !file.is_empty())
+        .map(PathBuf::from)
+        .collect();
+    Some(ComposeContainer {
+        id: id.to_owned(),
+        name: name.to_owned(),
+        working_dir,
+        config_files,
+    })
+}
+
+/// Remove these containers, running or not, in one call.
+///
+/// `--force` because a leftover is usually still running: it is the container a
+/// delete did not stop.
+pub(crate) fn remove_containers(runner: &dyn Runner, ids: &NonEmpty<String>) -> Answer {
+    let mut args = vec!["rm".to_owned(), "--force".to_owned()];
+    args.extend(ids.iter().cloned());
+    let spec = SpawnSpec::from(Invocation::new(PROGRAM).with_args(args)).with_timeout(REMOVE_THEM);
     answer(runner.capture(&spec))
 }
 

@@ -396,6 +396,13 @@ impl<T> NonEmpty<T> {
     pub fn iter(&self) -> impl Iterator<Item = &T> {
         std::iter::once(&self.first).chain(self.rest.iter())
     }
+
+    pub(crate) fn map<U>(&self, mut f: impl FnMut(&T) -> U) -> NonEmpty<U> {
+        NonEmpty {
+            first: f(&self.first),
+            rest: self.rest.iter().map(f).collect(),
+        }
+    }
 }
 
 /// What one workspace clone holds, as far as git can tell.

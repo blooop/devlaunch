@@ -97,6 +97,47 @@ records died before any of this existed, no route reaches them that is not the
 pattern above, and they stay. See [the disk neither command
 frees](#the-disk-neither-command-frees).
 
+### Containers a forgotten workspace left running
+
+`devpod delete` finds a workspace's container by one label,
+`dev.containers.id=<uid>`, and runs `compose down` only when it finds it. Two
+ordinary events leave a compose project running after devpod has dropped its
+record:
+
+- A forced delete (`devpod delete --force`, which `dl <ws> kill` runs) whose
+  `compose down` failed. A compose file that no longer interpolates is enough, for
+  example a required variable from a `.env` that the `initializeCommand` wrote and
+  that is gone from the clone. devpod logs the error and drops the record anyway.
+- A record made again under a new uid. A `devpod up` over the leftovers makes a
+  new record, then fails because a compose file that pins `container_name:` cannot
+  make a second container with that name. The next `devpod delete` looks for the
+  new uid, finds no container, and reports success. The leftovers stay up.
+
+So `dl <ws> rm` (and `kill`), once devpod holds no record of the workspace in any
+context, removes every container whose compose labels
+(`com.docker.compose.project.working_dir`, `com.docker.compose.project.config_files`)
+name a path inside devpod's own directory for that workspace id
+(`<devpod home>/agent/contexts/<context>/workspaces/<id>`, where devpod writes its
+compose override) or inside the clone dl made for it. A launch does the same
+before its `devpod up` for a workspace devpod has no record of, so the new compose
+project does not trip over the old names. Each removal is named on stderr:
+
+```
+Removed containers <id> left behind: <name>, <name>
+```
+
+A workspace devpod still holds is left alone (a record dl cannot read counts as
+held), and so is a container that names
+only a local folder opened with `dl ./folder`: that folder is yours, and a compose
+project you started in it by hand is not a leftover. Names are never matched.
+
+When any doubt remains, the container stays. A container is left when one of
+its labels names devpod's directory for a *different* workspace id, or a path
+inside a folder that devpod holds as another workspace's source and that sits
+in the clone (a local folder opened with `dl ./folder` can sit inside a clone).
+When devpod's records cannot be read, a container that names only the clone
+stays too.
+
 ### What a delete says while it does it
 
 `dl <ws> rm` names the workspace going in and again once it has gone, both on

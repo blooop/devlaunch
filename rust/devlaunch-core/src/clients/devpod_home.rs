@@ -134,6 +134,116 @@ impl DevpodHome {
             .join("workspace.lock")
     }
 
+    /// devpod's agent-side directories, one per context, each holding one
+    /// directory per workspace.
+    fn agent_contexts(&self) -> PathBuf {
+        self.root.join("agent").join("contexts")
+    }
+
+    /// Whether any context still holds a record for this workspace.
+    ///
+    /// Every context rather than [`Self::sole_context_holding`]'s single answer,
+    /// because the caller asks the opposite question: whether devpod has *no*
+    /// workspace by this id anywhere, so that nothing on the machine can still
+    /// claim the containers that name it. Two contexts holding it is
+    /// [`RecordPresence::Held`].
+    ///
+    /// Only "not found", for the `contexts` directory or for every record path
+    /// under it, is [`RecordPresence::Absent`]. Anything else that would not
+    /// read (a directory dl may not search, an entry the listing could not
+    /// return) is [`RecordPresence::Unknown`]: a record may be there. A context
+    /// name that is not UTF-8 is read like any other, by its bytes.
+    pub(crate) fn record_presence(&self, workspace_id: &str) -> RecordPresence {
+        let contexts = match std::fs::read_dir(self.contexts()) {
+            Ok(contexts) => contexts,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return RecordPresence::Absent;
+            }
+            Err(_) => return RecordPresence::Unknown,
+        };
+        let mut unknown = false;
+        for context in contexts {
+            let Ok(context) = context else {
+                unknown = true;
+                continue;
+            };
+            let record = context
+                .path()
+                .join("workspaces")
+                .join(workspace_id)
+                .join("workspace.json");
+            match std::fs::metadata(&record) {
+                Ok(_) => return RecordPresence::Held,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => unknown = true,
+            }
+        }
+        if unknown {
+            RecordPresence::Unknown
+        } else {
+            RecordPresence::Absent
+        }
+    }
+
+    /// The workspace id whose devpod agent-side directory `path` is inside,
+    /// under any context, or nothing when it is inside none.
+    ///
+    /// devpod writes its compose override for a workspace there
+    /// (`.docker-compose/docker-compose.devcontainer.containerFeatures-*.yml`), and
+    /// compose records that file in the `config_files` label of every container
+    /// the project makes. So the label names the workspace *by id*, whatever uid
+    /// devpod gave the project, which is the one handle a container keeps after
+    /// devpod has forgotten it.
+    pub(crate) fn agent_dir_owner<'p>(&self, path: &'p Path) -> Option<&'p std::ffi::OsStr> {
+        let rest = path.strip_prefix(self.agent_contexts()).ok()?;
+        let mut components = rest.components().skip(1);
+        if components.next()?.as_os_str() != "workspaces" {
+            return None;
+        }
+        match components.next()? {
+            std::path::Component::Normal(id) => Some(id),
+            _ => None,
+        }
+    }
+
+    /// The local folders of every workspace devpod holds a record for, or
+    /// nothing when any record, or the walk to it, would not read.
+    ///
+    /// A record whose source is not a local folder (a git source devpod cloned
+    /// itself) names no folder on this machine and is skipped. A record that is
+    /// there and would not read is not: it could name any folder, so the answer
+    /// is "unknown" rather than a list missing one.
+    pub(crate) fn held_local_folders(&self) -> Option<Vec<PathBuf>> {
+        let mut folders = Vec::new();
+        let Some(contexts) = read_dir_if_any(&self.contexts())? else {
+            return Some(folders);
+        };
+        for context in contexts {
+            let Some(workspaces) = read_dir_if_any(&context.ok()?.path().join("workspaces"))?
+            else {
+                continue;
+            };
+            for workspace in workspaces {
+                let record = workspace.ok()?.path().join("workspace.json");
+                let text = match std::fs::read_to_string(&record) {
+                    Ok(text) => text,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(_) => return None,
+                };
+                let record: serde_json::Value = serde_json::from_str(&text).ok()?;
+                if let Some(folder) = record
+                    .get("source")
+                    .and_then(|source| source.get("localFolder"))
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|folder| !folder.is_empty())
+                {
+                    folders.push(PathBuf::from(folder));
+                }
+            }
+        }
+        Some(folders)
+    }
+
     /// devpod's record of a *completed* create for one workspace.
     ///
     /// devpod writes this beside [`Self::record`] on its way out of a successful
@@ -244,6 +354,30 @@ impl DevpodHome {
             });
         }
         Ok(())
+    }
+}
+
+/// Whether devpod holds a record for one workspace id, in any context.
+///
+/// Three arms, because "could not tell" must not read as "no": the one caller
+/// removes containers on [`Self::Absent`] alone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RecordPresence {
+    /// A record is there, in at least one context.
+    Held,
+    /// No context holds one, and every place one could be said so.
+    Absent,
+    /// Some place a record could be would not read.
+    Unknown,
+}
+
+/// A directory's entries; `Some(None)` when it is not there, and nothing when
+/// it is there and would not read.
+fn read_dir_if_any(dir: &Path) -> Option<Option<std::fs::ReadDir>> {
+    match std::fs::read_dir(dir) {
+        Ok(entries) => Some(Some(entries)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(None),
+        Err(_) => None,
     }
 }
 
@@ -426,6 +560,36 @@ pub(crate) fn devpod_home_with(entries: &[(&str, &str, Option<()>)]) -> ScratchH
         }
     }
     ScratchHome { _dir: dir, home }
+}
+
+/// An empty record for one workspace under a context named by raw bytes, for
+/// the test that needs a context name that is not UTF-8.
+#[cfg(test)]
+pub(crate) fn record_under_context(
+    home: &DevpodHome,
+    context: &std::ffi::OsStr,
+    workspace_id: &str,
+) {
+    let dir = home
+        .contexts()
+        .join(context)
+        .join("workspaces")
+        .join(workspace_id);
+    std::fs::create_dir_all(&dir).expect("a record directory");
+    std::fs::write(dir.join("workspace.json"), "{}").expect("a record");
+}
+
+/// A file in devpod's agent-side directory for one workspace, where devpod
+/// writes its compose override. Not created: a container label names it whether
+/// or not it is still on disk.
+#[cfg(test)]
+pub(crate) fn agent_compose_file(home: &DevpodHome, context: &str, workspace_id: &str) -> PathBuf {
+    home.agent_contexts()
+        .join(context)
+        .join("workspaces")
+        .join(workspace_id)
+        .join(".docker-compose")
+        .join("docker-compose.devcontainer.containerFeatures-0.yml")
 }
 
 /// The `flock` devpod blocks on, created empty, for the one test that has to

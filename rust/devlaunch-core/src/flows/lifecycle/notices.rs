@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use super::delete::{SweepOccasion, VolumeRefusal};
 use super::delete_guard::RemovalRefused;
 use crate::domain::metadata::{self};
+use crate::domain::workspace_state::NonEmpty;
 use crate::flows::repo_manager::CacheNotice;
 use crate::flows::workspace_clone::RemoveWorkspaceError;
 use crate::notices::{Notices, Wrapped};
@@ -43,6 +44,27 @@ pub enum LifecycleNotice {
         workspace_id: String,
         occasion: SweepOccasion,
         refusal: VolumeRefusal,
+    },
+    /// Containers this workspace left behind were removed, named. devpod's own
+    /// delete finds a container by the uid of the record it is deleting, so a
+    /// compose project from an older record, or one a forced delete gave up on,
+    /// outlives it; see `flows::orphan_containers`.
+    LeftoverContainersRemoved {
+        workspace_id: String,
+        names: NonEmpty<String>,
+    },
+    /// docker would not list containers, so whether this workspace left any
+    /// behind is not known; docker said why.
+    LeftoverContainersNotListed {
+        workspace_id: String,
+        reason: String,
+    },
+    /// Containers this workspace left behind are still on this machine, and
+    /// docker said why.
+    LeftoverContainersNotRemoved {
+        workspace_id: String,
+        names: NonEmpty<String>,
+        reason: String,
     },
     /// A clone directory went and its `metadata.json` record could not be
     /// dropped. Named by the path, which is what the record described.

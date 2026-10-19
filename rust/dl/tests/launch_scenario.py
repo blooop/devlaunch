@@ -153,6 +153,20 @@ def build(root: pathlib.Path, shim: pathlib.Path, wanted: set) -> None:
             f'#!/bin/sh\nexec "{sys.executable}" "{shim}" "$@"\n',
         )
 
+    # A fake docker in every world: `bin` comes first on the test's PATH, so
+    # without it a launch's leftover-container sweep would ask whatever docker
+    # the machine running the suite has. Each call is logged to `docker-log` as
+    # the number of devpod calls logged before it, then its argv, so a test can
+    # tell which side of `devpod up` it ran on. A `ps` prints `docker-ps` when a
+    # test has written one; otherwise nothing.
+    _executable(
+        root / "bin" / "docker",
+        "#!/bin/sh\n"
+        f'n=$(cat "{root / "shim-log.jsonl"}" 2>/dev/null | wc -l | tr -d " ")\n'
+        f'echo "$n $*" >> "{root / "docker-log"}"\n'
+        f'if [ "$1" = ps ] && [ -f "{root / "docker-ps"}" ]; then cat "{root / "docker-ps"}"; fi\n',
+    )
+
     if "gh" in wanted:
         # Only `auth token` answers; anything else exits non-zero, as a gh that
         # does not know a subcommand does.
