@@ -1424,6 +1424,23 @@ fn kill_removes_the_leftovers_once_devpods_delete_drops_its_record() {
     );
 }
 
+/// A delete devpod refuses leaves devpod's record standing, so the workspace is
+/// still devpod's and so are its containers: the sweep asks docker nothing and
+/// removes nothing, though leftovers that name the workspace are on the machine.
+#[test]
+fn a_refused_delete_that_keeps_the_record_leaves_the_containers() {
+    let world = World::with(&["--devcontainer-volumes"]);
+    leave_containers_behind(&world);
+    world.devpod_answers(&["delete"], 3, "devpod: cannot read devcontainer.json\n");
+
+    world.dl(&["devlaunch-main-legacy", "rm"]).exited(3);
+
+    assert!(
+        world.exists("devpod/contexts/default/workspaces/devlaunch-main-legacy/workspace.json")
+    );
+    assert_eq!(world.docker_calls(), Vec::<String>::new());
+}
+
 /// A local folder opened as its own workspace can sit inside another
 /// workspace's clone. devpod still holds the inner one, `sub`, and its live
 /// container names `sub`'s devpod directory; removing the outer workspace must
