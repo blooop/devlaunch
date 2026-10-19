@@ -1424,6 +1424,39 @@ fn kill_removes_the_leftovers_once_devpods_delete_drops_its_record() {
     );
 }
 
+/// A local folder opened as its own workspace can sit inside another
+/// workspace's clone. devpod still holds the inner one, `sub`, and its live
+/// container names `sub`'s devpod directory; removing the outer workspace must
+/// leave that container, though its compose files are inside the outer clone.
+#[test]
+fn rm_leaves_the_containers_of_a_held_workspace_inside_the_clone() {
+    let world = World::base();
+    let root = world.root.display().to_string();
+    let sub = format!("{root}/cache/devlaunch/repos/blooop/devlaunch/devlaunch-main-legacy/sub");
+    let record = world.path("devpod/contexts/default/workspaces/sub/workspace.json");
+    std::fs::create_dir_all(record.parent().expect("a record directory")).expect("a record dir");
+    std::fs::write(
+        &record,
+        format!(r#"{{"id":"sub","source":{{"localFolder":"{sub}"}}}}"#),
+    )
+    .expect("devpod's record of sub");
+    let agent = format!(
+        "{root}/devpod/agent/contexts/default/workspaces/sub/.docker-compose/\
+         docker-compose.devcontainer.containerFeatures-0.yml"
+    );
+    std::fs::write(
+        world.path("docker-ps"),
+        format!("sss\tsub_dev\t{sub}/.devcontainer\t{sub}/.devcontainer/compose.yml,{agent}\n"),
+    )
+    .expect("a docker listing");
+
+    let run = world.dl(&["devlaunch-main-legacy", "rm"]);
+
+    run.exited(0);
+    assert_eq!(world.docker_calls(), [LEFTOVER_LISTING]);
+    assert!(!run.err.contains("sub_dev"), "{}", run.err);
+}
+
 /// Put three compose containers on the world's docker: two left by
 /// `devlaunch-main-legacy` (`aaa`, `bbb`), and one of somebody else's.
 fn leave_containers_behind(world: &World) {

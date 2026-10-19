@@ -130,6 +130,13 @@ A workspace devpod still holds is left alone, and so is a container that names
 only a local folder opened with `dl ./folder`: that folder is yours, and a compose
 project you started in it by hand is not a leftover. Names are never matched.
 
+When any doubt remains, the container stays. A container is left when one of
+its labels names devpod's directory for a *different* workspace id, or a path
+inside a folder that devpod holds as another workspace's source and that sits
+in the clone (a local folder opened with `dl ./folder` can sit inside a clone).
+When devpod's records cannot be read, a container that names only the clone
+stays too.
+
 ### What a delete says while it does it
 
 `dl <ws> rm` names the workspace going in and again once it has gone, both on

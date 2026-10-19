@@ -160,8 +160,8 @@ impl DevpodHome {
         })
     }
 
-    /// Whether `path` is inside devpod's agent-side directory for this workspace,
-    /// under any context.
+    /// The workspace id whose devpod agent-side directory `path` is inside,
+    /// under any context, or nothing when it is inside none.
     ///
     /// devpod writes its compose override for a workspace there
     /// (`.docker-compose/docker-compose.devcontainer.containerFeatures-*.yml`), and
@@ -169,17 +169,54 @@ impl DevpodHome {
     /// the project makes. So the label names the workspace *by id*, whatever uid
     /// devpod gave the project, which is the one handle a container keeps after
     /// devpod has forgotten it.
-    pub(crate) fn is_in_agent_dir_of(&self, path: &Path, workspace_id: &str) -> bool {
-        let Ok(rest) = path.strip_prefix(self.agent_contexts()) else {
-            return false;
-        };
+    pub(crate) fn agent_dir_owner<'p>(&self, path: &'p Path) -> Option<&'p std::ffi::OsStr> {
+        let rest = path.strip_prefix(self.agent_contexts()).ok()?;
         let mut components = rest.components().skip(1);
-        components
-            .next()
-            .is_some_and(|c| c.as_os_str() == "workspaces")
-            && components
-                .next()
-                .is_some_and(|c| c.as_os_str() == workspace_id)
+        if components.next()?.as_os_str() != "workspaces" {
+            return None;
+        }
+        match components.next()? {
+            std::path::Component::Normal(id) => Some(id),
+            _ => None,
+        }
+    }
+
+    /// The local folders of every workspace devpod holds a record for, or
+    /// nothing when any record, or the walk to it, would not read.
+    ///
+    /// A record whose source is not a local folder (a git source devpod cloned
+    /// itself) names no folder on this machine and is skipped. A record that is
+    /// there and would not read is not: it could name any folder, so the answer
+    /// is "unknown" rather than a list missing one.
+    pub(crate) fn held_local_folders(&self) -> Option<Vec<PathBuf>> {
+        let mut folders = Vec::new();
+        let Some(contexts) = read_dir_if_any(&self.contexts())? else {
+            return Some(folders);
+        };
+        for context in contexts {
+            let Some(workspaces) = read_dir_if_any(&context.ok()?.path().join("workspaces"))?
+            else {
+                continue;
+            };
+            for workspace in workspaces {
+                let record = workspace.ok()?.path().join("workspace.json");
+                let text = match std::fs::read_to_string(&record) {
+                    Ok(text) => text,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(_) => return None,
+                };
+                let record: serde_json::Value = serde_json::from_str(&text).ok()?;
+                if let Some(folder) = record
+                    .get("source")
+                    .and_then(|source| source.get("localFolder"))
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|folder| !folder.is_empty())
+                {
+                    folders.push(PathBuf::from(folder));
+                }
+            }
+        }
+        Some(folders)
     }
 
     /// devpod's record of a *completed* create for one workspace.
@@ -292,6 +329,16 @@ impl DevpodHome {
             });
         }
         Ok(())
+    }
+}
+
+/// A directory's entries; `Some(None)` when it is not there, and nothing when
+/// it is there and would not read.
+fn read_dir_if_any(dir: &Path) -> Option<Option<std::fs::ReadDir>> {
+    match std::fs::read_dir(dir) {
+        Ok(entries) => Some(Some(entries)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(None),
+        Err(_) => None,
     }
 }
 

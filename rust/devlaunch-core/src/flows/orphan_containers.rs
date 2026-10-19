@@ -33,6 +33,11 @@
 //!   the user started there by hand is not dl's to remove, so a local folder is
 //!   matched by the devpod directory alone.
 //!
+//! And a container is left whenever anything else may own it: a label that
+//! names the devpod directory of a different id, or a path in a folder devpod
+//! holds as another workspace's source inside the clone. When devpod's records
+//! would not read, the clone alone matches nothing.
+//!
 //! Nothing is matched on a container *name*: names are the devcontainer's to
 //! choose, and a pattern over them would reach other people's containers.
 
@@ -90,10 +95,11 @@ pub(crate) fn sweep(
         Err(Unlisted::NotInstalled) => return OrphanSweep::NoDocker,
         Err(Unlisted::Failed(reason)) => return OrphanSweep::NotListed { reason },
     };
+    let clone = clone.map(|path| CloneDir::of(path, home));
     let Some(left) = NonEmpty::of(
         containers
             .iter()
-            .filter(|container| left_by(container, home, workspace_id, clone)),
+            .filter(|container| left_by(container, home, workspace_id, clone.as_ref())),
     ) else {
         return OrphanSweep::Nothing;
     };
@@ -113,17 +119,63 @@ pub(crate) fn sweep(
     }
 }
 
-/// Whether one container's compose labels name this workspace.
+/// Whether one container's compose labels name this workspace, and nothing
+/// else that could own it.
+///
+/// A container is left whenever any doubt remains:
+///
+/// - a label that names the devpod directory of a *different* workspace id
+///   makes the container that workspace's, whatever else it names;
+/// - a label inside the source folder of a workspace devpod holds, where that
+///   folder is the clone or inside it, makes the container that workspace's: a
+///   local folder opened as its own workspace can sit inside a clone;
+/// - when devpod's records would not read, the clone alone proves nothing,
+///   and only this id's devpod directory counts.
 fn left_by(
     container: &ComposeContainer,
     home: &DevpodHome,
     workspace_id: &str,
-    clone: Option<&Path>,
+    clone: Option<&CloneDir<'_>>,
 ) -> bool {
-    container.paths().any(|path| {
-        home.is_in_agent_dir_of(path, workspace_id)
-            || clone.is_some_and(|clone| path.starts_with(clone))
-    })
+    let mut by_id = false;
+    let mut in_clone = false;
+    for path in container.paths() {
+        match home.agent_dir_owner(path) {
+            Some(owner) if owner == workspace_id => by_id = true,
+            Some(_) => return false,
+            None => {}
+        }
+        if let Some(clone) = clone {
+            if clone
+                .held_inside
+                .as_ref()
+                .is_some_and(|held| held.iter().any(|folder| path.starts_with(folder)))
+            {
+                return false;
+            }
+            in_clone |= path.starts_with(clone.path);
+        }
+    }
+    by_id || (in_clone && clone.is_some_and(|clone| clone.held_inside.is_some()))
+}
+
+/// The workspace's clone, and the folders inside it that devpod holds as other
+/// workspaces' sources (nothing when devpod's records would not say).
+struct CloneDir<'a> {
+    path: &'a Path,
+    held_inside: Option<Vec<std::path::PathBuf>>,
+}
+
+impl<'a> CloneDir<'a> {
+    fn of(path: &'a Path, home: &DevpodHome) -> Self {
+        let held_inside = home.held_local_folders().map(|folders| {
+            folders
+                .into_iter()
+                .filter(|folder| folder.starts_with(path))
+                .collect()
+        });
+        Self { path, held_inside }
+    }
 }
 
 #[cfg(test)]
@@ -310,6 +362,117 @@ mod tests {
         assert_eq!(
             fake.args_to("docker").last().expect("a removal"),
             &["rm", "--force", "aaa"]
+        );
+    }
+
+    /// A local folder opened as its own workspace, `sub`, can sit inside another
+    /// workspace's clone, `ws`. devpod still holds `sub`; it holds nothing for
+    /// `ws`. Sweeping `ws` must not take `sub`'s live container just because its
+    /// compose files are inside `ws`'s clone: its labels name `sub`'s devpod
+    /// directory, so it is `sub`'s.
+    #[test]
+    fn a_held_workspace_nested_in_the_clone_keeps_its_containers() {
+        let home = devpod_home_with(&[("default", "sub", None)]);
+        let clone = PathBuf::from("/cache/devlaunch/repos/o/r/ws");
+        let sub = clone.join("sub/.devcontainer");
+        let fake = FakeRunner::new();
+        fake.script(
+            ["docker", "ps"],
+            Response::stdout(row(
+                "aaa",
+                "sub_dev",
+                &sub,
+                &[
+                    &sub.join("compose.yml"),
+                    &agent_compose_file(&home, "default", "sub"),
+                ],
+            )),
+        );
+
+        assert_eq!(
+            sweep(&fake, Some(&home), "ws", Some(&clone)),
+            OrphanSweep::Nothing
+        );
+        assert_eq!(fake.args_to("docker").len(), 1, "a listing and no removal");
+    }
+
+    /// A container that names another workspace's devpod directory is that
+    /// workspace's, even beside this one's: two owners is one too many to remove.
+    #[test]
+    fn a_container_naming_another_workspaces_devpod_directory_stays() {
+        let home = devpod_home_with(&[]);
+        let fake = FakeRunner::new();
+        fake.script(
+            ["docker", "ps"],
+            Response::stdout(row(
+                "aaa",
+                "dev",
+                Path::new("/x"),
+                &[
+                    &agent_compose_file(&home, "default", WS),
+                    &agent_compose_file(&home, "default", "other"),
+                ],
+            )),
+        );
+
+        assert_eq!(
+            sweep(&fake, Some(&home), WS, Some(&clone_dir())),
+            OrphanSweep::Nothing
+        );
+        assert_eq!(fake.args_to("docker").len(), 1, "a listing and no removal");
+    }
+
+    /// A compose project inside a folder devpod holds as a workspace's source is
+    /// that workspace's business, even when the folder is inside this clone and
+    /// the project names no devpod directory at all.
+    #[test]
+    fn a_project_in_a_held_workspaces_source_inside_the_clone_stays() {
+        let home = devpod_home_with(&[("default", "sub", None)]);
+        let clone = clone_dir();
+        let sub = clone.join("sub");
+        std::fs::write(
+            home.record("default", "sub"),
+            format!(r#"{{"source":{{"localFolder":"{}"}}}}"#, sub.display()),
+        )
+        .expect("a record with a source");
+        let fake = FakeRunner::new();
+        fake.script(
+            ["docker", "ps"],
+            Response::stdout(row("aaa", "their_db", &sub, &[&sub.join("compose.yml")])),
+        );
+
+        assert_eq!(
+            sweep(&fake, Some(&home), WS, Some(&clone)),
+            OrphanSweep::Nothing
+        );
+        assert_eq!(fake.args_to("docker").len(), 1, "a listing and no removal");
+    }
+
+    /// A held record whose source dl cannot read could name a folder inside the
+    /// clone, so the clone alone proves nothing: only devpod's directory for the
+    /// id still counts.
+    #[test]
+    fn an_unreadable_held_record_leaves_clone_only_matches() {
+        let home = devpod_home_with(&[("default", "sub", None)]);
+        std::fs::write(home.record("default", "sub"), "not json").expect("a broken record");
+        let clone = clone_dir();
+        let dir = clone.join(".devcontainer");
+        let fake = FakeRunner::new();
+        fake.script(
+            ["docker", "ps"],
+            Response::stdout(
+                row(
+                    "aaa",
+                    "ours",
+                    &dir,
+                    &[&agent_compose_file(&home, "default", WS)],
+                ) + &row("bbb", "maybe_theirs", &dir, &[&dir.join("b.yml")]),
+            ),
+        );
+
+        assert_eq!(
+            sweep(&fake, Some(&home), WS, Some(&clone)),
+            OrphanSweep::Removed(names(["ours".to_owned()]))
         );
     }
 
