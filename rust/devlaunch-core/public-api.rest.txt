@@ -2079,6 +2079,7 @@ pub fn devlaunch_core::flows::launch::UnquotableCommand::fmt(&self, &mut core::f
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::launch::UnquotableCommand
 pub fn devlaunch_core::flows::launch::names_for(&devlaunch_core::flows::launch::Host, &str) -> (devlaunch_core::flows::launch::TerminalTitle, devlaunch_core::flows::launch::HerdrTabRename)
 pub fn devlaunch_core::flows::launch::plan(&str) -> core::result::Result<devlaunch_core::flows::launch::Plan, devlaunch_core::domain::workspace_id::UnsafeName>
+pub fn devlaunch_core::flows::launch::recorded_ids_labelled(&devlaunch_core::domain::metadata::MetadataStorage, &str, impl core::ops::function::Fn(&str) -> bool) -> alloc::vec::Vec<alloc::string::String>
 pub fn devlaunch_core::flows::launch::recorded_label_in(&std::path::Path, &str) -> core::option::Option<alloc::string::String>
 pub fn devlaunch_core::flows::launch::resolve_triple(&mut devlaunch_core::flows::listing::CommandContext<'_>, &mut dyn devlaunch_core::flows::launch::ColdMachinery<'_>, &devlaunch_core::domain::workspace_id::WorkspaceId, &mut dyn devlaunch_core::notices::Notices<devlaunch_core::flows::launch::LaunchNotice>, devlaunch_core::clients::devpod::Patience) -> core::result::Result<devlaunch_core::flows::launch::Resolution, devlaunch_core::clients::devpod::NotRun>
 pub mod devlaunch_core::flows::launch_locks
@@ -3365,7 +3366,23 @@ pub fn devlaunch_core::flows::session_manager::PaneDestination::eq(&self, &devla
 impl core::fmt::Debug for devlaunch_core::flows::session_manager::PaneDestination
 pub fn devlaunch_core::flows::session_manager::PaneDestination::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::session_manager::PaneDestination
+pub enum devlaunch_core::flows::session_manager::ThisTab
+pub devlaunch_core::flows::session_manager::ThisTab::Named
+pub devlaunch_core::flows::session_manager::ThisTab::Named::label: alloc::string::String
+pub devlaunch_core::flows::session_manager::ThisTab::Named::tab_id: alloc::string::String
+pub devlaunch_core::flows::session_manager::ThisTab::NotInHerdr
+pub devlaunch_core::flows::session_manager::ThisTab::Unanswered
+pub devlaunch_core::flows::session_manager::ThisTab::Unanswered::tab_id: alloc::string::String
+impl core::clone::Clone for devlaunch_core::flows::session_manager::ThisTab
+pub fn devlaunch_core::flows::session_manager::ThisTab::clone(&self) -> devlaunch_core::flows::session_manager::ThisTab
+impl core::cmp::Eq for devlaunch_core::flows::session_manager::ThisTab
+impl core::cmp::PartialEq for devlaunch_core::flows::session_manager::ThisTab
+pub fn devlaunch_core::flows::session_manager::ThisTab::eq(&self, &devlaunch_core::flows::session_manager::ThisTab) -> bool
+impl core::fmt::Debug for devlaunch_core::flows::session_manager::ThisTab
+pub fn devlaunch_core::flows::session_manager::ThisTab::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::flows::session_manager::ThisTab
 pub fn devlaunch_core::flows::session_manager::pane_destination(&dyn devlaunch_runner::Runner) -> devlaunch_core::flows::session_manager::PaneDestination
+pub fn devlaunch_core::flows::session_manager::this_tab(&dyn devlaunch_runner::Runner) -> devlaunch_core::flows::session_manager::ThisTab
 pub mod devlaunch_core::flows::stale_images
 pub struct devlaunch_core::flows::stale_images::StaleImage
 impl devlaunch_core::flows::stale_images::StaleImage

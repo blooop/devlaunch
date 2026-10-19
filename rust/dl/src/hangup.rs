@@ -1,6 +1,8 @@
-//! `rme`: hanging up the shell `dl` was called from, once the removal is done.
+//! `rme` and `rmt`: hanging up the shell `dl` was called from, once the removal
+//! is done.
 //!
-//! One verb reaches this module. `dl <ws> rme` deletes the workspace exactly as
+//! Two words reach this module, and `rmt` is `rme` with the herdr tab as its
+//! target, so `rme` is the one described here. `dl <ws> rme` deletes the workspace exactly as
 //! `dl <ws> rm` does, and then sends SIGHUP to `dl`'s parent process — which for
 //! the line it exists for is an interactive shell, so the shell ends and the
 //! terminal tab it was sitting in closes on its own. The workspace tab has nothing
@@ -47,7 +49,9 @@
 //!   there is. A `nohup` is the one form `dl` refuses outright, above.
 //!
 //! Nothing here is reachable from `rm`: [`crate::cli::AfterRemoval`] is the only
-//! way in, and the grammar builds `HangUpTheShell` for one word.
+//! way in, and two words reach `HangUpTheShell`. The grammar builds it for `rme`,
+//! and the dispatcher passes it for `rmt`, which is `rme` with the herdr tab as its
+//! target and so ends the same way.
 
 use std::io::Write as _;
 
@@ -84,15 +88,15 @@ pub(crate) fn wanted(after: AfterRemoval, ending: Ending) -> bool {
 /// worked, as `rm` does, because the removal is what the exit code is *about* — and
 /// on the run this is for nobody reads it anyway, the shell that would have being
 /// the one that just went.
-pub(crate) fn after_the_command(after: AfterRemoval, ending: Ending) -> Ending {
+pub(crate) fn after_the_command(after: AfterRemoval, word: &str, ending: Ending) -> Ending {
     if wanted(after, ending) {
-        hang_up_the_parent();
+        hang_up_the_parent(word);
     }
     ending
 }
 
 /// SIGHUP to whatever started `dl`.
-fn hang_up_the_parent() {
+fn hang_up_the_parent(word: &str) {
     // Something disarmed SIGHUP before this run started, which is what `nohup dl …`
     // does — and a shell runs that by `exec`ing dl in place, so the parent about to
     // be signalled is the terminal `nohup` was typed to outlive. `dl` already
@@ -100,7 +104,7 @@ fn hang_up_the_parent() {
     // disarmed for the whole run (`install_signal_handlers`); sending the one it
     // refuses to act on would be the same process arguing both sides.
     if crate::sighup_arrived_ignored() {
-        eprintln!("{}", render::hangup_disarmed());
+        eprintln!("{}", render::hangup_disarmed(word));
         return;
     }
     // SAFETY: `getppid` reads a property of this process and touches nothing.
@@ -110,7 +114,7 @@ fn hang_up_the_parent() {
     // pid 1 is init and a root `dl` would be asking it to shut the machine's
     // service manager down.
     if parent <= 1 {
-        eprintln!("{}", render::nothing_to_hang_up());
+        eprintln!("{}", render::nothing_to_hang_up(word));
         return;
     }
     eprintln!("{}", render::hanging_up(parent));
@@ -138,7 +142,7 @@ fn hang_up_the_parent() {
         // only thing that says why.
         eprintln!(
             "{}",
-            render::could_not_hang_up(parent, &std::io::Error::last_os_error().to_string())
+            render::could_not_hang_up(word, parent, &std::io::Error::last_os_error().to_string())
         );
     }
 }

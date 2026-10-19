@@ -702,6 +702,11 @@ fn grammar_refusal(refused: &cli::GrammarError) -> String {
              'dl <workspace> rm' to delete one now."
                 .to_owned()
         }
+        cli::GrammarError::TabTakesNoWorkspace => format!(
+            "{} takes no workspace: it removes the workspace this herdr tab is named after. \
+             Use 'dl <workspace> rm' to name one.",
+            cli::REMOVE_THIS_TAB
+        ),
         cli::GrammarError::TargetNotAllowed { command } => {
             format!("{command} takes no workspace: it is not a workspace command.")
         }

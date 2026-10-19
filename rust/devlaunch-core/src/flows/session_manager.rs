@@ -386,6 +386,65 @@ pub fn pane_destination(runner: &dyn Runner) -> PaneDestination {
     )
 }
 
+/// What herdr calls the tab this process runs in.
+///
+/// Three arms, because `dl rmt` says something different for each: a shell outside
+/// herdr has no tab to ask about, a herdr that did not answer is not a tab with no
+/// name, and a name is what the removal looks the workspace up by.
+#[derive(Clone, Debug, PartialEq, Eq)]
+// binary surface -- not part of the frozen wf API (#251 §7)
+pub enum ThisTab {
+    /// [`launch::HERDR_TAB_VAR`] is not set: this is not a herdr pane.
+    NotInHerdr,
+    /// herdr was asked about the tab and gave no label: it refused, timed out, was
+    /// not found, or answered something that is not a `tab_info`.
+    Unanswered { tab_id: String },
+    /// The tab's label, as `herdr tab get` reports it.
+    Named { tab_id: String, label: String },
+}
+
+/// The label of the herdr tab this process runs in, asked of herdr.
+///
+/// The same environment [`pane_destination`] reads -- the tab id from
+/// [`launch::HERDR_TAB_VAR`], the binary through [`herdr::binary_from_process`] --
+/// and the same bound on herdr's answer, so a herdr that has gone away costs
+/// [`herdr::ANSWER_WITHIN`] and not a hang.
+pub fn this_tab(runner: &dyn Runner) -> ThisTab {
+    let tab_id = crate::osext::env_str(launch::HERDR_TAB_VAR);
+    let binary = herdr::binary_from_process();
+    tab_for(
+        runner,
+        PaneEnv {
+            tab_id: tab_id.as_deref(),
+            binary: binary.as_deref(),
+        },
+    )
+}
+
+/// [`this_tab`], against a stated environment rather than this process's.
+fn tab_for(runner: &dyn Runner, host: PaneEnv<'_>) -> ThisTab {
+    let Some(tab_id) = host.tab_id.filter(|id| !id.is_empty()) else {
+        return ThisTab::NotInHerdr;
+    };
+    let binary = host
+        .binary
+        .filter(|path| !path.is_empty())
+        .unwrap_or(launch::HERDR_BIN_FALLBACK);
+    let mut budget = Budget::of(herdr::ANSWER_WITHIN);
+    match ask(runner, binary, &herdr::tab_get_argv(tab_id), &mut budget)
+        .as_deref()
+        .and_then(herdr::tab_label_in)
+    {
+        Some(label) => ThisTab::Named {
+            tab_id: tab_id.to_owned(),
+            label,
+        },
+        None => ThisTab::Unanswered {
+            tab_id: tab_id.to_owned(),
+        },
+    }
+}
+
 /// What herdr exported into this pane, as the pane shell reads it.
 ///
 /// A struct rather than two `Option<&str>` parameters, which is what this was:
@@ -1829,6 +1888,72 @@ mod tests {
             PaneDestination::HostShell
         );
         assert_eq!(runner.call_count(), 0);
+    }
+
+    /// A `tab get` answer in herdr's envelope, with this label. The fields this
+    /// does not read are written out for the reason [`pane_list`] gives.
+    fn tab_info(label: &str) -> String {
+        format!(
+            r#"{{"id":"cli:tab:get","result":{{"type":"tab_info","tab":{{"tab_id":"w1:t1","workspace_id":"w1","number":4,"label":"{label}","focused":true,"pane_count":1,"agent_status":"none"}}}}}}"#
+        )
+    }
+
+    #[test]
+    fn this_tab_reads_the_label_a_launch_renamed_it_to() {
+        let runner = ScriptedRunner::new();
+        runner.on_unscripted(Unscripted::Panic);
+        runner.script(
+            [LENT_HERDR, "tab", "get", "w1:t1"],
+            Response::stdout(tab_info("devlaunch@main")),
+        );
+        assert_eq!(
+            tab_for(&runner, in_pane_of("w1:t1")),
+            ThisTab::Named {
+                tab_id: "w1:t1".to_owned(),
+                label: "devlaunch@main".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn this_tab_outside_herdr_asks_nothing() {
+        let runner = ScriptedRunner::new();
+        runner.on_unscripted(Unscripted::Panic);
+        for tab_id in [None, Some("")] {
+            assert_eq!(
+                tab_for(
+                    &runner,
+                    PaneEnv {
+                        tab_id,
+                        ..PaneEnv::default()
+                    }
+                ),
+                ThisTab::NotInHerdr
+            );
+        }
+        assert_eq!(runner.call_count(), 0);
+    }
+
+    #[test]
+    fn a_herdr_that_refuses_or_answers_no_label_is_unanswered() {
+        for response in [
+            Response::failed(
+                1,
+                r#"{"id":"cli:tab:get","error":{"code":"tab_not_found"}}"#,
+            ),
+            Response::stdout(tab_info("  ")),
+            Response::stdout("not json"),
+        ] {
+            let runner = ScriptedRunner::new();
+            runner.on_unscripted(Unscripted::Panic);
+            runner.script([LENT_HERDR, "tab", "get", "w1:t1"], response);
+            assert_eq!(
+                tab_for(&runner, in_pane_of("w1:t1")),
+                ThisTab::Unanswered {
+                    tab_id: "w1:t1".to_owned()
+                }
+            );
+        }
     }
 
     #[test]

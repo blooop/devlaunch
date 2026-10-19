@@ -497,6 +497,36 @@ background jobs with it, because that is what a shell does on SIGHUP. Use `rme` 
 the tab that has nothing left in it, which is the tab it was written for, and `rm` in
 the one you are still working in.
 
+### `rmt`: the workspace this herdr tab is named after
+
+`dl rmt` deletes a workspace without a name on the line and without the selector. The
+workspace is the one the herdr tab you type it in is named after.
+
+A launch in a herdr pane renames its tab after the workspace's record, `repo@branch`, and
+herdr keeps that name after the session ends. So when you close an `aid` session, the shell
+left in the tab still knows which workspace the tab was for. `dl rmt` asks herdr for the
+tab's name (`herdr tab get $HERDR_TAB_ID`) and deletes that workspace:
+
+```
+$ dl rmt
+This tab is named 'devlaunch@main', which is workspace devlaunch-main-3j1t.
+Removing workspace devlaunch-main-3j1t...
+...
+Hanging up the shell dl was called from (pid 4242).
+```
+
+The name becomes an id in one of two ways. A name that is a workspace id devpod lists is
+that workspace, because a launch of a workspace `dl` holds no record for names the tab with
+the id. Any other name is looked up in `metadata.json`, and only workspaces devpod still lists can answer, so the record
+of a workspace deleted long ago cannot. A tab nobody renamed carries its number, which names
+no workspace. No match and two matches are both refused, and nothing is deleted.
+
+After that it is `rme`. The guard stops at work that is nowhere else, and `dl rmt --force`
+is the way past it. Once the workspace has gone, `dl` hangs up the shell it was typed in, so
+the tab closes. A refusal leaves the shell open with the reason on screen.
+[`rme`](#rme-the-delete-and-then-the-shell) has what the hangup does and when it is skipped.
+`rmt` takes no workspace name, no `--rm` and no command. Outside a herdr tab it refuses and asks herdr nothing.
+
 ### `--stop` and `--autorm` are retired
 
 Both moved because `--rm` changed meaning, and both are still recognised so that a

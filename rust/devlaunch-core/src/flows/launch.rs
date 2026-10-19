@@ -4668,6 +4668,52 @@ fn label_in(records: &MetadataStorage, workspace_id: &str) -> Option<String> {
     )
 }
 
+/// The workspaces a tab name was given to, read backwards out of the records.
+///
+/// [`label_in`] the other way round. A launch names the herdr tab and the pane
+/// after the record (`devlaunch@main`), and that name outlives the session: the
+/// tab is closed, the container is still running, and the name is the one thing
+/// the person still has in their head. `dl rmt` typed in that tab reads the name,
+/// and this is how it finds the workspace behind it.
+///
+/// **Only ids `listed` admits come back**, and which of a record's two ids is
+/// asked first is [`stored_as`]'s order reversed on purpose: `devpod_workspace_id`
+/// is the name devpod was actually given, so it is the one a listing holds. A
+/// record nothing lists is a workspace deleted months ago -- `metadata.json` is
+/// append-mostly -- and must not turn a tab name into an id devpod has never
+/// heard of.
+///
+/// **More than one answer is an answer.** Names need not be unique: two owners'
+/// forks of one repo on one branch carry the same label, and so do two records of
+/// one triple under different id schemes. The caller refuses rather than picks,
+/// because the verb this serves, `rmt`, deletes.
+#[must_use]
+pub fn recorded_ids_labelled(
+    records: &MetadataStorage,
+    label: &str,
+    listed: impl Fn(&str) -> bool,
+) -> Vec<String> {
+    let mut ids: Vec<String> = records
+        .list_worktrees(crate::domain::metadata::WorktreeFilter::All)
+        .into_iter()
+        .filter(|record| {
+            WorkspaceId::new(&record.owner, &record.repo, &record.branch)
+                .is_ok_and(|workspace| workspace.label() == label)
+        })
+        .filter_map(|record| {
+            record
+                .devpod_workspace_id
+                .iter()
+                .chain(std::iter::once(&record.workspace_id))
+                .find(|id| listed(id))
+                .cloned()
+        })
+        .collect();
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
 /// The devpod workspace id `metadata.json` holds for a triple, if any.
 ///
 /// A store that cannot be opened answers `None`, which is Python's reading: a
@@ -13111,6 +13157,44 @@ mod tests {
             !scene.cache_dir().join("no-cache-here").exists(),
             "a look creates nothing, which is what lets this sit in front of a launch",
         );
+    }
+
+    #[test]
+    fn a_tab_name_reads_back_to_the_listed_workspaces_that_carry_it() {
+        // The tab says `devlaunch@main` long after the session that named it has
+        // gone, and that name is what `dl rmt` reads from the tab. The
+        // record that names the tab is the record that answers, and only for ids
+        // devpod still lists: a stale record must not become an id to act on.
+        let scene = Scene::new();
+        record_worktree(
+            scene.cache_dir(),
+            "blooop",
+            "devlaunch",
+            "main",
+            "devlaunch-main-legacy",
+        );
+        record_worktree(
+            scene.cache_dir(),
+            "someone",
+            "devlaunch",
+            "main",
+            "devlaunch-main-fork",
+        );
+        let records = MetadataStorage::look(MetadataStorage::path_in(scene.cache_dir()));
+
+        assert_eq!(
+            recorded_ids_labelled(&records, "devlaunch@main", |id| id
+                == "devlaunch-main-legacy"),
+            ["devlaunch-main-legacy"],
+        );
+        // Two forks on one branch are one tab name, and both come back: which one
+        // the person meant is theirs to say.
+        assert_eq!(
+            recorded_ids_labelled(&records, "devlaunch@main", |_| true),
+            ["devlaunch-main-fork", "devlaunch-main-legacy"],
+        );
+        assert!(recorded_ids_labelled(&records, "devlaunch@main", |_| false).is_empty());
+        assert!(recorded_ids_labelled(&records, "devlaunch@other", |_| true).is_empty());
     }
 
     #[test]

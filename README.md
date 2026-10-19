@@ -19,7 +19,7 @@ one argument instead of a clone, a config file and a build command.
 [![GitHub pull-requests merged](https://badgen.net/github/merged-prs/blooop/devlaunch)](https://github.com/blooop/devlaunch/pulls?q=is%3Amerged)
 [![GitHub release](https://img.shields.io/github/release/blooop/devlaunch.svg)](https://GitHub.com/blooop/devlaunch/releases/)
 [![PyPI](https://img.shields.io/pypi/v/devlaunch)](https://pypi.org/project/devlaunch/)
-[![Conda](https://img.shields.io/badge/conda-v0.60.1-brightgreen?logo=anaconda)](https://prefix.dev/channels/blooop/packages/devlaunch)
+[![Conda](https://img.shields.io/badge/conda-v0.62.0-brightgreen?logo=anaconda)](https://prefix.dev/channels/blooop/packages/devlaunch)
 [![License](https://img.shields.io/github/license/blooop/devlaunch)](https://opensource.org/license/mit/)
 [![Platform](https://img.shields.io/badge/platform-linux--64-blue)](https://github.com/blooop/devlaunch/releases)
 [![Pixi Badge](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/prefix-dev/pixi/main/assets/badge/v0.json)](https://pixi.sh)
@@ -257,6 +257,7 @@ there to answer. [docs/cli.md](docs/cli.md) has the rest.
 | `dl <ws> kill` | Kill whatever is holding a workspace that will not answer, then delete it |
 | `dl <ws> rm` | Delete it. Refuses if the clone holds work that is nowhere else |
 | `dl <ws> rme` | The same delete, and then the shell: it closes the terminal it was typed in |
+| `dl rmt` | In a [herdr](https://herdr.dev) tab: delete the workspace the tab is named after, then close the tab as `rme` does. No selector |
 | `dl <ws> code` | Open it in VS Code |
 | `dl <ws> restart` | Stop and start, no rebuild |
 | `dl <ws> recreate` | Recreate the container |
@@ -272,6 +273,12 @@ opens the selector.
 now; `dl <ws> --rm` deletes once the session ends, the way `docker run --rm` does. Both stop at
 work that exists nowhere else: a clone with uncommitted or unpushed changes is kept and named,
 and `dl <ws> rm --force` is how you override that.
+
+`rmt` is for the herdr tab a session ran in. A launch names the tab after its workspace
+(`devlaunch@main`), and the name stays after the session closes. Type `dl rmt` in that tab and
+it deletes that workspace and then closes the tab, as `rme` does, with the same guard and the
+same `--force`. It prints the workspace id before it deletes anything, and it refuses a tab
+name that no workspace or two workspaces carry. See [docs/cli.md](docs/cli.md#rmt-the-workspace-this-herdr-tab-is-named-after).
 
 `rme` is neither of those. It deletes the workspace now, as `rm` does, and then hangs up the
 shell that asked, so the terminal tab you opened for that one workspace closes on its own
@@ -343,7 +350,7 @@ clone, and [docs/cleanup.md](docs/cleanup.md) says what it carries one past and 
 
 ```bash
 $ dl --version
-dl 0.60.1
+dl 0.62.0
 ```
 
 `--devcontainer <variant|path>` picks a non-default `devcontainer.json`. A bare name means
