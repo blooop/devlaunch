@@ -865,6 +865,79 @@ fn a_cold_triple_prepares_a_clone_creates_the_workspace_and_attaches() {
     );
 }
 
+/// Every docker call the launch made, each with the number of devpod calls
+/// logged before it.
+fn docker_calls(world: &World) -> Vec<(usize, String)> {
+    std::fs::read_to_string(world.path("docker-log"))
+        .unwrap_or_default()
+        .lines()
+        .map(|line| {
+            let (before, argv) = line.split_once(' ').expect("a count and an argv");
+            (before.parse().expect("a count"), argv.to_owned())
+        })
+        .collect()
+}
+
+/// A cold launch of a workspace devpod holds no record of, over containers an
+/// older one left under the same id: they go before the `devpod up`, which
+/// would otherwise trip over their fixed names, and the launch says so.
+#[test]
+fn a_cold_launch_removes_the_leftovers_of_a_forgotten_workspace_before_the_up() {
+    let world = World::with(&[]);
+    let root = world.root.display().to_string();
+    let clone = format!("{root}/cache/devlaunch/repos/blooop/devlaunch/{COLD}");
+    let agent = format!(
+        "{root}/devpod/agent/contexts/default/workspaces/{COLD}/.docker-compose/\
+         docker-compose.devcontainer.containerFeatures-0.yml"
+    );
+    std::fs::write(
+        world.path("docker-ps"),
+        format!(
+            "aaa\tdev_old\t{clone}/.devcontainer\t{clone}/.devcontainer/a.yml,{agent}\n\
+             ccc\tsomeone_else\t/srv/other\t/srv/other/compose.yml\n"
+        ),
+    )
+    .expect("a docker listing");
+
+    let run = world.dl(&["blooop/devlaunch@cold"]);
+
+    run.exited(0);
+    let calls = docker_calls(&world);
+    let removal = calls
+        .iter()
+        .find(|(_, argv)| argv.starts_with("rm "))
+        .unwrap_or_else(|| panic!("no removal in {calls:?}"));
+    assert_eq!(removal.1, "rm --force aaa");
+    let up = world
+        .raw_calls()
+        .iter()
+        .position(|argv| argv.first().is_some_and(|word| word == "up"))
+        .expect("a devpod up");
+    assert!(removal.0 <= up, "the removal ran after the up: {calls:?}");
+    assert!(
+        run.err
+            .contains(&format!("Removed containers {COLD} left behind: dev_old\n")),
+        "{}",
+        run.err
+    );
+}
+
+/// A workspace devpod holds a record of is devpod's to manage: the launch asks
+/// docker nothing, so an ordinary `up` costs no docker call at all.
+#[test]
+fn a_launch_of_a_workspace_devpod_holds_asks_docker_nothing() {
+    let world = World::with(&[]);
+    let record = world.path(&format!(
+        "devpod/contexts/default/workspaces/{COLD}/workspace.json"
+    ));
+    std::fs::create_dir_all(record.parent().expect("a record directory")).expect("a record dir");
+    std::fs::write(&record, "{}").expect("devpod's record");
+
+    world.dl(&["blooop/devlaunch@cold"]).exited(0);
+
+    assert_eq!(docker_calls(&world), []);
+}
+
 #[test]
 fn a_bare_owner_repo_names_the_default_branch_before_it_derives_an_id() {
     // No `@branch`, so the default branch has to be named first — from the record
