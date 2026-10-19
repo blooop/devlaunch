@@ -1390,6 +1390,67 @@ mod leftover_tests {
         );
     }
 
+    /// A docker that will not list its containers is said, in its own words,
+    /// and nothing is removed.
+    #[test]
+    fn a_listing_docker_refuses_is_said_in_dockers_words() {
+        let home = devpod_home_with(&[]);
+        let fake = FakeRunner::new();
+        fake.script(["docker", "ps"], Response::failed(1, "daemon is down\n"));
+        let mut notices: Vec<LaunchNotice> = Vec::new();
+
+        sweep_leftovers(
+            &fake,
+            &host_with(&home, Path::new("/cache/devlaunch")),
+            "ws",
+            "/home/me/ws",
+            &mut notices,
+        );
+
+        assert_eq!(
+            notices,
+            [LaunchNotice::LeftoverContainersNotListed {
+                workspace_id: "ws".to_owned(),
+                reason: "docker ps failed (Code(1)): daemon is down".to_owned(),
+            }]
+        );
+        assert_eq!(fake.args_to("docker").len(), 1, "a listing and no removal");
+    }
+
+    /// A docker that will not remove the leftovers is said, with their names
+    /// and docker's words.
+    #[test]
+    fn a_removal_docker_refuses_is_said_in_dockers_words() {
+        let home = devpod_home_with(&[]);
+        let fake = FakeRunner::new();
+        fake.script(
+            ["docker", "ps"],
+            Response::stdout(format!(
+                "aaa\tdev_ws\t/x\t{}\n",
+                agent_compose_file(&home, "default", "ws").display()
+            )),
+        );
+        fake.script(["docker", "rm"], Response::failed(1, "daemon said no\n"));
+        let mut notices: Vec<LaunchNotice> = Vec::new();
+
+        sweep_leftovers(
+            &fake,
+            &host_with(&home, Path::new("/cache/devlaunch")),
+            "ws",
+            "/home/me/ws",
+            &mut notices,
+        );
+
+        assert_eq!(
+            notices,
+            [LaunchNotice::LeftoverContainersNotRemoved {
+                workspace_id: "ws".to_owned(),
+                names: NonEmpty::of(["dev_ws".to_owned()]).expect("one name"),
+                reason: "docker rm failed (Code(1)): daemon said no".to_owned(),
+            }]
+        );
+    }
+
     /// A local folder is the user's directory: a container that names only the
     /// folder, and not devpod's directory for the workspace, is not a leftover.
     #[test]
