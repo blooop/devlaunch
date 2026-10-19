@@ -402,8 +402,9 @@ pub(crate) fn workspace_delete(
 /// This workspace's clone, when it is one devlaunch made, for the leftover
 /// sweep to match container labels against.
 ///
-/// Only a clone under devlaunch's own clone root: a recorded path anywhere else
-/// is somebody's directory, and a compose project they started there by hand is
+/// Only a clone in the shape devlaunch makes, `<clone root>/<owner>/<repo>/<id>`:
+/// a recorded path anywhere else is somebody's directory, or a repository's
+/// directory holding other workspaces' clones, and a compose project there is
 /// not a leftover of this workspace.
 fn managed_clone(
     clones: &WorkspaceCloneManager<'_>,
@@ -415,7 +416,7 @@ fn managed_clone(
     // silent so it is not said twice.
     let mut unsaid = Vec::new();
     let path = clones.resolve_clone_path(recorded, &mut unsaid)?;
-    path.starts_with(clones.repos_dir()).then_some(path)
+    crate::domain::xdg::is_clone_of(clones.repos_dir(), &path, workspace_id).then_some(path)
 }
 
 /// Remove the containers a deleted workspace left behind, and say so.

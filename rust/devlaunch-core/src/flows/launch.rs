@@ -1295,20 +1295,8 @@ fn sweep_leftovers(
 ) {
     let source = Path::new(source);
     let clone_root = crate::domain::xdg::clone_root_in(&host.cache_dir);
-    let clone = source
-        .strip_prefix(&clone_root)
-        .is_ok_and(|under| {
-            let parts: Vec<_> = under.components().collect();
-            matches!(
-                parts.as_slice(),
-                [
-                    std::path::Component::Normal(_),
-                    std::path::Component::Normal(_),
-                    std::path::Component::Normal(leaf),
-                ] if *leaf == std::ffi::OsStr::new(workspace_id)
-            )
-        })
-        .then_some(source);
+    let clone =
+        crate::domain::xdg::is_clone_of(&clone_root, source, workspace_id).then_some(source);
     match crate::flows::orphan_containers::sweep(
         runner,
         host.devpod_home.as_ref(),

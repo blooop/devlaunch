@@ -141,6 +141,24 @@ pub fn clone_root_in(cache: &Path) -> PathBuf {
     cache.join("repos")
 }
 
+/// Whether `path` is the clone dl makes for `workspace_id` under `clone_root`:
+/// `<clone root>/<owner>/<repo>/<id>`, exactly.
+///
+/// Not merely a path under the root: the repository's directory above a clone
+/// holds every clone of that repository, so a test by prefix would read the
+/// repository's directory as one workspace's clone and its clones as that
+/// workspace's.
+pub(crate) fn is_clone_of(clone_root: &Path, path: &Path, workspace_id: &str) -> bool {
+    use std::path::Component::Normal;
+    path.strip_prefix(clone_root).is_ok_and(|under| {
+        let parts: Vec<_> = under.components().collect();
+        matches!(
+            parts.as_slice(),
+            [Normal(_), Normal(_), Normal(leaf)] if *leaf == std::ffi::OsStr::new(workspace_id)
+        )
+    })
+}
+
 /// The whole XDG rule, as a function of its two inputs.
 ///
 /// An empty value counts as unset, which is what the XDG basedir spec says and
@@ -162,6 +180,20 @@ mod tests {
     use super::*;
     use std::ffi::OsString;
     use std::path::{Path, PathBuf};
+
+    /// A clone dl makes is `<clone root>/<owner>/<repo>/<id>`, and only that:
+    /// the repository's directory above it holds every clone of the repository,
+    /// and a path elsewhere is somebody's own directory.
+    #[test]
+    fn only_the_owner_repo_id_directory_is_a_workspaces_clone() {
+        let root = Path::new("/cache/devlaunch/repos");
+
+        assert!(is_clone_of(root, &root.join("o/r/ws"), "ws"));
+        assert!(!is_clone_of(root, &root.join("o/r"), "r"));
+        assert!(!is_clone_of(root, &root.join("o/r/ws"), "other"));
+        assert!(!is_clone_of(root, &root.join("o/r/ws/sub"), "sub"));
+        assert!(!is_clone_of(root, Path::new("/home/me/o/r/ws"), "ws"));
+    }
 
     fn home() -> PathBuf {
         PathBuf::from("/home/someone")
