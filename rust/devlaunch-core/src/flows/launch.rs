@@ -11734,6 +11734,10 @@ mod tests {
             ("/tmp/-lead_", "lead"),
             ("/tmp/__", ""),
             (
+                "/tmp/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa__________bbbbbbbbbbbbbbbbbbbb",
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaabbbbbbbbbbbbbbbbbb",
+            ),
+            (
                 "/tmp/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-b",
                 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             ),
