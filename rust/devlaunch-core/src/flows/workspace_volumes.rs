@@ -40,7 +40,7 @@
 //! `rm`, `rme`, `kill` and `--rm`. `stop`, `up`, recreate and `--refresh-stale`
 //! never reach it, so the caches a recreate is meant to keep stay put.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use indexmap::IndexMap;
@@ -184,22 +184,34 @@ fn read_mounts(runner: &dyn Runner, uid: &str, mounted: &mut Mounted) -> Result<
         return Ok(());
     };
     let mut projects = BTreeSet::new();
-    let mut config_files: Vec<PathBuf> = Vec::new();
+    let mut project_files: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
+    let mut projectless_files: Vec<Vec<PathBuf>> = Vec::new();
     for container in docker::container_mounts(runner, &ids)? {
-        projects.extend(container.project);
-        for file in container.config_files {
-            if !config_files.contains(&file) {
-                config_files.push(file);
+        match container.project {
+            Some(project) => {
+                let files = project_files.entry(project.clone()).or_default();
+                for file in container.config_files {
+                    if !files.contains(&file) {
+                        files.push(file);
+                    }
+                }
+                projects.insert(project);
             }
+            None if !container.config_files.is_empty() => {
+                projectless_files.push(container.config_files);
+            }
+            None => {}
         }
         mounted.volumes.extend(container.volumes);
     }
     if mounted.volumes.is_empty() {
         return Ok(());
     }
-    mounted
-        .literal
-        .extend(external_volumes(&config_files).map_err(Unlisted::Failed)?);
+    for files in project_files.values().chain(&projectless_files) {
+        mounted
+            .literal
+            .extend(external_volumes(files).map_err(Unlisted::Failed)?);
+    }
     for volume in docker::compose_volumes(runner)? {
         if !mounted.volumes.contains(&volume.name) {
             continue;
@@ -819,6 +831,49 @@ mod tests {
                 .into_iter()
                 .collect())
         );
+    }
+
+    #[test]
+    fn one_projects_compose_file_does_not_unmark_another_projects_external_volume() {
+        let dir = tempfile::tempdir().expect("a scratch dir");
+        let a = dir.path().join("a.yml");
+        let b = dir.path().join("b.yml");
+        std::fs::write(
+            &a,
+            "volumes:\n  cache:\n    external: true\n    name: app-cache\n",
+        )
+        .expect("a");
+        std::fs::write(&b, "volumes:\n  cache:\n    external: false\n").expect("b");
+        let home = devpod_home_with(&[("default", "app", None)]);
+        std::fs::write(
+            home.record("default", "app"),
+            serde_json::json!({ "id": "app", "uid": UID }).to_string(),
+        )
+        .expect("a record");
+        let fake = FakeRunner::new();
+        fake.script(
+            container_ps(&format!("label=dev.containers.id={UID}")),
+            Response::stdout("aaa\n"),
+        );
+        fake.script(
+            container_ps(&format!("label=com.docker.compose.project={UID}")),
+            Response::stdout("bbb\n"),
+        );
+        fake.script(
+            ["docker", "inspect"],
+            Response::stdout(format!(
+                "project-a\t{}\tapp-cache\t\n{UID}\t{}\tapp-pixi\t\n",
+                a.display(),
+                b.display()
+            )),
+        );
+        fake.script(["docker", "volume", "ls"], Response::stdout(""));
+
+        let Recording::Read(m) = record(&fake, Some(&home), "app") else {
+            panic!("read");
+        };
+
+        assert_eq!(owned(&m), ["app-pixi".to_owned()]);
     }
 
     #[test]
