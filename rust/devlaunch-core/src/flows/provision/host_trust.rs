@@ -1,6 +1,133 @@
 //! The trust entry, written on the host.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+/// What the trust stage reported from inside the container.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Reported {
+    /// The container's Claude config directory, resolved in the container.
+    pub(crate) config_dir: String,
+    /// The workspace folder the pass stood in, `pwd -P` in the container.
+    pub(crate) workspace: String,
+}
+
+/// One mount, as `docker inspect` reports it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Mount {
+    pub(crate) bind: bool,
+    pub(crate) source: PathBuf,
+    pub(crate) destination: String,
+    pub(crate) writable: bool,
+}
+
+/// What the host knows that the container cannot change.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct HostSide<'a> {
+    /// This machine's home directory.
+    pub(crate) home: &'a Path,
+    /// The directory this machine's Claude Code keeps its config in, if it names one.
+    pub(crate) claude_dir: Option<&'a Path>,
+    /// The clone devpod mounted as this workspace's folder.
+    pub(crate) clone: &'a Path,
+}
+
+/// The host file to merge into, and the key to merge.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Target {
+    pub(crate) file: PathBuf,
+    pub(crate) key: String,
+}
+
+/// Which host file to merge into, and which key, or `None` where the host has no
+/// business writing anything.
+///
+/// The container says two things and the host believes neither of them on its own
+/// word. `docker inspect` is what says where a container path lives on the host,
+/// and the host's own facts say which host paths are fair game:
+///
+/// - **The file.** The reported config directory must be exactly the destination of
+///   a read-write bind mount whose host source is this machine's Claude config
+///   directory (`$CLAUDE_CONFIG_DIR`) or `~/.claude` (what devlaunch's claude-code
+///   feature mounts). Anything else is the container's own directory, which the seed
+///   in the container already wrote, or somebody else's host directory, which is not
+///   dl's to write. A further mount over the file itself makes the source directory
+///   the wrong file, so that is refused too.
+/// - **The key.** The reported path must be spelled the one way Claude Code keys it
+///   (absolute, no `.`, `..`, empty or trailing component, and only
+///   `[-a-zA-Z0-9_/.@+]`), and it must be the mount point of the clone dl made for
+///   this workspace, or a directory under it. Neither that mount point nor the path
+///   may be the host's home, inside it, or above it: a repo picks its own
+///   `workspaceMount` target, and a key there would name a real host directory the
+///   host's own Claude Code would then stop asking about. `/` is above everything.
+pub(crate) fn target(reported: &Reported, mounts: &[Mount], host: HostSide<'_>) -> Option<Target> {
+    let file = config_file(&reported.config_dir, mounts, host)?;
+    let key = trusted_key(&reported.workspace, mounts, host)?;
+    Some(Target { file, key })
+}
+
+/// The host `.claude.json` behind the container's config directory, if it is one of
+/// the host's own Claude config directories mounted read-write.
+fn config_file(config_dir: &str, mounts: &[Mount], host: HostSide<'_>) -> Option<PathBuf> {
+    if !is_plain_absolute(config_dir) {
+        return None;
+    }
+    let inner_file = format!("{config_dir}/{CONFIG_FILE}");
+    if mounts.iter().any(|mount| mount.destination == inner_file) {
+        return None;
+    }
+    let allowed: Vec<PathBuf> = std::iter::once(host.home.join(super::CLAUDE_CONFIG_RELPATH))
+        .chain(host.claude_dir.map(Path::to_path_buf))
+        .map(|dir| resolved(&dir))
+        .collect();
+    mounts
+        .iter()
+        .filter(|mount| mount.bind && mount.writable && mount.destination == config_dir)
+        .map(|mount| resolved(&mount.source))
+        .find(|source| allowed.contains(source))
+        .map(|source| source.join(CONFIG_FILE))
+}
+
+/// The reported workspace path, if the host agrees it is this workspace's folder.
+fn trusted_key(workspace: &str, mounts: &[Mount], host: HostSide<'_>) -> Option<String> {
+    if !is_plain_absolute(workspace) || !workspace.bytes().all(is_key_byte) {
+        return None;
+    }
+    let home = resolved(host.home);
+    let home = home.to_str()?;
+    let near_home = |path: &str| super::is_under(path, home) || super::is_under(home, path);
+    if near_home(workspace) {
+        return None;
+    }
+    let clone = resolved(host.clone);
+    mounts
+        .iter()
+        .filter(|mount| mount.bind && resolved(&mount.source) == clone)
+        .filter(|mount| is_plain_absolute(&mount.destination) && !near_home(&mount.destination))
+        .any(|mount| super::is_under(workspace, &mount.destination))
+        .then(|| workspace.to_owned())
+}
+
+/// The bytes the seed's `printf` can spell, and so the bytes either write accepts.
+fn is_key_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || b"-_/.@+".contains(&byte)
+}
+
+/// An absolute path in its one spelling: no empty, `.` or `..` component, and no
+/// trailing slash. `/` itself is not one, because nothing may be keyed there.
+fn is_plain_absolute(path: &str) -> bool {
+    let Some(rest) = path.strip_prefix('/') else {
+        return false;
+    };
+    !rest.is_empty()
+        && rest
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && part != "..")
+}
+
+/// A host path with its links resolved, or as written where it does not exist.
+fn resolved(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
 
 /// What one merge came to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -347,5 +474,262 @@ mod tests {
         }
         std::fs::set_permissions(&config.dir, std::fs::Permissions::from_mode(0o700))
             .expect("a writable dir again");
+    }
+
+    // =======================================================================
+    // which host file, and which key
+    // =======================================================================
+
+    /// A host with a home, a Claude config directory and a clone, and a container
+    /// that mounts the two the way the claude-code feature and devpod do.
+    struct Host {
+        _scratch: tempfile::TempDir,
+        home: PathBuf,
+        clone: PathBuf,
+    }
+
+    impl Host {
+        fn new() -> Self {
+            let scratch = tempfile::tempdir().expect("a scratch dir");
+            let root = std::fs::canonicalize(scratch.path()).expect("a resolved scratch dir");
+            let home = root.join("home/ags");
+            let clone = home.join(".cache/devlaunch/repos/o/r/r-main-abcd");
+            std::fs::create_dir_all(home.join(".claude")).expect("a claude dir");
+            std::fs::create_dir_all(&clone).expect("a clone");
+            Self {
+                _scratch: scratch,
+                home,
+                clone,
+            }
+        }
+
+        fn side(&self) -> HostSide<'_> {
+            HostSide {
+                home: &self.home,
+                claude_dir: None,
+                clone: &self.clone,
+            }
+        }
+
+        fn bind(&self, source: &Path, destination: &str, writable: bool) -> Mount {
+            Mount {
+                bind: true,
+                source: source.to_path_buf(),
+                destination: destination.to_owned(),
+                writable,
+            }
+        }
+
+        /// The bencher shape: the clone at `/workspaces/<id>`, `~/.claude` at the
+        /// container's config directory, both read-write.
+        fn mounts(&self) -> Vec<Mount> {
+            vec![
+                self.bind(&self.clone, "/workspaces/r-main-abcd", true),
+                self.bind(&self.home.join(".claude"), "/home/vscode/.claude", true),
+            ]
+        }
+
+        fn file(&self) -> PathBuf {
+            self.home.join(".claude/.claude.json")
+        }
+    }
+
+    fn reported(config_dir: &str, workspace: &str) -> Reported {
+        Reported {
+            config_dir: config_dir.to_owned(),
+            workspace: workspace.to_owned(),
+        }
+    }
+
+    #[test]
+    fn a_container_sharing_the_hosts_claude_dir_merges_into_the_hosts_file() {
+        let host = Host::new();
+        assert_eq!(
+            target(
+                &reported("/home/vscode/.claude", "/workspaces/r-main-abcd"),
+                &host.mounts(),
+                host.side()
+            ),
+            Some(Target {
+                file: host.file(),
+                key: "/workspaces/r-main-abcd".to_owned(),
+            })
+        );
+        // A git root under the workspace folder is the workspace folder's to claim.
+        assert_eq!(
+            target(
+                &reported("/home/vscode/.claude", "/workspaces/r-main-abcd/sub"),
+                &host.mounts(),
+                host.side()
+            )
+            .map(|found| found.key),
+            Some("/workspaces/r-main-abcd/sub".to_owned())
+        );
+    }
+
+    #[test]
+    fn the_hosts_own_claude_config_dir_counts_as_well_as_the_default() {
+        let host = Host::new();
+        let elsewhere = host.home.join("profiles/work");
+        std::fs::create_dir_all(&elsewhere).expect("a profile dir");
+        let mounts = vec![
+            host.bind(&host.clone, "/workspaces/r-main-abcd", true),
+            host.bind(&elsewhere, "/home/vscode/.claude", true),
+        ];
+        let side = HostSide {
+            claude_dir: Some(&elsewhere),
+            ..host.side()
+        };
+        assert_eq!(
+            target(
+                &reported("/home/vscode/.claude", "/workspaces/r-main-abcd"),
+                &mounts,
+                side
+            )
+            .map(|found| found.file),
+            Some(elsewhere.join(".claude.json"))
+        );
+    }
+
+    #[test]
+    fn a_config_dir_that_is_not_the_hosts_claude_dir_mounted_read_write_is_left_alone() {
+        let host = Host::new();
+        let other = host.home.join("somewhere-else");
+        std::fs::create_dir_all(&other).expect("another dir");
+        let cases: Vec<(&str, Vec<Mount>)> = vec![
+            (
+                "not mounted at all: the container's own directory",
+                vec![host.bind(&host.clone, "/workspaces/r-main-abcd", true)],
+            ),
+            (
+                "mounted read-only",
+                vec![
+                    host.bind(&host.clone, "/workspaces/r-main-abcd", true),
+                    host.bind(&host.home.join(".claude"), "/home/vscode/.claude", false),
+                ],
+            ),
+            (
+                "mounted from some other host directory",
+                vec![
+                    host.bind(&host.clone, "/workspaces/r-main-abcd", true),
+                    host.bind(&other, "/home/vscode/.claude", true),
+                ],
+            ),
+            (
+                "a volume, which is no host path at all",
+                vec![
+                    host.bind(&host.clone, "/workspaces/r-main-abcd", true),
+                    Mount {
+                        bind: false,
+                        ..host.bind(&host.home.join(".claude"), "/home/vscode/.claude", true)
+                    },
+                ],
+            ),
+            (
+                "the directory's parent mounted, not the directory",
+                vec![
+                    host.bind(&host.clone, "/workspaces/r-main-abcd", true),
+                    host.bind(&host.home.join(".claude"), "/home/vscode", true),
+                ],
+            ),
+            (
+                "the file itself mounted over from somewhere else",
+                vec![
+                    host.bind(&host.clone, "/workspaces/r-main-abcd", true),
+                    host.bind(&host.home.join(".claude"), "/home/vscode/.claude", true),
+                    host.bind(&other.join("x.json"), "/home/vscode/.claude/.claude.json", true),
+                ],
+            ),
+        ];
+        for (case, mounts) in cases {
+            assert_eq!(
+                target(
+                    &reported("/home/vscode/.claude", "/workspaces/r-main-abcd"),
+                    &mounts,
+                    host.side()
+                ),
+                None,
+                "{case}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_reported_path_outside_the_workspace_folder_is_never_recorded() {
+        // The path comes from a container that ran a stranger's postCreate. The host
+        // records it only where it is the clone's mount point or under it.
+        let host = Host::new();
+        for workspace in [
+            "/",
+            "/workspaces",
+            "/workspaces/r-main-abcd-other",
+            "/workspaces/other",
+            "/home/vscode",
+            "/home/ags",
+            "/workspaces/r-main-abcd/../other",
+            "/workspaces/r-main-abcd/./x",
+            "/workspaces//r-main-abcd",
+            "/workspaces/r-main-abcd/",
+            "workspaces/r-main-abcd",
+            "/workspaces/r-main-abcd/say \"hi\"",
+            "",
+        ] {
+            assert_eq!(
+                target(
+                    &reported("/home/vscode/.claude", workspace),
+                    &host.mounts(),
+                    host.side()
+                ),
+                None,
+                "{workspace:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_clone_mounted_at_or_around_a_host_home_path_is_never_recorded() {
+        // A repo picks its own `workspaceMount` target. Mounted at the host user's
+        // home, inside it, or above it, the key would name a real host directory,
+        // and the host's own Claude Code would stop asking about it.
+        let host = Host::new();
+        let home = host.home.to_str().expect("a path").to_owned();
+        let parent = host
+            .home
+            .parent()
+            .and_then(Path::to_str)
+            .expect("a parent")
+            .to_owned();
+        for destination in [home.clone(), format!("{home}/projects/r"), parent, "/".to_owned()] {
+            let mounts = vec![
+                host.bind(&host.clone, &destination, true),
+                host.bind(&host.home.join(".claude"), "/home/vscode/.claude", true),
+            ];
+            assert_eq!(
+                target(&reported("/home/vscode/.claude", &destination), &mounts, host.side()),
+                None,
+                "{destination}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_workspace_folder_that_is_not_the_clone_is_never_recorded() {
+        // Only the clone dl made is a workspace folder. Another host directory the
+        // repo mounts is the repo's choice, not dl's.
+        let host = Host::new();
+        let other = host.home.join("elsewhere");
+        std::fs::create_dir_all(&other).expect("another dir");
+        let mounts = vec![
+            host.bind(&other, "/workspaces/r-main-abcd", true),
+            host.bind(&host.home.join(".claude"), "/home/vscode/.claude", true),
+        ];
+        assert_eq!(
+            target(
+                &reported("/home/vscode/.claude", "/workspaces/r-main-abcd"),
+                &mounts,
+                host.side()
+            ),
+            None
+        );
     }
 }
