@@ -3077,7 +3077,7 @@ fn setup_pass(
     // there always is one. Its outcome is not the pass's: like the stage, every
     // refusal leaves the workspace with the prompt it would have had anyway.
     if let Some(host) = host {
-        let _: Option<host_trust::Merged> = host_trust::record(runner, workspace, report, host);
+        host_trust::record(runner, workspace, report, host);
     }
     Ok(PassReport {
         tools: ProbeResult::parse(report),
@@ -5821,6 +5821,11 @@ fi
             report
         }
 
+        /// The host's config file, byte for byte: what a refusal must leave alone.
+        fn host_config_bytes(&self) -> Vec<u8> {
+            fs::read(self.host_home.join(".claude/.claude.json")).expect("the host's config")
+        }
+
         fn host_config(&self) -> serde_json::Value {
             serde_json::from_str(
                 &fs::read_to_string(self.host_home.join(".claude/.claude.json"))
@@ -5839,9 +5844,8 @@ fi
         let report = world.run_the_stages();
         let runner = docker_inspect_answering(world.mounts(), 0);
 
-        let merged = host_trust::record(&runner, SHARED_WS, &report, &world.host());
+        host_trust::record(&runner, SHARED_WS, &report, &world.host());
 
-        assert_eq!(merged, Some(host_trust::Merged::Wrote), "{report}");
         let key = world
             .container_workspace
             .to_str()
@@ -5867,9 +5871,14 @@ fi
         world.record_up("", world.clone.to_str().expect("a path"));
         let runner = docker_inspect_answering(world.mounts(), 0);
 
+        let before = world.host_config_bytes();
+
+        host_trust::record(&runner, SHARED_WS, &report, &world.host());
+
         assert_eq!(
-            host_trust::record(&runner, SHARED_WS, &report, &world.host()),
-            None
+            world.host_config_bytes(),
+            before,
+            "the host's config was touched"
         );
         assert_eq!(
             runner.argvs(),
@@ -5893,9 +5902,14 @@ fi
         world.record_up("c0ffee", &relative);
         let runner = docker_inspect_answering(world.mounts(), 0);
 
+        let before = world.host_config_bytes();
+
+        host_trust::record(&runner, SHARED_WS, &report, &world.host());
+
         assert_eq!(
-            host_trust::record(&runner, SHARED_WS, &report, &world.host()),
-            None
+            world.host_config_bytes(),
+            before,
+            "the host's config was touched"
         );
         assert_eq!(
             runner.argvs(),
@@ -5913,13 +5927,14 @@ fi
         let report = world.run_the_stages();
         let runner = docker_inspect_answering(String::new(), 1);
 
+        let before = world.host_config_bytes();
+
+        host_trust::record(&runner, SHARED_WS, &report, &world.host());
+
         assert_eq!(
-            host_trust::record(&runner, SHARED_WS, &report, &world.host()),
-            None
-        );
-        assert_eq!(
-            world.host_config(),
-            serde_json::json!({"hasCompletedOnboarding": true})
+            world.host_config_bytes(),
+            before,
+            "the host's config was touched"
         );
     }
 
@@ -5945,13 +5960,14 @@ fi
         let world = SharedConfigWorld::new(r#"{"hasCompletedOnboarding":true}"#);
         let report = world.run_the_stages();
         let runner = docker_inspect_answering(serde_json::json!([]).to_string(), 0);
+        let before = world.host_config_bytes();
+
+        host_trust::record(&runner, SHARED_WS, &report, &world.host());
+
         assert_eq!(
-            host_trust::record(&runner, SHARED_WS, &report, &world.host()),
-            None
-        );
-        assert_eq!(
-            world.host_config(),
-            serde_json::json!({"hasCompletedOnboarding": true})
+            world.host_config_bytes(),
+            before,
+            "the host's config was touched"
         );
         assert_eq!(
             runner.argvs(),

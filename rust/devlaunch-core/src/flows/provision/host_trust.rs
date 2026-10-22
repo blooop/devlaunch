@@ -237,12 +237,19 @@ pub(crate) fn parse_mounts(json: &str) -> Vec<Mount> {
 ///
 /// Silent, like the stage it replaces: every refusal leaves the workspace where it
 /// was before trust was recorded at all, which is with the prompt.
-pub(crate) fn record(
+pub(crate) fn record(runner: &dyn Runner, workspace: &str, report: &str, host: &HostLayout) {
+    if let Some(found) = found_target(runner, workspace, report, host) {
+        let _: Merged = merge(&found.dir, &found.key);
+    }
+}
+
+/// Where [`record`] merges, or `None` at the first refusal.
+fn found_target(
     runner: &dyn Runner,
     workspace: &str,
     report: &str,
     host: &HostLayout,
-) -> Option<Merged> {
+) -> Option<Target> {
     let reported = Reported::parse(report)?;
     let up = created(host.devpod_home.as_ref(), workspace)?;
     let printed = docker::inspect_formatted(
@@ -257,8 +264,7 @@ pub(crate) fn record(
         clone: &up.clone,
         workspace_folder: &up.workspace_folder,
     };
-    let found = target(&reported, &parse_mounts(&printed), side)?;
-    Some(merge(&found.dir, &found.key))
+    target(&reported, &parse_mounts(&printed), side)
 }
 
 /// What devpod's own record of the `up` says it made for this workspace.
