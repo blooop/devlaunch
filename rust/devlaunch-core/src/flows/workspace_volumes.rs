@@ -276,8 +276,8 @@ fn literal_volumes(result: &serde_json::Value) -> BTreeSet<String> {
 /// An external volume's name is its `name:`, or the legacy `external: { name: }`,
 /// or else its key: compose does not prefix an external name with the project.
 /// A file that cannot be read or parsed, an `external:` that is not a bool or a
-/// map (compose reads `"true"` or `yes` as true), or a name with a `${...}` in it that
-/// only compose's environment could expand, is an error, because a volume the
+/// map (compose reads `"true"` or `yes` as true), or a name with a `$` variable in
+/// it that only compose's environment could expand, is an error, because a volume the
 /// read cannot name is one the sweep cannot be sure to spare.
 fn external_volumes(files: &[PathBuf]) -> Result<BTreeSet<String>, String> {
     #[derive(Default)]
@@ -328,14 +328,28 @@ fn external_volumes(files: &[PathBuf]) -> Result<BTreeSet<String>, String> {
             continue;
         }
         let name = entry.name.or(entry.legacy_name).unwrap_or(key);
-        if name.contains("${") {
+        let Some(literal) = unescape_dollars(&name) else {
             return Err(format!(
                 "the compose files name external volume {name} with a variable"
             ));
-        }
-        names.insert(name);
+        };
+        names.insert(literal);
     }
     Ok(names)
+}
+
+/// `text` with compose's `$$` escape read as a literal `$`, or `None` when any
+/// other `$` starts a variable only compose's environment could expand.
+fn unescape_dollars(text: &str) -> Option<String> {
+    let mut literal = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        if c == '$' && chars.next() != Some('$') {
+            return None;
+        }
+        literal.push(c);
+    }
+    Some(literal)
 }
 
 /// A YAML key or scalar as compose reads it: a string, or a number or bool it
@@ -661,6 +675,32 @@ mod tests {
         assert!(
             matches!(&recording, Recording::Unread { reason } if reason.contains("${PREFIX}-cache")),
             "{recording:?}"
+        );
+    }
+
+    #[test]
+    fn an_external_name_spelled_with_an_unbraced_variable_removes_nothing() {
+        let recording = record_bare_app(Some(
+            "volumes:\n  cache:\n    external: true\n    name: $PREFIX-cache\n",
+        ));
+        assert!(
+            matches!(&recording, Recording::Unread { reason } if reason.contains("$PREFIX-cache")),
+            "{recording:?}"
+        );
+    }
+
+    #[test]
+    fn a_doubled_dollar_in_an_external_name_is_a_literal_dollar() {
+        let dir = tempfile::tempdir().expect("a scratch dir");
+        let file = dir.path().join("compose.yml");
+        std::fs::write(
+            &file,
+            "volumes:\n  cache:\n    external: true\n    name: a$$b\n",
+        )
+        .expect("compose");
+        assert_eq!(
+            external_volumes(&[file]),
+            Ok(["a$b".to_owned()].into_iter().collect())
         );
     }
 
