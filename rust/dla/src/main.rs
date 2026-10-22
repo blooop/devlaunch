@@ -319,8 +319,9 @@ fn name_agent_for_session_manager(agent: Option<&str>) {
 
 /// Why the command line could not be understood.
 ///
-/// dla's own words, and Python's: the first is what somebody who typed `dla` alone
-/// sees, and the second names the variable that has to be fixed.
+/// Python's words, with the program's name changed from `aid` to `dla`: the first is
+/// what somebody who typed `dla` alone sees, and the second names the variable that
+/// has to be fixed.
 fn refusal(refused: &UsageError) -> String {
     match refused {
         UsageError::NoWorkspace => {
@@ -380,7 +381,7 @@ fn refusal(refused: &UsageError) -> String {
 /// dla's usage text.
 ///
 /// Hand-written rather than generated, and unlike `dl`'s (**divergence row 3**) it is
-/// Python's own text: dla's grammar is not a clap grammar and could not be one — an
+/// Python's text with the program's name changed from `aid` to `dla`. dla's grammar is not a clap grammar and could not be one — an
 /// unknown leading flag is *passed through to dl* and everything after the workspace
 /// is the prompt, flags and all, which a parser that rejects unknown flags would
 /// refuse. What generates a `--help` here would have to be the parser that cannot

@@ -1,10 +1,11 @@
 //! `dla` at the binary boundary: what it prints, what it hands dl, and how it ends.
 //!
 //! Every expectation here was captured by running the frozen Python build —
-//! `python -m devlaunch.dla` — against `dl/tests/launch_scenario.py`'s world with
+//! `python -m devlaunch.aid` — against `dl/tests/launch_scenario.py`'s world with
 //! `test/fixtures/devpod_shim.py` on PATH as `devpod`, under a scratch
 //! `HOME`/`XDG_CACHE_HOME`/`XDG_CONFIG_HOME`/`DEVPOD_HOME`, and pasting what it
-//! printed. Nothing here was read off the Rust implementation.
+//! printed, with the program's name since changed from `aid` to `dla`. Nothing here
+//! was read off the Rust implementation.
 //!
 //! The world is `dl`'s, deliberately: dla's whole contract is that it reaches a
 //! workspace through dl and through nothing else, so the fixture that judges it has
