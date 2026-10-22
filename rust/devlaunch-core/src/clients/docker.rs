@@ -271,25 +271,171 @@ pub(crate) fn present_containers(
         .collect())
 }
 
+/// Full ids of every container, running or not, that carries `label`
+/// (`key=value`).
+pub(crate) fn containers_labelled(
+    runner: &dyn Runner,
+    label: &str,
+) -> Result<Vec<String>, Unlisted> {
+    containers_matching(runner, &format!("label={label}"))
+}
+
+/// Full ids of every container, running or not, that one `docker ps --filter`
+/// matches.
+fn containers_matching(runner: &dyn Runner, filter: &str) -> Result<Vec<String>, Unlisted> {
+    ids_from(listing(
+        runner,
+        ["ps", "--all", "--quiet", "--no-trunc", "--filter", filter].map(str::to_owned),
+    )?)
+}
+
+/// Full ids of every container, running or not, that mounts the volume `name`.
+pub(crate) fn containers_using_volume(
+    runner: &dyn Runner,
+    name: &str,
+) -> Result<Vec<String>, Unlisted> {
+    containers_matching(runner, &format!("volume={name}"))
+}
+
+fn ids_from(stdout: String) -> Result<Vec<String>, Unlisted> {
+    Ok(stdout
+        .lines()
+        .filter_map(|line| line.split_whitespace().next())
+        .map(str::to_owned)
+        .collect())
+}
+
+/// The compose project one container is in, and the named volumes it mounts.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ContainerMounts {
+    /// `com.docker.compose.project`, when the container has one.
+    pub(crate) project: Option<String>,
+    /// The names of the mounts of `Type` `volume`. Binds are not named here.
+    pub(crate) volumes: Vec<String>,
+}
+
+/// The `--format` [`container_mounts`] reads back: the compose project, then each
+/// named volume, tab-separated, one line per container. docker prints
+/// `<no value>` for a label the container does not carry.
+const MOUNTS_FORMAT: &str = "{{index .Config.Labels \"com.docker.compose.project\"}}\t\
+{{range .Mounts}}{{if eq .Type \"volume\"}}{{.Name}}\t{{end}}{{end}}";
+
+/// What these containers mount, in one `docker inspect`.
+pub(crate) fn container_mounts(
+    runner: &dyn Runner,
+    ids: &NonEmpty<String>,
+) -> Result<Vec<ContainerMounts>, Unlisted> {
+    let mut args = ["inspect", "--type", "container", "--format", MOUNTS_FORMAT]
+        .map(str::to_owned)
+        .to_vec();
+    args.extend(ids.iter().cloned());
+    let stdout = listing(runner, args)?;
+    Ok(stdout
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            let mut fields = line.split('\t');
+            let project = fields
+                .next()
+                .map(str::trim)
+                .filter(|p| !p.is_empty() && *p != "<no value>")
+                .map(str::to_owned);
+            let volumes = fields
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(str::to_owned)
+                .collect();
+            ContainerMounts { project, volumes }
+        })
+        .collect())
+}
+
+/// Every volume compose made for `project`, as `(name, compose's own name for
+/// it)` — `com.docker.compose.volume`, the key under the file's `volumes:`.
+pub(crate) fn compose_volumes(
+    runner: &dyn Runner,
+    project: &str,
+) -> Result<Vec<(String, String)>, Unlisted> {
+    let stdout = listing(
+        runner,
+        [
+            "volume",
+            "ls",
+            "--filter",
+            &format!("label=com.docker.compose.project={project}"),
+            "--format",
+            "{{.Name}}\t{{.Label \"com.docker.compose.volume\"}}",
+        ]
+        .map(str::to_owned),
+    )?;
+    Ok(stdout
+        .lines()
+        .filter_map(|line| {
+            let (name, key) = line.split_once('\t')?;
+            Some((name.trim().to_owned(), key.trim().to_owned()))
+        })
+        .filter(|(name, _)| !name.is_empty())
+        .collect())
+}
+
+/// What one `docker volume rm` came to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum VolumeRemoval {
+    /// docker removed it.
+    Removed,
+    /// docker had no volume of that name.
+    Gone,
+    /// docker would not remove it, in these words.
+    Refused(String),
+}
+
+/// Remove one volume, without `--force`, so the answer says whether it was there.
+pub(crate) fn remove_volume(runner: &dyn Runner, name: &str) -> VolumeRemoval {
+    let spec = SpawnSpec::from(Invocation::new(PROGRAM).with_args(["volume", "rm", name]))
+        .with_timeout(REMOVE_THEM);
+    match ran(runner.capture(&spec)) {
+        Ok((exit, _)) if exit.is_success() => VolumeRemoval::Removed,
+        Ok((_, CapturedText { stderr, .. })) if stderr.contains("no such volume") => {
+            VolumeRemoval::Gone
+        }
+        Ok((exit, CapturedText { stderr, .. })) => VolumeRemoval::Refused(format!(
+            "docker volume rm failed ({exit:?}): {}",
+            stderr.trim()
+        )),
+        Err(NoAnswer::NotInstalled) => VolumeRemoval::Refused("docker is not installed".to_owned()),
+        Err(NoAnswer::NotStarted(failure)) => VolumeRemoval::Refused(format!(
+            "docker volume rm did not finish ({:?})",
+            failure.kind
+        )),
+    }
+}
+
 /// One `docker ps`, its stdout, or why docker would not give it.
 fn listing(
     runner: &dyn Runner,
     args: impl IntoIterator<Item = String>,
 ) -> Result<String, Unlisted> {
+    let args: Vec<String> = args.into_iter().collect();
+    // The verb the words name: `ps`, `inspect`, or `volume ls`.
+    let verb = match args.as_slice() {
+        [first, second, ..] if first == "volume" => format!("{first} {second}"),
+        [first, ..] => first.clone(),
+        [] => String::new(),
+    };
     let spec = SpawnSpec::from(Invocation::new(PROGRAM).with_args(args))
         .with_timeout(LIST_COMPOSE_CONTAINERS);
     match ran(runner.capture(&spec)) {
         Ok((exit, CapturedText { stdout, .. })) if exit.is_success() => Ok(stdout),
         Ok((exit, CapturedText { stderr, .. })) => Err(Unlisted::Failed(format!(
-            "docker ps failed ({exit:?}): {}",
+            "docker {verb} failed ({exit:?}): {}",
             stderr.trim()
         ))),
         Err(NoAnswer::NotInstalled) => Err(Unlisted::NotInstalled),
         Err(NoAnswer::NotStarted(failure)) if failure.kind == ErrorKind::TimedOut => Err(
-            Unlisted::Failed("docker ps did not answer in time".to_owned()),
+            Unlisted::Failed(format!("docker {verb} did not answer in time")),
         ),
         Err(NoAnswer::NotStarted(failure)) => Err(Unlisted::Failed(format!(
-            "docker ps could not start ({:?})",
+            "docker {verb} could not start ({:?})",
             failure.kind
         ))),
     }
