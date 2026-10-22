@@ -319,7 +319,7 @@ done
         assert "--ls" not in completions
         assert "--install" not in completions
 
-    def test_no_subcommand_completion_after_an_dla_workspace(self):
+    def test_no_subcommand_completion_after_a_dla_workspace(self):
         """Everything after a dla workspace is the prompt, not a subcommand."""
         completions = self.run_completion("dla my-workspace ")
         for cmd in ["up", "stop", "rm", "code", "restart", "recreate", "reset"]:
@@ -361,7 +361,7 @@ done
         assert self.run_completion("dl --devcontainer robot my-") == bare
         assert self.run_completion("dl --claude-profile work my-") == bare
 
-    def test_an_dla_model_or_effort_and_its_value_do_not_move_the_spec(self):
+    def test_a_dla_model_or_effort_and_its_value_do_not_move_the_spec(self):
         """`dla --model opus <spec>` completes its spec as `dla <spec>` does.
 
         Both flags take a value, so the scan has to step over two words. A
@@ -374,7 +374,7 @@ done
         assert self.run_completion("dla --effort high my-") == bare
         assert self.run_completion("dla --model opus --effort high my-") == bare
 
-    def test_nothing_completes_an_dla_model_or_effort_value(self):
+    def test_nothing_completes_a_dla_model_or_effort_value(self):
         """The values are each agent's, and dla holds no list of them."""
         assert self.run_completion("dla --model ") == []
         assert self.run_completion("dla --effort ") == []
@@ -479,7 +479,7 @@ done
             assert self.run_completion(before), f"`{before}` completes something"
             assert self.run_completion(line) == []
 
-    def test_an_dla_prompt_is_never_a_verb_however_the_line_began(self):
+    def test_a_dla_prompt_is_never_a_verb_however_the_line_began(self):
         """dla's prompt starts after the spec, leading flags or not."""
         for line in ["dla my-workspace ", "dla --codex my-workspace ", "dla --codex my-ws stop "]:
             for verb in ["up", "stop", "rm", "code", "restart", "recreate", "reset"]:
