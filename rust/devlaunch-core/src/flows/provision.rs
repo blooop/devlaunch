@@ -3077,7 +3077,7 @@ fn setup_pass(
     // there always is one. Its outcome is not the pass's: like the stage, every
     // refusal leaves the workspace with the prompt it would have had anyway.
     if let Some(host) = host {
-        let _: Option<host_trust::Merged> = host_trust::record(runner, workspace, report, host);
+        host_trust::record(runner, workspace, report, host);
     }
     Ok(PassReport {
         tools: ProbeResult::parse(report),
@@ -3251,6 +3251,7 @@ mod tests {
     use std::sync::Mutex;
 
     use super::*;
+    use devlaunch_test_support::{Call, FakeRunner, Response, Unscripted};
     // The other reader of the one zellij signal, so the drift test can ask both.
     use crate::flows::launch;
     use crate::runner::{CapturedText, DetachOutcome, Invocation, Outcome, SpawnSpec, StdinPlan};
@@ -5680,57 +5681,20 @@ fi
     // the trust stage
     // =======================================================================
 
-    /// A runner that answers `docker inspect` with `mounts` and refuses anything
-    /// else: the host half of the trust merge makes that one call and no other.
-    struct DockerInspect {
-        mounts: String,
-        exit: i32,
-        seen: Mutex<Vec<Vec<String>>>,
-    }
-
-    impl DockerInspect {
-        fn answering(mounts: String, exit: i32) -> Self {
-            Self {
-                mounts,
-                exit,
-                seen: Mutex::new(Vec::new()),
-            }
-        }
-
-        fn calls(&self) -> Vec<Vec<String>> {
-            self.seen.lock().expect("the recording").clone()
-        }
-    }
-
-    impl Runner for DockerInspect {
-        fn capture(&self, spec: &SpawnSpec) -> Outcome<CapturedText> {
-            let argv = spec.invocation.argv();
-            self.seen.lock().expect("the recording").push(argv.clone());
-            assert_eq!(argv.first().map(String::as_str), Some("docker"), "{argv:?}");
-            Outcome::Ran {
-                exit: Exit::Code(self.exit),
-                io: CapturedText {
-                    stdout: self.mounts.clone(),
-                    stderr: String::new(),
-                },
-            }
-        }
-
-        fn passthrough(&self, _spec: &SpawnSpec) -> Outcome {
-            panic!("the trust merge never streams")
-        }
-
-        fn session(&self, _spec: &SpawnSpec, _on_stderr_line: &mut dyn FnMut(&str)) -> Outcome {
-            panic!("the trust merge never opens a session")
-        }
-
-        fn watched(&self, _spec: &SpawnSpec, _on_line: &mut dyn FnMut(&str)) -> Outcome {
-            panic!("the trust merge never watches a run")
-        }
-
-        fn detach(&self, _what: &Invocation) -> DetachOutcome {
-            panic!("the trust merge never detaches")
-        }
+    /// A [`FakeRunner`] that answers `docker inspect` with `mounts` and `exit`.
+    /// A `devpod` spawn still gets the fake's devpod answer, and any other spawn
+    /// fails the test, so each test pins its calls with `runner.argvs()`.
+    fn docker_inspect_answering(mounts: String, exit: i32) -> FakeRunner {
+        let fake = FakeRunner::new().with_unscripted(Unscripted::Panic);
+        fake.script(
+            ["docker", "inspect"],
+            Response::Ran {
+                exit: Exit::Code(exit),
+                stdout: mounts,
+                stderr: String::new(),
+            },
+        );
+        fake
     }
 
     /// The bencher shape, on one machine: a host home whose `~/.claude` holds the
@@ -5780,13 +5744,18 @@ fi
 
         /// Write devpod's record of the `up` as naming `container` and `clone`.
         fn record_up(&self, container: &str, clone: &str) {
+            self.record_up_at(container, clone, &self.container_workspace);
+        }
+
+        /// The same, with `folder` as the workspace folder in the container.
+        fn record_up_at(&self, container: &str, clone: &str, folder: &Path) {
             fs::write(
                 self.devpod.result("default", SHARED_WS),
                 serde_json::json!({
                     "ContainerDetails": {"ID": container},
                     "SubstitutionContext": {
                         "LocalWorkspaceFolder": clone,
-                        "ContainerWorkspaceFolder": self.container_workspace,
+                        "ContainerWorkspaceFolder": folder,
                     },
                 })
                 .to_string(),
@@ -5817,6 +5786,11 @@ fi
         /// The onboarding and trust stages, run "in the container" under a PATH
         /// with no python3 on it, and the report the pass would have sent back.
         fn run_the_stages(&self) -> String {
+            self.run_the_stages_in(&self.container_workspace)
+        }
+
+        /// The same, standing in `dir` rather than the workspace's mount point.
+        fn run_the_stages_in(&self, dir: &Path) -> String {
             let stages: Vec<Stage> = setup_stages(
                 SHARED_WS,
                 ToolsSwitch::Skip,
@@ -5832,7 +5806,7 @@ fi
             let ran = Command::new(bash())
                 .arg("-c")
                 .arg(setup_script(&stages))
-                .current_dir(&self.container_workspace)
+                .current_dir(dir)
                 .env_clear()
                 .env("HOME", self.scratch.path().join("ctr/home/vscode"))
                 .env("CLAUDE_CONFIG_DIR", &self.container_config)
@@ -5857,6 +5831,11 @@ fi
             report
         }
 
+        /// The host's config file, byte for byte: what a refusal must leave alone.
+        fn host_config_bytes(&self) -> Vec<u8> {
+            fs::read(self.host_home.join(".claude/.claude.json")).expect("the host's config")
+        }
+
         fn host_config(&self) -> serde_json::Value {
             serde_json::from_str(
                 &fs::read_to_string(self.host_home.join(".claude/.claude.json"))
@@ -5873,11 +5852,10 @@ fi
         // this folder?". The container now only reports, and the host merges.
         let world = SharedConfigWorld::new(r#"{"hasCompletedOnboarding":true}"#);
         let report = world.run_the_stages();
-        let runner = DockerInspect::answering(world.mounts(), 0);
+        let runner = docker_inspect_answering(world.mounts(), 0);
 
-        let merged = host_trust::record(&runner, SHARED_WS, &report, &world.host());
+        host_trust::record(&runner, SHARED_WS, &report, &world.host());
 
-        assert_eq!(merged, Some(host_trust::Merged::Wrote), "{report}");
         let key = world
             .container_workspace
             .to_str()
@@ -5890,10 +5868,40 @@ fi
             Some(&true.into())
         );
         assert_eq!(
-            runner.calls(),
+            runner.argvs(),
             [inspect_of_c0ffee()],
             "the container devpod recorded, and nothing else"
         );
+    }
+
+    #[test]
+    fn a_workspace_folder_at_a_submodule_inside_the_clone_is_trusted_end_to_end() {
+        // A devcontainer.json `workspaceFolder` may name a folder inside the clone,
+        // and the pass reports it when it holds its own `.git`: the seed's floor is
+        // `-e "$ws/.git"`, which a submodule's `.git` file passes. So devpod's
+        // recorded folder is a sub-folder of the clone's mount point, and the host
+        // must still trust it.
+        let world = SharedConfigWorld::new(r#"{"hasCompletedOnboarding":true}"#);
+        let sub = world.container_workspace.join("sub");
+        fs::create_dir_all(world.container_workspace.join(".git/modules/sub"))
+            .expect("the submodule's git dir");
+        fs::create_dir_all(&sub).expect("the submodule");
+        fs::write(sub.join(".git"), "gitdir: ../.git/modules/sub\n").expect("its .git file");
+        world.record_up_at("c0ffee", world.clone.to_str().expect("a path"), &sub);
+        let report = world.run_the_stages_in(&sub);
+        let runner = docker_inspect_answering(world.mounts(), 0);
+
+        host_trust::record(&runner, SHARED_WS, &report, &world.host());
+
+        let key = sub.to_str().expect("a path").replace('/', "~1");
+        assert_eq!(
+            world
+                .host_config()
+                .pointer(&format!("/projects/{key}/hasTrustDialogAccepted")),
+            Some(&true.into()),
+            "{report}"
+        );
+        assert_eq!(runner.argvs(), [inspect_of_c0ffee()]);
     }
 
     #[test]
@@ -5901,14 +5909,19 @@ fi
         let world = SharedConfigWorld::new(r#"{"hasCompletedOnboarding":true}"#);
         let report = world.run_the_stages();
         world.record_up("", world.clone.to_str().expect("a path"));
-        let runner = DockerInspect::answering(world.mounts(), 0);
+        let runner = docker_inspect_answering(world.mounts(), 0);
+
+        let before = world.host_config_bytes();
+
+        host_trust::record(&runner, SHARED_WS, &report, &world.host());
 
         assert_eq!(
-            host_trust::record(&runner, SHARED_WS, &report, &world.host()),
-            None
+            world.host_config_bytes(),
+            before,
+            "the host's config was touched"
         );
         assert_eq!(
-            runner.calls(),
+            runner.argvs(),
             Vec::<Vec<String>>::new(),
             "no container to ask about"
         );
@@ -5927,14 +5940,19 @@ fi
             .expect("a path")
             .to_owned();
         world.record_up("c0ffee", &relative);
-        let runner = DockerInspect::answering(world.mounts(), 0);
+        let runner = docker_inspect_answering(world.mounts(), 0);
+
+        let before = world.host_config_bytes();
+
+        host_trust::record(&runner, SHARED_WS, &report, &world.host());
 
         assert_eq!(
-            host_trust::record(&runner, SHARED_WS, &report, &world.host()),
-            None
+            world.host_config_bytes(),
+            before,
+            "the host's config was touched"
         );
         assert_eq!(
-            runner.calls(),
+            runner.argvs(),
             Vec::<Vec<String>>::new(),
             "refused at devpod's record"
         );
@@ -5947,16 +5965,19 @@ fi
         // the empty answer that leaves the host's file alone here.
         let world = SharedConfigWorld::new(r#"{"hasCompletedOnboarding":true}"#);
         let report = world.run_the_stages();
-        let runner = DockerInspect::answering(String::new(), 1);
+        let runner = docker_inspect_answering(String::new(), 1);
+
+        let before = world.host_config_bytes();
+
+        host_trust::record(&runner, SHARED_WS, &report, &world.host());
 
         assert_eq!(
-            host_trust::record(&runner, SHARED_WS, &report, &world.host()),
-            None
+            world.host_config_bytes(),
+            before,
+            "the host's config was touched"
         );
-        assert_eq!(
-            world.host_config(),
-            serde_json::json!({"hasCompletedOnboarding": true})
-        );
+        assert_eq!(runner.argvs(), [inspect_of_c0ffee()]);
+        assert!(matches!(runner.calls()[..], [Call::Capture(_)]));
     }
 
     /// The one call the host half makes: the mounts of the container devpod recorded.
@@ -5980,17 +6001,18 @@ fi
         // whole of it, and the host writes nothing of its own.
         let world = SharedConfigWorld::new(r#"{"hasCompletedOnboarding":true}"#);
         let report = world.run_the_stages();
-        let runner = DockerInspect::answering(serde_json::json!([]).to_string(), 0);
+        let runner = docker_inspect_answering(serde_json::json!([]).to_string(), 0);
+        let before = world.host_config_bytes();
+
+        host_trust::record(&runner, SHARED_WS, &report, &world.host());
+
         assert_eq!(
-            host_trust::record(&runner, SHARED_WS, &report, &world.host()),
-            None
+            world.host_config_bytes(),
+            before,
+            "the host's config was touched"
         );
         assert_eq!(
-            world.host_config(),
-            serde_json::json!({"hasCompletedOnboarding": true})
-        );
-        assert_eq!(
-            runner.calls(),
+            runner.argvs(),
             [inspect_of_c0ffee()],
             "the host looked at the mounts and decided, rather than never asking"
         );
