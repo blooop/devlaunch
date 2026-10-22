@@ -120,6 +120,31 @@ for built in "${BUILT[@]}"; do
     fi
 done
 
+# Retire what an older run of this script left for `aid`, which this tree no
+# longer builds. The loop above only visits the names cargo reports, so without
+# this an `aid-next` from before the rename keeps running a stale build and says
+# nothing. Only a symlink into our own bin directory is ours to remove; anything
+# else at that path was put there by someone else and stays.
+stale_link="${BIN_DIR}/aid-next"
+stale_copy="${INSTALL_DIR}/bin/aid"
+if [ -L "${stale_link}" ]; then
+    case "$(readlink "${stale_link}")" in
+        "${INSTALL_DIR}/bin/"*)
+            rm "${stale_link}"
+            echo "Removed stale symlink: ${stale_link} (aid is now dla)"
+            ;;
+        *)
+            echo "Note: ${stale_link} points outside ${INSTALL_DIR}/bin. Leaving it alone."
+            ;;
+    esac
+elif [ -e "${stale_link}" ]; then
+    echo "Note: ${stale_link} exists and is not a symlink. Leaving it alone."
+fi
+if [ -e "${stale_copy}" ]; then
+    rm -f "${stale_copy}"
+    echo "Removed stale copy: ${stale_copy} (aid is now dla)"
+fi
+
 # Verify the installation, and verify the thing worth verifying: that these
 # binaries say which build they are. A `-next` that printed the released version
 # string would be the one failure mode this whole two-names arrangement exists to
