@@ -381,19 +381,38 @@ config file does:
 - **No `.claude.json` at all.** The seed above writes both keys at once, which
   needs no JSON parser because there is nothing to merge with.
 - **A `.claude.json` already there,** which is what a container sharing your
-  host's config directory has, devlaunch's own devcontainer included. A second
-  stage merges the one key with `python3` and leaves every other byte alone. A
-  textual insert has no sound spelling: after the opening brace it loses to the
-  original on last-key-wins, and before the closing brace it wins and takes every
-  project you had with it.
+  host's config directory has, devlaunch's own claude-code feature included. That
+  needs a JSON merge: a textual insert has no sound spelling, since after the
+  opening brace it loses to the original on last-key-wins, and before the closing
+  brace it wins and takes every project you had with it. So a second stage only
+  reports the workspace path and its config directory, and `dl` does the merge on
+  the host, in Rust. The container needs no interpreter for it. (It used to be
+  `python3` in the container, and the default image has none, so every workspace
+  opened from it asked again.)
 
-A container with no `python3` gets nothing *from the merge* and says nothing about
-it. Where a `.claude.json` is already there, which is what a mount of the host's
-config is, the prompt appears exactly as it did before: installing an interpreter
-on every cold launch to spare one keypress is the wrong trade, and a stage that
-failed would warn on every launch of an image that is working correctly. The other
-half needs no interpreter, so a virgin config directory is still seeded with the
-workspace recorded in it and does not prompt.
+The host merges only into a file that is really its own, and it does not take the
+container's word for either path, because the container has just run a stranger's
+`postCreateCommand`:
+
+- **The file.** `docker inspect` on the container devpod recorded for the workspace
+  must show the reported config directory as exactly the target of a read-write
+  bind mount whose host source is your `$CLAUDE_CONFIG_DIR` or `~/.claude`. Then
+  the file is `.claude.json` in that host directory. A link there is followed only
+  to a file that is also named `.claude.json`, because the container can put a link
+  in a shared directory and the host would resolve it to a host path.
+- **The key.** The path must be the target of the bind mount of the clone `dl`
+  made for the workspace (devpod's record names the clone), or a directory under
+  it. It must be spelled the one way Claude Code keys it, with the same characters
+  the seed allows, and neither the path nor that mount target may be your home
+  directory, inside it, or above it, which also rules out `/`.
+
+The merge adds the one key, keeps the order and the indentation of everything
+else, writes a scratch file beside the original and renames it over, and keeps its
+mode. It writes nothing where the entry is already true, where the file is missing
+or is not a JSON object, or where the rename cannot happen. A container whose
+config directory is its own and already holds a `.claude.json` (an image that bakes
+one in) gets nothing: the host cannot reach that file, and the prompt appears
+there exactly as it did before.
 
 The path it records is the pass's own working directory, resolved, and never one
 composed from the workspace id. A `devpod ssh` given no `--workdir` lands in the
