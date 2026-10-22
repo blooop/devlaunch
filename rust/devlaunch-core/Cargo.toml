@@ -18,6 +18,7 @@ toml = { workspace = true }
 rustix = { workspace = true }
 jiff = { workspace = true }
 shlex = { workspace = true }
+yaml-rust2 = { workspace = true }
 # Not dev-only: metadata's atomic save needs a same-directory 0600 temp file no
 # other writer can be holding, which is what Python's tempfile.mkstemp gives it.
 tempfile = { workspace = true }

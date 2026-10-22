@@ -305,19 +305,26 @@ fn ids_from(stdout: String) -> Result<Vec<String>, Unlisted> {
         .collect())
 }
 
-/// The compose project one container is in, and the named volumes it mounts.
+/// The compose project one container is in, the compose files it came from, and
+/// the named volumes it mounts.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct ContainerMounts {
     /// `com.docker.compose.project`, when the container has one.
     pub(crate) project: Option<String>,
+    /// `com.docker.compose.project.config_files`: the compose files compose
+    /// started the container from, in the order it read them. Empty for a
+    /// container compose did not start.
+    pub(crate) config_files: Vec<PathBuf>,
     /// The names of the mounts of `Type` `volume`. Binds are not named here.
     pub(crate) volumes: Vec<String>,
 }
 
-/// The `--format` [`container_mounts`] reads back: the compose project, then each
-/// named volume, tab-separated, one line per container. docker prints
-/// `<no value>` for a label the container does not carry.
+/// The `--format` [`container_mounts`] reads back: the compose project, the
+/// compose files (comma-separated, as compose writes the label), then each named
+/// volume, tab-separated, one line per container. docker prints `<no value>` for
+/// a label the container does not carry.
 const MOUNTS_FORMAT: &str = "{{index .Config.Labels \"com.docker.compose.project\"}}\t\
+{{index .Config.Labels \"com.docker.compose.project.config_files\"}}\t\
 {{range .Mounts}}{{if eq .Type \"volume\"}}{{.Name}}\t{{end}}{{end}}";
 
 /// What these containers mount, in one `docker inspect`.
@@ -335,17 +342,32 @@ pub(crate) fn container_mounts(
         .filter(|line| !line.trim().is_empty())
         .map(|line| {
             let mut fields = line.split('\t');
-            let project = fields
-                .next()
-                .map(str::trim)
-                .filter(|p| !p.is_empty() && *p != "<no value>")
-                .map(str::to_owned);
+            let label = |field: Option<&str>| {
+                field
+                    .map(str::trim)
+                    .filter(|p| !p.is_empty() && *p != "<no value>")
+                    .map(str::to_owned)
+            };
+            let project = label(fields.next());
+            let config_files = label(fields.next())
+                .map(|files| {
+                    files
+                        .split(',')
+                        .filter(|f| !f.is_empty())
+                        .map(PathBuf::from)
+                        .collect()
+                })
+                .unwrap_or_default();
             let volumes = fields
                 .map(str::trim)
                 .filter(|v| !v.is_empty())
                 .map(str::to_owned)
                 .collect();
-            ContainerMounts { project, volumes }
+            ContainerMounts {
+                project,
+                config_files,
+                volumes,
+            }
         })
         .collect())
 }
@@ -708,6 +730,36 @@ mod tests {
     use devlaunch_test_support::{FakeRunner, Response};
 
     use super::*;
+
+    #[test]
+    fn a_containers_mounts_carry_its_project_and_compose_files() {
+        let fake = FakeRunner::new();
+        fake.script(
+            ["docker", "inspect"],
+            Response::stdout(
+                "p\t/a/compose.yml,/b/override.yml\tv1\tv2\t\n<no value>\t<no value>\tv3\t\n",
+            ),
+        );
+        let ids = NonEmpty::of(["aaa".to_owned(), "bbb".to_owned()]).expect("two ids");
+
+        let mounts = container_mounts(&fake, &ids).expect("an answer");
+
+        assert_eq!(
+            mounts,
+            [
+                ContainerMounts {
+                    project: Some("p".to_owned()),
+                    config_files: vec!["/a/compose.yml".into(), "/b/override.yml".into()],
+                    volumes: vec!["v1".to_owned(), "v2".to_owned()],
+                },
+                ContainerMounts {
+                    project: None,
+                    config_files: Vec::new(),
+                    volumes: vec!["v3".to_owned()],
+                },
+            ]
+        );
+    }
 
     #[test]
     fn a_compose_projects_containers_are_asked_for_by_label() {
