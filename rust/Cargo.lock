@@ -438,7 +438,7 @@ dependencies = [
 
 [[package]]
 name = "devlaunch-core"
-version = "0.63.0"
+version = "0.63.1"
 dependencies = [
  "devlaunch-runner",
  "devlaunch-test-support",
@@ -458,7 +458,7 @@ dependencies = [
 
 [[package]]
 name = "devlaunch-runner"
-version = "0.63.0"
+version = "0.63.1"
 dependencies = [
  "libc",
  "portable-pty",
@@ -467,7 +467,7 @@ dependencies = [
 
 [[package]]
 name = "devlaunch-test-support"
-version = "0.63.0"
+version = "0.63.1"
 dependencies = [
  "devlaunch-runner",
  "serde",
@@ -509,7 +509,7 @@ dependencies = [
 
 [[package]]
 name = "dl"
-version = "0.63.0"
+version = "0.63.1"
 dependencies = [
  "clap",
  "devlaunch-core",
@@ -527,7 +527,7 @@ dependencies = [
 
 [[package]]
 name = "dla"
-version = "0.63.0"
+version = "0.63.1"
 dependencies = [
  "devlaunch-test-support",
  "dl",
