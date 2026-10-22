@@ -290,7 +290,7 @@ pub(crate) enum LineKept {
 /// Report a typed-back line to herdr as the pane's line again, and check that
 /// herdr kept it.
 ///
-/// The `dl` the line runs is given no line to report: only `aid` hands one over,
+/// The `dl` the line runs is given no line to report: only `dla` hands one over,
 /// and dl does not guess another program's flags from a command. Without this,
 /// herdr drops the old line once the old agent ends, and the agent can be
 /// started again once only. The line is the one herdr saved, so it is already a

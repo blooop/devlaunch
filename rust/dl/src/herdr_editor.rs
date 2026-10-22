@@ -143,7 +143,7 @@ fn waiter_command(
     let mut command = Command::new(program);
     command
         .arg(READY_WORD)
-        // `aid` sets this before entering `dl`. Letting the waiter inherit it
+        // `dla` sets this before entering `dl`. Letting the waiter inherit it
         // makes the waiter itself satisfy the agent probe before a transport exists.
         .env_remove(AGENT_VAR)
         .env(EXPECTED_AGENT_VAR, expected.as_str())
@@ -319,7 +319,7 @@ fn ask<const N: usize>(args: [&str; N]) -> Answer {
     let spec = SpawnSpec::new(
         Invocation::new(binary)
             .with_args(args)
-            // `aid` exports this for the later transport. An automation subprocess
+            // `dla` exports this for the later transport. An automation subprocess
             // must not briefly identify itself as that agent while asking Herdr.
             // The environment is built rather than inherited because the seam can
             // set a variable and not unset one; a name or value that is not UTF-8

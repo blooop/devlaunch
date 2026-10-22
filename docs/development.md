@@ -5,12 +5,12 @@ image, and what a branch workspace costs on disk.
 
 ## Development
 
-`dl` and `aid` are Rust. `rust/` is what ships: one cargo workspace, built and tested with cargo,
+`dl` and `dla` are Rust. `rust/` is what ships: one cargo workspace, built and tested with cargo,
 and it is where the tests of `dl`'s own behaviour live.
 
 ```bash
 cd rust
-cargo build --release                          # target/release/{dl,aid}
+cargo build --release                          # target/release/{dl,dla}
 cargo test
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
@@ -32,8 +32,8 @@ pixi run ci                                    # ruff, pylint, ty, and the harne
 pixi run test-e2e                              # the real-devpod tier: builds real containers
 ```
 
-Both build `rust/target/release/{dl,aid}` first, because that is what the harness runs.
-`DEVLAUNCH_DL_CMD` / `DEVLAUNCH_AID_CMD` are the seams that point it somewhere else: a debug build,
+Both build `rust/target/release/{dl,dla}` first, because that is what the harness runs.
+`DEVLAUNCH_DL_CMD` / `DEVLAUNCH_DLA_CMD` are the seams that point it somewhere else: a debug build,
 an installed release, the wheel's binary.
 
 ```bash
@@ -181,7 +181,7 @@ after #267 retired the Python `dl` what it measured was `scripts/`: the shipped 
 nobody's for two releases.
 
 **One thing to know if you write a boundary test.** The suites in `rust/dl/tests` and
-`rust/aid/tests` spawn the real binary with `env_clear()`, so the child gets exactly the world the
+`rust/dla/tests` spawn the real binary with `env_clear()`, so the child gets exactly the world the
 test built and nothing from your shell. An instrumented binary needs `LLVM_PROFILE_FILE` to write
 its counters anywhere `cargo llvm-cov` will read them, so every one of those spawns calls
 `.keeping_coverage()` straight after `.env_clear()`, the one variable that is allowed back in.
@@ -193,8 +193,8 @@ Two cargo tests are outside the CI measurement on purpose: `cargo test -p dl --t
 and `--test lock_wait` kill real process trees, and a SIGKILLed process writes no counters. They run in
 the `rust` job like everything else, and `pixi run coverage-rust` includes them locally.
 
-Inside this repository's devcontainer, `pixi run dl` and `pixi run aid` are `cargo run` over the
-working tree; on a host, `./dev.sh` installs it as `dl-next`/`aid-next`/`dla-next` beside the released builds. All
+Inside this repository's devcontainer, `pixi run dl` and `pixi run dla` are `cargo run` over the
+working tree; on a host, `./dev.sh` installs it as `dl-next`/`dla-next` beside the released pair. Both
 print a `-dev` version so a working-tree build is never mistaken for a released one. See
 [AGENTS.md](../AGENTS.md).
 
@@ -232,7 +232,7 @@ The two published artifacts are built from the same cargo package, both taking t
 `rust/Cargo.toml`, the only place it is written down:
 
 ```bash
-cd packaging/wheel && maturin build --release --locked -o dist    # the PyPI wheel: dl, aid and dla
+cd packaging/wheel && maturin build --release --locked -o dist    # the PyPI wheel: dl and dla
 rattler-build build --experimental --recipe conda.recipe/recipe.yaml   # the conda package
 ```
 

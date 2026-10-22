@@ -30,7 +30,7 @@
 //!    `wf` should import from [`api`] alone; adding to it is a deliberate PR,
 //!    removing from it is a breaking change.
 //! 2. **The binary surface** — the four layer modules are `pub` so the `dl` and
-//!    `aid` binaries, which live in separate crates, can name the typed results
+//!    `dla` binaries, which live in separate crates, can name the typed results
 //!    they render: a rendering layer that cannot name what it renders is not a
 //!    rendering layer. Every item reached that way carries the note **binary
 //!    surface — not part of the frozen wf API (#251 §7)**. It is *not* frozen
@@ -105,7 +105,7 @@ pub mod runner {
 //
 // `pub` only for [`osext::env_str`], the way `json` below is `pub` only for
 // `JsonKind`: the binaries have environment variables of their own, and one of
-// them -- `aid`'s `DEVLAUNCH_AID_AGENT` -- was read with the `std::env::var(..)
+// them -- `dla`'s `DEVLAUNCH_AID_AGENT` -- was read with the `std::env::var(..)
 // .ok()` this module exists to replace. Everything else here stays
 // `pub(crate)`, so this is one reader promoted rather than the module opened;
 // whether the rest should follow is #406's open question and wants a second
@@ -137,7 +137,7 @@ pub mod timing;
 pub mod notices;
 
 // A leaf too: `shlex.quote`, which every remote payload in the crate is composed
-// out of — and which the `aid` binary composes a dl command line out of.
+// out of — and which the `dla` binary composes a dl command line out of.
 //
 // binary surface — not part of the frozen wf API (#251 §7)
 pub mod shell;

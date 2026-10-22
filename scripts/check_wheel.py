@@ -2,13 +2,13 @@
 """Check a built devlaunch wheel before anything installs or publishes it.
 
 The wheel is not a Python package any more: since 0.1.0 it is a container for
-compiled binaries (`dl`, `aid`, and `dla`, which is aid under a second name), built by maturin from ``packaging/wheel/pyproject.toml``. That
+two compiled binaries (`dl` and `dla`), built by maturin from ``packaging/wheel/pyproject.toml``. That
 makes two things worth asserting mechanically, both of which are silent failures
 otherwise:
 
 * **Every binary is in there.** They come from *one* cargo package (`rust/dl`,
-  whose `aid` and `dla` bin targets sit behind the ``wheel`` feature), so a lost feature
-  flag or a renamed target ships a wheel with `dl` and no `aid` -- a wheel that
+  whose `dla` bin target sits behind the ``wheel`` feature), so a lost feature
+  flag or a renamed target ships a wheel with `dl` and no `dla` -- a wheel that
   installs cleanly and leaves half the tool missing.
 * **The version in the wheel is the version being released.** It is read from
   ``rust/Cargo.toml`` by maturin, by the conda recipe and by hatchling
@@ -32,8 +32,7 @@ from pathlib import Path
 
 # What the wheel must contain, and all it may contain beyond `.dist-info`: the
 # binaries, as `.data/scripts/` entries that pip drops into the environment's bin/.
-# `dla` is `aid` under a second name, built from the same source.
-BINARIES = ("dl", "aid", "dla")
+BINARIES = ("dl", "dla")
 
 
 def check(wheel: Path, version: str) -> list[str]:
@@ -50,6 +49,19 @@ def check(wheel: Path, version: str) -> list[str]:
         member = f"devlaunch-{version}.data/scripts/{binary}"
         if member not in names:
             problems.append(f"the wheel has no {member}")
+
+    # Present is not enough: a binary the list does not name, such as a retired
+    # `aid`, would install onto PATH beside the ones that belong there.
+    scripts = f"devlaunch-{version}.data/scripts/"
+    extra = sorted(
+        name
+        for name in names
+        if name.startswith(scripts)
+        and name[len(scripts) :] not in BINARIES
+        and not name.endswith("/")
+    )
+    if extra:
+        problems.append(f"the wheel ships binaries it does not list in BINARIES: {extra}")
 
     # A Python module in here would mean something got packaged alongside the
     # binaries that should not be. The Python build this used to guard against is

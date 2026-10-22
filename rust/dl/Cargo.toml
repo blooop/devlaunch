@@ -23,19 +23,19 @@ serde_json = { workspace = true }
 skim = { workspace = true }
 term = { workspace = true }
 
-# The released package ships three binaries (`dl`, `aid`, and `dla`, which is aid
-# under a second name), and a maturin bin-wheel ships the bin
+# The released package ships two binaries (`dl` and `dla`), and a maturin
+# bin-wheel ships the bin
 # targets of exactly *one* cargo package (maturin 1.14 asks cargo metadata for
 # `root_package()` and takes its targets; there is no cross-package collection).
-# So the package the wheel is built from has to own every bin target, and this is
+# So the package the wheel is built from has to own both bin targets, and this is
 # that package -- see `packaging/wheel/pyproject.toml`.
 #
-# Nothing forks: the bin below compiles the very `aid/src/main.rs` the `aid`
-# crate compiles, and `aid`'s own package keeps its own bin target (its tests
-# reach it through `env!("CARGO_BIN_EXE_aid")`, which only exists for a bin of
+# Nothing forks: the bin below compiles the very `dla/src/main.rs` the `dla`
+# crate compiles, and `dla`'s own package keeps its own bin target (its tests
+# reach it through `env!("CARGO_BIN_EXE_dla")`, which only exists for a bin of
 # the package under test). `required-features` is what keeps the two from
 # colliding -- a bin whose required features are off is skipped, so an ordinary
-# `cargo build --workspace --all-targets` builds `target/*/aid` from the `aid`
+# `cargo build --workspace --all-targets` builds `target/*/dla` from the `dla`
 # package alone and cargo has no output-filename collision to warn about. Only
 # the wheel and conda builds pass `--features wheel`.
 [features]
@@ -55,22 +55,15 @@ wheel = []
 dev-build = []
 
 [[bin]]
-name = "aid"
-path = "../aid/src/main.rs"
-required-features = ["wheel"]
-
-# `aid`'s second name, for the same reason it has one in `aid/Cargo.toml`.
-[[bin]]
 name = "dla"
-path = "../aid/src/main.rs"
+path = "../dla/src/main.rs"
 required-features = ["wheel"]
-test = false
 
 [dev-dependencies]
 devlaunch-test-support = { workspace = true }
 tempfile = { workspace = true }
 # `tests/picker.rs` opens a terminal and reads back what the picker drew on it.
-# Already a workspace dependency -- `aid` runs its session on one of these -- so
+# Already a workspace dependency -- `dla` runs its session on one of these -- so
 # this adds a name to a dev-dependency list and nothing to the dependency tree.
 portable-pty = { workspace = true }
 

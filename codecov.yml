@@ -3,7 +3,7 @@
 # There is one repository here and two things in it that are measured by different
 # tools for different reasons:
 #
-#   rust    the crates that ship -- `dl`, `aid`, `devlaunch-core` -- measured by
+#   rust    the crates that ship -- `dl`, `dla`, `devlaunch-core` -- measured by
 #           `cargo llvm-cov` in the `rust-coverage` CI job.
 #   python  the acceptance harness under `test/`, the repo's own doc guards, and
 #           the tooling under `scripts/`. None of it ships; `coverage run -m

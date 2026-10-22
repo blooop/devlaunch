@@ -43,7 +43,7 @@ from fixtures.e2e_guard import opt_out
 from fixtures.e2e_helpers import (
     ScopedSsh,
     WorkspaceTracker,
-    aid_command,
+    dla_command,
     create_e2e_workspace,
     dl_command,
     route_ssh_through,
@@ -139,10 +139,10 @@ class InteractiveWorkspace:
             [*dl_command(), self.workspace_id, *args], env=self.env(), timeout=timeout
         )
 
-    def aid(self, *args: str, timeout: float = 180) -> PtySession:
-        """`aid` on a pty. Its own seam, because it is its own binary (#252 §1)."""
+    def dla(self, *args: str, timeout: float = 180) -> PtySession:
+        """`dla` on a pty. Its own seam, because it is its own binary (#252 §1)."""
         return PtySession(
-            [*aid_command(), self.workspace_id, *args], env=self.env(), timeout=timeout
+            [*dla_command(), self.workspace_id, *args], env=self.env(), timeout=timeout
         )
 
 
@@ -352,7 +352,7 @@ class TestLongRunningSession:
         """The reported bug, reproduced without depending on a coding agent.
 
         A payload that needs a terminal to start and then never exits is what
-        `aid <repo>` runs. On the transport that has no pty this stops at
+        `dla <repo>` runs. On the transport that has no pty this stops at
         TTY-STATUS:MISSING and exits 42 before READY is ever printed.
         """
         with workspace.dl("--", "bash", "-lc", NEEDS_A_TTY_AND_STAYS) as s:
@@ -367,10 +367,10 @@ class TestLongRunningSession:
 
 @pytest.mark.e2e
 @pytest.mark.creates_workspace
-class TestAidStartsAnAgent:
-    """`aid <ws>` is the reported failure, end to end."""
+class TestDlaStartsAnAgent:
+    """`dla <ws>` is the reported failure, end to end."""
 
-    def test_aid_leaves_an_interactive_agent_running(self, workspace):
+    def test_dla_leaves_an_interactive_agent_running(self, workspace):
         """Skipped unless the workspace actually has claude, since that is the
         one thing about this path that is not dl's to guarantee.
 
@@ -380,7 +380,7 @@ class TestAidStartsAnAgent:
         Anthropic-shaped download inside an e2e run, which is the dependency the
         payloads above were built to avoid -- so this is the one test in the file
         that declines rather than runs, and it says so in its own words. What it
-        would add over `test_agent_shaped_payload_starts_and_stays` is the `aid`
+        would add over `test_agent_shaped_payload_starts_and_stays` is the `dla`
         entry point rather than the transport, and the transport is the subject.
         """
         probe = workspace.dl("--", "bash", "-lc", CLAUDE_PROBE, timeout=90)
@@ -389,9 +389,9 @@ class TestAidStartsAnAgent:
             if "AGENT-YES" not in probe.text:
                 opt_out("no claude in this workspace")
 
-        session = workspace.aid()
+        session = workspace.dla()
         with session:
-            # `aid <workspace>` names its workspace, so it asks for no agent, model
+            # `dla <workspace>` names its workspace, so it asks for no agent, model
             # or effort and goes straight to the prompt editor with the agent's
             # defaults, while the workspace boots. An empty Enter is the plain
             # session this test has always been about.

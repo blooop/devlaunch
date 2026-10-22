@@ -45,7 +45,7 @@ use std::path::PathBuf;
 ///
 /// The one item of this module the binaries can see, because they have
 /// `DEVLAUNCH_*` variables of their own and no way to spell this reading
-/// correctly for themselves: `aid` read `DEVLAUNCH_AID_AGENT` with
+/// correctly for themselves: `dla` read `DEVLAUNCH_AID_AGENT` with
 /// `std::env::var(..).ok()` and so started the default agent for a value it
 /// should have refused by name. It reaches this through `dl`, which re-exports
 /// it beside `shell` and `python_repr`.

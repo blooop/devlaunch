@@ -17,8 +17,8 @@
 //! test` process has no controlling terminal to observe them from. So each test
 //! here opens a pty and re-executes *this binary* on it — the session leader on a
 //! pty is what a capture's child inherits its group from — then types at it the
-//! way a person would. Same shape as `aid/tests/interactive.rs`, which drives a
-//! real `aid` through a pty for the same reason.
+//! way a person would. Same shape as `dla/tests/interactive.rs`, which drives a
+//! real `dla` through a pty for the same reason.
 
 use std::io::{Read as _, Write as _};
 use std::sync::{Arc, Mutex};

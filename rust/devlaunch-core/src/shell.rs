@@ -2,7 +2,7 @@
 //!
 //! Everything devlaunch sends to a remote shell is composed out of this: the
 //! `bash -lc <payload>` a launch runs, the `cd <workdir> && …` an OpenSSH session
-//! prefixes, the generated provisioning scripts, and the `dl` command line `aid`
+//! prefixes, the generated provisioning scripts, and the `dl` command line `dla`
 //! builds. They all have to agree, and they all have to agree with `shlex.quote` —
 //! because the payload travels in **argv**, and argv is what the parity harness
 //! compares.

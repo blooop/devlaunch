@@ -1,6 +1,6 @@
 //! The prompt editor, and the boot it overlaps.
 //!
-//! `aid <workspace>` with no prompt on a terminal does not go straight to the
+//! `dla <workspace>` with no prompt on a terminal does not go straight to the
 //! agent any more: the workspace starts booting in the background *while* the
 //! prompt is typed, so the minute a container takes to come up and the minute a
 //! prompt takes to write are the same minute. The prompt is read from the
@@ -17,16 +17,16 @@
 //! disposition `_exit`s the whole process.
 //!
 //! The child is this same binary re-entered through the internal `--boot-up`
-//! argv (aid's one dependency is `dl`, and the one binary aid can find without
+//! argv (dla's one dependency is `dl`, and the one binary dla can find without
 //! guessing at PATH is itself). Its output goes to a log file and is replayed to
 //! stderr after the prompt is submitted, so the build's progress is seen — just
 //! not interleaved with the typing. The prompt editor and the pickers hold the
-//! terminal in raw mode, so a Ctrl-C there raises no signal: it is a byte aid
-//! reads, and aid answers it with `BootChild::cancel`, which sends the child a
+//! terminal in raw mode, so a Ctrl-C there raises no signal: it is a byte dla
+//! reads, and dla answers it with `BootChild::cancel`, which sends the child a
 //! SIGINT of its own. The child's interrupt handler (the shared
 //! `dl::install_signal_handlers` disposition) then kills its `devpod up` group
 //! and unlinks its staged token file, so abandoning the editor tears the whole
-//! boot down. The child is still left in aid's process group, so a Ctrl-C typed
+//! boot down. The child is still left in dla's process group, so a Ctrl-C typed
 //! outside raw mode, while the boot is waited on after the prompt is submitted,
 //! reaches both processes as an ordinary terminal SIGINT.
 //!
@@ -41,10 +41,10 @@ use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
 use crate::recent::{self, Recent};
-use crate::rewrite::{self, AidArgs, Environment, Knob, Launcher, Tuning};
+use crate::rewrite::{self, DlaArgs, Environment, Knob, Launcher, Tuning};
 
 /// The internal argv word the boot child is started with. Undocumented on
-/// purpose: it is aid talking to itself, not a flag anyone types.
+/// purpose: it is dla talking to itself, not a flag anyone types.
 pub(crate) const BOOT_WORD: &str = "--boot-up";
 
 /// How often the log is checked for new output while waiting for the boot.
@@ -62,13 +62,13 @@ impl BootChild {
     /// log file.
     ///
     /// `None` on any failure — an unresolvable `current_exe`, an unwritable temp
-    /// directory — and the caller launches serially, as aid always has. stdin is
+    /// directory — and the caller launches serially, as dla always has. stdin is
     /// closed rather than inherited so the boot cannot eat a keystroke that
     /// belongs to the editor.
     pub(crate) fn spawn(boot_args: &[String]) -> Option<Self> {
         let me = std::env::current_exe().ok()?;
         let log =
-            std::env::temp_dir().join(format!("devlaunch-aid-boot-{}.log", std::process::id()));
+            std::env::temp_dir().join(format!("devlaunch-dla-boot-{}.log", std::process::id()));
         let out = std::fs::File::create(&log).ok()?;
         let err = match out.try_clone() {
             Ok(err) => err,
@@ -84,7 +84,7 @@ impl BootChild {
             .stdin(Stdio::null())
             .stdout(Stdio::from(out))
             .stderr(Stdio::from(err));
-        // The boot must not outlive this aid. An aid that is SIGKILLed never gets
+        // The boot must not outlive this dla. A dla that is SIGKILLed never gets
         // to `cancel`, and its boot then goes on holding devpod's workspace lock
         // with nobody left to wait on it.
         dl::interrupted_with_this_process(&mut command);
@@ -135,10 +135,10 @@ impl BootChild {
         match ended {
             Some(0) => {}
             Some(code) => {
-                eprintln!("aid: the background boot exited {code}; launching in the foreground...");
+                eprintln!("dla: the background boot exited {code}; launching in the foreground...");
             }
             None => {
-                eprintln!("aid: the background boot was killed; launching in the foreground...");
+                eprintln!("dla: the background boot was killed; launching in the foreground...");
             }
         }
     }
@@ -169,7 +169,7 @@ impl BootChild {
 
 /// Whether the agent, model and effort pickers run before the editor.
 ///
-/// Only a bare `aid`, or a line of flags with no workspace, asks. A line that
+/// Only a bare `dla`, or a line of flags with no workspace, asks. A line that
 /// names its workspace already said what it wanted, so it gets the editor alone
 /// and every setting it left open stays the agent's default.
 #[derive(Clone, Copy)]
@@ -181,7 +181,7 @@ pub(crate) enum Pickers {
 /// How the interactive flow ended.
 pub(crate) enum Collected {
     /// Launch this line, once the boot beside it, if any, has finished.
-    Launch(Box<AidArgs>, Option<BootChild>),
+    Launch(Box<DlaArgs>, Option<BootChild>),
     /// A picker was cancelled, or Ctrl-C was typed at the prompt editor. The
     /// boot was stopped and nothing launches.
     Cancelled,
@@ -195,17 +195,17 @@ pub(crate) enum Collected {
 /// prompt was the answer already), a terminal on stdin and stdout (a pipe has
 /// nobody typing; `DEVLAUNCH_NO_TTY=1` is the explicit opt-out), and a boot
 /// child that actually spawned (anything less falls back to the serial launch
-/// aid has always been).
+/// dla has always been).
 ///
 /// An empty submission — a bare Enter, or Ctrl-D — leaves the prompt empty,
-/// which is the agent's plain session: the old bare-`aid` behaviour is one
+/// which is the agent's plain session: the old bare-`dla` behaviour is one
 /// keystroke away, not gone.
 ///
 /// `argv` and `environment` are what `parsed` was parsed from: the agent picker
 /// builds its rows by parsing the line again with each row's flags in front.
 /// `pickers` says whether those pickers run at all.
 pub(crate) fn collect_prompt(
-    parsed: AidArgs,
+    parsed: DlaArgs,
     argv: &[String],
     environment: Environment<'_>,
     pickers: Pickers,
@@ -273,7 +273,7 @@ enum Asked {
 ///
 /// A setting a flag already gave is not asked for, and neither is one the agent
 /// does not have. Every choice is remembered, so the next launch lists it first.
-fn settle(parsed: AidArgs, argv: &[String], environment: Environment<'_>) -> Option<AidArgs> {
+fn settle(parsed: DlaArgs, argv: &[String], environment: Environment<'_>) -> Option<DlaArgs> {
     let file = recent::path();
     let mut recent = file.as_deref().map(Recent::read).unwrap_or_default();
     let parsed = match ask_agent(&parsed, argv, environment, &mut recent) {
@@ -316,7 +316,7 @@ enum Picked {
     /// The line as it was: one row or none to choose from, or no terminal.
     Kept,
     /// The line again, with the chosen row's flags in front.
-    Line(Box<AidArgs>),
+    Line(Box<DlaArgs>),
     Cancelled,
 }
 
@@ -327,7 +327,7 @@ enum Picked {
 /// most recently lead. Typed text that is no row is not an agent, so the picker
 /// asks again.
 fn ask_agent(
-    parsed: &AidArgs,
+    parsed: &DlaArgs,
     argv: &[String],
     environment: Environment<'_>,
     recent: &mut Recent,
@@ -432,7 +432,7 @@ fn ask_value(agent: &str, knob: Knob, recent: &Recent) -> Asked {
 
 /// What the line settled beyond the agent, for the banner: ` (account work, model
 /// opus)`, or nothing when every setting is the default.
-fn chosen(parsed: &AidArgs) -> String {
+fn chosen(parsed: &DlaArgs) -> String {
     let default = Tuning::default();
     let tuning = parsed.tuning().unwrap_or(&default);
     let parts: Vec<String> = [
@@ -452,7 +452,7 @@ fn chosen(parsed: &AidArgs) -> String {
 
 /// The one line the editor shows before the read, naming what is booting, which
 /// agent gets the prompt, and both ways out.
-pub(crate) fn banner(parsed: &AidArgs) {
+pub(crate) fn banner(parsed: &DlaArgs) {
     let agent = parsed.agent().unwrap_or_default();
     eprintln!(
         "Booting {} in the background. Type the prompt for {agent}{} and press Enter to \

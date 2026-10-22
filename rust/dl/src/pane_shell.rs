@@ -3,7 +3,7 @@
 //! herdr spawns one program per pane it creates -- `[terminal] default_shell` in
 //! its config -- and exports `HERDR_TAB_ID` into it. Put `dl-herdr-shell` there
 //! and every pane asks one question on the way up: does this tab already hold a
-//! devlaunch session? A pane in an `aid` tab lands in that workspace's container;
+//! devlaunch session? A pane in a `dla` tab lands in that workspace's container;
 //! every other pane gets the shell it would have got anyway.
 //!
 //! # Why a second name and not a flag

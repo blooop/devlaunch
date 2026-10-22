@@ -121,9 +121,9 @@ def timing_total_epoch() -> str:
 # ---------------------------------------------------------------------------
 
 HERDR_RS = CORE / "clients" / "herdr.rs"
-AID = Path(__file__).resolve().parent.parent.parent / "rust" / "aid" / "src"
-AID_MAIN_RS = AID / "main.rs"
-AID_REWRITE_RS = AID / "rewrite.rs"
+DLA = Path(__file__).resolve().parent.parent.parent / "rust" / "dla" / "src"
+DLA_MAIN_RS = DLA / "main.rs"
+DLA_REWRITE_RS = DLA / "rewrite.rs"
 LAUNCH_RS = CORE / "flows" / "launch.rs"
 DL = Path(__file__).resolve().parent.parent.parent / "rust" / "dl" / "src"
 DL_PANE_SHELL_RS = DL / "pane_shell.rs"
@@ -133,7 +133,7 @@ def _visible_str_const(source: str, name: str, path: Path) -> str:
     """`[pub[(crate)]] const NAME: &str = "...";`, whatever its visibility.
 
     Separate from `_str_const` because the two constants this reads differ in
-    exactly that: core's is `pub(crate)` and aid's is private, and a reader that
+    exactly that: core's is `pub(crate)` and dla's is private, and a reader that
     insisted on one spelling would pass by returning nothing about the other.
     """
     match = re.search(
@@ -148,9 +148,9 @@ def core_session_manager_agent_var() -> str:
     return _visible_str_const(_read(HERDR_RS), "AGENT_VAR", HERDR_RS)
 
 
-def aid_session_manager_agent_var() -> str:
-    """The variable aid writes for the session it opens."""
-    return _visible_str_const(_read(AID_MAIN_RS), "SESSION_MANAGER_AGENT_VAR", AID_MAIN_RS)
+def dla_session_manager_agent_var() -> str:
+    """The variable dla writes for the session it opens."""
+    return _visible_str_const(_read(DLA_MAIN_RS), "SESSION_MANAGER_AGENT_VAR", DLA_MAIN_RS)
 
 
 def core_agent_names() -> Tuple[str, ...]:
@@ -163,20 +163,20 @@ def core_agent_names() -> Tuple[str, ...]:
     return names
 
 
-def aid_agent_names() -> Tuple[str, ...]:
-    """The keys of aid's own agent table, which knows far more than their names.
+def dla_agent_names() -> Tuple[str, ...]:
+    """The keys of dla's own agent table, which knows far more than their names.
 
     Read from the `const AGENTS: &[(&str, Agent)]` block rather than from
     `agent_names()`, because the table is the thing that decides which agents exist
     and the function is only its sorted keys.
     """
-    source = _read(AID_REWRITE_RS)
+    source = _read(DLA_REWRITE_RS)
     start = source.find("const AGENTS: &[(&str, Agent)] = &[")
-    assert start != -1, f"{AID_REWRITE_RS.name} no longer declares `const AGENTS`"
+    assert start != -1, f"{DLA_REWRITE_RS.name} no longer declares `const AGENTS`"
     end = source.find("\n];", start)
-    assert end != -1, f"`const AGENTS` in {AID_REWRITE_RS.name} is not closed at column zero"
+    assert end != -1, f"`const AGENTS` in {DLA_REWRITE_RS.name} is not closed at column zero"
     names = tuple(re.findall(r'^\s{8}"([^"]+)",$', source[start:end], re.MULTILINE))
-    assert names, f"{AID_REWRITE_RS.name} declares AGENTS with no agent names in it"
+    assert names, f"{DLA_REWRITE_RS.name} declares AGENTS with no agent names in it"
     return names
 
 
@@ -190,13 +190,13 @@ def core_agent_resumes() -> Tuple[Tuple[str, str], ...]:
     return rows
 
 
-def aid_agent_resumes() -> Tuple[Tuple[str, str], ...]:
-    """Each row of aid's `AGENTS` table and its `resume` words, joined by a space."""
-    source = _read(AID_REWRITE_RS)
+def dla_agent_resumes() -> Tuple[Tuple[str, str], ...]:
+    """Each row of dla's `AGENTS` table and its `resume` words, joined by a space."""
+    source = _read(DLA_REWRITE_RS)
     start = source.find("const AGENTS: &[(&str, Agent)] = &[")
-    assert start != -1, f"{AID_REWRITE_RS.name} no longer declares `const AGENTS`"
+    assert start != -1, f"{DLA_REWRITE_RS.name} no longer declares `const AGENTS`"
     end = source.find("\n];", start)
-    assert end != -1, f"`const AGENTS` in {AID_REWRITE_RS.name} is not closed at column zero"
+    assert end != -1, f"`const AGENTS` in {DLA_REWRITE_RS.name} is not closed at column zero"
     rows = []
     for name, body in re.findall(
         r'^\s{8}"([^"]+)",$(.*?)(?=^\s{8}"[^"]+",$|\Z)',
@@ -204,9 +204,9 @@ def aid_agent_resumes() -> Tuple[Tuple[str, str], ...]:
         re.MULTILINE | re.DOTALL,
     ):
         resume = re.search(r"^\s+resume: &\[([^\]]*)\],$", body, re.MULTILINE)
-        assert resume, f"aid's row for {name} has no `resume`"
+        assert resume, f"dla's row for {name} has no `resume`"
         rows.append((name, " ".join(re.findall(r'"([^"]+)"', resume.group(1)))))
-    assert rows, f"{AID_REWRITE_RS.name} declares AGENTS with no agent names in it"
+    assert rows, f"{DLA_REWRITE_RS.name} declares AGENTS with no agent names in it"
     return tuple(rows)
 
 

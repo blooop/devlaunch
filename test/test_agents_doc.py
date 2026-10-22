@@ -88,10 +88,10 @@ def test_claude_md_is_the_same_document_as_agents_md():
 
 @pytest.mark.unit
 def test_agents_md_sends_in_container_work_through_pixi_run():
-    """Inside the devcontainer the document must name `pixi run dl` and `pixi run aid`."""
+    """Inside the devcontainer the document must name `pixi run dl` and `pixi run dla`."""
     section = _container_section()
     assert "`pixi run dl`" in section
-    assert "`pixi run aid`" in section
+    assert "`pixi run dla`" in section
 
 
 @pytest.mark.unit
@@ -120,11 +120,11 @@ def test_dev_sh_builds_with_the_feature_that_marks_the_version():
 
     Asserted per package rather than as one substring: this is a multi-package
     cargo build, and a `--features` list that named only `dl` would leave
-    `aid-next` reporting the released version while `dl-next` reported `-dev` --
+    `dla-next` reporting the released version while `dl-next` reported `-dev` --
     exactly the half-broken state two names exist to prevent.
     """
     dev_sh = DEV_SH.read_text(encoding="utf-8")
-    for package in ("dl", "aid"):
+    for package in ("dl", "dla"):
         assert f"{package}/{DEV_FEATURE}" in dev_sh, (
             f"dev.sh no longer builds {package} with the {DEV_FEATURE} feature, so "
             f"{package}-next would report the released version"
@@ -132,8 +132,8 @@ def test_dev_sh_builds_with_the_feature_that_marks_the_version():
 
 
 @pytest.mark.unit
-def test_the_feature_exists_and_aid_takes_it_from_dl():
-    """One marker, owned by `dl`, forwarded by `aid`.
+def test_the_feature_exists_and_dla_takes_it_from_dl():
+    """One marker, owned by `dl`, forwarded by `dla`.
 
     The forwarding is the assertion worth making: two independently declared
     features could be enabled separately, and then the two binaries could disagree
@@ -147,9 +147,9 @@ def test_the_feature_exists_and_aid_takes_it_from_dl():
         f"dl's {DEV_FEATURE} should enable nothing else; it only flips the marker"
     )
 
-    aid_manifest = tomllib.loads((REPO_ROOT / "rust" / "aid" / "Cargo.toml").read_text("utf-8"))
-    assert aid_manifest["features"][DEV_FEATURE] == [f"dl/{DEV_FEATURE}"], (
-        f"aid's {DEV_FEATURE} must forward to dl's, so the two cannot disagree"
+    dla_manifest = tomllib.loads((REPO_ROOT / "rust" / "dla" / "Cargo.toml").read_text("utf-8"))
+    assert dla_manifest["features"][DEV_FEATURE] == [f"dl/{DEV_FEATURE}"], (
+        f"dla's {DEV_FEATURE} must forward to dl's, so the two cannot disagree"
     )
 
 
@@ -163,7 +163,7 @@ def test_the_marker_is_off_by_default_so_released_builds_print_the_bare_version(
     """
     for manifest in (
         REPO_ROOT / "rust" / "dl" / "Cargo.toml",
-        REPO_ROOT / "rust" / "aid" / "Cargo.toml",
+        REPO_ROOT / "rust" / "dla" / "Cargo.toml",
     ):
         features = tomllib.loads(manifest.read_text("utf-8")).get("features", {})
         assert DEV_FEATURE not in features.get("default", []), (
@@ -192,7 +192,7 @@ def test_both_sections_quote_the_dev_version_line(section):
 def test_the_pixi_tasks_run_the_working_tree_with_the_marker():
     """`pixi run dl` must be cargo over this tree, marked, not a stale console script."""
     tasks = _pyproject()["tool"]["pixi"]["tasks"]
-    for name in ("dl", "aid"):
+    for name in ("dl", "dla"):
         command = tasks[name]
         assert "cargo run" in command, f"the {name} task no longer builds this tree"
         assert "rust/Cargo.toml" in command, f"the {name} task names no cargo manifest"

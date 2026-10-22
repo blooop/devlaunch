@@ -2,7 +2,7 @@
 
 `skipped` means two unrelated things in this suite, and the summary line cannot
 tell them apart. One is *opted out by design*: `test_ssh_config_isolation.py`
-needs a forwarded ssh agent that no CI runner has, and the `aid` test wants a
+needs a forwarded ssh agent that no CI runner has, and the `dla` test wants a
 coding agent inside a container that carries none, so on those machines those
 tests do not apply. The other is *could not run*: a registry served the 1.25 GB
 fixture image at 640 B/s, the first workspace test gave up, and the run reported
