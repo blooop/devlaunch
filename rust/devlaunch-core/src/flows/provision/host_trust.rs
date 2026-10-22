@@ -1120,6 +1120,33 @@ mod tests {
     }
 
     #[test]
+    fn a_workspace_folder_spelled_with_a_byte_the_seed_cannot_print_is_never_recorded() {
+        // devpod recorded the folder and the clone is mounted there, so only the
+        // charset decides: the seed blanks this path, and the host does the same.
+        let host = Host::new();
+        let at = |folder: &str| {
+            let mounts = vec![
+                host.bind(&host.clone, folder, true),
+                host.bind(&host.home.join(".claude"), "/home/vscode/.claude", true),
+            ];
+            target(
+                &reported("/home/vscode/.claude", folder),
+                &mounts,
+                HostSide {
+                    workspace_folder: folder,
+                    ..host.side()
+                },
+            )
+            .map(|found| found.key)
+        };
+        assert_eq!(at("/workspaces/r main"), None);
+        assert_eq!(
+            at("/workspaces/r@x+y"),
+            Some("/workspaces/r@x+y".to_owned())
+        );
+    }
+
+    #[test]
     fn a_clone_mounted_at_or_around_a_host_home_path_is_never_recorded() {
         // A repo picks its own `workspaceMount` target. Mounted at the host user's
         // home, inside it, or above it, the key would name a real host directory,
