@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A new workspace is trusted by Claude Code when the container has no `python3`.**
+  The trust stage merged `projects[<workspace>].hasTrustDialogAccepted` into the
+  `.claude.json` with `python3` inside the container, and the default image
+  (`ghcr.io/blooop/python_template/devcontainer`) has none, so every new workspace asked
+  "Do you trust the files in this folder?". The stage now only reports the workspace path
+  and its config directory, and `dl` does the merge on the host with `serde_json`. It
+  merges only where `docker inspect` shows that directory is your `$CLAUDE_CONFIG_DIR` or
+  `~/.claude` bind-mounted read-write, and only for the workspace folder devpod recorded,
+  which must be the clone's mount point or a folder under it, never your home directory,
+  a folder in it or above it, or `/`. The merge
+  keeps key order, indentation and file mode, writes a scratch file and renames it, and
+  follows a link only to another `.claude.json` inside the same directory. See docs/workspace-tools.md, "The trust
+  prompt, which is keyed on a path".
 - **A delete removes every named volume only that workspace used.** `rm`, `rme`, `kill` and
   `--rm` used to remove two volumes named from fixed templates (`<basename>-pixi` and the
   docker-in-docker one), so any other per-workspace volume, such as a compose named volume

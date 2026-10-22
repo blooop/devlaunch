@@ -30,7 +30,9 @@ serde = { version = "1", features = ["derive"] }
 # preserve_order: metadata.json's section maps keep the order they were written
 # in, so a file Python and Rust take turns rewriting does not churn its key
 # order (docs/rust-rewrite-plan.md cutover check 3).
-serde_json = { version = "1", features = ["preserve_order"] }
+# float_roundtrip: a float in the host's `.claude.json` that dl rewrites comes
+# back as the same digits, not one ulp off.
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 indexmap = { version = "2", features = ["serde"] }
 toml = "0.9"
 toml_edit = "0.23"
