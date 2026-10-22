@@ -2018,10 +2018,10 @@ pub(crate) fn setup_stages(
         ONBOARDING_STAGE,
         in_subshell(&onboarding_script()),
     ));
-    // Behind the seed and gated on nothing either, for the seed's reasons and one of
-    // its own: the two write the same file, and this one is the half that reaches a
-    // file already there. Behind, so that a file the seed just created is found here
-    // with the entry already in it and this exits without a second write.
+    // Behind the seed and gated on nothing either, for the seed's reasons. It writes
+    // nothing: it reports a config file that is already there, and the host merges.
+    // Behind, so that a file the seed just created is reported with the entry
+    // already in it, and the host's merge finds it true and writes nothing.
     //
     // In a subshell for the zellij stage's reason, and unredirected because its
     // whole output is the two marked lines the host reads off the outcome
@@ -5413,11 +5413,10 @@ fi
         // reach them by, and present under every combination of the two switches:
         // seeding a boolean is not tool provisioning, so neither switch owns it.
         //
-        // In this order, and the order is load-bearing rather than cosmetic: the seed
-        // creates the file where there is none and the merge reaches one already
-        // there, so a merge in front of the seed would find nothing on every cold
-        // launch and the seed behind it would then write the entry anyway. Behind, it
-        // finds the entry already true and exits without a second write.
+        // In this order: the seed creates the file where there is none, and the
+        // trust stage reports only a file already there. Behind the seed, it reports
+        // the file the seed just made, and the host's merge finds the entry already
+        // true and writes nothing.
         for (tools, zellij) in [
             (ToolsSwitch::Install, ZellijSwitch::Install),
             (ToolsSwitch::Skip, ZellijSwitch::Install),
@@ -5445,9 +5444,7 @@ fi
     fn the_claude_config_stages_are_one_word_the_pass_shell_evals_in_a_subshell() {
         // The zellij stage's property, for the zellij stage's reason: the quoting has
         // to survive being read by the *pass's* shell before `eval` reads a
-        // script with quotes and braces of its own in it. The trust stage asks more of
-        // it than any other — its script carries a Python program, itself
-        // single-quoted, inside the single-quoted script.
+        // script with quotes and braces of its own in it.
         let stages = setup_stages(
             "myws",
             ToolsSwitch::Skip,
@@ -8806,16 +8803,15 @@ fi
                 // a wizard in front of a working token where one was forwarded, and
                 // merely a wizard where one was not.
                 (ONBOARDING_STAGE, FailureLevel::Warning),
-                // The same default and the same reasoning, with a narrower cost: a
-                // merge that would not go in is one trust prompt on the first launch
-                // of this workspace, which is the state every launch was in before
-                // the stage existed. What can actually reach the level is narrower
-                // than that: no `python3`, no file, nothing safe to key on, a shape
-                // the merge will not write into, and — since the config directory
-                // it cannot write became an exit 0 — a replace that was refused, all
-                // return success. What is left is the interpreter itself dying, so
-                // a warning here reads as "python3 did not run", not as "this
-                // container would not take the write".
+                // The same default, with a narrower cost: a report that never
+                // arrives is one trust prompt on the first launch of this workspace,
+                // which is the state every launch was in before the stage existed.
+                // The stage runs no interpreter and writes nothing, and no file,
+                // nothing safe to key on and a directory that will not resolve all
+                // exit 0. The host's merge runs after the pass and its refusals are
+                // silent, so none of them reach the level either. What is left is a
+                // shell that cannot run the script at all, and a container like that
+                // is worth a warning whatever this stage costs.
                 (TRUST_STAGE, FailureLevel::Warning),
             ]
         );
