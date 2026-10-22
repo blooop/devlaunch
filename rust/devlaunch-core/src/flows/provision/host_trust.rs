@@ -603,7 +603,7 @@ mod tests {
         fn new() -> Self {
             let scratch = tempfile::tempdir().expect("a scratch dir");
             let root = std::fs::canonicalize(scratch.path()).expect("a resolved scratch dir");
-            let home = root.join("home/ags");
+            let home = root.join("home/someone");
             let clone = home.join(".cache/devlaunch/repos/o/r/r-main-abcd");
             std::fs::create_dir_all(home.join(".claude")).expect("a claude dir");
             std::fs::create_dir_all(&clone).expect("a clone");
@@ -780,7 +780,7 @@ mod tests {
             "/workspaces/r-main-abcd-other",
             "/workspaces/other",
             "/home/vscode",
-            "/home/ags",
+            "/home/someone",
             "/workspaces/r-main-abcd/../other",
             "/workspaces/r-main-abcd/./x",
             "/workspaces//r-main-abcd",
