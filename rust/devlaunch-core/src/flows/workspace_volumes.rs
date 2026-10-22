@@ -292,7 +292,12 @@ fn external_volumes(files: &[PathBuf]) -> Result<BTreeSet<String>, String> {
             .map_err(|error| format!("could not read compose file {}: {error}", file.display()))?;
         let documents = YamlLoader::load_from_str(&text)
             .map_err(|error| format!("could not parse compose file {}: {error}", file.display()))?;
-        let Some(volumes) = documents.first().and_then(|doc| doc["volumes"].as_hash()) else {
+        let Some(document) = documents.first() else {
+            continue;
+        };
+        let document = apply_merge_keys(document)
+            .map_err(|error| format!("could not read compose file {}: {error}", file.display()))?;
+        let Some(volumes) = document["volumes"].as_hash() else {
             continue;
         };
         for (key, spec) in volumes {
@@ -336,6 +341,45 @@ fn external_volumes(files: &[PathBuf]) -> Result<BTreeSet<String>, String> {
         names.insert(literal);
     }
     Ok(names)
+}
+
+/// `value` with every YAML merge key (`<<: *anchor`, or `<<: [*a, *b]`) applied the
+/// way compose applies it: a map's own keys win, then the merged maps in order.
+fn apply_merge_keys(value: &Yaml) -> Result<Yaml, String> {
+    match value {
+        Yaml::Hash(hash) => {
+            let merge_key = Yaml::String("<<".to_owned());
+            let mut applied = yaml_rust2::yaml::Hash::new();
+            for (key, item) in hash {
+                if *key != merge_key {
+                    applied.insert(key.clone(), apply_merge_keys(item)?);
+                }
+            }
+            let sources = match hash.get(&merge_key) {
+                None => &[][..],
+                Some(source @ Yaml::Hash(_)) => std::slice::from_ref(source),
+                Some(Yaml::Array(sources)) => sources.as_slice(),
+                Some(_) => return Err("a merge key `<<` that is not a map".to_owned()),
+            };
+            for source in sources {
+                let Yaml::Hash(source) = apply_merge_keys(source)? else {
+                    return Err("a merge key `<<` that is not a map".to_owned());
+                };
+                for (key, item) in source {
+                    if !applied.contains_key(&key) {
+                        applied.insert(key, item);
+                    }
+                }
+            }
+            Ok(Yaml::Hash(applied))
+        }
+        Yaml::Array(items) => items
+            .iter()
+            .map(apply_merge_keys)
+            .collect::<Result<_, _>>()
+            .map(Yaml::Array),
+        other => Ok(other.clone()),
+    }
 }
 
 /// `text` with compose's `$$` escape read as a literal `$`, or `None` when any
@@ -674,6 +718,36 @@ mod tests {
         ));
         assert!(
             matches!(&recording, Recording::Unread { reason } if reason.contains("${PREFIX}-cache")),
+            "{recording:?}"
+        );
+    }
+
+    #[test]
+    fn a_merge_key_is_applied_before_external_is_read() {
+        let dir = tempfile::tempdir().expect("a scratch dir");
+        let file = dir.path().join("compose.yml");
+        std::fs::write(
+            &file,
+            "x-ext: &ext\n  external: true\nx-named: &named\n  name: app-named\n\
+             volumes:\n  app-cache:\n    <<: *ext\n  \
+             listed:\n    <<: [*named, *ext]\n  \
+             overridden:\n    <<: *ext\n    external: false\n",
+        )
+        .expect("compose");
+        assert_eq!(
+            external_volumes(&[file]),
+            Ok(["app-cache", "app-named"]
+                .map(str::to_owned)
+                .into_iter()
+                .collect())
+        );
+    }
+
+    #[test]
+    fn a_merge_key_that_is_not_a_map_removes_nothing() {
+        let recording = record_bare_app(Some("volumes:\n  app-cache:\n    <<: true\n"));
+        assert!(
+            matches!(&recording, Recording::Unread { reason } if reason.contains("docker-compose.yml")),
             "{recording:?}"
         );
     }
