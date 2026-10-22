@@ -2998,6 +2998,73 @@ fn a_volume_docker_will_not_remove_is_said_and_the_workspace_is_still_deleted() 
     );
 }
 
+/// A volume both sweeps name — the mount read and devpod's template — is tried
+/// once and reported once: a refusal is one line, not a second forced attempt
+/// and a second line about the same volume.
+#[test]
+fn a_volume_docker_refused_is_tried_once_and_said_once() {
+    let mut deleting = a_world_ready_to_delete();
+    let fake = &deleting.world.devpod.fake;
+    fake.script(
+        ps_filtered("label=dev.containers.id=dc9a8b7c"),
+        Response::stdout("aaa\n"),
+    );
+    fake.script(
+        ["docker", "inspect"],
+        Response::stdout("<no value>\tdind-var-lib-docker-dc9a8b7c\t\n"),
+    );
+    fake.script(
+        ["docker", "volume", "rm", "dind-var-lib-docker-dc9a8b7c"],
+        Response::failed(1, "Error response from daemon: busy\n"),
+    );
+    fake.script(
+        [
+            "docker",
+            "volume",
+            "rm",
+            "--force",
+            "opened-as-pixi",
+            "dind-var-lib-docker-dc9a8b7c",
+        ],
+        Response::failed(1, "Error response from daemon: busy\n"),
+    );
+
+    let (_, notices) = deleting.delete();
+
+    let removals: Vec<Vec<String>> = deleting
+        .world
+        .devpod
+        .docker_argvs()
+        .into_iter()
+        .filter(|argv| argv.starts_with(&["volume".to_owned(), "rm".to_owned()]))
+        .collect();
+    assert_eq!(
+        removals,
+        [
+            vec!["volume", "rm", "dind-var-lib-docker-dc9a8b7c"],
+            vec!["volume", "rm", "--force", "opened-as-pixi"],
+        ]
+    );
+    let said: Vec<&LifecycleNotice> = notices
+        .iter()
+        .filter(|n| {
+            matches!(
+                n,
+                LifecycleNotice::WorkspaceVolumeNotRemoved { .. }
+                    | LifecycleNotice::VolumesNotRemoved { .. }
+            )
+        })
+        .collect();
+    assert!(
+        matches!(
+            said.as_slice(),
+            [LifecycleNotice::WorkspaceVolumeNotRemoved { name, .. }]
+                if name == "dind-var-lib-docker-dc9a8b7c"
+        ),
+        "{notices:?}"
+    );
+}
+
 #[test]
 fn a_delete_devpod_refused_removes_no_volume() {
     let mut deleting = a_world_ready_to_delete().with_containers_mounting_a_cache();

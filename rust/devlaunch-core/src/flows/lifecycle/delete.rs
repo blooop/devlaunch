@@ -1,5 +1,6 @@
 //! `dl <ws> rm`: a workspace, its clone, and the volumes its devcontainer made.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -384,7 +385,10 @@ pub(crate) fn workspace_delete(
             Err(error)
         }
     };
-    sweep_mounted(context.runner(), workspace_id, mounted, notices);
+    let tried = sweep_mounted(context.runner(), workspace_id, mounted, notices);
+    let named = named.and_then(|names| {
+        NonEmpty::of(names.iter().filter(|name| !tried.contains(*name)).cloned())
+    });
     let volumes = sweep_volumes(context.runner(), named);
     match &volumes {
         VolumeSweep::Refused(refusal) => notices.say(LifecycleNotice::VolumesNotRemoved {
@@ -459,24 +463,26 @@ fn sweep_leftovers(
 /// became of them. See [`workspace_volumes`] for which volumes count.
 ///
 /// Every outcome is a notice and none fails the delete: the workspace is gone
-/// whatever docker says about its volumes.
+/// whatever docker says about its volumes. Returns every volume it tried, so the
+/// template sweep after it leaves those alone.
 fn sweep_mounted(
     runner: &dyn Runner,
     workspace_id: &str,
     mounted: Recording,
     notices: &mut dyn Notices<LifecycleNotice>,
-) {
+) -> BTreeSet<String> {
     let mounted = match mounted {
         Recording::Read(mounted) => mounted,
-        Recording::Nothing => return,
+        Recording::Nothing => return BTreeSet::new(),
         Recording::Unread { reason } => {
             notices.say(LifecycleNotice::WorkspaceVolumesNotRead {
                 workspace_id: workspace_id.to_owned(),
                 reason,
             });
-            return;
+            return BTreeSet::new();
         }
     };
+    let tried: BTreeSet<String> = workspace_volumes::owned(&mounted).into_iter().collect();
     let mut removed = Vec::new();
     for swept in workspace_volumes::sweep(runner, &mounted) {
         match swept {
@@ -499,6 +505,7 @@ fn sweep_mounted(
             names,
         });
     }
+    tried
 }
 
 /// Remove the volumes `named`, and say what became of them.
