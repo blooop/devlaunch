@@ -53,14 +53,14 @@ pub(crate) struct HostSide<'a> {
     pub(crate) clone: &'a Path,
 }
 
-/// The host file to merge into, and the key to merge.
+/// The host config directory to merge into, resolved, and the key to merge.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Target {
-    pub(crate) file: PathBuf,
+    pub(crate) dir: PathBuf,
     pub(crate) key: String,
 }
 
-/// Which host file to merge into, and which key, or `None` where the host has no
+/// Which host config directory to merge into, and which key, or `None` where the host has no
 /// business writing anything.
 ///
 /// The container says two things and the host believes neither of them on its own
@@ -73,7 +73,8 @@ pub(crate) struct Target {
 ///   feature mounts). Anything else is the container's own directory, which the seed
 ///   in the container already wrote, or somebody else's host directory, which is not
 ///   dl's to write. A further mount over the file itself makes the source directory
-///   the wrong file, so that is refused too.
+///   the wrong file, so that is refused too. The directory is the mount's source
+///   with its links resolved, and [`merge`] follows no link out of it.
 /// - **The key.** The reported path must be spelled the one way Claude Code keys it
 ///   (absolute, no `.`, `..`, empty or trailing component, and only
 ///   `[-a-zA-Z0-9_/.@+]`), and it must be the mount point of the clone dl made for
@@ -82,14 +83,14 @@ pub(crate) struct Target {
 ///   `workspaceMount` target, and a key there would name a real host directory the
 ///   host's own Claude Code would then stop asking about. `/` is above everything.
 pub(crate) fn target(reported: &Reported, mounts: &[Mount], host: HostSide<'_>) -> Option<Target> {
-    let file = config_file(&reported.config_dir, mounts, host)?;
+    let dir = config_dir(&reported.config_dir, mounts, host)?;
     let key = trusted_key(&reported.workspace, mounts, host)?;
-    Some(Target { file, key })
+    Some(Target { dir, key })
 }
 
-/// The host `.claude.json` behind the container's config directory, if it is one of
-/// the host's own Claude config directories mounted read-write.
-fn config_file(config_dir: &str, mounts: &[Mount], host: HostSide<'_>) -> Option<PathBuf> {
+/// The host directory behind the container's config directory, resolved, if it is
+/// one of the host's own Claude config directories mounted read-write.
+fn config_dir(config_dir: &str, mounts: &[Mount], host: HostSide<'_>) -> Option<PathBuf> {
     if !is_plain_absolute(config_dir) {
         return None;
     }
@@ -106,7 +107,6 @@ fn config_file(config_dir: &str, mounts: &[Mount], host: HostSide<'_>) -> Option
         .filter(|mount| mount.bind && mount.writable && mount.destination == config_dir)
         .map(|mount| resolved(&mount.source))
         .find(|source| allowed.contains(source))
-        .map(|source| source.join(CONFIG_FILE))
 }
 
 /// The reported workspace path, if the host agrees it is this workspace's folder.
@@ -227,7 +227,7 @@ pub(crate) fn record(
         clone: &clone,
     };
     let found = target(&reported, &parse_mounts(&printed), side)?;
-    Some(merge(&found.file, &found.key))
+    Some(merge(&found.dir, &found.key))
 }
 
 /// The container devpod made for this workspace, and the host folder it mounted as
@@ -252,24 +252,25 @@ fn created(devpod_home: Option<&DevpodHome>, workspace: &str) -> Option<(String,
 /// The name every Claude config file has, and the only name a link is followed to.
 const CONFIG_FILE: &str = ".claude.json";
 
-/// Record `projects[key].hasTrustDialogAccepted = true` in the `.claude.json` at
-/// `file`, or leave every byte of it alone.
+/// Record `projects[key].hasTrustDialogAccepted = true` in the `.claude.json` in
+/// the host config directory `dir`, or leave every byte of it alone.
 ///
 /// Every exit is a *no* except the one write:
 ///
 /// - absent, or a dangling link: the seed's case, and the seed has already run.
 ///   Creating the file here would write it without `hasCompletedOnboarding`.
-/// - a link to a file not named `.claude.json`. The directory is shared with the
-///   container, so the container can put a link in it, and on the host that link
-///   resolves to a host path. Inside the container it could only ever write its own
+/// - a link that resolves outside `dir`, or to a file not named `.claude.json`. The
+///   directory is shared with the container, so the container can put a link in
+///   it, and on the host that link resolves to a host path: `../.claude.json` is the
+///   host's own main config. Inside the container it could only ever write its own
 ///   files through it; followed here, it would be the host writing the host's.
 /// - unreadable, not JSON, not an object, or `projects` or the entry not an object:
 ///   somebody else's file in a shape this does not understand, or a read that raced
 ///   Claude Code's own whole-file rewrite.
 /// - already true: the commonest case after the first launch.
 ///
-/// The link is resolved first, so a `.claude.json` that a dotfiles manager links in
-/// is written *through* rather than replaced by a regular file.
+/// A link that stays inside `dir` is resolved first and written *through* rather
+/// than replaced by a regular file.
 ///
 /// **Write to a scratch file beside it and rename, or do not write.** There is no
 /// in-place fallback: writing in place means truncating first, and the file being
@@ -280,11 +281,14 @@ const CONFIG_FILE: &str = ".claude.json";
 /// enables) and the file is written back two-space indented without escaping
 /// non-ASCII, which is how Claude Code writes it. So a merge into a file Claude Code
 /// wrote moves no line but the one before the new entry.
-pub(crate) fn merge(file: &Path, key: &str) -> Merged {
-    let Ok(path) = std::fs::canonicalize(file) else {
+pub(crate) fn merge(dir: &Path, key: &str) -> Merged {
+    let Ok(dir) = std::fs::canonicalize(dir) else {
         return Merged::Declined;
     };
-    if path.file_name() != Some(std::ffi::OsStr::new(CONFIG_FILE)) {
+    let Ok(path) = std::fs::canonicalize(dir.join(CONFIG_FILE)) else {
+        return Merged::Declined;
+    };
+    if !path.starts_with(&dir) || path.file_name() != Some(std::ffi::OsStr::new(CONFIG_FILE)) {
         return Merged::Declined;
     }
     let Ok(text) = std::fs::read_to_string(&path) else {
@@ -375,7 +379,7 @@ mod tests {
         }
 
         fn merge(&self) -> Merged {
-            merge(&self.file(), KEY)
+            merge(&self.dir, KEY)
         }
 
         fn parsed(&self) -> serde_json::Value {
@@ -513,11 +517,11 @@ mod tests {
 
     #[test]
     fn the_merge_writes_through_a_symlinked_config_rather_than_replacing_it() {
-        // A dotfiles manager may keep the real file elsewhere and link it here. A
+        // The real file may sit deeper in the directory with a link to it here. A
         // rename over the link would leave a regular file and cut the link.
         let config = Config::new(None);
-        let real = config.scratch.path().join("dotfiles/.claude.json");
-        std::fs::create_dir_all(real.parent().expect("a parent")).expect("a dotfiles dir");
+        let real = config.dir.join("real/.claude.json");
+        std::fs::create_dir_all(real.parent().expect("a parent")).expect("a nested dir");
         std::fs::write(&real, r#"{"hasCompletedOnboarding":true}"#).expect("the real config");
         std::os::unix::fs::symlink(&real, config.file()).expect("a linked config");
 
@@ -548,6 +552,24 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(&other).expect("the other file"),
             r#"{"editor":"vim"}"#
+        );
+    }
+
+    #[test]
+    fn the_merge_does_not_follow_a_link_out_of_the_config_dir() {
+        // A postCreateCommand can run `ln -sf ../.claude.json ~/.claude/.claude.json`
+        // in the shared directory. On the host that names `~/.claude.json`, the
+        // host's own main config, which the container never had mounted.
+        let config = Config::new(None);
+        let outside = config.scratch.path().join(".claude.json");
+        let theirs = r#"{"hasCompletedOnboarding":true}"#;
+        std::fs::write(&outside, theirs).expect("the host's main config");
+        std::os::unix::fs::symlink("../.claude.json", config.file()).expect("a planted link");
+
+        assert_eq!(config.merge(), Merged::Declined);
+        assert_eq!(
+            std::fs::read_to_string(&outside).expect("the host's main config"),
+            theirs
         );
     }
 
@@ -639,10 +661,6 @@ mod tests {
                 self.bind(&self.home.join(".claude"), "/home/vscode/.claude", true),
             ]
         }
-
-        fn file(&self) -> PathBuf {
-            self.home.join(".claude/.claude.json")
-        }
     }
 
     fn reported(config_dir: &str, workspace: &str) -> Reported {
@@ -662,7 +680,7 @@ mod tests {
                 host.side()
             ),
             Some(Target {
-                file: host.file(),
+                dir: host.home.join(".claude"),
                 key: "/workspaces/r-main-abcd".to_owned(),
             })
         );
@@ -697,8 +715,8 @@ mod tests {
                 &mounts,
                 side
             )
-            .map(|found| found.file),
-            Some(elsewhere.join(".claude.json"))
+            .map(|found| found.dir),
+            Some(elsewhere)
         );
     }
 
