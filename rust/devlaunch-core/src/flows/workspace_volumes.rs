@@ -579,6 +579,58 @@ mod tests {
     }
 
     #[test]
+    fn a_volume_docker_will_not_say_who_uses_is_kept_and_reported() {
+        let m = mounted(&[&format!("{WS}-a"), &format!("{WS}-b")]);
+        let fake = FakeRunner::new();
+        fake.script(
+            [
+                "docker",
+                "ps",
+                "--all",
+                "--quiet",
+                "--no-trunc",
+                "--filter",
+                &format!("volume={WS}-a"),
+            ],
+            Response::failed(1, "daemon down\n"),
+        );
+
+        let swept = sweep(&fake, &m);
+
+        assert!(
+            matches!(&swept[0], Swept::NotRemoved { name, reason }
+                if *name == format!("{WS}-a") && reason.contains("docker ps failed") && reason.contains("daemon down")),
+            "{swept:?}"
+        );
+        assert_eq!(swept[1], Swept::Removed(format!("{WS}-b")));
+        let removals: Vec<_> = fake
+            .argvs()
+            .into_iter()
+            .filter(|argv| argv[1] == "volume")
+            .collect();
+        assert_eq!(removals, [["docker", "volume", "rm", &format!("{WS}-b")]]);
+    }
+
+    #[test]
+    fn a_volume_rm_that_does_not_finish_is_reported_and_the_rest_still_go() {
+        let m = mounted(&[&format!("{WS}-a"), &format!("{WS}-b")]);
+        let fake = FakeRunner::new();
+        fake.script(
+            ["docker", "volume", "rm", &format!("{WS}-a")],
+            Response::TimedOut,
+        );
+
+        let swept = sweep(&fake, &m);
+
+        assert!(
+            matches!(&swept[0], Swept::NotRemoved { name, reason }
+                if *name == format!("{WS}-a") && reason.contains("did not finish")),
+            "{swept:?}"
+        );
+        assert_eq!(swept[1], Swept::Removed(format!("{WS}-b")));
+    }
+
+    #[test]
     fn a_name_is_a_part_only_between_separators() {
         assert!(has_part("ws-pixi", "ws"));
         assert!(has_part("a.ws", "ws"));

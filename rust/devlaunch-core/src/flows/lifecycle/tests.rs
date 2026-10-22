@@ -2952,6 +2952,27 @@ fn a_volume_something_else_still_uses_is_kept() {
 
     let (_, notices) = deleting.delete();
 
+    // The sweep ran and asked docker who uses the volume, after devpod let go:
+    // without this the negatives below hold for a sweep that never ran.
+    let argvs: Vec<String> = deleting
+        .world
+        .devpod
+        .fake
+        .argvs()
+        .into_iter()
+        .map(|argv| argv.join(" "))
+        .collect();
+    let at = |prefix: &str| {
+        argvs
+            .iter()
+            .position(|argv| argv.starts_with(prefix))
+            .unwrap_or_else(|| panic!("no {prefix} in {argvs:?}"))
+    };
+    assert!(
+        at("docker ps --all --quiet --no-trunc --filter volume=r-main-aa-cache")
+            > at("devpod delete"),
+        "{argvs:?}"
+    );
     assert!(
         !deleting
             .world
@@ -2966,6 +2987,45 @@ fn a_volume_something_else_still_uses_is_kept() {
             .any(|n| matches!(n, LifecycleNotice::WorkspaceVolumesRemoved { .. })),
         "{notices:?}"
     );
+}
+
+/// docker will not list the workspace's containers, so what they mount is
+/// unknown: the delete goes on, says so, and removes none of their volumes.
+#[test]
+fn a_docker_that_cannot_read_the_mounts_is_said_and_the_workspace_is_still_deleted() {
+    let deleting = a_world_ready_to_delete();
+    deleting
+        .world
+        .devpod
+        .fake
+        .script(["docker", "ps"], Response::failed(1, "daemon down"));
+    let mut deleting = deleting.with_containers_mounting_a_cache();
+
+    let (outcome, notices) = deleting.delete();
+
+    assert!(
+        matches!(outcome, RemoveOutcome::Deleted { .. }),
+        "{outcome:?}"
+    );
+    assert!(
+        notices.iter().any(|n| matches!(
+            n,
+            LifecycleNotice::WorkspaceVolumesNotRead { workspace_id, reason }
+                if workspace_id == "r-main-aa" && reason.contains("docker ps failed")
+        )),
+        "{notices:?}"
+    );
+    let removals: Vec<_> = deleting
+        .world
+        .devpod
+        .docker_argvs()
+        .into_iter()
+        .filter(|argv| {
+            argv.starts_with(&["volume".to_owned(), "rm".to_owned()])
+                && argv.iter().any(|arg| arg.starts_with("r-main-aa-"))
+        })
+        .collect();
+    assert_eq!(removals, Vec::<Vec<String>>::new());
 }
 
 #[test]

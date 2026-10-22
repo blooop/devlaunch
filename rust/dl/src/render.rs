@@ -6220,6 +6220,16 @@ mod tests {
                  Remove it with: docker volume rm ws-pixi"
             )
         );
+        let volumes_unread = lifecycle_notice(&LifecycleNotice::WorkspaceVolumesNotRead {
+            workspace_id: "ws".to_owned(),
+            reason: "docker ps failed (Code(1)): daemon down".to_owned(),
+        });
+        assert_eq!(
+            volumes_unread.as_deref(),
+            Some(
+                "Could not read which Docker volumes ws used: docker ps failed (Code(1)): daemon down"
+            )
+        );
 
         let refused = lifecycle_notice(&LifecycleNotice::LeftoverContainersNotRemoved {
             workspace_id: "ws".to_owned(),
