@@ -450,9 +450,10 @@ impl Located {
             file.write_all(body)?;
             file.sync_all()?;
             file.set_permissions(before.permissions())?;
-            // Only root may give a file away, and a host `dl` is rarely root: the
-            // file it replaces is then this user's already, which is what the
-            // scratch file is.
+            // Only root may give a file away, and a host `dl` is rarely root. Where
+            // the file it replaces belongs to someone else, a container's uid in a
+            // shared directory, this fails, the error is dropped, and the file
+            // that lands is this user's, as the scratch file was.
             let _ = std::os::unix::fs::fchown(&file, Some(before.uid()), Some(before.gid()));
             rustix::fs::renameat(&self.folder, &name, &self.folder, CONFIG_FILE)?;
             Ok(())
