@@ -31,14 +31,19 @@ Type "dla blooop/devlaunch@fix/flaky-test"
 Sleep 900ms
 Enter
 
-# The question arrives while the container is still coming up.
-Sleep 3s
+# The question arrives while the container is still coming up. Wait for it
+# rather than sleep: dla can take over three seconds to ask, and keys typed
+# before it does echo above the question instead of inside it.
+Wait+Screen@60s /Booting/
+Sleep 2s
 Type "fix the flaky test in the launch suite"
 Sleep 2s
 Enter
 
-# Attach, then the agent's screen. It paints about four seconds after Enter and
-# the transcript starts scrolling a couple of seconds later, taking the banner
-# with it; this is timed to end while the banner is still whole. Check the last
-# frame when you re-record -- attach time is what moves.
-Sleep 6500ms
+# Attach, then the agent's screen. Attach time moves from run to run -- two
+# seconds on a warm ssh connection, six on a cold one -- so a fixed Sleep either
+# cuts before the agent paints or runs on into its answer. Wait for the banner
+# instead; the transcript starts scrolling about two seconds after it, taking
+# the banner with it, so this ends while the banner is still whole.
+Wait+Screen@60s /Claude Code v/
+Sleep 1500ms
