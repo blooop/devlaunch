@@ -1848,16 +1848,19 @@ impl<'e> ToolProvisioning<'e> {
     /// caller has already resolved devlaunch's cache directory for everything else,
     /// and a second answer here could disagree with the first.
     pub fn from_env(cache: &Path, events: &'e mut dyn Notices<ProvisionEvent>) -> Self {
+        // Located once and handed to both, so the verdict cache and the trust merge
+        // read the same devpod records.
+        let devpod_home = DevpodHome::locate();
         Self {
             switches: Switches::from_env(),
             // `None` is a machine with no home directory to look in: nothing to
             // lend, rather than nothing to do — the setup pass still runs, because
             // the stages it carries are not tools work.
-            host: HostLayout::from_env(),
+            host: HostLayout::from_env(devpod_home.clone()),
             // A `None` devpod home here means something else again: no file to
             // check a remembered verdict against, so nothing is ever trusted and
             // every pass travels, exactly as it did before the cache existed.
-            verdicts: VerdictCache::under(cache, DevpodHome::locate()),
+            verdicts: VerdictCache::under(cache, devpod_home),
             events: RefCell::new(events),
         }
     }

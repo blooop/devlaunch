@@ -2982,7 +2982,7 @@ pub fn devlaunch_core::flows::provision::DevpodMissing::fmt(&self, &mut core::fm
 impl core::marker::StructuralPartialEq for devlaunch_core::flows::provision::DevpodMissing
 pub struct devlaunch_core::flows::provision::HostLayout
 impl devlaunch_core::flows::provision::HostLayout
-pub fn devlaunch_core::flows::provision::HostLayout::from_env() -> core::option::Option<Self>
+pub fn devlaunch_core::flows::provision::HostLayout::from_env(core::option::Option<devlaunch_core::clients::devpod_home::DevpodHome>) -> core::option::Option<Self>
 impl core::clone::Clone for devlaunch_core::flows::provision::HostLayout
 pub fn devlaunch_core::flows::provision::HostLayout::clone(&self) -> devlaunch_core::flows::provision::HostLayout
 impl core::cmp::Eq for devlaunch_core::flows::provision::HostLayout

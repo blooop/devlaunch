@@ -1,6 +1,28 @@
 //! The trust entry, written on the host.
+//!
+//! Claude Code asks "Do you trust the files in this folder?" until
+//! `projects[<path>].hasTrustDialogAccepted` is true in its `.claude.json`. The
+//! container's trust stage ([`super::trust_script`]) says which folder and which
+//! config directory, and this module does the write, on the host.
+//!
+//! On the host because the write needs a JSON parser and the container may have
+//! none: it used to be `python3` in the container, and the default image has no
+//! `python3`, so every workspace opened from it asked again. And on the host because
+//! the file it reaches is the host's: a container that shares the host's
+//! `~/.claude` (devlaunch's own claude-code feature mounts it and pins
+//! `CLAUDE_CONFIG_DIR` there) reads the host's `~/.claude/.claude.json`.
+//!
+//! The container ran a stranger's `postCreateCommand`, so both lines it prints are
+//! untrusted. [`target`] is where the host decides what they may touch, from
+//! `docker inspect` and devpod's own record of the `up`, never from the report alone.
 
 use std::path::{Path, PathBuf};
+
+use super::HostLayout;
+use crate::clients::devpod_home::{DevpodHome, sole_workspace_result};
+use crate::clients::docker;
+use crate::domain::workspace_state::NonEmpty;
+use crate::runner::Runner;
 
 /// What the trust stage reported from inside the container.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -138,6 +160,93 @@ pub(crate) enum Merged {
     AlreadyTrusted,
     /// The file was not one to write, so nothing was written.
     Declined,
+}
+
+/// The key the trust stage prints the container's resolved config directory under.
+pub(crate) const TRUST_DIR_KEY: &str = "trustdir";
+/// The key the trust stage prints the workspace path under.
+pub(crate) const TRUST_PATH_KEY: &str = "trustpath";
+
+impl Reported {
+    /// Read the trust stage's two lines out of the pass's report, or `None` where
+    /// it printed none (no config file, or no workspace path worth recording).
+    pub(crate) fn parse(report: &str) -> Option<Self> {
+        let found = super::marked_lines(report);
+        let config_dir = found.get(TRUST_DIR_KEY).filter(|value| !value.is_empty())?;
+        let workspace = found
+            .get(TRUST_PATH_KEY)
+            .filter(|value| !value.is_empty())?;
+        Some(Self {
+            config_dir: config_dir.clone(),
+            workspace: workspace.clone(),
+        })
+    }
+}
+
+/// The mounts in `docker inspect --format '{{json .Mounts}}'`'s answer. Anything
+/// unreadable is no mounts, which matches nothing.
+pub(crate) fn parse_mounts(json: &str) -> Vec<Mount> {
+    let Ok(serde_json::Value::Array(mounts)) = serde_json::from_str(json.trim()) else {
+        return Vec::new();
+    };
+    mounts
+        .iter()
+        .filter_map(|mount| {
+            Some(Mount {
+                bind: mount.get("Type")?.as_str()? == "bind",
+                source: PathBuf::from(mount.get("Source")?.as_str()?),
+                destination: mount.get("Destination")?.as_str()?.to_owned(),
+                writable: mount.get("RW")?.as_bool()?,
+            })
+        })
+        .collect()
+}
+
+/// Act on the trust stage's report: merge the entry into the host's file where
+/// [`target`] allows it, and do nothing in every other case.
+///
+/// Silent, like the stage it replaces: every refusal leaves the workspace where it
+/// was before trust was recorded at all, which is with the prompt.
+pub(crate) fn record(
+    runner: &dyn Runner,
+    workspace: &str,
+    report: &str,
+    host: &HostLayout,
+) -> Option<Merged> {
+    let reported = Reported::parse(report)?;
+    let (container, clone) = created(host.devpod_home.as_ref(), workspace)?;
+    let printed = docker::inspect_formatted(
+        runner,
+        "container",
+        "{{json .Mounts}}",
+        &NonEmpty::of([container])?,
+    )?;
+    let side = HostSide {
+        home: &host.home,
+        claude_dir: host.claude_dir.as_deref(),
+        clone: &clone,
+    };
+    let found = target(&reported, &parse_mounts(&printed), side)?;
+    Some(merge(&found.file, &found.key))
+}
+
+/// The container devpod made for this workspace, and the host folder it mounted as
+/// the workspace, from devpod's own record of the `up`.
+///
+/// devpod writes that record on the host, from the source dl gave it, so a repo's
+/// devcontainer.json cannot move the folder it names.
+fn created(devpod_home: Option<&DevpodHome>, workspace: &str) -> Option<(String, PathBuf)> {
+    let path = sole_workspace_result(devpod_home, workspace)?;
+    let document: serde_json::Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+    let container = document
+        .pointer("/ContainerDetails/ID")?
+        .as_str()
+        .filter(|id| !id.is_empty())?;
+    let clone = document
+        .pointer("/SubstitutionContext/LocalWorkspaceFolder")?
+        .as_str()
+        .filter(|folder| folder.starts_with('/'))?;
+    Some((container.to_owned(), PathBuf::from(clone)))
 }
 
 /// The name every Claude config file has, and the only name a link is followed to.
@@ -328,7 +437,11 @@ mod tests {
             config.read(),
             format!(
                 "{}\n  \"projects\": {{\n    \"{KEY}\": {{\n      \"hasTrustDialogAccepted\": true\n    }}\n  }}\n}}",
-                original.strip_suffix("\n}").expect("the closing brace").to_owned() + ","
+                original
+                    .strip_suffix("\n}")
+                    .expect("the closing brace")
+                    .to_owned()
+                    + ","
             ),
             "every line before the new entry is the line that was there"
         );
@@ -467,9 +580,7 @@ mod tests {
         if reachable {
             assert_eq!(config.merge(), Merged::Declined);
             assert_eq!(config.read(), r#"{"hasCompletedOnboarding":true}"#);
-            let leftovers = std::fs::read_dir(&config.dir)
-                .expect("the dir")
-                .count();
+            let leftovers = std::fs::read_dir(&config.dir).expect("the dir").count();
             assert_eq!(leftovers, 1, "no scratch file left behind");
         }
         std::fs::set_permissions(&config.dir, std::fs::Permissions::from_mode(0o700))
@@ -637,7 +748,11 @@ mod tests {
                 vec![
                     host.bind(&host.clone, "/workspaces/r-main-abcd", true),
                     host.bind(&host.home.join(".claude"), "/home/vscode/.claude", true),
-                    host.bind(&other.join("x.json"), "/home/vscode/.claude/.claude.json", true),
+                    host.bind(
+                        &other.join("x.json"),
+                        "/home/vscode/.claude/.claude.json",
+                        true,
+                    ),
                 ],
             ),
         ];
@@ -699,13 +814,22 @@ mod tests {
             .and_then(Path::to_str)
             .expect("a parent")
             .to_owned();
-        for destination in [home.clone(), format!("{home}/projects/r"), parent, "/".to_owned()] {
+        for destination in [
+            home.clone(),
+            format!("{home}/projects/r"),
+            parent,
+            "/".to_owned(),
+        ] {
             let mounts = vec![
                 host.bind(&host.clone, &destination, true),
                 host.bind(&host.home.join(".claude"), "/home/vscode/.claude", true),
             ];
             assert_eq!(
-                target(&reported("/home/vscode/.claude", &destination), &mounts, host.side()),
+                target(
+                    &reported("/home/vscode/.claude", &destination),
+                    &mounts,
+                    host.side()
+                ),
                 None,
                 "{destination}"
             );

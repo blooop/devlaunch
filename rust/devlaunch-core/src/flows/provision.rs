@@ -82,6 +82,8 @@ pub mod verdict_cache;
 
 use verdict_cache::{Observed, VerdictCache};
 
+use crate::clients::devpod_home::DevpodHome;
+
 // ===========================================================================
 // the constants both ends of the pipe are written against
 // ===========================================================================
@@ -980,9 +982,8 @@ const ONBOARDED_TRUSTING_FORMAT: &str =
 /// The key Claude Code's trust gate reads, under `projects{}` keyed by path.
 ///
 /// Spelled once and read twice — [`ONBOARDED_TRUSTING_FORMAT`] writes it as JSON
-/// text and [`TRUST_MERGE_PY`] as a Python string — so a test can hold the two
+/// text and [`host_trust::merge`] as a map key — so a test can hold the two
 /// spellings against this one rather than against each other.
-#[cfg_attr(not(test), allow(dead_code))]
 const TRUST_FLAG_KEY: &str = "hasTrustDialogAccepted";
 
 /// The [`ONBOARDING_STAGE`]'s script: record, in a Claude config directory that has
@@ -1129,8 +1130,9 @@ fn seed_dir_lines() -> Vec<String> {
 /// escape for a quote or a backslash. Recording nothing costs the trust prompt this
 /// exists to close; recording it wrongly costs a corrupt config file.
 ///
-/// [`trust_script`] could escape such a path — `json.dumps` does — and shares the
-/// rule anyway, because the alternative is one workspace trusted or not depending on
+/// The host merge behind [`trust_script`] could escape such a path, and shares the
+/// rule anyway (and checks it again, since it does not take the container's word
+/// for it), because the alternative is one workspace trusted or not depending on
 /// whether its container happened to have a config file already. One rule, and it
 /// errs towards the prompt.
 fn workspace_path_lines() -> Vec<String> {
@@ -1209,86 +1211,6 @@ pub(crate) fn onboarding_script() -> String {
     lines.join("\n")
 }
 
-/// The merge [`trust_script`] runs, in Python, over a `.claude.json` that already
-/// exists.
-///
-/// Python because a POSIX shell cannot parse JSON and this file is the host's real
-/// configuration on every mount that shares it. A textual insert has no sound
-/// spelling: putting `"projects"` after the opening brace loses to the original on
-/// `JSON.parse`'s last-key-wins, and putting it before the closing brace wins and
-/// takes every project the user had with it.
-///
-/// Every exit is a *no* except the one write:
-///
-/// - unreadable, not JSON, or not an object — somebody else's file in a shape this
-///   does not understand, and a half-understood config is not one to rewrite. Also
-///   what a read that raced Claude Code's own whole-file rewrite looks like.
-/// - already true — the commonest case after the first launch, and the one that
-///   makes running this on every pass free.
-///
-/// `realpath` first, so a `.claude.json` that is a symlink into a mount is written
-/// *through* rather than replaced by a regular file.
-///
-/// **Write to a scratch file and rename, or do not write.** There is no in-place
-/// fallback, and refusing one is the point rather than an omission: writing in place
-/// means truncating first, and the file being truncated is the host's whole Claude
-/// configuration wherever the container shares it. A directory this container may
-/// not create a file in is the shape that reaches it — a read-only mount of the
-/// shared config directory, or a uid mismatch on it — and there the *file* is often
-/// still writable by its owner, so the fallback does not merely fail, it succeeds at
-/// exactly the write that has nowhere to land if it stops halfway.
-///
-/// What it costs is a container whose `.claude.json` is bind-mounted as a *file*
-/// rather than reached through its directory: the rename cannot replace a mount
-/// point, so that container gets the prompt. It is the shape this repo's own feature
-/// moved off for the same reason, and it is a stated limit like the missing
-/// `python3` rather than a case worth the host's config to cover.
-const TRUST_MERGE_PY: &str = r#"import json, os, sys, tempfile
-path, key = os.path.realpath(sys.argv[1]), sys.argv[2]
-try:
-    with open(path, encoding="utf-8") as handle:
-        config = json.load(handle)
-except Exception:
-    sys.exit(0)
-if not isinstance(config, dict):
-    sys.exit(0)
-projects = config.get("projects")
-if projects is None:
-    projects = {}
-if not isinstance(projects, dict):
-    sys.exit(0)
-entry = projects.get(key)
-if entry is None:
-    entry = {}
-if not isinstance(entry, dict):
-    sys.exit(0)
-if entry.get("hasTrustDialogAccepted") is True:
-    sys.exit(0)
-entry["hasTrustDialogAccepted"] = True
-projects[key] = entry
-config["projects"] = projects
-body = json.dumps(config, indent=2, ensure_ascii=False)
-scratch = None
-try:
-    fd, scratch = tempfile.mkstemp(dir=os.path.dirname(path) or ".")
-    with os.fdopen(fd, "w", encoding="utf-8") as opened:
-        opened.write(body)
-    before = os.stat(path)
-    os.chmod(scratch, before.st_mode & 0o7777)
-    try:
-        os.chown(scratch, before.st_uid, before.st_gid)
-    except OSError:
-        pass
-    os.replace(scratch, path)
-except OSError:
-    if scratch is not None:
-        try:
-            os.unlink(scratch)
-        except OSError:
-            pass
-    sys.exit(0)
-"#;
-
 /// The [`TRUST_STAGE`]'s script: record that this workspace's own directory is one
 /// Claude Code may read without asking first.
 ///
@@ -1341,38 +1263,50 @@ except OSError:
 /// pinned at it, which is exactly the shape this repository's own claude-code
 /// feature has. There the file is always there, always has the host's real
 /// configuration in it, and the write has to add one key and leave every other byte
-/// alone. See [`TRUST_MERGE_PY`] for how, and for why the shell cannot.
+/// alone.
+///
+/// # Why the container only reports, and the host writes
+///
+/// A POSIX shell cannot parse JSON, and a textual insert has no sound spelling:
+/// putting `"projects"` after the opening brace loses to the original on
+/// `JSON.parse`'s last-key-wins, and putting it before the closing brace wins and
+/// takes every project the user had with it. This stage used to run the merge with
+/// `python3` in the container, and the default image (`python_template`) has none,
+/// so every workspace opened from it asked again.
+///
+/// So the stage prints two marked lines and writes nothing: the directory its config
+/// is in and the folder it stands in, both resolved. [`host_trust::record`] reads
+/// them on the host, where `dl` always has a JSON parser, and merges only where
+/// `docker inspect` shows that directory is one of the host's own Claude directories
+/// mounted read-write, and that folder is the clone dl made or under it. See
+/// [`host_trust::target`] for the whole rule, and why the host takes neither line on
+/// the container's word.
 ///
 /// # What it does not promise
 ///
-/// **A container without `python3` gets nothing, and says so by doing nothing.** The
-/// stage exits 0, because the state it leaves behind is the state before it: the
-/// prompt appears, exactly as it does today. An interpreter installed for this would
-/// be a package on every cold launch to spare one keypress, and a stage that failed
-/// would put a warning on every launch of an image that is working correctly.
+/// **A container whose config directory is its own, and that already had a config
+/// file, gets nothing.** The seed covers a container whose file is new; the host can
+/// reach only a file that lives on the host. An image that bakes its own
+/// `.claude.json` in keeps the prompt, exactly as it had before the stage existed,
+/// and nothing is said about it.
 pub(crate) fn trust_script() -> String {
     let mut lines = vec!["set -u".to_owned()];
     lines.extend(seed_dir_lines());
     lines.extend([
-        "file=\"$dir/.claude.json\"".to_owned(),
         // `-f` and not `-e`: absent is [`onboarding_script`]'s case, and it has
-        // already run in this pass — this stage is behind it precisely so that the
-        // file it may have just written is found here rather than merged into twice.
-        // A dangling symlink is `-f` false as well, which is the same answer for the
-        // same reason: there is nothing there to merge with, and following it would
-        // be the write the seed's own guard exists to prevent.
-        "if [ ! -f \"$file\" ]; then exit 0; fi".to_owned(),
-        // Nothing installed for this, and nothing warned about: see the note above.
-        "if ! command -v python3 >/dev/null 2>&1; then exit 0; fi".to_owned(),
+        // already run in this pass. A dangling symlink is `-f` false as well:
+        // there is nothing there to merge with.
+        "if [ ! -f \"$dir/.claude.json\" ]; then exit 0; fi".to_owned(),
     ]);
     lines.extend(workspace_path_lines());
     lines.extend([
         "if [ -z \"$ws\" ]; then exit 0; fi".to_owned(),
-        // The program through a variable rather than inline, so the `-c` argument is
-        // one word to `python3` whatever the program contains, and the two
-        // paths stay `argv` rather than becoming text in it.
-        format!("prog={}", quote(TRUST_MERGE_PY)),
-        "python3 -c \"$prog\" \"$file\" \"$ws\"".to_owned(),
+        // Resolved, because a mount point in `docker inspect` is a real path, and
+        // the host compares this against one.
+        "cfg=$(readlink -f \"$dir\" 2>/dev/null || true)".to_owned(),
+        "if [ -z \"$cfg\" ]; then exit 0; fi".to_owned(),
+        format!("echo \"{PROBE_MARK} {} $cfg\"", host_trust::TRUST_DIR_KEY),
+        format!("echo \"{PROBE_MARK} {} $ws\"", host_trust::TRUST_PATH_KEY),
     ]);
     lines.join("\n")
 }
@@ -2089,10 +2023,9 @@ pub(crate) fn setup_stages(
     // file already there. Behind, so that a file the seed just created is found here
     // with the entry already in it and this exits without a second write.
     //
-    // In a subshell for the zellij stage's reason, and unredirected for the
-    // seed's: nothing in this script writes to stdout, which is the stream the
-    // outcome protocol shares, and python3's complaint about a file it could not
-    // write belongs on stderr where a stage's complaints go.
+    // In a subshell for the zellij stage's reason, and unredirected because its
+    // whole output is the two marked lines the host reads off the outcome
+    // protocol's stdout (see [`host_trust::record`]).
     stages.push(Stage::new(TRUST_STAGE, in_subshell(&trust_script())));
     stages
 }
@@ -2277,14 +2210,28 @@ pub struct HostLayout {
     pub(crate) home: PathBuf,
     /// What a PATH search for `gh` answered, if anything.
     pub(crate) gh_on_path: Option<PathBuf>,
+    /// The directory this machine's Claude Code keeps its config in when
+    /// `$CLAUDE_CONFIG_DIR` names one. One of the two host directories the trust
+    /// merge may write into; see [`host_trust::target`].
+    pub(crate) claude_dir: Option<PathBuf>,
+    /// devpod's records, which say which container is this workspace's and which
+    /// clone it mounts. `None` where they cannot be found, and then no trust is
+    /// merged on the host.
+    pub(crate) devpod_home: Option<DevpodHome>,
 }
 
 impl HostLayout {
-    /// This machine, as `Path.home()` and `shutil.which("gh")` read it.
-    pub fn from_env() -> Option<Self> {
+    /// This machine, as `Path.home()` and `shutil.which("gh")` read it, with
+    /// devpod's records where the caller found them.
+    pub fn from_env(devpod_home: Option<DevpodHome>) -> Option<Self> {
         Some(Self {
             home: crate::osext::home_dir()?,
             gh_on_path: which("gh"),
+            // A path, so read as bytes: see `clients::claude`'s `HostEnv`.
+            claude_dir: std::env::var_os("CLAUDE_CONFIG_DIR")
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from),
+            devpod_home,
         })
     }
 }
@@ -2960,9 +2907,7 @@ fn run_the_pass(
     observed: Option<Observed>,
     events: &mut dyn Notices<ProvisionEvent>,
 ) -> Result<Pass, DevpodMissing> {
-    let host_home = host.and_then(|layout| layout.home.to_str());
-
-    let found = match setup_pass(runner, workspace, switches, title, host_home, events) {
+    let found = match setup_pass(runner, workspace, switches, title, host, events) {
         Ok(found) => found,
         Err(refusal) => {
             // On this route out too, and that was the defect: a trip devpod refused
@@ -3091,10 +3036,12 @@ fn setup_pass(
     switches: Switches,
     title: Option<&str>,
     // This machine's home directory, which only the host knows and
-    // `cfg_dir_is_foreign` needs.
-    host_home: Option<&str>,
+    // `cfg_dir_is_foreign` needs, and the facts the trust merge checks the
+    // container's report against.
+    host: Option<&HostLayout>,
     events: &mut dyn Notices<ProvisionEvent>,
 ) -> Result<PassReport, NotRun> {
+    let host_home = host.and_then(|layout| layout.home.to_str());
     let stages = setup_stages(
         workspace,
         switches.tools,
@@ -3120,6 +3067,12 @@ fn setup_pass(
             tools: ProbeResult::Absent,
             claude: None,
         });
+    }
+    // The trust stage's half that needs a JSON parser, done here on the host where
+    // there always is one. Its outcome is not the pass's: like the stage, every
+    // refusal leaves the workspace with the prompt it would have had anyway.
+    if let Some(host) = host {
+        let _: Option<host_trust::Merged> = host_trust::record(runner, workspace, report, host);
     }
     Ok(PassReport {
         tools: ProbeResult::parse(report),
@@ -3490,10 +3443,10 @@ else
   echo "devlaunch-probe stage onboarding failed $?"
 fi"#;
 
-    /// The trust stage's snippet, spelled out for the reason the one above it is,
-    /// and with more riding on it: this one carries a Python program through two
-    /// quoting layers, so it is the place in this module where a quoting change is
-    /// likeliest to be silently survivable and least likely to be harmless.
+    /// The trust stage's snippet, spelled out for the reason the one above it is.
+    /// It reports and writes nothing, so what rides on it is the two marked lines
+    /// the host reads: a quoting change that moved them would leave every workspace
+    /// with the prompt and say nothing.
     const TRUST_STAGE_SNIPPET: &str = r#"if ( eval 'set -u
 dir="${CLAUDE_CONFIG_DIR:-}"
 if [ -z "$dir" ]; then
@@ -3501,9 +3454,7 @@ if [ -z "$dir" ]; then
   if [ -z "$dir" ]; then exit 0; fi
 fi
 case "$dir" in /*) ;; *) exit 0 ;; esac
-file="$dir/.claude.json"
-if [ ! -f "$file" ]; then exit 0; fi
-if ! command -v python3 >/dev/null 2>&1; then exit 0; fi
+if [ ! -f "$dir/.claude.json" ]; then exit 0; fi
 ws=$(pwd -P 2>/dev/null || true)
 case "$ws" in /*) ;; *) ws= ;; esac
 case "$ws" in *[!-a-zA-Z0-9_/.@+]*) ws= ;; esac
@@ -3511,52 +3462,10 @@ home=$(readlink -f "${HOME:-}" 2>/dev/null || true)
 if [ "$ws" = / ] || { [ -n "$home" ] && [ "$ws" = "$home" ]; }; then ws=; fi
 if [ ! -e "$ws/.git" ]; then ws=; fi
 if [ -z "$ws" ]; then exit 0; fi
-prog='"'"'import json, os, sys, tempfile
-path, key = os.path.realpath(sys.argv[1]), sys.argv[2]
-try:
-    with open(path, encoding="utf-8") as handle:
-        config = json.load(handle)
-except Exception:
-    sys.exit(0)
-if not isinstance(config, dict):
-    sys.exit(0)
-projects = config.get("projects")
-if projects is None:
-    projects = {}
-if not isinstance(projects, dict):
-    sys.exit(0)
-entry = projects.get(key)
-if entry is None:
-    entry = {}
-if not isinstance(entry, dict):
-    sys.exit(0)
-if entry.get("hasTrustDialogAccepted") is True:
-    sys.exit(0)
-entry["hasTrustDialogAccepted"] = True
-projects[key] = entry
-config["projects"] = projects
-body = json.dumps(config, indent=2, ensure_ascii=False)
-scratch = None
-try:
-    fd, scratch = tempfile.mkstemp(dir=os.path.dirname(path) or ".")
-    with os.fdopen(fd, "w", encoding="utf-8") as opened:
-        opened.write(body)
-    before = os.stat(path)
-    os.chmod(scratch, before.st_mode & 0o7777)
-    try:
-        os.chown(scratch, before.st_uid, before.st_gid)
-    except OSError:
-        pass
-    os.replace(scratch, path)
-except OSError:
-    if scratch is not None:
-        try:
-            os.unlink(scratch)
-        except OSError:
-            pass
-    sys.exit(0)
-'"'"'
-python3 -c "$prog" "$file" "$ws"' ); then
+cfg=$(readlink -f "$dir" 2>/dev/null || true)
+if [ -z "$cfg" ]; then exit 0; fi
+echo "devlaunch-probe trustdir $cfg"
+echo "devlaunch-probe trustpath $ws"' ); then
   echo "devlaunch-probe stage trust ok"
 else
   echo "devlaunch-probe stage trust failed $?"
@@ -3926,6 +3835,8 @@ fi
         HostLayout {
             home: PathBuf::from("/nonexistent/devlaunch-has-nothing-here"),
             gh_on_path: None,
+            claude_dir: None,
+            devpod_home: None,
         }
     }
 
@@ -3938,6 +3849,8 @@ fi
         HostLayout {
             home,
             gh_on_path: Some(gh),
+            claude_dir: None,
+            devpod_home: None,
         }
     }
 
@@ -5764,6 +5677,229 @@ fi
     // the trust stage
     // =======================================================================
 
+    /// A runner that answers `docker inspect` with `mounts` and refuses anything
+    /// else: the host half of the trust merge makes that one call and no other.
+    struct DockerInspect {
+        mounts: String,
+        seen: Mutex<Vec<Vec<String>>>,
+    }
+
+    impl Runner for DockerInspect {
+        fn capture(&self, spec: &SpawnSpec) -> Outcome<CapturedText> {
+            let argv = spec.invocation.argv();
+            self.seen.lock().expect("the recording").push(argv.clone());
+            assert_eq!(argv.first().map(String::as_str), Some("docker"), "{argv:?}");
+            Outcome::Ran {
+                exit: Exit::Code(0),
+                io: CapturedText {
+                    stdout: self.mounts.clone(),
+                    stderr: String::new(),
+                },
+            }
+        }
+
+        fn passthrough(&self, _spec: &SpawnSpec) -> Outcome {
+            panic!("the trust merge never streams")
+        }
+
+        fn session(&self, _spec: &SpawnSpec, _on_stderr_line: &mut dyn FnMut(&str)) -> Outcome {
+            panic!("the trust merge never opens a session")
+        }
+
+        fn watched(&self, _spec: &SpawnSpec, _on_line: &mut dyn FnMut(&str)) -> Outcome {
+            panic!("the trust merge never watches a run")
+        }
+
+        fn detach(&self, _what: &Invocation) -> DetachOutcome {
+            panic!("the trust merge never detaches")
+        }
+    }
+
+    /// The bencher shape, on one machine: a host home whose `~/.claude` holds the
+    /// host's config, a clone under the host's cache, and a "container" side whose
+    /// config directory and workspace folder `docker inspect` says are mounts of the
+    /// two. The container's copy of the config is a separate file here, so a write
+    /// that lands in the host's file can only have been the host's.
+    struct SharedConfigWorld {
+        scratch: tempfile::TempDir,
+        host_home: PathBuf,
+        clone: PathBuf,
+        container_config: PathBuf,
+        container_workspace: PathBuf,
+        devpod: crate::clients::devpod_home::ScratchHome,
+    }
+
+    const SHARED_WS: &str = "r-main-abcd";
+
+    impl SharedConfigWorld {
+        fn new(config: &str) -> Self {
+            let scratch = tempfile::tempdir().expect("a scratch dir");
+            let root = fs::canonicalize(scratch.path()).expect("a resolved scratch dir");
+            let host_home = root.join("host");
+            let clone = host_home.join(".cache/devlaunch/repos/o/r").join(SHARED_WS);
+            let container_config = root.join("ctr/home/vscode/.claude");
+            let container_workspace = root.join("ctr/workspaces").join(SHARED_WS);
+            for dir in [&host_home.join(".claude"), &clone, &container_config] {
+                fs::create_dir_all(dir).expect("a directory");
+            }
+            fs::create_dir_all(container_workspace.join(".git")).expect("a workspace folder");
+            fs::write(host_home.join(".claude/.claude.json"), config).expect("the host's config");
+            fs::write(container_config.join(".claude.json"), config).expect("the mount's view");
+
+            let devpod =
+                crate::clients::devpod_home::devpod_home_with(&[("default", SHARED_WS, Some(()))]);
+            fs::write(
+                devpod.result("default", SHARED_WS),
+                serde_json::json!({
+                    "ContainerDetails": {"ID": "c0ffee"},
+                    "SubstitutionContext": {"LocalWorkspaceFolder": clone},
+                })
+                .to_string(),
+            )
+            .expect("devpod's result");
+            Self {
+                scratch,
+                host_home,
+                clone,
+                container_config,
+                container_workspace,
+                devpod,
+            }
+        }
+
+        fn mounts(&self) -> String {
+            serde_json::json!([
+                {"Type": "bind", "Source": self.clone, "Destination": self.container_workspace,
+                 "Mode": "", "RW": true, "Propagation": "rprivate"},
+                {"Type": "bind", "Source": self.host_home.join(".claude"),
+                 "Destination": self.container_config, "Mode": "", "RW": true,
+                 "Propagation": "rprivate"},
+            ])
+            .to_string()
+        }
+
+        fn host(&self) -> HostLayout {
+            HostLayout {
+                home: self.host_home.clone(),
+                gh_on_path: None,
+                claude_dir: None,
+                devpod_home: Some((*self.devpod).clone()),
+            }
+        }
+
+        /// The onboarding and trust stages, run "in the container" under a PATH
+        /// with no python3 on it, and the report the pass would have sent back.
+        fn run_the_stages(&self) -> String {
+            let stages: Vec<Stage> = setup_stages(
+                SHARED_WS,
+                ToolsSwitch::Skip,
+                ZellijSwitch::Skip,
+                CodexSwitch::Skip,
+                None,
+            )
+            .into_iter()
+            .filter(|stage| stage.name == ONBOARDING_STAGE || stage.name == TRUST_STAGE)
+            .collect();
+            let sysbin = sysbin(self.scratch.path(), &["readlink", "mkdir"]);
+            assert!(!sysbin.join("python3").exists());
+            let ran = Command::new(bash())
+                .arg("-c")
+                .arg(setup_script(&stages))
+                .current_dir(&self.container_workspace)
+                .env_clear()
+                .env("HOME", self.scratch.path().join("ctr/home/vscode"))
+                .env("CLAUDE_CONFIG_DIR", &self.container_config)
+                .env("PATH", &sysbin)
+                .output()
+                .expect("bash ran");
+            assert!(
+                ran.status.success(),
+                "{}",
+                String::from_utf8_lossy(&ran.stderr)
+            );
+            let report = String::from_utf8_lossy(&ran.stdout).into_owned();
+            assert_eq!(
+                stage_outcomes(&report, &stages)
+                    .into_iter()
+                    .map(|outcome| outcome.result)
+                    .collect::<Vec<_>>(),
+                vec![StageResult::Ok, StageResult::Ok],
+                "{report}\n{}",
+                String::from_utf8_lossy(&ran.stderr)
+            );
+            report
+        }
+
+        fn host_config(&self) -> serde_json::Value {
+            serde_json::from_str(
+                &fs::read_to_string(self.host_home.join(".claude/.claude.json"))
+                    .expect("the host's config"),
+            )
+            .expect("JSON")
+        }
+    }
+
+    #[test]
+    fn a_container_without_python3_sharing_the_hosts_config_ends_up_trusted() {
+        // The bug: the merge ran with python3 in the container, and the default
+        // image has none, so every new workspace asked "Do you trust the files in
+        // this folder?". The container now only reports, and the host merges.
+        let world = SharedConfigWorld::new(r#"{"hasCompletedOnboarding":true}"#);
+        let report = world.run_the_stages();
+        let runner = DockerInspect {
+            mounts: world.mounts(),
+            seen: Mutex::new(Vec::new()),
+        };
+
+        let merged = host_trust::record(&runner, SHARED_WS, &report, &world.host());
+
+        assert_eq!(merged, Some(host_trust::Merged::Wrote), "{report}");
+        let key = world
+            .container_workspace
+            .to_str()
+            .expect("a path")
+            .replace('/', "~1");
+        assert_eq!(
+            world
+                .host_config()
+                .pointer(&format!("/projects/{key}/hasTrustDialogAccepted")),
+            Some(&true.into())
+        );
+        assert_eq!(
+            runner.seen.lock().expect("the recording").as_slice(),
+            &[vec![
+                "docker".to_owned(),
+                "inspect".to_owned(),
+                "--type".to_owned(),
+                "container".to_owned(),
+                "--format".to_owned(),
+                "{{json .Mounts}}".to_owned(),
+                "c0ffee".to_owned(),
+            ]],
+            "the container devpod recorded, and nothing else"
+        );
+    }
+
+    #[test]
+    fn a_container_whose_config_is_its_own_costs_the_host_nothing() {
+        // No mount of the host's Claude directory: the seed in the container is the
+        // whole of it, and the host writes nothing of its own.
+        let world = SharedConfigWorld::new(r#"{"hasCompletedOnboarding":true}"#);
+        let report = world.run_the_stages();
+        let runner = DockerInspect {
+            mounts: serde_json::json!([]).to_string(),
+            seen: Mutex::new(Vec::new()),
+        };
+        assert_eq!(
+            host_trust::record(&runner, SHARED_WS, &report, &world.host()),
+            None
+        );
+        assert_eq!(
+            world.host_config(),
+            serde_json::json!({"hasCompletedOnboarding": true})
+        );
+    }
+
     /// A scratch world for the trust stage: a home holding `config`, a workspace
     /// folder to stand in, and the resolved path Claude Code would key it on.
     struct TrustWorld {
@@ -5830,193 +5966,56 @@ fi
             answered
         }
 
-        fn parsed(&self) -> serde_json::Value {
-            serde_json::from_str(&self.read()).expect("JSON Claude Code can read")
-        }
-
-        fn trusts(&self, path: &str) -> Option<serde_json::Value> {
-            self.parsed()
-                .get("projects")
-                .and_then(|projects| projects.get(path))
-                .and_then(|entry| entry.get(TRUST_FLAG_KEY))
-                .cloned()
+        /// What the stage reported to the host, run from the workspace folder.
+        fn reported(&self) -> Option<host_trust::Reported> {
+            host_trust::Reported::parse(&String::from_utf8_lossy(&self.run().stdout))
         }
     }
 
     #[test]
-    fn the_trust_stage_adds_one_key_and_keeps_every_other_byte() {
-        // The whole claim, and the case the stage exists for: a `.claude.json` that is
-        // already there, holding the host's real configuration, because the container
-        // shares it through a mount. One entry appears; nothing else moves.
-        //
-        // The other project in here is the point of the test rather than decoration.
-        // A textual insert has no sound spelling -- after the opening brace it loses
-        // to the original on last-key-wins, before the closing brace it wins and takes
-        // this entry with it -- which is why the merge is a JSON parse and why what
-        // this asserts is the *other* entry surviving.
-        let world = TrustWorld::new(Some(
-            r#"{"oauthAccount":{"emailAddress":"someone@example.com"},
-                "projects":{"/workspaces/devlaunch-nb98-btvv":{"hasTrustDialogAccepted":true,
-                                                               "allowedTools":["Bash"]}},
-                "themeMode":"dark"}"#,
-        ));
-
-        world.run();
-
-        assert_eq!(world.trusts(&world.keyed), Some(true.into()));
-        let parsed = world.parsed();
-        assert_eq!(
-            parsed.pointer("/oauthAccount/emailAddress"),
-            Some(&"someone@example.com".into()),
-            "the account the host is signed in as is not this stage's to touch"
-        );
-        assert_eq!(parsed.get("themeMode"), Some(&"dark".into()));
-        assert_eq!(
-            world.trusts("/workspaces/devlaunch-nb98-btvv"),
-            Some(true.into()),
-            "every workspace already trusted stays trusted"
-        );
-        assert_eq!(
-            parsed.pointer("/projects/~1workspaces~1devlaunch-nb98-btvv/allowedTools"),
-            Some(&serde_json::json!(["Bash"])),
-            "and keeps the rest of its entry"
-        );
-    }
-
-    #[test]
-    fn the_trust_stage_keeps_the_shape_of_the_config_it_merges_into() {
-        // The host's real `.claude.json` is pretty-printed and holds non-ASCII: 283 KB
-        // over 7,984 lines on the machine this was written on. Re-serialising it
-        // compactly rewrites all 7,984 to add one key -- which is the claim the test
-        // above makes and does not check, since it reads values back rather than the
-        // file -- and hands Claude Code a document it rewrites again on next launch.
-        let world = TrustWorld::new(Some(
-            "{\n  \"themeMode\": \"dark\",\n  \"tipsHistory\": {\n    \"caf\u{e9}\": 1\n  }\n}",
-        ));
-
-        world.run();
-
-        assert_eq!(world.trusts(&world.keyed), Some(true.into()));
-        let after = world.read();
-        assert!(
-            after.contains("\n  \""),
-            "the indent the host's file is written with survives: {after}"
-        );
-        assert!(
-            after.contains('\u{e9}'),
-            "and a non-ASCII key is not escaped on the way through: {after}"
-        );
-    }
-
-    #[test]
-    fn the_trust_stage_is_idempotent_and_rewrites_nothing_it_need_not() {
-        // Every launch of a warm workspace runs this again, so "already true" is the
-        // majority case rather than an edge: it must not rewrite the file, because
-        // the file it would rewrite is the host's and something else may be writing
-        // it at the same moment.
+    fn the_trust_stage_reports_the_folder_and_the_config_dir_and_writes_nothing() {
+        // The stage needs no JSON parser any more: it says where it stands and which
+        // directory its config is in, both resolved, and the host does the merge.
+        // So it runs the same in an image with no python3.
         let world = TrustWorld::new(Some(r#"{"hasCompletedOnboarding":true}"#));
-
-        world.run();
-        assert_eq!(world.trusts(&world.keyed), Some(true.into()));
-        let after_first = world.read();
-
-        world.run();
-        assert_eq!(
-            world.read(),
-            after_first,
-            "a second pass over an entry already true leaves the bytes alone"
-        );
-    }
-
-    #[test]
-    fn the_trust_stage_leaves_a_file_it_cannot_read_alone() {
-        // Not JSON, and JSON that is not an object, are both somebody else's file in a
-        // shape this does not understand -- and so is a read that raced Claude Code's
-        // own whole-file rewrite, which looks exactly like the first of them. A
-        // half-understood config is not one to rewrite, so each is a no-op and an
-        // exit 0: the workspace gets its trust prompt, which is where it was anyway.
-        for shape in [
-            "not json at all",
-            "[1, 2, 3]",
-            r#"{"projects": "not an object either"}"#,
-        ] {
-            let world = TrustWorld::new(Some(shape));
-            world.run();
-            assert_eq!(world.read(), shape, "{shape}");
-        }
-    }
-
-    #[test]
-    fn the_trust_stage_writes_nothing_where_the_seed_has_not_been() {
-        // Absent is the seed's case and it has already run in this pass. Creating the
-        // file here would be a second spelling of the seed -- and would write it
-        // without `hasCompletedOnboarding`, which is the key that actually opens the
-        // session.
-        let world = TrustWorld::new(None);
-        world.run();
-        assert!(
-            !world.file().exists(),
-            "the stage that creates this file is the one in front of it"
-        );
-
-        // A dangling symlink reads as absent for the same reason it does in the seed:
-        // there is nothing there to merge with, and following it would write at a path
-        // no stage named.
-        let target = world.scratch.path().join("not-here-yet.json");
-        std::os::unix::fs::symlink(&target, world.file()).expect("a dangling link");
-        world.run();
-        assert!(!target.exists(), "the merge followed a dangling link");
-    }
-
-    #[test]
-    fn the_trust_stage_writes_through_a_symlinked_config_rather_than_replacing_it() {
-        // The shape a mount of one file leaves behind -- this repository's own
-        // claude-code feature mounted `.claude.json` individually before it switched
-        // to the directory. A rename over the link would leave a regular file and quietly
-        // disconnect the container from the host's config for the rest of its life.
-        let world = TrustWorld::new(None);
-        let real = world.scratch.path().join("host/.claude.json");
-        std::fs::create_dir_all(real.parent().expect("a parent")).expect("a host config dir");
-        std::fs::write(&real, r#"{"hasCompletedOnboarding":true}"#).expect("the host's config");
-        std::os::unix::fs::symlink(&real, world.file()).expect("a linked config");
-
-        world.run();
-
-        assert!(
-            std::fs::symlink_metadata(world.file())
-                .expect("the link")
-                .file_type()
-                .is_symlink(),
-            "the link is still a link"
-        );
-        assert_eq!(world.trusts(&world.keyed), Some(true.into()));
-    }
-
-    #[test]
-    fn the_trust_stage_does_nothing_and_says_nothing_where_there_is_no_python3() {
-        // The one promise this stage does not make. An interpreter installed for it
-        // would be a package on every cold launch to spare one keypress, and a stage
-        // that *failed* would put a warning on every launch of an image that is
-        // working correctly. So: the prompt appears, exactly as it did before the
-        // stage existed, and nothing is said about it.
-        let world = TrustWorld::new(Some(r#"{"hasCompletedOnboarding":true}"#));
-        // A PATH holding bash and nothing else, because `Command` resolves the
-        // program against the *child's* PATH: an empty one is a test that cannot
-        // start a shell rather than a shell that cannot find python3.
         let bin = world.scratch.path().join("bin");
         std::fs::create_dir_all(&bin).expect("a bin");
-        std::os::unix::fs::symlink(
-            std::fs::canonicalize("/bin/bash").expect("a bash to borrow"),
-            bin.join("bash"),
-        )
-        .expect("a bash on the stripped path");
+        for tool in ["bash", "readlink"] {
+            std::os::unix::fs::symlink(
+                which(tool).unwrap_or_else(|| panic!("the test host needs {tool}")),
+                bin.join(tool),
+            )
+            .expect("a tool on the stripped path");
+        }
+
         let answered = world.run_with_path(Some(bin.into_os_string()));
-        assert_eq!(world.trusts(&world.keyed), None);
+
         assert_eq!(
-            String::from_utf8_lossy(&answered.stderr),
-            "",
-            "an image without python3 is not a failure to report"
+            host_trust::Reported::parse(&String::from_utf8_lossy(&answered.stdout)),
+            Some(host_trust::Reported {
+                config_dir: std::fs::canonicalize(&world.home)
+                    .expect("a resolved home")
+                    .to_str()
+                    .expect("a path")
+                    .to_owned(),
+                workspace: world.keyed.clone(),
+            })
         );
+        assert_eq!(String::from_utf8_lossy(&answered.stderr), "");
+        assert_eq!(world.read(), r#"{"hasCompletedOnboarding":true}"#);
+    }
+
+    #[test]
+    fn the_trust_stage_reports_nothing_where_the_seed_has_not_been() {
+        // Absent is the seed's case and it has already run in this pass, so there is
+        // nothing for the host to merge into. A dangling link reads the same.
+        let world = TrustWorld::new(None);
+        assert_eq!(world.reported(), None);
+
+        let target = world.scratch.path().join("not-here-yet.json");
+        std::os::unix::fs::symlink(&target, world.file()).expect("a dangling link");
+        assert_eq!(world.reported(), None);
+        assert!(!target.exists());
     }
 
     #[test]
@@ -6075,9 +6074,9 @@ fi
                 .expect("bash ran");
             assert!(answered.status.success());
             assert_eq!(
-                merge.read(),
-                r#"{"hasCompletedOnboarding":true}"#,
-                "and the merge records nothing either, standing in {}",
+                host_trust::Reported::parse(&String::from_utf8_lossy(&answered.stdout)),
+                None,
+                "and the trust stage reports nothing either, standing in {}",
                 standing.display()
             );
         }
@@ -6114,83 +6113,23 @@ fi
         );
 
         assert_eq!(
-            world.trusts(stood.to_str().expect("a path bash can spell")),
+            host_trust::Reported::parse(&String::from_utf8_lossy(&answered.stdout)),
             None,
-            "a directory with no git root under it has no floor to stop the walk"
+            "a directory with no git root under it ({}) has no floor to stop the walk",
+            stood.display()
         );
-    }
-
-    #[test]
-    fn a_config_the_merge_cannot_replace_is_left_exactly_as_it_was() {
-        // The file this stage writes is the host's real configuration wherever the
-        // container shares it, so the promise is the atomic one: the entry is in, or
-        // every byte is where it was. A read-only mount of that directory, or a uid
-        // mismatch on it, is the shape that reaches this -- and it is the same shape
-        // the stage exists for, a container sharing the host's config.
-        //
-        // Written against a version that fell back to `open(path, "w")` when the
-        // rename would not go: that truncates before it writes, so a failure during
-        // the write left the host's config empty, and the EACCES that stopped the
-        // rename stopped the fallback too -- a traceback and a warning on every cold
-        // launch of a container that is working correctly.
-        let world = TrustWorld::new(Some(r#"{"hasCompletedOnboarding":true}"#));
-        let mut locked = std::fs::metadata(&world.home)
-            .expect("a home")
-            .permissions();
-        locked.set_mode(0o500);
-        std::fs::set_permissions(&world.home, locked).expect("a read-only config dir");
-        // Root ignores the mode, so the state this asserts about cannot be reached as
-        // root and the assertion below would pass for the wrong reason. Probing is
-        // how that is told, rather than asking who we are.
-        let reachable = std::fs::write(world.home.join("probe"), "x").is_err();
-        if !reachable {
-            std::fs::remove_file(world.home.join("probe")).expect("the probe");
-            return;
-        }
-
-        let answered = std::process::Command::new("bash")
-            .arg("-c")
-            .arg(trust_script())
-            .current_dir(&world.workspace)
-            .env("HOME", &world.home)
-            .env_remove("CLAUDE_CONFIG_DIR")
-            .output()
-            .expect("bash ran");
-
-        assert_eq!(
-            world.read(),
-            r#"{"hasCompletedOnboarding":true}"#,
-            "a merge that could not go in is not a merge that half went in"
-        );
-        assert!(
-            answered.status.success(),
-            "a directory this container may not write is permanent and nothing the \
-             user can act on, so it declines rather than warning on every launch: {}",
-            String::from_utf8_lossy(&answered.stderr)
-        );
-        assert_eq!(
-            String::from_utf8_lossy(&answered.stderr),
-            "",
-            "and it declines quietly, like the other declines"
-        );
-
-        let mut unlocked = std::fs::metadata(&world.home)
-            .expect("a home")
-            .permissions();
-        unlocked.set_mode(0o700);
-        std::fs::set_permissions(&world.home, unlocked).expect("a writable dir again");
     }
 
     #[test]
     fn the_trust_stage_records_nothing_for_a_workspace_folder_the_seed_could_not_spell() {
-        // The merge could escape a quote -- `json.dumps` does -- where the seed's
-        // `printf` cannot, and the two share the rule anyway. One rule, because
-        // otherwise the same workspace is trusted or not depending on whether its
-        // container happened to have a config file already, and a path awkward enough
-        // to reach this is a path to be conservative about in both.
+        // The host merge could escape a quote where the seed's `printf` cannot, and
+        // the two share the rule anyway. One rule, because otherwise the same
+        // workspace is trusted or not depending on whether its container happened to
+        // have a config file already. The host checks the same rule again, since it
+        // does not take the container's word for it.
         let world = TrustWorld::new(Some(r#"{"hasCompletedOnboarding":true}"#));
         let awkward = world.scratch.path().join(r#"say "hi""#);
-        std::fs::create_dir_all(&awkward).expect("an awkward workspace folder");
+        std::fs::create_dir_all(awkward.join(".git")).expect("an awkward workspace folder");
         let answered = std::process::Command::new("bash")
             .arg("-c")
             .arg(trust_script())
@@ -6200,11 +6139,14 @@ fi
             .output()
             .expect("bash ran");
         assert!(answered.status.success());
-        assert_eq!(world.read(), r#"{"hasCompletedOnboarding":true}"#);
+        assert_eq!(
+            host_trust::Reported::parse(&String::from_utf8_lossy(&answered.stdout)),
+            None
+        );
     }
 
     #[test]
-    fn the_setup_pass_records_trust_for_the_workspace_it_stands_in() {
+    fn the_setup_pass_reports_the_workspace_it_stands_in() {
         let world = TrustWorld::new(Some(r#"{"hasCompletedOnboarding":true}"#));
         let stages: Vec<Stage> = setup_stages(
             "devlaunch-nb99-hicj",
@@ -6246,11 +6188,11 @@ fi
             "{report}\n{}",
             String::from_utf8_lossy(&ran.stderr)
         );
-        assert_eq!(world.trusts(&world.keyed), Some(true.into()));
         assert_eq!(
-            world.parsed().get("hasCompletedOnboarding"),
-            Some(&true.into())
+            host_trust::Reported::parse(&report).map(|reported| reported.workspace),
+            Some(world.keyed.clone())
         );
+        assert_eq!(world.read(), r#"{"hasCompletedOnboarding":true}"#);
     }
 
     #[test]
@@ -8801,6 +8743,8 @@ fi
         let payload = host_payload(&HostLayout {
             home: home.clone(),
             gh_on_path: Some(gh.clone()),
+            claude_dir: None,
+            devpod_home: None,
         })
         .expect("a host that can lend");
 
@@ -8842,6 +8786,8 @@ fi
             host_payload(&HostLayout {
                 home,
                 gh_on_path: Some(gh),
+                claude_dir: None,
+                devpod_home: None,
             }),
             None
         );
@@ -8871,6 +8817,8 @@ fi
         let payload = host_payload(&HostLayout {
             home,
             gh_on_path: Some(trampoline),
+            claude_dir: None,
+            devpod_home: None,
         })
         .expect("a payload");
 
@@ -8899,6 +8847,8 @@ fi
             host_payload(&HostLayout {
                 home,
                 gh_on_path: Some(trampoline),
+                claude_dir: None,
+                devpod_home: None,
             }),
             None
         );
@@ -8926,6 +8876,8 @@ fi
             host_payload(&HostLayout {
                 home: home.clone(),
                 gh_on_path: None,
+                claude_dir: None,
+                devpod_home: None,
             }),
             None
         );
@@ -8936,6 +8888,8 @@ fi
             host_payload(&HostLayout {
                 home: a_home(&scratch.path().join("empty")),
                 gh_on_path: Some(gh),
+                claude_dir: None,
+                devpod_home: None,
             }),
             None
         );
