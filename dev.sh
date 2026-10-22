@@ -70,8 +70,8 @@ BUILD_LOG="$(mktemp)"
 trap 'rm -f "${BUILD_LOG}"' EXIT
 
 # The executables are read out of cargo's own report rather than named here,
-# because a list here is one somebody has to remember: under the old script `dla`
-# was added as a second entry point and the script knew nothing about it, so `dla`
+# because a list here is one somebody has to remember: under the old script `aid`
+# was added as a second entry point and the script knew nothing about it, so `aid`
 # kept resolving to the released build while its change sat in the tree untested.
 # `--message-format=json-render-diagnostics` keeps compiler diagnostics on stderr
 # where they belong and puts one JSON object per artifact on stdout; only real
