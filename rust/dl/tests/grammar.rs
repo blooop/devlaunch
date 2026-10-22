@@ -276,7 +276,22 @@ fn a_path_that_names_no_workspace_is_refused() {
     assert_eq!(run.out, "");
     assert_eq!(
         run.err,
-        "'/' does not name a workspace: its path has no final component to name one after.\n"
+        "'/' does not name a workspace: the end of its path has no letter or digit to make an id from.\n"
+    );
+}
+
+#[test]
+fn a_path_whose_folder_name_gives_devpod_no_id_is_refused_before_anything_runs() {
+    // devpod's `ToID` deletes `_`, so `___` leaves an empty id, the same as `/`.
+    let world = World::full();
+    let run = world.dl(&[&format!("{}/foreign/___", world.root.display())]);
+
+    assert_eq!(run.code, Some(1), "stderr: {}", run.err);
+    assert_eq!(run.out, "");
+    assert_eq!(
+        run.err,
+        "'{ROOT}/foreign/___' does not name a workspace: the end of its path has no letter or \
+         digit to make an id from.\n"
     );
 }
 
