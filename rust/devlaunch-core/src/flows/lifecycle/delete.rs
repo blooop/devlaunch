@@ -549,9 +549,8 @@ pub(super) fn sweep_volumes(runner: &dyn Runner, named: Option<NonEmpty<String>>
 /// disagree — a workspace opened before a rename, say. Neither *value* is guessed:
 /// a substitution that is not in the record names no volume. The two name
 /// **templates** are still this repository's own devcontainer and the
-/// `docker-in-docker` feature's, so a `mounts` entry naming some third volume is
-/// not swept — devlaunch#325's scope, and the follow-up that would end it is
-/// reading the mount sources out of the recorded merged config instead.
+/// `docker-in-docker` feature's; any other volume the workspace's containers
+/// mount is `workspace_volumes`'s to remove.
 ///
 /// [`sole_workspace_result`] is what finds the file, rather than a contexts walk of
 /// its own: an id under two contexts must answer nothing, and `devpod delete`

@@ -24,8 +24,8 @@ workspaces](#cleaning-up-workspaces)), and **the named Docker volumes that
 workspace's devcontainer created**. Every path that removes a workspace does all three:
 `dl <ws> rm`, `dl <ws> rme`, `dl <ws> --rm`, and `--purge`.
 
-Two volumes per workspace, both named from what devpod recorded substituting into
-the devcontainer:
+Two of them are named from what devpod recorded substituting into the
+devcontainer:
 
 | volume | declared by |
 | --- | --- |
@@ -41,11 +41,11 @@ removes the container and never a volume, and Docker never garbage-collects a
 Three things about how the removal behaves, all of them so that a delete cannot
 be made worse by it:
 
-- **The names are read from devpod's own record, never guessed from a pattern.**
-  devpod writes down what it substituted, and that is the only thing consulted. A
-  workspace devpod never finished creating has no such record, so nothing is named
-  and no `docker` command runs at all, rather than one carrying a made-up name,
-  which would be somebody else's disk.
+- **These two names are read from devpod's own record, never guessed.** devpod
+  writes down what it substituted, and that is the only thing consulted. A
+  workspace devpod never finished creating has no such record, so neither is
+  named, rather than a made-up name, which would be somebody else's disk. Every
+  other volume is one a workspace container mounts, [below](#every-other-volume-only-the-workspace-used).
 - **It is best-effort, and cannot fail a delete.** The workspace is gone either
   way; reporting failure would send you looking for a workspace that is not there.
   A volume Docker will not release, one another container still holds, say, is a
@@ -76,8 +76,8 @@ spells literally, with no `${...}` in it (`team-tracker-pixi`), and a volume com
 under an explicit `name:`, which compose labels with a name other than `<project>_<volume>`.
 A volume compose did not make, such as one marked `external: true`, has no compose label:
 it stays only when its name holds neither the workspace id nor devpod's uid. Each volume removed is named on stderr. A volume Docker will not
-remove is a line, never a failed delete. A delete that the guard refuses, or that devpod
-refuses, removes no volume. `stop`, `up`, `recreate` and `--refresh-stale` never
+remove is a line, never a failed delete. A delete that the guard refuses, that devpod
+refuses, or a `kill` whose `devpod delete` times out, removes no volume. `stop`, `up`, `recreate` and `--refresh-stale` never
 run this, so the caches a recreate keeps stay.
 
 ### The volumes of a workspace devpod has already forgotten

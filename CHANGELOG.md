@@ -33,7 +33,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stays, and so does a volume compose made under an explicit `name:`. A volume compose did
   not make (`external: true`, or one created before compose ran) has no compose label, so
   it stays only when its name holds neither the id nor the uid. Each removed volume is named;
-  one docker will not remove is a line, never a failed delete. `stop`, `up`, `recreate` and
+  one docker will not remove is a line, never a failed delete. A `kill` whose delete times
+  out removes no volume. `stop`, `up`, `recreate` and
   `--refresh-stale` keep every volume.
 
 ## [0.62.1] - 2026-10-19
