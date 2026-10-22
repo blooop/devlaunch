@@ -36,8 +36,11 @@ const NAMER: &str = "flows/kept_copies.rs";
 const TEMPLATES: [&str; 2] = ["{basename}-pixi", "dind-var-lib-docker-{"];
 
 /// The one function that can remove a volume, and the one module that may call it.
-const REMOVAL: &str = "remove_volumes(";
+const REMOVAL: [&str; 2] = ["remove_volumes(", "remove_volume("];
 const DOOR: &str = "flows/lifecycle/delete.rs";
+/// The second door: a volume a deleted workspace's containers mounted, removed
+/// one at a time once nothing left uses it.
+const MOUNTED_DOOR: &str = "flows/workspace_volumes.rs";
 const DOORWAY: &str = "clients/docker.rs";
 
 fn crate_src() -> PathBuf {
@@ -121,9 +124,11 @@ fn that_module_does_build_them() {
 #[test]
 fn only_one_module_can_remove_a_volume() {
     let root = crate_src();
-    let strays: Vec<String> = mentions(&root, &[REMOVAL])
+    let strays: Vec<String> = mentions(&root, &REMOVAL)
         .into_iter()
-        .filter(|(file, _)| file != Path::new(DOOR) && file != Path::new(DOORWAY))
+        .filter(|(file, _)| {
+            file != Path::new(DOOR) && file != Path::new(MOUNTED_DOOR) && file != Path::new(DOORWAY)
+        })
         .map(|(file, line)| format!("  src/{}:{line}", file.display()))
         .collect();
     assert!(

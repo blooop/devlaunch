@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A delete removes every named volume only that workspace used.** `rm`, `rme`, `kill` and
+  `--rm` used to remove two volumes named from fixed templates (`<basename>-pixi` and the
+  docker-in-docker one), so any other per-workspace volume, such as a compose named volume
+  over a build cache, outlived the workspace. Before `devpod delete`, dl now reads the named
+  volumes every container of the workspace mounts (the dev container and its compose
+  sidecars). After the delete it removes each one that no remaining container uses and that
+  is the workspace's own: compose made it for the workspace's project under compose's default
+  `<project>_<volume>` name, or its name holds the workspace id or devpod's uid as a whole
+  part. A name the devcontainer config spells literally (`team-tracker-pixi`) is shared and
+  stays, and so does a compose volume with an explicit `name:`. Each removed volume is named;
+  one docker will not remove is a line, never a failed delete. `stop`, `up`, `recreate` and
+  `--refresh-stale` keep every volume.
+
 ## [0.62.1] - 2026-10-19
 
 ### Fixed

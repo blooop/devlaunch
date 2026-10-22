@@ -55,6 +55,29 @@ be made worse by it:
   frees](#the-disk-neither-command-frees). That boundary is about images now, and
   deliberately stays there.
 
+#### Every other volume only the workspace used
+
+The two templates above are not the whole list. A repository can declare any named
+volume: a compose named volume over a build cache, or a pixi volume it spells its own
+way. So `rm`, `rme`, `kill` and `--rm` also read, before `devpod delete`, the named
+volumes that every container of the workspace mounts: the dev container (by devpod's
+`dev.containers.id` label) and its compose sidecars (by the compose project devpod names
+after the same uid). After the delete, each such volume is removed when both of these
+hold:
+
+- **No container that is left uses it.** dl asks Docker after the workspace's own
+  containers are gone, so a volume another workspace still mounts stays.
+- **It is the workspace's own.** Compose made it for the workspace's project under
+  compose's default name, `<project>_<volume>`, or its name holds the workspace id or
+  devpod's uid as a whole part, as `<id>-pixi` does.
+
+Two kinds of volume are shared on purpose and always stay: a name the devcontainer config
+spells literally, with no `${...}` in it (`team-tracker-pixi`), and a compose volume with
+an explicit `name:`. Each volume removed is named on stderr. A volume Docker will not
+remove is a line, never a failed delete. A delete that the guard refuses, or that devpod
+refuses, removes no volume. `stop`, `up`, `recreate` and `--refresh-stale` never
+run this, so the caches a recreate keeps stay.
+
 ### The volumes of a workspace devpod has already forgotten
 
 The read above happens at delete time, immediately before `devpod delete` takes

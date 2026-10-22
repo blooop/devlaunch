@@ -208,6 +208,16 @@ pub devlaunch_core::api::LifecycleNotice::VolumesNotRemoved
 pub devlaunch_core::api::LifecycleNotice::VolumesNotRemoved::occasion: devlaunch_core::flows::lifecycle::SweepOccasion
 pub devlaunch_core::api::LifecycleNotice::VolumesNotRemoved::refusal: devlaunch_core::flows::lifecycle::VolumeRefusal
 pub devlaunch_core::api::LifecycleNotice::VolumesNotRemoved::workspace_id: alloc::string::String
+pub devlaunch_core::api::LifecycleNotice::WorkspaceVolumeNotRemoved
+pub devlaunch_core::api::LifecycleNotice::WorkspaceVolumeNotRemoved::name: alloc::string::String
+pub devlaunch_core::api::LifecycleNotice::WorkspaceVolumeNotRemoved::reason: alloc::string::String
+pub devlaunch_core::api::LifecycleNotice::WorkspaceVolumeNotRemoved::workspace_id: alloc::string::String
+pub devlaunch_core::api::LifecycleNotice::WorkspaceVolumesNotRead
+pub devlaunch_core::api::LifecycleNotice::WorkspaceVolumesNotRead::reason: alloc::string::String
+pub devlaunch_core::api::LifecycleNotice::WorkspaceVolumesNotRead::workspace_id: alloc::string::String
+pub devlaunch_core::api::LifecycleNotice::WorkspaceVolumesRemoved
+pub devlaunch_core::api::LifecycleNotice::WorkspaceVolumesRemoved::names: devlaunch_core::domain::workspace_state::NonEmpty<alloc::string::String>
+pub devlaunch_core::api::LifecycleNotice::WorkspaceVolumesRemoved::workspace_id: alloc::string::String
 impl core::clone::Clone for devlaunch_core::flows::lifecycle::LifecycleNotice
 pub fn devlaunch_core::flows::lifecycle::LifecycleNotice::clone(&self) -> devlaunch_core::flows::lifecycle::LifecycleNotice
 impl core::cmp::Eq for devlaunch_core::flows::lifecycle::LifecycleNotice
@@ -890,6 +900,16 @@ pub devlaunch_core::flows::lifecycle::LifecycleNotice::VolumesNotRemoved
 pub devlaunch_core::flows::lifecycle::LifecycleNotice::VolumesNotRemoved::occasion: devlaunch_core::flows::lifecycle::SweepOccasion
 pub devlaunch_core::flows::lifecycle::LifecycleNotice::VolumesNotRemoved::refusal: devlaunch_core::flows::lifecycle::VolumeRefusal
 pub devlaunch_core::flows::lifecycle::LifecycleNotice::VolumesNotRemoved::workspace_id: alloc::string::String
+pub devlaunch_core::flows::lifecycle::LifecycleNotice::WorkspaceVolumeNotRemoved
+pub devlaunch_core::flows::lifecycle::LifecycleNotice::WorkspaceVolumeNotRemoved::name: alloc::string::String
+pub devlaunch_core::flows::lifecycle::LifecycleNotice::WorkspaceVolumeNotRemoved::reason: alloc::string::String
+pub devlaunch_core::flows::lifecycle::LifecycleNotice::WorkspaceVolumeNotRemoved::workspace_id: alloc::string::String
+pub devlaunch_core::flows::lifecycle::LifecycleNotice::WorkspaceVolumesNotRead
+pub devlaunch_core::flows::lifecycle::LifecycleNotice::WorkspaceVolumesNotRead::reason: alloc::string::String
+pub devlaunch_core::flows::lifecycle::LifecycleNotice::WorkspaceVolumesNotRead::workspace_id: alloc::string::String
+pub devlaunch_core::flows::lifecycle::LifecycleNotice::WorkspaceVolumesRemoved
+pub devlaunch_core::flows::lifecycle::LifecycleNotice::WorkspaceVolumesRemoved::names: devlaunch_core::domain::workspace_state::NonEmpty<alloc::string::String>
+pub devlaunch_core::flows::lifecycle::LifecycleNotice::WorkspaceVolumesRemoved::workspace_id: alloc::string::String
 impl core::clone::Clone for devlaunch_core::flows::lifecycle::LifecycleNotice
 pub fn devlaunch_core::flows::lifecycle::LifecycleNotice::clone(&self) -> devlaunch_core::flows::lifecycle::LifecycleNotice
 impl core::cmp::Eq for devlaunch_core::flows::lifecycle::LifecycleNotice

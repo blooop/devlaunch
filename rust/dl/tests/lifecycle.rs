@@ -379,6 +379,21 @@ impl World {
         self.read("docker-log").lines().map(str::to_owned).collect()
     }
 
+    /// [`Self::docker_calls`] without the reads a delete makes before `devpod
+    /// delete`, of what the workspace's containers mount. They change nothing.
+    fn docker_calls_after_the_mount_reads(&self) -> Vec<String> {
+        self.docker_calls()
+            .into_iter()
+            .filter(|call| {
+                !call.starts_with("ps --all --quiet --no-trunc --filter label=dev.containers.id=")
+                    && !call.starts_with(
+                        "ps --all --quiet --no-trunc --filter label=com.docker.compose.project=",
+                    )
+                    && !call.starts_with("inspect --type container --format ")
+            })
+            .collect()
+    }
+
     /// Put a `gh` on the world's PATH that answers one `gh pr view` and nothing
     /// else.
     ///
@@ -1271,7 +1286,7 @@ fn a_removed_workspaces_devcontainer_volumes_go_with_it() {
     world.dl(&["devlaunch-main-legacy", "rm"]).exited(0);
 
     assert_eq!(
-        world.docker_calls(),
+        world.docker_calls_after_the_mount_reads(),
         ["volume rm --force devlaunch-main-legacy-pixi dind-var-lib-docker-0f4b2c1d"]
     );
 }
@@ -1378,7 +1393,7 @@ fn rm_removes_the_leftovers_once_devpods_delete_drops_its_record() {
     run.exited(0);
     assert!(!world.exists("devpod/contexts/default/workspaces/devlaunch-main-legacy"));
     assert_eq!(
-        world.docker_calls(),
+        world.docker_calls_after_the_mount_reads(),
         [
             LEFTOVER_LISTING,
             "rm --force aaa bbb",
@@ -1438,7 +1453,12 @@ fn a_refused_delete_that_keeps_the_record_leaves_the_containers() {
     assert!(
         world.exists("devpod/contexts/default/workspaces/devlaunch-main-legacy/workspace.json")
     );
-    assert_eq!(world.docker_calls(), Vec::<String>::new());
+    // What the containers mount is read before devpod is asked, and nothing is
+    // removed: no container, and no volume.
+    assert_eq!(
+        world.docker_calls_after_the_mount_reads(),
+        Vec::<String>::new()
+    );
 }
 
 /// A local folder opened as its own workspace can sit inside another

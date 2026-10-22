@@ -2686,7 +2686,7 @@ fn a_delete_removes_both_volumes_the_workspaces_devcontainer_created() {
     let (outcome, notices) = deleting.delete();
 
     assert_eq!(
-        deleting.world.devpod.docker_argvs(),
+        deleting.world.devpod.docker_argvs()[2..],
         [[
             "volume",
             "rm",
@@ -2736,15 +2736,23 @@ fn the_volumes_are_removed_after_devpod_has_let_go_of_the_workspace() {
     assert_eq!(
         argvs,
         [
-            vec!["devpod", "delete", "r-main-aa"],
-            vec![
+            // What the containers mount, read while they are there; nothing
+            // mounts anything in this world, so nothing more is asked.
+            ps_filtered("label=dev.containers.id=dc9a8b7c"),
+            ps_filtered("label=com.docker.compose.project=dc9a8b7c"),
+            ["devpod", "delete", "r-main-aa"]
+                .map(str::to_owned)
+                .to_vec(),
+            [
                 "docker",
                 "volume",
                 "rm",
                 "--force",
                 "opened-as-pixi",
                 "dind-var-lib-docker-dc9a8b7c",
-            ],
+            ]
+            .map(str::to_owned)
+            .to_vec(),
         ]
     );
 }
@@ -2845,6 +2853,190 @@ fn a_workspace_whose_up_never_finished_names_nothing_and_runs_no_docker() {
             .any(|notice| matches!(notice, LifecycleNotice::VolumesNotRemoved { .. })),
         "{notices:?}"
     );
+}
+
+// =======================================================================
+// delete: every volume only the workspace's containers used
+// =======================================================================
+
+/// `docker ps` for the containers carrying one filter, argv-exact.
+fn ps_filtered(filter: &str) -> Vec<String> {
+    [
+        "docker",
+        "ps",
+        "--all",
+        "--quiet",
+        "--no-trunc",
+        "--filter",
+        filter,
+    ]
+    .map(str::to_owned)
+    .to_vec()
+}
+
+impl Deleting {
+    /// The workspace's dev container `aaa` mounts its own cache volume and the
+    /// shared `team-tracker-pixi`; `dc9a8b7c` is the uid the result records.
+    fn with_containers_mounting_a_cache(self) -> Self {
+        let fake = &self.world.devpod.fake;
+        fake.script(
+            ps_filtered("label=dev.containers.id=dc9a8b7c"),
+            Response::stdout("aaa\n"),
+        );
+        fake.script(
+            ["docker", "inspect"],
+            Response::stdout("<no value>\tr-main-aa-cache\tteam-tracker-pixi\t\n"),
+        );
+        self
+    }
+}
+
+/// devpod's own delete leaves every named volume; the workspace's own cache goes
+/// after it, by what its container mounted, and is named.
+#[test]
+fn a_delete_removes_the_volumes_only_its_containers_used_and_names_them() {
+    let mut deleting = a_world_ready_to_delete().with_containers_mounting_a_cache();
+
+    let (outcome, notices) = deleting.delete();
+
+    assert!(
+        matches!(outcome, RemoveOutcome::Deleted { .. }),
+        "{outcome:?}"
+    );
+    assert!(
+        notices.contains(&LifecycleNotice::WorkspaceVolumesRemoved {
+            workspace_id: "r-main-aa".to_owned(),
+            names: NonEmpty::of(["r-main-aa-cache".to_owned()]).expect("a name"),
+        }),
+        "{notices:?}"
+    );
+    let argvs: Vec<String> = deleting
+        .world
+        .devpod
+        .fake
+        .calls()
+        .into_iter()
+        .filter(|call| !matches!(call, devlaunch_test_support::Call::Detach(_)))
+        .map(|call| call.argv().join(" "))
+        .collect();
+    let at = |prefix: &str| {
+        argvs
+            .iter()
+            .position(|argv| argv.starts_with(prefix))
+            .unwrap_or_else(|| panic!("no {prefix} in {argvs:?}"))
+    };
+    // Read while the container is there, removed once devpod has let go.
+    assert!(at("docker inspect") < at("devpod delete"), "{argvs:?}");
+    assert!(
+        at("docker ps --all --quiet --no-trunc --filter volume=r-main-aa-cache")
+            > at("devpod delete"),
+        "{argvs:?}"
+    );
+    assert!(at("docker volume rm r-main-aa-cache") > at("devpod delete"));
+    // The shared volume is never asked about, let alone removed.
+    assert!(
+        !argvs
+            .iter()
+            .any(|argv| argv.contains("team-tracker-pixi") && !argv.starts_with("docker inspect")),
+        "{argvs:?}"
+    );
+}
+
+#[test]
+fn a_volume_something_else_still_uses_is_kept() {
+    let mut deleting = a_world_ready_to_delete().with_containers_mounting_a_cache();
+    deleting.world.devpod.fake.script(
+        ps_filtered("volume=r-main-aa-cache"),
+        Response::stdout("other\n"),
+    );
+
+    let (_, notices) = deleting.delete();
+
+    assert!(
+        !deleting
+            .world
+            .devpod
+            .docker_argvs()
+            .iter()
+            .any(|argv| argv == &["volume", "rm", "r-main-aa-cache"]),
+    );
+    assert!(
+        !notices
+            .iter()
+            .any(|n| matches!(n, LifecycleNotice::WorkspaceVolumesRemoved { .. })),
+        "{notices:?}"
+    );
+}
+
+#[test]
+fn a_volume_docker_will_not_remove_is_said_and_the_workspace_is_still_deleted() {
+    let mut deleting = a_world_ready_to_delete().with_containers_mounting_a_cache();
+    deleting.world.devpod.fake.script(
+        ["docker", "volume", "rm", "r-main-aa-cache"],
+        Response::failed(1, "Error response from daemon: busy\n"),
+    );
+
+    let (outcome, notices) = deleting.delete();
+
+    assert!(
+        matches!(
+            outcome,
+            RemoveOutcome::Deleted {
+                clone: Ok(Removed::Clone),
+                ..
+            }
+        ),
+        "{outcome:?}"
+    );
+    assert!(
+        notices.iter().any(|n| matches!(
+            n,
+            LifecycleNotice::WorkspaceVolumeNotRemoved { workspace_id, name, reason }
+                if workspace_id == "r-main-aa" && name == "r-main-aa-cache" && reason.contains("busy")
+        )),
+        "{notices:?}"
+    );
+}
+
+#[test]
+fn a_delete_devpod_refused_removes_no_volume() {
+    let mut deleting = a_world_ready_to_delete().with_containers_mounting_a_cache();
+    deleting
+        .world
+        .devpod
+        .fake
+        .script(["devpod", "delete"], Response::exited(1));
+
+    let (outcome, _) = deleting.delete();
+
+    assert!(
+        matches!(outcome, RemoveOutcome::DevpodRefused { .. }),
+        "{outcome:?}"
+    );
+    assert!(
+        !deleting
+            .world
+            .devpod
+            .docker_argvs()
+            .iter()
+            .any(|argv| argv.starts_with(&["volume".to_owned(), "rm".to_owned()])),
+        "{:?}",
+        deleting.world.devpod.docker_argvs()
+    );
+}
+
+/// An `rm` the guard refuses has deleted nothing, volumes included: docker is
+/// not even asked what the containers mount.
+#[test]
+fn a_refused_rm_reads_and_removes_no_volume() {
+    let (mut world, clone) = a_world_ready_to_remove();
+    std::fs::write(clone.join("notes.md"), "an hour of work\n").expect("a file");
+    let home = devpod_home_recording("r-main-aa", "/host/clones/opened-as", "dc9a8b7c");
+
+    let (outcome, _) = remove_with(&mut world, Removal::Guarded, Some(&home));
+
+    assert!(matches!(outcome, RemoveOutcome::Refused(_)), "{outcome:?}");
+    assert_eq!(world.devpod.docker_argvs(), Vec::<Vec<String>>::new());
 }
 
 /// One id under two contexts: devpod's ids are unique per context, so a record
@@ -3235,6 +3427,15 @@ fn push_by_url(world: &World, clone: &Path) {
 
 /// `dl r-main-aa <removal>`, through the one call the binary makes.
 fn remove(world: &mut World, removal: Removal) -> (RemoveOutcome, Vec<LifecycleNotice>) {
+    remove_with(world, removal, None)
+}
+
+/// [`remove`], with a devpod home to read the workspace's records from.
+fn remove_with(
+    world: &mut World,
+    removal: Removal,
+    devpod_home: Option<&DevpodHome>,
+) -> (RemoveOutcome, Vec<LifecycleNotice>) {
     let clones = clones_for(&world.repos_dir, &world.devpod);
     let mut context = CommandContext::new(&world.devpod);
     let updater = SelfInvocation::new("dl");
@@ -3248,7 +3449,7 @@ fn remove(world: &mut World, removal: Removal) -> (RemoveOutcome, Vec<LifecycleN
         &clones,
         &mut world.storage,
         &world.cache,
-        None,
+        devpod_home,
         &copies,
         "r-main-aa",
         removal,

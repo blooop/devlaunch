@@ -14285,6 +14285,40 @@ mod tests {
         assert!(up.contains(&"--recreate".to_owned()), "{up:?}");
     }
 
+    /// A recreate keeps the workspace, so it keeps every volume its containers
+    /// used: per-workspace caches are what a recreate is meant to survive.
+    #[test]
+    fn a_recreate_reads_and_removes_no_volume() {
+        let scene = Scene::new().with_running("myws");
+        let updater = SelfInvocation::new("dl");
+        let completion = scene.cache_dir().join("completion.json");
+        let mut parts = launching(&scene.runner, &updater, &completion);
+        let mut cold = NeverCold;
+        let mut launch = Launch::new(
+            &mut parts.context,
+            &mut parts.refresh,
+            &mut cold,
+            &parts.provision,
+            &scene.host,
+            &mut parts.chatter,
+            &mut parts.said,
+        );
+
+        let _ = launch.run("myws", &LaunchVerb::Recreate, None);
+
+        let volume_calls: Vec<_> = scene
+            .runner
+            .argvs()
+            .into_iter()
+            .filter(|argv| {
+                argv.first().map(String::as_str) == Some("docker")
+                    && (argv.get(1).map(String::as_str) == Some("volume")
+                        || argv.iter().any(|arg| arg.starts_with("volume=")))
+            })
+            .collect();
+        assert_eq!(volume_calls, Vec::<Vec<String>>::new());
+    }
+
     /// A scene whose launch runs in herdr pane `w1:p9`, with one other pane, `w1:p1`,
     /// running Claude in `myws` and a saved line to start it again (devlaunch#673).
     fn in_herdr_beside_claude(scene: &mut Scene) -> Vec<String> {
