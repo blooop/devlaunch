@@ -4,14 +4,14 @@ members = [
     "devlaunch-runner",
     "devlaunch-core",
     "dl",
-    "aid",
+    "dla",
     "devlaunch-test-support",
 ]
 
 # The single source of the version (docs/rust-rewrite-plan.md: cutover ships
 # 0.1.0, version read from Cargo.toml).
 [workspace.package]
-version = "0.62.1"
+version = "0.63.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/blooop/devlaunch"

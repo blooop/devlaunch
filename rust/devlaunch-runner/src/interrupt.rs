@@ -188,7 +188,7 @@ fn register_in(slots: &'static [AtomicPtr<libc::c_char>], path: &Path) -> Option
 /// `devpod up` that takes the handler's SIGTERM and does not act on it outlives
 /// the `_exit` behind it. Either way the child is reparented to init still holding
 /// devpod's workspace flock, and every later `dl <ws>`, `rm` and `devpod delete`
-/// waits on it. That was measured on a host: two such orphans of an `aid
+/// waits on it. That was measured on a host: two such orphans of a `dla
 /// --boot-up` sat for four hours, and the kernel log showed no OOM kill. Linux's
 /// `PR_SET_PDEATHSIG` is the kernel's own answer, and it does not depend on this
 /// process getting to run anything.
@@ -202,7 +202,7 @@ fn register_in(slots: &'static [AtomicPtr<libc::c_char>], path: &Path) -> Option
 /// **The kernel watches the parent *thread*, not the process.** The signal fires
 /// when the thread that forked exits, so a child spawned from a short-lived thread
 /// would be killed when that thread ends. Every child this is set on is spawned
-/// from `main` in both binaries: the launch's `devpod up` and `aid`'s boot child.
+/// from `main` in both binaries: the launch's `devpod up` and `dla`'s boot child.
 /// A caller that spawns from another thread has to keep that thread alive for as
 /// long as the child should live.
 ///

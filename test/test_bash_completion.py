@@ -306,38 +306,33 @@ done
         assert "stop" not in completions
         assert "rm" not in completions
 
-    def test_aid_completes_the_same_workspaces_as_dl(self):
-        """aid's first argument is a dl workspace spec, so it completes alike."""
-        assert self.run_completion("aid my-") == self.run_completion("dl my-")
+    def test_dla_completes_the_same_workspaces_as_dl(self):
+        """dla's first argument is a dl workspace spec, so it completes alike."""
+        assert self.run_completion("dla my-") == self.run_completion("dl my-")
 
-    def test_dla_completes_exactly_as_aid(self):
-        """`dla` is aid's second name, so every line completes as aid's does."""
-        for line in ("dla my-", "dla --", "dla my-workspace ", "dla --codex my-"):
-            assert self.run_completion(line) == self.run_completion("aid" + line[3:]), line
-
-    def test_aid_completes_agent_flags(self):
-        """Test completion of aid's own flags."""
-        completions = self.run_completion("aid --")
+    def test_dla_completes_agent_flags(self):
+        """Test completion of dla's own flags."""
+        completions = self.run_completion("dla --")
         for flag in ["--claude", "--codex", "--gemini", "--devcontainer"]:
             assert flag in completions
-        # dl's workspace-management flags are not aid's business
+        # dl's workspace-management flags are not dla's business
         assert "--ls" not in completions
         assert "--install" not in completions
 
-    def test_no_subcommand_completion_after_an_aid_workspace(self):
-        """Everything after an aid workspace is the prompt, not a subcommand."""
-        completions = self.run_completion("aid my-workspace ")
+    def test_no_subcommand_completion_after_a_dla_workspace(self):
+        """Everything after a dla workspace is the prompt, not a subcommand."""
+        completions = self.run_completion("dla my-workspace ")
         for cmd in ["up", "stop", "rm", "code", "restart", "recreate", "reset"]:
             assert cmd not in completions
 
     def test_an_agent_flag_does_not_move_the_workspace_spec(self):
-        """`aid --codex <spec>` completes its spec exactly as `aid <spec>` does.
+        """`dla --codex <spec>` completes its spec exactly as `dla <spec>` does.
 
-        aid reads its leading flags and calls the first word that is not one the
-        workspace spec (`parse_aid_args`), so an agent flag does not occupy the
+        dla reads its leading flags and calls the first word that is not one the
+        workspace spec (`parse_dla_args`), so an agent flag does not occupy the
         spec's position. The script counted words from the command instead and
-        offered a spec at word two alone, which made every `aid --codex`,
-        `aid --claude` and `aid --gemini` line complete nothing at all.
+        offered a spec at word two alone, which made every `dla --codex`,
+        `dla --claude` and `dla --gemini` line complete nothing at all.
         """
         # Both halves of what the function answers, because "the same" includes
         # whether the cursor is left against the `/` -- an owner completed with a
@@ -345,11 +340,11 @@ done
         # cannot show the difference. `run_completion` alone would pass a script
         # that appended a space here and not there.
         for spec in ["my-", "", "my-org/", "my-org/my-repo@", "./"]:
-            bare = self.run_completion_with_options(f"aid {spec}")
-            assert bare[0], f"`aid {spec}` completes something to begin with"
+            bare = self.run_completion_with_options(f"dla {spec}")
+            assert bare[0], f"`dla {spec}` completes something to begin with"
             for flag in ["--claude", "--codex", "--gemini"]:
-                assert self.run_completion_with_options(f"aid {flag} {spec}") == bare, (
-                    f"`aid {flag} {spec}` completes differently from `aid {spec}`, "
+                assert self.run_completion_with_options(f"dla {flag} {spec}") == bare, (
+                    f"`dla {flag} {spec}` completes differently from `dla {spec}`, "
                     "but the flag is read before the spec and does not stand in its "
                     "place"
                 )
@@ -366,23 +361,23 @@ done
         assert self.run_completion("dl --devcontainer robot my-") == bare
         assert self.run_completion("dl --claude-profile work my-") == bare
 
-    def test_an_aid_model_or_effort_and_its_value_do_not_move_the_spec(self):
-        """`aid --model opus <spec>` completes its spec as `aid <spec>` does.
+    def test_a_dla_model_or_effort_and_its_value_do_not_move_the_spec(self):
+        """`dla --model opus <spec>` completes its spec as `dla <spec>` does.
 
         Both flags take a value, so the scan has to step over two words. A
         script that stepped over one would call `opus` the spec and complete
         nothing after it.
         """
-        bare = self.run_completion("aid my-")
+        bare = self.run_completion("dla my-")
         assert bare
-        assert self.run_completion("aid --model opus my-") == bare
-        assert self.run_completion("aid --effort high my-") == bare
-        assert self.run_completion("aid --model opus --effort high my-") == bare
+        assert self.run_completion("dla --model opus my-") == bare
+        assert self.run_completion("dla --effort high my-") == bare
+        assert self.run_completion("dla --model opus --effort high my-") == bare
 
-    def test_nothing_completes_an_aid_model_or_effort_value(self):
-        """The values are each agent's, and aid holds no list of them."""
-        assert self.run_completion("aid --model ") == []
-        assert self.run_completion("aid --effort ") == []
+    def test_nothing_completes_a_dla_model_or_effort_value(self):
+        """The values are each agent's, and dla holds no list of them."""
+        assert self.run_completion("dla --model ") == []
+        assert self.run_completion("dla --effort ") == []
 
     def test_a_leading_modifier_leaves_the_verb_where_it_was(self):
         """`dl --rm <ws> <verb>`: a flag ahead of the spec shifts nothing.
@@ -462,14 +457,14 @@ done
     def test_an_unknown_leading_flag_completes_nothing_for_either_binary(self):
         """A flag neither grammar knows ends the line rather than shifting it.
 
-        For dl because clap refuses the flag outright, and for aid because it
-        cannot know whether an unknown flag takes a value: `parse_aid_args`
+        For dl because clap refuses the flag outright, and for dla because it
+        cannot know whether an unknown flag takes a value: `parse_dla_args`
         reads one as a boolean dl option, so on
-        `aid --unknown-taking-a-value foo owner/repo` it calls `foo` the spec.
-        Completing nothing is the honest answer to a line whose slots aid
+        `dla --unknown-taking-a-value foo owner/repo` it calls `foo` the spec.
+        Completing nothing is the honest answer to a line whose slots dla
         itself cannot place.
         """
-        for line in ["dl --bogus my-", "aid --bogus my-", "dl --bogus ", "aid --bogus "]:
+        for line in ["dl --bogus my-", "dla --bogus my-", "dl --bogus ", "dla --bogus "]:
             assert self.run_completion(line) == []
 
     def test_nothing_is_completed_past_the_double_dash(self):
@@ -484,12 +479,12 @@ done
             assert self.run_completion(before), f"`{before}` completes something"
             assert self.run_completion(line) == []
 
-    def test_an_aid_prompt_is_never_a_verb_however_the_line_began(self):
-        """aid's prompt starts after the spec, leading flags or not."""
-        for line in ["aid my-workspace ", "aid --codex my-workspace ", "aid --codex my-ws stop "]:
+    def test_a_dla_prompt_is_never_a_verb_however_the_line_began(self):
+        """dla's prompt starts after the spec, leading flags or not."""
+        for line in ["dla my-workspace ", "dla --codex my-workspace ", "dla --codex my-ws stop "]:
             for verb in ["up", "stop", "rm", "code", "restart", "recreate", "reset"]:
                 assert verb not in self.run_completion(line), (
-                    f"`{line}` offers the verb {verb}, but everything after an aid "
+                    f"`{line}` offers the verb {verb}, but everything after a dla "
                     "workspace is prompt text"
                 )
 

@@ -3,8 +3,8 @@
 //!
 //! `devlaunch-core/completions/dl.bash` is a bash script with three tables copied
 //! into it by hand: the flags `dl` accepts as a first argument, the workspace verbs,
-//! and — for the same function serving `aid` — one `--flag` per coding agent. The
-//! originals live in three different crates (`dl`'s argument grammar, `aid`'s
+//! and — for the same function serving `dla` — one `--flag` per coding agent. The
+//! originals live in three different crates (`dl`'s argument grammar, `dla`'s
 //! rewrite table) with nothing linking them, which is how the script came to be
 //! missing five flags that had been shipping for releases: a flag added to the
 //! grammar completes nothing, and nothing fails. A flag *retired* from the grammar
@@ -21,7 +21,7 @@
 //! # Why the tables are read as text
 //!
 //! Every table this compares against is private to its crate — `dl`'s `Cli` and its
-//! verb list are `pub(crate)` or narrower, `aid`'s agent table is module-private —
+//! verb list are `pub(crate)` or narrower, `dla`'s agent table is module-private —
 //! and widening a type's visibility so a test can see it is a worse trade than
 //! reading the file the table is written in. So the extraction below parses source
 //! text, and every extractor asserts it found something: a parser that silently
@@ -32,7 +32,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
 
-/// The completion payload, `dl`'s argument grammar, and `aid`'s rewrite table,
+/// The completion payload, `dl`'s argument grammar, and `dla`'s rewrite table,
 /// resolved from this crate's manifest directory so the test does not care where it
 /// was run from.
 fn source(relative: &str) -> String {
@@ -50,8 +50,8 @@ fn argument_grammar() -> String {
     source("dl/src/cli.rs")
 }
 
-fn aid_rewrite() -> String {
-    source("aid/src/rewrite.rs")
+fn dla_rewrite() -> String {
+    source("dla/src/rewrite.rs")
 }
 
 // --- reading the bash script's tables ---------------------------------------
@@ -61,7 +61,7 @@ fn aid_rewrite() -> String {
 ///
 /// The prefix rather than just the variable name, because `global_opts` is assigned
 /// twice — once as the `local` default for `dl` and once, bare, in the branch that
-/// serves `aid` — and the two tables are compared against different originals.
+/// serves `dla` — and the two tables are compared against different originals.
 /// Exactly one line may match, so a second copy of an assignment fails here rather
 /// than being silently ignored.
 fn assigned(script: &str, prefix: &str) -> BTreeSet<String> {
@@ -225,13 +225,13 @@ fn grammar_words(grammar: &str, name: &str) -> BTreeSet<String> {
     words
 }
 
-// --- reading aid's rewrite tables -------------------------------------------
+// --- reading dla's rewrite tables -------------------------------------------
 
 /// The entries of a `const NAME: &[...] = &[ ... ];` declaration.
 fn slice_body<'a>(rust: &'a str, name: &str) -> &'a str {
     let after = rust
         .split_once(&format!("const {name}: &["))
-        .unwrap_or_else(|| panic!("aid's rewrite declares {name}"))
+        .unwrap_or_else(|| panic!("dla's rewrite declares {name}"))
         .1;
     after
         .split_once("= &[")
@@ -242,13 +242,13 @@ fn slice_body<'a>(rust: &'a str, name: &str) -> &'a str {
         .0
 }
 
-/// The agents aid can start, from its agent table.
+/// The agents dla can start, from its agent table.
 ///
 /// Matched line by line rather than by scanning for string literals, because the
 /// table's entries contain string literals of their own — the words each agent is
 /// started with, and the environment pairs. A name is the only entry written as a
 /// bare quoted word on a line of its own.
-fn aid_agents(rewrite: &str) -> BTreeSet<String> {
+fn dla_agents(rewrite: &str) -> BTreeSet<String> {
     let body = slice_body(rewrite, "AGENTS");
     let names: BTreeSet<String> = body
         .lines()
@@ -277,7 +277,7 @@ fn aid_agents(rewrite: &str) -> BTreeSet<String> {
 /// the number of entries actually written: reading one of two spellings and
 /// comparing the short list against the script is the silent pass this whole file
 /// exists to prevent, and it is what happened before the count went in.
-fn aid_flag_list(rewrite: &str, name: &str) -> BTreeSet<String> {
+fn dla_flag_list(rewrite: &str, name: &str) -> BTreeSet<String> {
     let body = slice_body(rewrite, name);
     let entries: Vec<&str> = body
         .split(',')
@@ -302,11 +302,11 @@ fn aid_flag_list(rewrite: &str, name: &str) -> BTreeSet<String> {
     flags
 }
 
-/// The string a `const NAME: &str = "...";` in aid's rewrite is declared as.
+/// The string a `const NAME: &str = "...";` in dla's rewrite is declared as.
 fn named_str_const(rewrite: &str, name: &str) -> String {
     let after = rewrite
         .split_once(&format!("const {name}: &str = \""))
-        .unwrap_or_else(|| panic!("aid's rewrite declares {name} as a &str const"))
+        .unwrap_or_else(|| panic!("dla's rewrite declares {name} as a &str const"))
         .1;
     after
         .split_once('"')
@@ -443,13 +443,13 @@ fn every_flag_offered_beside_a_workspace_is_a_flag_the_grammar_accepts() {
 #[test]
 fn the_flags_a_value_follows_are_the_grammars_value_taking_flags() {
     // Three copies of this one fact, so all three are compared: the script switches
-    // to completing a value after these, aid has to tell such a value from the
+    // to completing a value after these, dla has to tell such a value from the
     // workspace spec, and the grammar is where the flag's value is declared. A
     // second value-taking flag added to the grammar and missed here would complete
     // as though a flag came next.
     let script = completion_script();
     let grammar = argument_grammar();
-    let rewrite = aid_rewrite();
+    let rewrite = dla_rewrite();
 
     let expected: BTreeSet<String> = grammar_flags(&grammar)
         .iter()
@@ -463,7 +463,7 @@ fn the_flags_a_value_follows_are_the_grammars_value_taking_flags() {
         .filter(|flag| flag.takes_value && !flag.hidden && !flag.requires_herdr_env)
         .map(|flag| flag.long.clone())
         .collect();
-    assert_eq!(aid_flag_list(&rewrite, "DL_VALUE_OPTIONS"), launch_values);
+    assert_eq!(dla_flag_list(&rewrite, "DL_VALUE_OPTIONS"), launch_values);
     assert!(
         expected.is_subset(&dl_first_argument_flags(&script)),
         "a flag whose value is completed is a flag that can be reached"
@@ -530,7 +530,7 @@ fn every_flag_whose_value_is_completed_is_one_a_spec_may_follow() {
     // for the spec, so a value option missing from `spec_follows` would eat its
     // value and end the line in the same breath -- `dl --devcontainer robot
     // owner/repo` would complete nothing, which is half of the defect this whole
-    // change fixes. Checked for both binaries, because aid's table is its own.
+    // change fixes. Checked for both binaries, because dla's table is its own.
     let script = completion_script();
 
     let management_values: BTreeSet<String> = grammar_flags(&argument_grammar())
@@ -573,48 +573,48 @@ fn a_flag_offered_beside_a_workspace_is_one_a_spec_could_have_followed() {
     }
 }
 
-/// Flags `aid` offers for a first argument beyond one per agent, and where each
+/// Flags `dla` offers for a first argument beyond one per agent, and where each
 /// comes from.
 ///
-/// Hand-written for the same reason as [`NOT_OFFERED_FIRST`]: aid's grammar is not a
+/// Hand-written for the same reason as [`NOT_OFFERED_FIRST`]: dla's grammar is not a
 /// clap grammar and could not be one (an unknown leading flag is passed through to
 /// dl, and everything after the workspace is prompt), so its help text is the
 /// interface and there is no table to derive these two from. The agent flags, which
 /// are a table, are derived.
 ///
-/// aid's `--rm`, `--stop`, `--autorm` and `--force` are absent on purpose: they are
+/// dla's `--rm`, `--stop`, `--autorm` and `--force` are absent on purpose: they are
 /// *suffix* flags, peeled off the end of a line, and the script offers nothing after
-/// an aid workspace because everything there is prompt.
-const AID_FLAGS_BESIDE_THE_AGENTS: [(&str, &str); 3] = [
-    ("--help", "aid's own, checked before anything is rewritten"),
+/// a dla workspace because everything there is prompt.
+const DLA_FLAGS_BESIDE_THE_AGENTS: [(&str, &str); 3] = [
+    ("--help", "dla's own, checked before anything is rewritten"),
     ("-h", "the same"),
-    ("--version", "aid's own, likewise"),
+    ("--version", "dla's own, likewise"),
 ];
 
 #[test]
-fn the_aid_flags_whose_value_is_stepped_over_are_aids_value_options() {
+fn the_dla_flags_whose_value_is_stepped_over_are_dlas_value_options() {
     // A second copy of `AGENT_VALUE_OPTIONS`, so it is diffed here: the scan steps
     // over these flags' values, and a flag missed here would make its value read
     // as the workspace spec.
     assert_eq!(
-        assigned(&completion_script(), "aid_value_opts="),
-        aid_flag_list(&aid_rewrite(), "AGENT_VALUE_OPTIONS")
+        assigned(&completion_script(), "dla_value_opts="),
+        dla_flag_list(&dla_rewrite(), "AGENT_VALUE_OPTIONS")
     );
 }
 
 #[test]
-fn aid_offers_one_flag_per_agent_it_can_start() {
+fn dla_offers_one_flag_per_agent_it_can_start() {
     let script = completion_script();
-    let rewrite = aid_rewrite();
+    let rewrite = dla_rewrite();
 
-    let mut expected: BTreeSet<String> = aid_agents(&rewrite)
+    let mut expected: BTreeSet<String> = dla_agents(&rewrite)
         .iter()
         .map(|agent| format!("--{agent}"))
         .collect();
-    expected.extend(aid_flag_list(&rewrite, "DL_VALUE_OPTIONS"));
-    expected.extend(aid_flag_list(&rewrite, "AGENT_VALUE_OPTIONS"));
+    expected.extend(dla_flag_list(&rewrite, "DL_VALUE_OPTIONS"));
+    expected.extend(dla_flag_list(&rewrite, "AGENT_VALUE_OPTIONS"));
     expected.extend(
-        AID_FLAGS_BESIDE_THE_AGENTS
+        DLA_FLAGS_BESIDE_THE_AGENTS
             .iter()
             .map(|(flag, _)| (*flag).to_owned()),
     );
@@ -622,26 +622,26 @@ fn aid_offers_one_flag_per_agent_it_can_start() {
     assert_eq!(
         assigned(&script, "global_opts="),
         expected,
-        "the completion script's aid flags have drifted from aid's agent table"
+        "the completion script's dla flags have drifted from dla's agent table"
     );
 }
 
 #[test]
-fn the_aid_flags_a_spec_may_follow_are_the_ones_parse_aid_args_reads_past() {
-    // aid's half of `the_flags_a_spec_may_follow_are_the_launch_modifiers_...`, and
-    // derived the same way even though aid's grammar is not a clap one: these are
-    // exactly the three tables `parse_aid_args` reads and then keeps looking for the
+fn the_dla_flags_a_spec_may_follow_are_the_ones_parse_dla_args_reads_past() {
+    // dla's half of `the_flags_a_spec_may_follow_are_the_launch_modifiers_...`, and
+    // derived the same way even though dla's grammar is not a clap one: these are
+    // exactly the three tables `parse_dla_args` reads and then keeps looking for the
     // spec -- an agent flag, either polarity of the remote-control flag, or a dl
     // value option.
     //
-    // The three flags aid answers itself are absent, and so is an unknown flag: aid
-    // passes one through to dl as a boolean option, so on `aid --unknown-taking-a-
+    // The three flags dla answers itself are absent, and so is an unknown flag: dla
+    // passes one through to dl as a boolean option, so on `dla --unknown-taking-a-
     // value foo owner/repo` it calls `foo` the spec, and no completion is honest
-    // about a slot aid itself cannot place.
+    // about a slot dla itself cannot place.
     let script = completion_script();
-    let rewrite = aid_rewrite();
+    let rewrite = dla_rewrite();
 
-    let mut expected: BTreeSet<String> = aid_agents(&rewrite)
+    let mut expected: BTreeSet<String> = dla_agents(&rewrite)
         .iter()
         .map(|agent| format!("--{agent}"))
         .collect();
@@ -651,18 +651,18 @@ fn the_aid_flags_a_spec_may_follow_are_the_ones_parse_aid_args_reads_past() {
         "AGENT_VALUE_OPTIONS",
         "DL_VALUE_OPTIONS",
     ] {
-        expected.extend(aid_flag_list(&rewrite, table));
+        expected.extend(dla_flag_list(&rewrite, table));
     }
 
     assert_eq!(
         assigned(&script, "spec_follows="),
         expected,
-        "aid's launch modifiers have drifted from what `parse_aid_args` reads past"
+        "dla's launch modifiers have drifted from what `parse_dla_args` reads past"
     );
-    for (flag, _) in AID_FLAGS_BESIDE_THE_AGENTS {
+    for (flag, _) in DLA_FLAGS_BESIDE_THE_AGENTS {
         assert!(
             !expected.contains(flag),
-            "{flag} is one aid answers itself, so no spec follows it"
+            "{flag} is one dla answers itself, so no spec follows it"
         );
     }
 }

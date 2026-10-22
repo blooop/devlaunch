@@ -1,6 +1,6 @@
 //! Keeping an instrumented child's coverage counters when its environment is cleared.
 //!
-//! Every suite that judges `dl` or `aid` at the binary boundary builds the child
+//! Every suite that judges `dl` or `dla` at the binary boundary builds the child
 //! with `env_clear()`, and it has to: what those tests pin is what the binary does
 //! given exactly the `HOME`, `PATH` and `XDG_*` the world under test provides, and
 //! a variable leaking in from the developer's shell is a test that passes on one

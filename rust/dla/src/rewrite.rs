@@ -1,9 +1,9 @@
-//! An `aid` command line, rewritten into a `dl` one.
+//! A `dla` command line, rewritten into a `dl` one.
 //!
 //! Ported from `devlaunch/aid.py`. Nothing here spawns anything, reads anything or
 //! decides anything about a container: the whole module is one string-to-strings
-//! function and the agent table it reads. That is the point — an `aid` that drove
-//! containers itself is an `aid` that builds one `dl` would have reused, which is
+//! function and the agent table it reads. That is the point — a `dla` that drove
+//! containers itself is a `dla` that builds one `dl` would have reused, which is
 //! the drift `aid.py` was rewritten to end.
 
 use dl::NonEmpty;
@@ -46,7 +46,7 @@ struct Agent {
     /// `--claude-profile` chooses. The account picker is offered for these only.
     claude_login: bool,
     /// The words that reopen one of this agent's earlier sessions instead of
-    /// starting a new one: what `aid resume` appends in place of a prompt.
+    /// starting a new one: what `dla resume` appends in place of a prompt.
     ///
     /// Words rather than a flag, because the agents do not agree on the shape.
     /// claude takes a flag, and a bare `--resume` opens its session picker. codex
@@ -60,10 +60,10 @@ struct Agent {
     /// rows are those CLIs' documented spellings and were not run where this was
     /// written, because neither was installed there.
     resume: &'static [&'static str],
-    /// The flag that names a new session's id, when the agent takes one of aid's
+    /// The flag that names a new session's id, when the agent takes one of dla's
     /// choosing: claude's `--session-id <uuid>`.
     ///
-    /// What lets herdr bring the session back after a restart. aid mints the id,
+    /// What lets herdr bring the session back after a restart. dla mints the id,
     /// so the line that reopens the session (`resume` then the id) is known before
     /// the session exists. `None` for codex and gemini, which name their own.
     session_id: Option<&'static str>,
@@ -84,7 +84,7 @@ struct Agent {
 ///
 /// **The spelling is a fact, the values are only suggestions.** The models and
 /// effort levels each agent takes change with every release of that agent, and the
-/// agent checks them itself, so aid passes a value on as it was typed and never
+/// agent checks them itself, so dla passes a value on as it was typed and never
 /// refuses one. `offered` is what the picker lists on a first run, before there are
 /// recent choices to list. A stale entry costs a row nobody picks, and a missing one
 /// costs typing the name once.
@@ -112,13 +112,13 @@ impl Spelling {
     }
 }
 
-/// The word that makes a line reopen an earlier session: `aid resume [workspace]`.
+/// The word that makes a line reopen an earlier session: `dla resume [workspace]`.
 ///
 /// A verb and not a flag, for dl's reason: `dl stop` is the verb with no
 /// workspace, and a verb in the first slot is what the picker hangs off. Only the
-/// first positional word is read this way, so `aid owner/repo resume the work` is
-/// still a prompt, and `aid ./resume` still names a directory. The cost is dl's
-/// cost too: a workspace called `resume` has to be written `aid resume resume`.
+/// first positional word is read this way, so `dla owner/repo resume the work` is
+/// still a prompt, and `dla ./resume` still names a directory. The cost is dl's
+/// cost too: a workspace called `resume` has to be written `dla resume resume`.
 pub(crate) const RESUME_WORD: &str = "resume";
 
 /// The agent this build starts when nothing picks one.
@@ -135,7 +135,7 @@ pub(crate) const AGENT_ENV_VAR: &str = "DEVLAUNCH_AID_AGENT";
 /// **Every agent here is started in its own full-auto mode**, because the whole
 /// point of a dl workspace is that the agent is already inside a disposable
 /// container with only this repo in it, so the per-tool prompts it would otherwise
-/// ask on the host buy nothing and stop an unattended `aid owner/repo fix the bug`
+/// ask on the host buy nothing and stop an unattended `dla owner/repo fix the bug`
 /// dead. The flag is per-CLI and each one spells it its own way:
 /// `--dangerously-skip-permissions` for claude,
 /// `--dangerously-bypass-approvals-and-sandbox` for codex, `--yolo` for gemini.
@@ -155,7 +155,7 @@ pub(crate) const AGENT_ENV_VAR: &str = "DEVLAUNCH_AID_AGENT";
 ///
 /// `IS_SANDBOX=1` is what makes that flag usable at all here. claude refuses it
 /// outright under uid 0 — "cannot be used with root/sudo privileges", exit 1 — and
-/// plenty of devcontainers run as root, so without this aid would not start in them
+/// plenty of devcontainers run as root, so without this dla would not start in them
 /// at all. The variable is claude's own way of being told the refusal is answering
 /// for a machine that isn't there, which is exactly a dl workspace.
 ///
@@ -168,9 +168,9 @@ pub(crate) const AGENT_ENV_VAR: &str = "DEVLAUNCH_AID_AGENT";
 /// worth taking: which workspace a pane *is* does not change, while what claude is
 /// doing in it is already on screen inside the pane.
 ///
-/// Set here rather than forwarded from the host because aid is what decided to
-/// start claude, so aid is what owes the consequence -- a `dl <ws> -- claude ...`
-/// somebody typed themselves is their command, not aid's to rewrite. It also costs
+/// Set here rather than forwarded from the host because dla is what decided to
+/// start claude, so dla is what owes the consequence -- a `dl <ws> -- claude ...`
+/// somebody typed themselves is their command, not dla's to rewrite. It also costs
 /// no new machinery: this table is already an env prefix on a payload that runs
 /// under `bash -lc`.
 ///
@@ -181,13 +181,13 @@ pub(crate) const AGENT_ENV_VAR: &str = "DEVLAUNCH_AID_AGENT";
 /// anyone's command. This entry stays because the two do not reach the same
 /// sessions. The profile export lands when a workspace enters Running and is read
 /// by shells that start after it, so a container that was already up when dl
-/// learned this needs a re-login; the prefix here works on the next `aid` either
+/// learned this needs a re-login; the prefix here works on the next `dla` either
 /// way, and a prefix and an inherited value of the same variable agree.
 ///
 /// In the order Python's dict is written, which is the order `--help` lists the
 /// flags in after sorting.
 ///
-/// **A name here doubles as a session manager's id**, because it is what aid
+/// **A name here doubles as a session manager's id**, because it is what dla
 /// exports as `HERDR_AGENT` (`main.rs`'s `SESSION_MANAGER_AGENT_VAR`). herdr keeps
 /// a detection manifest per agent, keyed by exactly these strings, so `claude`
 /// classifies a pane where `claude-code` or `Claude` would identify nothing and
@@ -268,20 +268,20 @@ const AGENTS: &[(&str, Agent)] = &[
     ),
 ];
 
-/// aid's own flag for the model the agent runs. aid's word, not the agent's: each
+/// dla's own flag for the model the agent runs. dla's word, not the agent's: each
 /// row of [`AGENTS`] says how its own CLI spells it.
 pub(crate) const MODEL_FLAG: &str = "--model";
 
-/// aid's own flag for how hard the agent thinks, spelled per agent the same way.
+/// dla's own flag for how hard the agent thinks, spelled per agent the same way.
 pub(crate) const EFFORT_FLAG: &str = "--effort";
 
-/// aid's flags that take a value, read before the spec and never passed to dl.
+/// dla's flags that take a value, read before the spec and never passed to dl.
 ///
 /// Each takes its value as the next word or joined by `=`. They are read only
 /// ahead of the spec, like the agent flags: after it, they are prompt text.
 const AGENT_VALUE_OPTIONS: &[&str] = &[MODEL_FLAG, EFFORT_FLAG];
 
-/// aid's own flag for Claude Code's Remote Control, which is not dl's and must not
+/// dla's own flag for Claude Code's Remote Control, which is not dl's and must not
 /// reach it.
 ///
 /// It has to be intercepted ahead of the "unknown leading flag goes to dl" rule for
@@ -312,13 +312,13 @@ const REMOTE_CONTROL_NO: &[&str] = &["0", "false", "off", "no"];
 
 /// `dl` options whose value is a separate argument.
 ///
-/// aid splits its own command line before handing it to dl and has to tell such a
+/// dla splits its own command line before handing it to dl and has to tell such a
 /// value from the workspace spec. Python keeps the list in `dl.py`
 /// (`DL_VALUE_OPTIONS`) next to the parsing it describes; here it is the one thing
-/// aid knows about dl's grammar.
+/// dla knows about dl's grammar.
 ///
 /// A flag missing from this list is not passed through wrongly, it is read as *prompt
-/// text*, because everything after the workspace is the prompt. `aid --claude-profile
+/// text*, because everything after the workspace is the prompt. `dla --claude-profile
 /// work owner/repo fix it` would send `dl` a prompt beginning "work". That is why the
 /// list is here rather than inferred.
 ///
@@ -326,7 +326,7 @@ const REMOTE_CONTROL_NO: &[&str] = &["0", "false", "off", "no"];
 /// else.** It is not the claude.ai login the container's own `claude` is paired to
 /// for Remote Control, which lives in the container with the rest of the agent's
 /// state (docs/cli.md, "It needs a claude.ai login inside the workspace"). So
-/// `aid --claude-profile work` still lists its session under whichever account the
+/// `dla --claude-profile work` still lists its session under whichever account the
 /// container is signed in to. Two credentials, and this one is the token forwarded
 /// into the session.
 const DL_VALUE_OPTIONS: &[&str] = &["--devcontainer", "--claude-profile"];
@@ -341,7 +341,7 @@ const SUFFIX_MODIFIERS: &[&str] = &["--force"];
 
 /// dl options a line may end with, which ride *with* the prompt.
 ///
-/// aid's rule is that everything after the spec is prompt, flags and all, which is
+/// dla's rule is that everything after the spec is prompt, flags and all, which is
 /// what lets a prompt go unquoted. These are the one exception, and it is bounded to
 /// earn it — see [`peel_suffix`]. They exist because appending to a recalled line is
 /// the cheap edit a shell offers and rewriting the front of one is not, so "and then
@@ -352,15 +352,15 @@ const SUFFIX_MODIFIERS: &[&str] = &["--force"];
 /// thing anybody wants of an agent line: send it in, let it work, get the disk back.
 ///
 /// Bounded three ways to earn the exception: only at the very end of the line, only
-/// these exact words, and only as whole argv words. `aid <ws> explain the --rm flag`
-/// ends on `flag` and is untouched, and a quoted `aid <ws> 'why --rm'` is one
+/// these exact words, and only as whole argv words. `dla <ws> explain the --rm flag`
+/// ends on `flag` and is untouched, and a quoted `dla <ws> 'why --rm'` is one
 /// argument that is not `--rm`. Divergence row 32.
 const SUFFIX_OPTIONS: &[&str] = &["--rm"];
 
 /// The retired spellings, peeled for one reason: so dl refuses them by name.
 ///
-/// Left out of the peel they would fall into the *prompt* — aid joins every
-/// post-spec word — and `aid <ws> 'review this pr' --autorm` would quietly ask an
+/// Left out of the peel they would fall into the *prompt* — dla joins every
+/// post-spec word — and `dla <ws> 'review this pr' --autorm` would quietly ask an
 /// agent to read `--autorm` where it used to delete the workspace. Peeled, they ride
 /// to dl ahead of nothing at all: [`Task::Retired`] builds no agent command, so dl
 /// refuses the spelling before a workspace is booted or a prompt is asked for.
@@ -441,7 +441,7 @@ impl Launcher {
         }
     }
 
-    /// The aid words that choose this row, for the front of a command line.
+    /// The dla words that choose this row, for the front of a command line.
     fn words(&self) -> Vec<String> {
         let mut words = vec![format!("--{}", self.agent)];
         if let Some(profile) = &self.profile {
@@ -461,12 +461,12 @@ impl Launcher {
 ///
 /// **A row is offered only if the line it makes parses**, which is what keeps the
 /// rules in one place: `--remote-control` on the line leaves out codex and gemini,
-/// and `--effort` leaves out gemini, because [`parse_aid_args`] refuses those
+/// and `--effort` leaves out gemini, because [`parse_dla_args`] refuses those
 /// lines. Nothing here restates why.
 pub(crate) fn launchers(
     argv: &[String],
     environment: Environment<'_>,
-    parsed: &AidArgs,
+    parsed: &DlaArgs,
     profiles: &[String],
 ) -> Vec<Launcher> {
     if parsed.claude_profile().is_some() {
@@ -496,10 +496,10 @@ pub(crate) fn relaunched(
     argv: &[String],
     environment: Environment<'_>,
     launcher: &Launcher,
-) -> Result<AidArgs, UsageError> {
+) -> Result<DlaArgs, UsageError> {
     let mut line = launcher.words();
     line.extend(argv.iter().cloned());
-    match parse_aid_args(&line, environment)? {
+    match parse_dla_args(&line, environment)? {
         Line::Ready(parsed) => Ok(parsed),
         // Only a line with no workspace is unpicked, and the picker only runs for a
         // line that named one.
@@ -529,7 +529,7 @@ pub(crate) fn remote_control_values() -> Vec<&'static str> {
         .collect()
 }
 
-/// The aid command line could not be understood.
+/// The dla command line could not be understood.
 ///
 /// One arm per thing a person can get wrong. Python's `UsageError` carries the
 /// sentence; here the sentence is [`crate::render`]'s and this is what happened.
@@ -567,7 +567,7 @@ pub(crate) enum UsageError {
     /// Carries the agent for the reason [`Self::RemoteControlUnsupported`] does:
     /// `DEVLAUNCH_AID_AGENT` can be what chose it.
     EffortUnsupported { agent: String },
-    /// `aid resume <workspace>` with words after the workspace.
+    /// `dla resume <workspace>` with words after the workspace.
     ///
     /// Refused rather than handed on, because the words have no one place to go:
     /// claude would read them as a search term for its picker, codex as a session
@@ -576,7 +576,7 @@ pub(crate) enum UsageError {
     ResumeTakesNoPrompt { words: String },
 }
 
-/// The variables aid reads, resolved by the caller.
+/// The variables dla reads, resolved by the caller.
 ///
 /// A struct rather than two `Option<&str>` parameters, because two adjacent optional
 /// strings of the same type are two arguments a call site can swap with no compiler
@@ -659,9 +659,9 @@ impl RemoteControlRequest {
     }
 }
 
-/// An aid command line, split into the pieces the dl one is built from.
+/// A dla command line, split into the pieces the dl one is built from.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct AidArgs {
+pub(crate) struct DlaArgs {
     /// The workspace, in any spelling dl accepts. Always present: the parse refuses
     /// a command line without one, so there is no "maybe a workspace" state here.
     pub(crate) spec: String,
@@ -699,7 +699,7 @@ pub(crate) enum Task {
         /// already settled against the agent.
         ///
         /// Settled rather than requested, and it lives here rather than on
-        /// [`AidArgs`], because those two choices are what keep the illegal states
+        /// [`DlaArgs`], because those two choices are what keep the illegal states
         /// out. On the task, because a [`Task::Retired`] line starts no agent at
         /// all, and a Remote Control state beside it would describe a session
         /// nobody opens. Settled, because [`RemoteControlRequest::settle`] has
@@ -711,7 +711,7 @@ pub(crate) enum Task {
         /// agent: an effort is only ever here beside an agent that can take one.
         tuning: Tuning,
     },
-    /// Reopen one of the agent's earlier sessions in the workspace: `aid resume`.
+    /// Reopen one of the agent's earlier sessions in the workspace: `dla resume`.
     ///
     /// Its own arm and not an [`Task::Agent`] with a flag, because it has no prompt.
     /// The agent's own picker is what chooses the session, so a prompt beside it
@@ -745,7 +745,7 @@ pub(crate) struct Tuning {
     pub(crate) effort: Option<String>,
 }
 
-impl AidArgs {
+impl DlaArgs {
     /// The agent this line starts, when it starts one.
     ///
     /// `None` is a retired-spelling line, which starts none — the distinction the
@@ -802,7 +802,7 @@ impl AidArgs {
 
     /// The same line with the spec a pull request reference resolved to.
     ///
-    /// aid holds the spec in three places `dl` never sees — the banner, the early
+    /// dla holds the spec in three places `dl` never sees — the banner, the early
     /// tab name, and the background boot's own argv — so the reference has to be
     /// resolved here rather than left to dl's own rewrite. Replacing it once, in
     /// front of all three, is what keeps them naming one workspace: the boot and
@@ -817,21 +817,21 @@ impl AidArgs {
 /// What the parse settled: a line that names its workspace, or one that asks for
 /// the picker first.
 ///
-/// Two arms rather than an `Option` spec on [`AidArgs`], because only one line can
-/// be missing its workspace — `aid resume` on its own — and everything downstream
+/// Two arms rather than an `Option` spec on [`DlaArgs`], because only one line can
+/// be missing its workspace — `dla resume` on its own — and everything downstream
 /// of the parse (the pull request lookup, the banner, the boot, the dl line) needs
-/// a workspace to act on. Keeping the gap out here is what lets [`AidArgs::spec`]
+/// a workspace to act on. Keeping the gap out here is what lets [`DlaArgs::spec`]
 /// stay a `String` that is always there.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Line {
-    Ready(AidArgs),
-    /// `aid resume` with no workspace: pick one, then [`Unpicked::picked`].
+    Ready(DlaArgs),
+    /// `dla resume` with no workspace: pick one, then [`Unpicked::picked`].
     Unpicked(Unpicked),
 }
 
-/// An `aid resume` line waiting for the workspace the picker will choose.
+/// A `dla resume` line waiting for the workspace the picker will choose.
 ///
-/// Everything [`AidArgs`] holds except the spec, with the task's fields in place
+/// Everything [`DlaArgs`] holds except the spec, with the task's fields in place
 /// of a [`Task`], because the only task a line with no workspace can reach is
 /// [`Task::Resume`]. Private fields and one way out, so the only thing that can be
 /// done with it is to name the workspace.
@@ -847,8 +847,8 @@ pub(crate) struct Unpicked {
 
 impl Unpicked {
     /// The same line, for the workspace that was picked.
-    pub(crate) fn picked(self, spec: String) -> AidArgs {
-        AidArgs {
+    pub(crate) fn picked(self, spec: String) -> DlaArgs {
+        DlaArgs {
             spec,
             dl_options: self.dl_options,
             spec_options: self.spec_options,
@@ -870,7 +870,7 @@ impl Unpicked {
 /// suffix options**: `--rm` beside `up` is a pair dl refuses by name, `up` hands
 /// over no session for a removal to wait on anyway, and the flag still rides on the
 /// foreground attach line where it means what it means.
-pub(crate) fn build_boot_args(parsed: &AidArgs) -> Vec<String> {
+pub(crate) fn build_boot_args(parsed: &DlaArgs) -> Vec<String> {
     let mut args = parsed.dl_options.clone();
     args.push(parsed.spec.clone());
     args.push("up".to_owned());
@@ -885,7 +885,7 @@ pub(crate) fn build_boot_args(parsed: &AidArgs) -> Vec<String> {
 ///
 /// A yes answers `Default` rather than `Insisted` on purpose: the variable sets a
 /// *default*, and a default that refused would make `DEVLAUNCH_AID_REMOTE_CONTROL=1`
-/// in a profile break every `aid --codex` on the machine. Only a flag somebody typed
+/// in a profile break every `dla --codex` on the machine. Only a flag somebody typed
 /// on the line in front of them insists.
 fn default_remote_control(environment: Option<&str>) -> Result<RemoteControlRequest, UsageError> {
     let value = environment.unwrap_or("").trim().to_ascii_lowercase();
@@ -949,7 +949,7 @@ struct Suffix<'a> {
     /// What the run asked of Remote Control, or `None` if it said nothing.
     ///
     /// An `Option` rather than a [`RemoteControlRequest::Default`], because "said
-    /// nothing" has to leave an earlier flag standing: `aid --no-remote <ws> fix it
+    /// nothing" has to leave an earlier flag standing: `dla --no-remote <ws> fix it
     /// --rm` turned it off before the spec and the `--rm` run must not turn it back
     /// on.
     remote_control: Option<RemoteControlRequest>,
@@ -962,18 +962,18 @@ struct Suffix<'a> {
 /// [`SUFFIX_OPTIONS`], [`SUFFIX_RETIRED`] and [`SUFFIX_MODIFIERS`], and only when an
 /// option or a retired spelling is among them. A prompt whose last word happens to
 /// be `--force` is untouched, and so is one that merely mentions `--rm` inside it —
-/// `aid <ws> fix the --rm flag` ends on `flag`, and a quoted `aid <ws> 'drop --rm'`
+/// `dla <ws> fix the --rm flag` ends on `flag`, and a quoted `dla <ws> 'drop --rm'`
 /// is one argument that is not `--rm`.
 ///
-/// A `--force` in the run is peeled with them, which is what gets `aid <ws> <prompt>
+/// A `--force` in the run is peeled with them, which is what gets `dla <ws> <prompt>
 /// --rm --force` the sentence dl has for that pair instead of a `--force` silently
 /// glued onto the prompt.
 ///
 /// **Options come out ahead of modifiers, whichever order they were typed in**, and
 /// that is not cosmetic. dl recovers `--force`'s meaning from its *position* in the
 /// word stream — index 1 is the verb slot, and a `--force` there is an unknown verb
-/// rather than the modifier. aid emits the spec at index 0, so a `--force` reaching
-/// index 1 is exactly `aid <ws> <prompt> --force --autorm`, which used to answer
+/// rather than the modifier. dla emits the spec at index 0, so a `--force` reaching
+/// index 1 is exactly `dla <ws> <prompt> --force --autorm`, which used to answer
 /// `Unknown command '--force'` about a line whose real problem is the pair. One
 /// option ahead of it puts it at index 2, where dl reads it as the modifier and
 /// refuses the pair by name. Reordering two flags is safe in a way reordering words
@@ -982,8 +982,8 @@ struct Suffix<'a> {
 /// Answers `None` rather than an empty suffix, so the caller has no "peeled
 /// nothing" case to tell from "peeled something".
 ///
-/// **Divergence row 30**, aid's half: Python joined every post-spec word into the
-/// prompt with no exception, so `aid <ws> <prompt> --rm` asked an agent to read
+/// **Divergence row 30**, dla's half: Python joined every post-spec word into the
+/// prompt with no exception, so `dla <ws> <prompt> --rm` asked an agent to read
 /// `--rm`.
 fn peel_suffix(argv: &[String]) -> Option<Suffix<'_>> {
     let is_suffix = |word: &str| {
@@ -1032,14 +1032,14 @@ fn peel_suffix(argv: &[String]) -> Option<Suffix<'_>> {
     })
 }
 
-/// Split an aid command line into agent, dl options, workspace spec, and the task.
+/// Split a dla command line into agent, dl options, workspace spec, and the task.
 ///
 /// The first argument that is neither an agent flag nor a dl option is the workspace
 /// spec; everything after it is the prompt, flags and all, so a prompt never has to
-/// be quoted to protect it from aid's own parsing — except a trailing dl option,
+/// be quoted to protect it from dla's own parsing — except a trailing dl option,
 /// which [`peel_suffix`] takes off first and which rides beside the prompt.
 ///
-/// A `--rm` can also arrive *before* the spec (`aid --rm owner/repo fix it`), which
+/// A `--rm` can also arrive *before* the spec (`dla --rm owner/repo fix it`), which
 /// is the same request written the other way round: an unrecognised leading flag is
 /// passed through to dl, and dl takes it in either position.
 ///
@@ -1047,7 +1047,7 @@ fn peel_suffix(argv: &[String]) -> Option<Suffix<'_>> {
 /// positional word is the spec. With none, the answer is [`Line::Unpicked`] and
 /// the caller asks the picker, unless the line spells a retired flag: that is
 /// [`UsageError::NoWorkspace`], as it is on any other line with no spec.
-pub(crate) fn parse_aid_args(
+pub(crate) fn parse_dla_args(
     argv: &[String],
     environment: Environment<'_>,
 ) -> Result<Line, UsageError> {
@@ -1107,12 +1107,12 @@ pub(crate) fn parse_aid_args(
             continue;
         }
         if word.starts_with('-') {
-            // aid does not need to know every dl flag to stay out of its way.
+            // dla does not need to know every dl flag to stay out of its way.
             dl_options.push(word.to_owned());
             at += 1;
             continue;
         }
-        // Once, so that `aid resume resume` still reaches a workspace called that.
+        // Once, so that `dla resume resume` still reaches a workspace called that.
         if word == RESUME_WORD && !resuming {
             resuming = true;
             at += 1;
@@ -1130,7 +1130,7 @@ pub(crate) fn parse_aid_args(
         });
     }
     // dl is what refuses a retired spelling, and it needs a workspace to be asked
-    // about, so a resume line carrying one goes no further than `aid --stop` does.
+    // about, so a resume line carrying one goes no further than `dla --stop` does.
     let retired = names_a_retired_spelling(&trailing);
     if spec.is_none() && (!resuming || retired) {
         return Err(UsageError::NoWorkspace);
@@ -1143,7 +1143,7 @@ pub(crate) fn parse_aid_args(
         remote_control = asked;
     }
     // Settled after the workspace, because a line missing both is missing a
-    // workspace first: that is the sentence which tells somebody what an aid line
+    // workspace first: that is the sentence which tells somebody what a dla line
     // looks like. Settled before the task is built, so the `RemoteControl` the task
     // carries is one an agent row supplied the flag for.
     let remote_control = remote_control.settle(&agent)?;
@@ -1177,7 +1177,7 @@ pub(crate) fn parse_aid_args(
             tuning,
         }
     };
-    Ok(Line::Ready(AidArgs {
+    Ok(Line::Ready(DlaArgs {
         spec,
         dl_options,
         spec_options: trailing,
@@ -1198,7 +1198,7 @@ fn agent_row(agent: &str) -> Option<&'static Agent> {
 /// the pair took: two for `--model opus`, one for `--model=opus`.
 ///
 /// `Ok(None)` is a word that is not one of them. A missing value, an empty one or
-/// one that starts with `-` is refused: `aid --model --codex <ws>` is a typo, not a
+/// one that starts with `-` is refused: `dla --model --codex <ws>` is a typo, not a
 /// model called `--codex`.
 fn agent_value(
     line: &[String],
@@ -1243,11 +1243,11 @@ fn agent_flag(word: &str) -> Option<&'static str> {
 /// else's quoted argument.
 ///
 /// The composed payload is unchanged by all of that: every word this returns is
-/// either already shell-safe or gets the same quoting aid used to apply itself, so
+/// either already shell-safe or gets the same quoting dla used to apply itself, so
 /// what reaches the remote shell is byte for byte what it was.
 ///
 /// `None` is an agent this build has no entry for, which only a caller inventing a
-/// name can produce — [`parse_aid_args`] answers with a name from the table.
+/// name can produce — [`parse_dla_args`] answers with a name from the table.
 ///
 /// `remote_control` is the session name to start Claude Code's Remote Control under,
 /// or `None` for the ordinary local session. A name rather than a bool because
@@ -1255,7 +1255,7 @@ fn agent_flag(word: &str) -> Option<&'static str> {
 /// of a prompt would eat the prompt as the session's name; passing the name always,
 /// `=`-joined into one argv word, is what makes that impossible. An agent whose table
 /// row has no Remote Control flag ignores the name rather than inventing one — a
-/// state [`parse_aid_args`] settles before it can be built.
+/// state [`parse_dla_args`] settles before it can be built.
 #[cfg(test)]
 pub(crate) fn build_agent_command(
     agent: &str,
@@ -1285,7 +1285,7 @@ pub(crate) fn build_resume_command(
 enum Opening<'a> {
     Prompt(&'a str),
     Resume,
-    /// Reopening one after herdr restarts: `session` is the id aid named it with,
+    /// Reopening one after herdr restarts: `session` is the id dla named it with,
     /// or `None` for the most recent one.
     Restore(Option<&'a str>),
 }
@@ -1370,16 +1370,16 @@ fn agent_line(
     NonEmpty::of(line)
 }
 
-/// [`build_launch`]'s command line alone, for a session aid names no id for.
+/// [`build_launch`]'s command line alone, for a session dla names no id for.
 #[cfg(test)]
 pub(crate) fn build_dl_args(
-    parsed: &AidArgs,
+    parsed: &DlaArgs,
     workspace_id_of: &dyn Fn(&str) -> Option<String>,
 ) -> Option<Vec<String>> {
     build_launch(parsed, workspace_id_of, None).map(|launch| launch.dl_args)
 }
 
-/// What aid hands dl: the command line, and how the agent it starts is started
+/// What dla hands dl: the command line, and how the agent it starts is started
 /// again after herdr restarts.
 #[derive(Debug)]
 pub(crate) struct Launch {
@@ -1394,7 +1394,7 @@ pub(crate) struct Launch {
 /// `[<dl options>…, <spec>, "--", <agent argv>…]` — the agent's command and each of
 /// its arguments as their own word, which is the shape `dl` reads: it quotes the tail
 /// itself on the way into the remote payload, so the prompt stays one argument
-/// without aid quoting anything.
+/// without dla quoting anything.
 ///
 /// `--rm` lands between the spec and the `--`, so the agent still gets its prompt and
 /// dl still gets the flag: `[…, <spec>, "--rm", "--", <agent command>]`.
@@ -1411,7 +1411,7 @@ pub(crate) struct Launch {
 /// a triple and a line with Remote Control off has no use for it; `main` hands in
 /// [`dl::workspace_id_of`], and a test hands in a table.
 ///
-/// The fresh session is named `session` when the agent takes a name of aid's
+/// The fresh session is named `session` when the agent takes a name of dla's
 /// choosing, and beside the line goes the one that reopens it.
 ///
 /// The reopening line is the agent's own line with no prompt, so a restore does
@@ -1421,7 +1421,7 @@ pub(crate) struct Launch {
 /// session under it (`/clear`); only an agent with [`Agent::session_id`] has one,
 /// since only claude has the hook.
 pub(crate) fn build_launch(
-    parsed: &AidArgs,
+    parsed: &DlaArgs,
     workspace_id_of: &dyn Fn(&str) -> Option<String>,
     session: Option<&str>,
 ) -> Option<Launch> {
@@ -1486,7 +1486,7 @@ pub(crate) fn build_launch(
     };
     let removed = args.iter().any(|word| word == "--rm");
     let resume = (!removed).then(|| {
-        // The same model and effort as the line it reopens, as `aid resume` has.
+        // The same model and effort as the line it reopens, as `dla resume` has.
         let line = agent_line(
             agent,
             Opening::Restore(restored),
@@ -1516,7 +1516,7 @@ pub(crate) fn build_launch(
 #[cfg(test)]
 mod tests {
     //! The Python `test_aid`'s three parsing classes (retired with the Python tree
-    //! in #267), which are the whole of aid's own behaviour: what the command line
+    //! in #267), which are the whole of dla's own behaviour: what the command line
     //! splits into, what shell command comes out, and what dl is handed.
 
     use super::*;
@@ -1533,21 +1533,21 @@ mod tests {
         argv.iter().map(|word| (*word).to_owned()).collect()
     }
 
-    /// [`super::parse_aid_args`] for a line that names its workspace, which is
+    /// [`super::parse_dla_args`] for a line that names its workspace, which is
     /// every line these tests parse but the ones that ask for the picker. Those
-    /// call [`super::parse_aid_args`] by its full path.
-    fn parse_aid_args(
+    /// call [`super::parse_dla_args`] by its full path.
+    fn parse_dla_args(
         argv: &[String],
         environment: Environment<'_>,
-    ) -> Result<AidArgs, UsageError> {
-        super::parse_aid_args(argv, environment).map(|line| match line {
+    ) -> Result<DlaArgs, UsageError> {
+        super::parse_dla_args(argv, environment).map(|line| match line {
             Line::Ready(parsed) => parsed,
             Line::Unpicked(unpicked) => panic!("{argv:?} asked for the picker: {unpicked:?}"),
         })
     }
 
-    fn parsed(argv: &[&str]) -> AidArgs {
-        parse_aid_args(&words(argv), Environment::default()).expect("a usable command line")
+    fn parsed(argv: &[&str]) -> DlaArgs {
+        parse_dla_args(&words(argv), Environment::default()).expect("a usable command line")
     }
 
     /// An environment naming an agent and saying nothing about Remote Control.
@@ -1568,7 +1568,7 @@ mod tests {
 
     /// The prompt an agent line carries. Panics on a retired-spelling line or a
     /// resume line, which carry none.
-    fn prompt(parsed: &AidArgs) -> &str {
+    fn prompt(parsed: &DlaArgs) -> &str {
         match &parsed.task {
             Task::Agent { prompt, .. } => prompt,
             Task::Retired => panic!("a retired-spelling line has no prompt"),
@@ -1578,7 +1578,7 @@ mod tests {
 
     /// What the line settled Remote Control on. Panics on a retired-spelling line,
     /// which starts no session to drive.
-    fn remote_control(parsed: &AidArgs) -> RemoteControl {
+    fn remote_control(parsed: &DlaArgs) -> RemoteControl {
         match &parsed.task {
             Task::Agent { remote_control, .. } | Task::Resume { remote_control, .. } => {
                 *remote_control
@@ -1602,7 +1602,7 @@ mod tests {
     #[test]
     fn a_resolved_spec_reaches_every_argv_the_line_produces() {
         // The pull request lookup happens once, in `main`, and lands here. Both
-        // command lines aid builds have to carry the answer: `build_boot_args` is
+        // command lines dla builds have to carry the answer: `build_boot_args` is
         // a `dl::run` of its own, and a boot that warmed one workspace while the
         // launch attached to another is the failure the single lookup exists to
         // prevent.
@@ -1665,7 +1665,7 @@ mod tests {
 
     #[test]
     fn a_flag_on_the_command_line_beats_the_environments_default() {
-        let chosen = parse_aid_args(
+        let chosen = parse_dla_args(
             &words(&["--codex", "owner/repo"]),
             agent_env(Some("gemini")),
         )
@@ -1676,7 +1676,7 @@ mod tests {
 
     #[test]
     fn the_environment_sets_the_default_agent() {
-        let chosen = parse_aid_args(&words(&["owner/repo"]), agent_env(Some("gemini")))
+        let chosen = parse_dla_args(&words(&["owner/repo"]), agent_env(Some("gemini")))
             .expect("a usable command line");
 
         assert_eq!(chosen.agent(), Some("gemini"));
@@ -1684,7 +1684,7 @@ mod tests {
         // called "": Python `.strip()`s it and falls back.
         for blank in [None, Some(""), Some("  ")] {
             assert_eq!(
-                parse_aid_args(&words(&["owner/repo"]), agent_env(blank))
+                parse_dla_args(&words(&["owner/repo"]), agent_env(blank))
                     .expect("a usable command line")
                     .agent(),
                 Some(DEFAULT_AGENT)
@@ -1695,7 +1695,7 @@ mod tests {
     #[test]
     fn an_agent_the_environment_invented_is_refused() {
         assert_eq!(
-            parse_aid_args(&words(&["owner/repo"]), agent_env(Some("nope"))),
+            parse_dla_args(&words(&["owner/repo"]), agent_env(Some("nope"))),
             Err(UsageError::UnknownAgentInEnvironment {
                 name: "nope".to_owned()
             })
@@ -1713,7 +1713,7 @@ mod tests {
 
     #[test]
     fn an_unknown_leading_flag_goes_to_dl() {
-        // aid does not need to know every dl flag to stay out of its way — and a dl
+        // dla does not need to know every dl flag to stay out of its way — and a dl
         // that does not know it either is the one that says so.
         let parsed = parsed(&["--shared", "owner/repo"]);
 
@@ -1725,7 +1725,7 @@ mod tests {
     fn a_command_line_with_no_workspace_is_refused() {
         for argv in [vec!["--claude"], vec!["--devcontainer", "robot"], vec![]] {
             assert_eq!(
-                parse_aid_args(&words(&argv), Environment::default()),
+                parse_dla_args(&words(&argv), Environment::default()),
                 Err(UsageError::NoWorkspace),
                 "{argv:?}"
             );
@@ -1763,7 +1763,7 @@ mod tests {
     #[test]
     fn a_prompt_that_merely_mentions_a_suffix_flag_is_still_a_prompt() {
         // The bound the peel is worth having: only the exact word, only at the very
-        // end. Everything else stays what aid has always made it.
+        // end. Everything else stays what dla has always made it.
         assert_eq!(
             prompt(&parsed(&["owner/repo", "fix", "the", "--rm", "flag"])),
             "fix the --rm flag"
@@ -1784,7 +1784,7 @@ mod tests {
     fn a_suffix_flag_with_no_workspace_is_still_no_workspace() {
         for argv in [vec!["--rm"], vec!["--stop", "--force"]] {
             assert_eq!(
-                parse_aid_args(&words(&argv), Environment::default()),
+                parse_dla_args(&words(&argv), Environment::default()),
                 Err(UsageError::NoWorkspace),
                 "{argv:?}"
             );
@@ -1913,7 +1913,7 @@ mod tests {
 
         for (agent, flag) in expected {
             // As a whole argv word. `contains` is the same trap the docs guard in
-            // `aid/tests/rewrite.rs` records: every truncation of a flag is a
+            // `dla/tests/rewrite.rs` records: every truncation of a flag is a
             // substring of it, and so is every flag that merely starts with one, so
             // a table entry reading `--yolo-dry-run` satisfied a `contains("--yolo")`
             // while asking gemini for the opposite of full auto. The words are argv
@@ -2002,7 +2002,7 @@ mod tests {
     #[test]
     fn the_tail_after_the_separator_is_argv_and_the_prompt_is_one_word_of_it() {
         // What this used to assert was the bug: dl rejoined the tail with plain
-        // spaces, so aid kept the quoting inside one argument and everybody else's
+        // spaces, so dla kept the quoting inside one argument and everybody else's
         // quoted argument was re-split. The tail is argv now, and the
         // property worth holding is that the prompt is *one* word of it however
         // many words were typed -- dl quotes each one on the way to the remote
@@ -2033,7 +2033,7 @@ mod tests {
     #[test]
     fn every_agent_in_the_table_is_reachable_by_its_own_flag() {
         for name in agent_names() {
-            let chosen = parse_aid_args(
+            let chosen = parse_dla_args(
                 &words(&[&format!("--{name}"), "owner/repo"]),
                 Environment::default(),
             )
@@ -2115,7 +2115,7 @@ mod tests {
 
             assert_eq!(remote_control(&chosen), RemoteControl::Off, "{spelling}");
             assert_eq!(prompt(&chosen), "fix the bug", "{spelling}");
-            // And it is aid's flag, so it must not ride on to dl, which has never
+            // And it is dla's flag, so it must not ride on to dl, which has never
             // heard of it and exits 2 on contact.
             assert!(chosen.spec_options.is_empty(), "{spelling}");
         }
@@ -2185,15 +2185,15 @@ mod tests {
     }
 
     /// A pair typed at the *front* is emitted at the front, and that is the spelling
-    /// aid actually produces.
+    /// dla actually produces.
     ///
     /// Everything above is about the trailing run, because that is the position a
-    /// recalled line grows in. But aid takes any leading `-` word it does not
+    /// recalled line grows in. But dla takes any leading `-` word it does not
     /// recognise and puts it ahead of the spec without knowing what it means, so
-    /// `aid --rm --force <ws> <prompt>` reaches dl with both flags *before* the
-    /// workspace. aid decides nothing about whether that is safe, and it must not:
+    /// `dla --rm --force <ws> <prompt>` reaches dl with both flags *before* the
+    /// workspace. dla decides nothing about whether that is safe, and it must not:
     /// what makes it safe is dl answering the pair by name before it reads where
-    /// `--force` sits, which `dl`'s `the_pair_aid_emits_is_refused_ahead_of_where_force_sits`
+    /// `--force` sits, which `dl`'s `the_pair_dla_emits_is_refused_ahead_of_where_force_sits`
     /// is the other half of. Pinned here so the line those two agree about is a
     /// line somebody has actually written down.
     #[test]
@@ -2238,7 +2238,7 @@ mod tests {
     #[test]
     fn force_never_lands_in_dls_verb_slot_whichever_order_it_was_typed_in() {
         // The order the flags come out in is dl's positional reading, not the user's
-        // typing: dl recovers `--force`'s meaning from where it sits, and aid's spec
+        // typing: dl recovers `--force`'s meaning from where it sits, and dla's spec
         // takes index 0, so a `--force` emitted next would be read as an unknown
         // *verb* — answering `Unknown command '--force'` about a line whose real
         // problem is the pair. An option ahead of it puts it at index 2, where dl
@@ -2258,7 +2258,7 @@ mod tests {
     #[test]
     fn a_retired_spelling_beside_the_live_one_is_still_dls_to_refuse() {
         // `--rm --autorm` is one request written twice, half of it in a spelling
-        // this build has retired — and naming which half is dl's job, not aid's.
+        // this build has retired — and naming which half is dl's job, not dla's.
         // So the whole run travels and no agent command is built.
         let chosen = parsed(&["owner/repo", "review this pr", "--rm", "--autorm"]);
 
@@ -2276,7 +2276,7 @@ mod tests {
 
         assert!(help.contains("--rm"), "{help}");
         assert!(help.contains("the agent still runs"), "{help}");
-        // And it names the verb, because "delete it now" no longer has an aid
+        // And it names the verb, because "delete it now" no longer has a dla
         // spelling at all and the help is where somebody looks for where it went.
         assert!(help.contains("dl <workspace> rm"), "{help}");
     }
@@ -2357,13 +2357,13 @@ mod tests {
         );
         // And the same through the variable, which is how somebody who set it once
         // launches every line.
-        let chosen = parse_aid_args(&words(&["owner/repo", "hi"]), agent_env(Some("codex")))
+        let chosen = parse_dla_args(&words(&["owner/repo", "hi"]), agent_env(Some("codex")))
             .expect("a usable command line");
         assert_eq!(remote_control(&chosen), RemoteControl::Off);
     }
 
     #[test]
-    fn remote_control_is_aids_own_flag_and_never_reaches_dl() {
+    fn remote_control_is_dlas_own_flag_and_never_reaches_dl() {
         // dl has never heard of it, so falling through to the "unknown leading flag
         // goes to dl" rule would exit 2 rather than start anything. It is read
         // wherever the agent flags are read, and in either order beside them.
@@ -2401,7 +2401,7 @@ mod tests {
         // Including the refusal, which is the alias's other half: a `--remote`
         // beside codex has to say the same thing the long spelling says.
         assert_eq!(
-            parse_aid_args(
+            parse_dla_args(
                 &words(&["--codex", "--remote", "owner/repo"]),
                 Environment::default()
             ),
@@ -2442,7 +2442,7 @@ mod tests {
         // has not got is a no-op, not a mistake worth stopping a launch for.
         for agent in ["--codex", "--gemini"] {
             assert!(
-                parse_aid_args(
+                parse_dla_args(
                     &words(&[agent, "--no-remote-control", "owner/repo"]),
                     Environment::default()
                 )
@@ -2499,7 +2499,7 @@ mod tests {
     #[test]
     fn remote_control_with_no_workspace_is_still_no_workspace() {
         // The missing workspace is the first thing wrong with the line, and its
-        // sentence is the one that says what an aid line looks like.
+        // sentence is the one that says what a dla line looks like.
         for argv in [
             vec!["--remote-control"],
             vec!["--remote-control", "--codex"],
@@ -2508,7 +2508,7 @@ mod tests {
             vec!["--no-remote"],
         ] {
             assert_eq!(
-                parse_aid_args(&words(&argv), Environment::default()),
+                parse_dla_args(&words(&argv), Environment::default()),
                 Err(UsageError::NoWorkspace),
                 "{argv:?}"
             );
@@ -2551,7 +2551,7 @@ mod tests {
         // retyped, and before a workspace is booted. The default is the opposite
         // case and stays silent: see the test above.
         for flag in ["--codex", "--gemini"] {
-            let refused = parse_aid_args(
+            let refused = parse_dla_args(
                 &words(&[flag, "--remote-control", "owner/repo"]),
                 Environment::default(),
             );
@@ -2567,7 +2567,7 @@ mod tests {
         // And the agent the *environment* picked, which is the case with nothing on
         // the command line naming an agent at all.
         assert_eq!(
-            parse_aid_args(
+            parse_dla_args(
                 &words(&["--remote-control", "owner/repo"]),
                 agent_env(Some("codex"))
             ),
@@ -2578,7 +2578,7 @@ mod tests {
         // A `--claude` after it still wins, so the refusal is about the agent the
         // line settles on rather than the order the flags were typed in.
         assert!(
-            parse_aid_args(
+            parse_dla_args(
                 &words(&["--remote-control", "--claude", "owner/repo"]),
                 agent_env(Some("codex"))
             )
@@ -2610,7 +2610,7 @@ mod tests {
         // Case and surrounding space are the two things a profile line picks up on
         // its way through a shell, so neither may change the answer.
         for value in ["0", "false", "off", "no", "OFF", "  No  "] {
-            let chosen = parse_aid_args(&words(&["owner/repo"]), remote_env(value))
+            let chosen = parse_dla_args(&words(&["owner/repo"]), remote_env(value))
                 .expect("a usable command line");
 
             assert_eq!(remote_control(&chosen), RemoteControl::Off, "{value:?}");
@@ -2629,7 +2629,7 @@ mod tests {
             Some("on"),
             Some("YES"),
         ] {
-            let chosen = parse_aid_args(
+            let chosen = parse_dla_args(
                 &words(&["owner/repo"]),
                 Environment {
                     agent: None,
@@ -2643,7 +2643,7 @@ mod tests {
         // A yes is a *default*, not a request: it must not turn every codex launch
         // on the machine into a refusal, which is what reading it as `Insisted`
         // would do.
-        let codex = parse_aid_args(
+        let codex = parse_dla_args(
             &words(&["--codex", "owner/repo"]),
             Environment {
                 agent: None,
@@ -2661,7 +2661,7 @@ mod tests {
         // both leave somebody sure they set something they did not.
         for value in ["claude", "2", "yes please", "-"] {
             assert_eq!(
-                parse_aid_args(&words(&["owner/repo"]), remote_env(value)),
+                parse_dla_args(&words(&["owner/repo"]), remote_env(value)),
                 Err(UsageError::UnknownRemoteControlInEnvironment {
                     value: value.to_owned()
                 }),
@@ -2674,12 +2674,12 @@ mod tests {
     fn a_flag_on_the_command_line_beats_the_variable_in_both_directions() {
         // The rule `DEVLAUNCH_AID_AGENT` is already read by: the variable is a
         // default, and the line in front of you is not.
-        let insisted = parse_aid_args(&words(&["--remote-control", "owner/repo"]), remote_env("0"))
+        let insisted = parse_dla_args(&words(&["--remote-control", "owner/repo"]), remote_env("0"))
             .expect("a usable command line");
 
         assert_eq!(remote_control(&insisted), RemoteControl::On);
 
-        let refused_it = parse_aid_args(&words(&["--no-remote", "owner/repo"]), remote_env("1"))
+        let refused_it = parse_dla_args(&words(&["--no-remote", "owner/repo"]), remote_env("1"))
             .expect("a usable command line");
 
         assert_eq!(remote_control(&refused_it), RemoteControl::Off);
@@ -2691,7 +2691,7 @@ mod tests {
         // regardless of what this particular line asked for, and the retired
         // spelling would otherwise hide it behind dl's refusal.
         assert_eq!(
-            parse_aid_args(
+            parse_dla_args(
                 &words(&["owner/repo", "hi", "--autorm"]),
                 remote_env("maybe")
             ),
@@ -2760,7 +2760,7 @@ mod tests {
 
     #[test]
     fn a_typed_prompt_keeps_each_agents_own_prompt_grammar() {
-        let chosen = parse_aid_args(&words(&["--gemini", "owner/repo"]), Environment::default())
+        let chosen = parse_dla_args(&words(&["--gemini", "owner/repo"]), Environment::default())
             .expect("a usable command line")
             .with_prompt("explain this".to_owned());
 
@@ -2780,7 +2780,7 @@ mod tests {
     #[test]
     fn a_typed_prompt_keeps_whatever_the_line_settled_remote_control_on() {
         // The interactive path is the promptless launch, which is where most
-        // `aid <ws>` lines go, so both states have to survive the editor: a session
+        // `dla <ws>` lines go, so both states have to survive the editor: a session
         // that came back local would be one nobody can pick up elsewhere, and one
         // that came back drivable would be one somebody turned off.
         let on = parsed(&["owner/repo@fix/x"]).with_prompt("fix the bug".to_owned());
@@ -2848,9 +2848,9 @@ mod tests {
         dl[at + 1..].to_vec()
     }
 
-    /// What `parse_aid_args` refused the line with.
+    /// What `parse_dla_args` refused the line with.
     fn refused(argv: &[&str]) -> UsageError {
-        parse_aid_args(&words(argv), Environment::default()).expect_err("a refusal")
+        parse_dla_args(&words(argv), Environment::default()).expect_err("a refusal")
     }
 
     #[test]
@@ -2932,7 +2932,7 @@ mod tests {
 
     #[test]
     fn a_value_is_passed_on_as_typed_and_never_checked() {
-        // The agents add models and effort levels faster than aid is released, and
+        // The agents add models and effort levels faster than dla is released, and
         // codex already takes effort values it does not know by name. A value the
         // agent does not have is the agent's to answer for: claude warns and moves on.
         assert_eq!(
@@ -2964,7 +2964,7 @@ mod tests {
 
     #[test]
     fn a_flag_with_no_value_is_refused_by_name() {
-        // A flag in the value's place is the typo this catches: `aid --model --codex
+        // A flag in the value's place is the typo this catches: `dla --model --codex
         // <ws>` would otherwise start claude with a model called `--codex`.
         for (argv, flag) in [
             (vec!["--model"], MODEL_FLAG),
@@ -3079,7 +3079,7 @@ mod tests {
         launchers(
             &argv,
             Environment::default(),
-            &parse_aid_args(&argv, Environment::default()).expect("a usable command line"),
+            &parse_dla_args(&argv, Environment::default()).expect("a usable command line"),
             &profiles,
         )
     }
@@ -3117,7 +3117,7 @@ mod tests {
 
     #[test]
     fn a_row_the_line_would_refuse_is_not_offered() {
-        // The refusals are parse_aid_args's, read by trying each row.
+        // The refusals are parse_dla_args's, read by trying each row.
         assert_eq!(
             launchers_for(&["--remote-control", "owner/repo"], &[]),
             [launcher("claude", None)]
@@ -3220,11 +3220,11 @@ mod tests {
         );
     }
 
-    // ------------------------------------------------------- aid resume
+    // ------------------------------------------------------- dla resume
 
     /// A resume line that names no workspace, waiting for the picker.
     fn unpicked(argv: &[&str]) -> Unpicked {
-        match super::parse_aid_args(&words(argv), Environment::default()) {
+        match super::parse_dla_args(&words(argv), Environment::default()) {
             Ok(Line::Unpicked(unpicked)) => unpicked,
             other => panic!("{argv:?} did not ask for the picker: {other:?}"),
         }
@@ -3232,7 +3232,7 @@ mod tests {
 
     #[test]
     fn resume_alone_asks_for_the_picker_and_then_resumes_claude_in_the_pick() {
-        // The whole feature, end to end on the aid side: the picked id becomes the
+        // The whole feature, end to end on the dla side: the picked id becomes the
         // spec, and the line is a fresh launch's with `--resume` where the prompt
         // would be. `--resume` is last because claude reads a word after it as a
         // search term.
@@ -3307,7 +3307,7 @@ mod tests {
     #[test]
     fn words_after_the_workspace_on_a_resume_line_are_refused() {
         assert_eq!(
-            super::parse_aid_args(
+            super::parse_dla_args(
                 &words(&["resume", "owner/repo", "fix", "it"]),
                 Environment::default()
             ),
@@ -3347,7 +3347,7 @@ mod tests {
     fn a_retired_spelling_on_a_resume_line_with_no_workspace_asks_for_one_before_any_picker() {
         for retired in ["--stop", "--autorm"] {
             assert_eq!(
-                super::parse_aid_args(&words(&["resume", retired]), Environment::default()),
+                super::parse_dla_args(&words(&["resume", retired]), Environment::default()),
                 Err(UsageError::NoWorkspace),
                 "{retired}"
             );
@@ -3419,7 +3419,7 @@ mod tests {
         base.iter().chain(more).copied().collect()
     }
 
-    /// The id is minted by aid, so the line that reopens it is known before the
+    /// The id is minted by dla, so the line that reopens it is known before the
     /// session exists -- and the prompt is not in it, or a restore would send it again.
     #[test]
     fn a_fresh_claude_session_is_named_and_reopened_by_that_name() {
@@ -3443,7 +3443,7 @@ mod tests {
         );
     }
 
-    /// `aid resume` opens claude's picker, so the id is not aid's to know: a restore
+    /// `dla resume` opens claude's picker, so the id is not dla's to know: a restore
     /// reopens the latest session, and the container hook names the real one when
     /// it can.
     #[test]
@@ -3464,7 +3464,7 @@ mod tests {
         );
     }
 
-    /// `aid resume --codex` and `--gemini` open the agent's own picker too, and
+    /// `dla resume --codex` and `--gemini` open the agent's own picker too, and
     /// neither has a hook: a restore reopens the latest session in its own spelling.
     #[test]
     fn a_picked_codex_or_gemini_session_is_reopened_as_the_latest_one() {
@@ -3509,7 +3509,7 @@ mod tests {
         );
     }
 
-    /// codex and gemini take no id of aid's choosing and have no hook: each
+    /// codex and gemini take no id of dla's choosing and have no hook: each
     /// reopens its latest session in its own spelling.
     #[test]
     fn the_other_agents_reopen_their_latest_session() {
@@ -3552,7 +3552,7 @@ mod tests {
     }
 
     /// A restore after herdr restarts is the same session, so it keeps the model
-    /// and effort the launch asked for, as `aid resume` does.
+    /// and effort the launch asked for, as `dla resume` does.
     #[test]
     fn a_restored_session_keeps_the_model_and_effort() {
         let launch = build_launch(

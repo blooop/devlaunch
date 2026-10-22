@@ -228,7 +228,7 @@ pub struct Host {
     /// ([`herdr::restore_program`]). `None` reads as the released `dl`.
     pub(crate) invoked_as: Option<String>,
     /// How the agent this launch starts is started again after herdr restarts,
-    /// when the caller knows. Not read from the environment: `aid` knows it because
+    /// when the caller knows. Not read from the environment: `dla` knows it because
     /// it wrote the agent's line, and hands it over with [`Self::with_agent_resume`].
     pub(crate) agent_resume: Option<herdr::AgentResume>,
     pub(crate) stdin_tty: bool,
@@ -595,7 +595,7 @@ pub enum LaunchNotice {
     ///
     /// Said on the fast-attach arm, where a warm launch otherwise provisions
     /// nothing. It costs one round trip, once per workspace: the pass that follows
-    /// records codex in the workspace's marker, so the next `aid --codex` on it is
+    /// records codex in the workspace's marker, so the next `dla --codex` on it is
     /// warm again. Distinct from [`Self::SetupPassNeverFinished`] because nothing
     /// went wrong here. The earlier pass did everything it was asked to.
     CodexStageMissing { workspace_id: String },
@@ -1777,7 +1777,7 @@ pub trait Provision {
     /// fast-attach arm and answered from the same records. A pass that ran to
     /// completion can still have skipped a stage, because which stages a pass
     /// carries depends on what the launch that paid for it was doing: a workspace
-    /// opened by `dl <ws>` was never given codex, and `aid --codex <ws>` on it is
+    /// opened by `dl <ws>` was never given codex, and `dla --codex <ws>` on it is
     /// asking for something no pass has installed.
     ///
     /// **Only ever true for a launch that wants codex**, which is what keeps the
@@ -2401,7 +2401,7 @@ fn absent_agent_socket(host: &Host) -> Option<PathBuf> {
 /// work is worth refusing before removing whatever is there for it.
 ///
 /// **It does not leave the path absent, even briefly.** Two `dl` processes at once
-/// is ordinary rather than exotic: `aid` spawns a prewarm boot beside its own
+/// is ordinary rather than exotic: `dla` spawns a prewarm boot beside its own
 /// launch, and wf fires `dl <ws> up` the moment a launch is staged. Both taking
 /// `remove` then `bind` means the second unlinks the first's socket, and a
 /// `devpod up` that resolves the bind source inside that window is refused with
@@ -4031,7 +4031,7 @@ impl HerdrTabRename {
 /// Both names for `name` on this host: the escape and the tab rename, together.
 ///
 /// For a caller that has something to name *before* it has a launch to take the
-/// name from. `aid` is the one: with no prompt on the line it opens the prompt
+/// name from. `dla` is the one: with no prompt on the line it opens the prompt
 /// editor first and boots the workspace behind it, deliberately, so the minute a
 /// container takes to come up and the minute a prompt takes to write are the same
 /// minute -- and for the whole of that minute there was no launch yet and so no
@@ -4678,8 +4678,8 @@ fn recorded_label(cold: &mut dyn ColdMachinery<'_>, workspace_id: &str) -> Optio
 /// The same answer as [`recorded_label`], for a caller that has a cache directory
 /// and no launch.
 ///
-/// **`aid` is the caller, and the window it covers is the one nothing else can.**
-/// `aid <spec>` with no prompt on the line opens the prompt editor and boots the
+/// **`dla` is the caller, and the window it covers is the one nothing else can.**
+/// `dla <spec>` with no prompt on the line opens the prompt editor and boots the
 /// workspace behind it, so it names the terminal and the herdr tab itself, up
 /// front, from the spec read syntactically (`dl::name_before_launch`). The launch
 /// that would say [`recorded_label`]'s answer has not happened yet and does not
@@ -5962,7 +5962,7 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
         // No records and no pass means no login forwarded, which is a real limit and
         // the least bad of three. Paying a pass here to find out was tried: it puts
         // two setup-stage warnings on the terminal of every first attach, on the
-        // hottest path dl has, and an aid test caught it. Forwarding anyway was the
+        // hottest path dl has, and a dla test caught it. Forwarding anyway was the
         // other option, and it would override a mounted credential that can refresh
         // itself, on every warm attach, for as long as no pass ran.
         //
@@ -8016,7 +8016,7 @@ mod tests {
     }
 
     /// The path is never absent, even for the instant between removing what was
-    /// there and binding. Two dl processes at once is ordinary -- aid spawns a
+    /// there and binding. Two dl processes at once is ordinary -- dla spawns a
     /// prewarm beside its own launch -- and a `devpod up` that resolves the bind
     /// source in that window is refused with `bind source path does not exist`.
     #[test]
@@ -8948,7 +8948,7 @@ mod tests {
 
     #[test]
     fn a_quoted_prompt_reaches_the_agent_intact() {
-        // `aid repo fix the bug` becomes one quoted argument; it must stay one.
+        // `dla repo fix the bug` becomes one quoted argument; it must stay one.
         let payload = RemotePayload::wrap(
             &RemoteCommand::argv(&["claude", "fix the bug"]),
             ZellijWrap::Off,
@@ -10099,7 +10099,7 @@ mod tests {
     }
 
     /// A Scene in a herdr pane that has not consented to container reporting, with
-    /// `aid`'s resume line handed over.
+    /// `dla`'s resume line handed over.
     fn in_a_pane_resuming(mut scene: Scene, line: &[&str]) -> Scene {
         scene.host.herdr = crate::clients::herdr::HostEnv {
             in_pane: Some("1".to_owned()),
@@ -10187,7 +10187,7 @@ mod tests {
             &line,
             Some(by_id),
         );
-        scene.host.invoked_as = Some("aid-next".to_owned());
+        scene.host.invoked_as = Some("dla-next".to_owned());
         let _ = a_session(&scene, Some(&RemoteCommand::argv(&["claude"])));
         assert_eq!(
             coordinated_ssh(&scene)
@@ -10353,7 +10353,7 @@ mod tests {
     }
 
     /// A Scene whose pane has consented to container reporting and reaches the
-    /// manager's `Ready` arm, with `aid`'s resume line and its `by_id` handed over.
+    /// manager's `Ready` arm, with `dla`'s resume line and its `by_id` handed over.
     ///
     /// The binary is a real file, because `prepare` measures it; the forward and
     /// the probe are the fake's unscripted successes.
@@ -10676,7 +10676,7 @@ mod tests {
     /// OpenSSH route is unavailable: no alias published yet (a workspace devpod has
     /// only just created), no ssh config, or output redirected. The agent's name
     /// reached the OpenSSH route alone, so on any of those the launch was silently
-    /// nameless -- and `aid`, which sets the variable in its own process before
+    /// nameless -- and `dla`, which sets the variable in its own process before
     /// exec'ing, covered both routes all along.
     #[test]
     fn a_command_that_names_an_agent_names_it_on_the_devpod_route_too() {
@@ -13172,7 +13172,7 @@ mod tests {
     #[test]
     fn the_records_answer_a_reader_holding_only_a_cache_directory_the_same_name() {
         // `recorded_label_in` is the way in for a caller that has no launch to ask.
-        // `aid <id>` with no prompt on the line names the tab in front of a boot it
+        // `dla <id>` with no prompt on the line names the tab in front of a boot it
         // cannot wait for, so it has a cache directory, an id, and nothing else --
         // and it has to reach the name the launch will reach, or the tab carries the
         // bare id for the whole editor window and an entire `devpod up`

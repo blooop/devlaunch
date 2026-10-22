@@ -602,7 +602,7 @@ fn a_launch_blocked_behind_an_orphan_clears_it_and_gets_past_the_up() {
 /// A SIGKILL runs no handler, so the interrupt drain that a Ctrl-C reaches never
 /// runs, and before `PR_SET_PDEATHSIG` the `up` was reparented to init still
 /// holding devpod's flock. That is the holder every test above has to sweep, and
-/// two of them were found on a host after four hours behind a dead `aid --boot-up`.
+/// two of them were found on a host after four hours behind a dead `dla --boot-up`.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_launch_that_is_sigkilled_mid_up_takes_its_devpod_up_with_it() {

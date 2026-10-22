@@ -19,7 +19,7 @@ one argument instead of a clone, a config file and a build command.
 [![GitHub pull-requests merged](https://badgen.net/github/merged-prs/blooop/devlaunch)](https://github.com/blooop/devlaunch/pulls?q=is%3Amerged)
 [![GitHub release](https://img.shields.io/github/release/blooop/devlaunch.svg)](https://GitHub.com/blooop/devlaunch/releases/)
 [![PyPI](https://img.shields.io/pypi/v/devlaunch)](https://pypi.org/project/devlaunch/)
-[![Conda](https://img.shields.io/badge/conda-v0.62.1-brightgreen?logo=anaconda)](https://prefix.dev/channels/blooop/packages/devlaunch)
+[![Conda](https://img.shields.io/badge/conda-v0.63.0-brightgreen?logo=anaconda)](https://prefix.dev/channels/blooop/packages/devlaunch)
 [![License](https://img.shields.io/github/license/blooop/devlaunch)](https://opensource.org/license/mit/)
 [![Platform](https://img.shields.io/badge/platform-linux--64-blue)](https://github.com/blooop/devlaunch/releases)
 [![Pixi Badge](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/prefix-dev/pixi/main/assets/badge/v0.json)](https://pixi.sh)
@@ -27,7 +27,7 @@ one argument instead of a clone, a config file and a build command.
 ## Contents
 
 [Quickstart](#quickstart) · [Install](#install) · [Usage](#usage) · [Commands](#commands) ·
-[aid](#aid-an-agent-instead-of-a-shell) · [What every workspace gets](#what-every-workspace-gets) ·
+[dla](#dla-an-agent-instead-of-a-shell) · [What every workspace gets](#what-every-workspace-gets) ·
 [Cleaning up](#cleaning-up) · [Environment variables](#environment-variables) ·
 [Docs](#docs) · [Development](#development)
 
@@ -81,15 +81,15 @@ The selector is built in. No `fzf` to install, no plugin. Type to filter, Enter 
 ![Starting a coding agent](docs/demo/3-agent.gif)
 
 ```bash
-aid blooop/devlaunch@fix/flaky-test
+dla blooop/devlaunch@fix/flaky-test
 ```
 
-`aid` is `dl` with a coding agent started for you, in the same container `dl` would have given
+`dla` is `dl` with a coding agent started for you, in the same container `dl` would have given
 you. Name the repo and it asks for the prompt while the container boots, so the two minutes are
 the same minute. Or put the prompt on the line and skip the question:
 
 ```bash
-aid blooop/devlaunch@feature/json-flag add a --json flag
+dla blooop/devlaunch@feature/json-flag add a --json flag
 ```
 
 ### 4. Clear them out
@@ -129,11 +129,11 @@ GitHub still works from inside either way, over HTTPS with the `gh` token `dl` f
 pixi global install --channel conda-forge --channel https://prefix.dev/blooop devlaunch
 ```
 
-That is the minimal install, and it is deliberately minimal: `dl`, `aid`, and the `devpod` they
+That is the minimal install, and it is deliberately minimal: `dl`, `dla`, and the `devpod` they
 drive. Everything else `dl` touches it resolves from your PATH, so it finds the `git`, `ssh` and
 `gh` you already use rather than a second copy of its own.
 
-`dl` and `aid` go on your PATH; `devpod` stays inside the environment, where `dl` can reach it and
+`dl` and `dla` go on your PATH; `devpod` stays inside the environment, where `dl` can reach it and
 you cannot. Run `pixi global expose add --environment devlaunch devpod` if you want to type
 `devpod` yourself.
 
@@ -162,7 +162,7 @@ is only about the host, and only because the token has to be read here to be for
 pip install devlaunch
 ```
 
-The wheel is linux-64 and needs glibc 2.28 or newer (Ubuntu 20.04, RHEL 8). `dl` and `aid` are
+The wheel is linux-64 and needs glibc 2.28 or newer (Ubuntu 20.04, RHEL 8). `dl` and `dla` are
 compiled binaries, so once installed they need no Python at all. Install
 [devpod](https://devpod.sh/docs/getting-started/install) yourself; pip does not.
 
@@ -337,7 +337,7 @@ instead. [docs/cli.md](docs/cli.md) has the full `--rm` contract, including whic
 | `dl --help`, `-h` | Print help |
 
 `--herdr-shell` is not a command to type. It is what herdr's `[terminal] default_shell` points at,
-so that splitting a pane in an `aid` tab opens a terminal in that workspace's container instead of
+so that splitting a pane in a `dla` tab opens a terminal in that workspace's container instead of
 on this host. `dl --herdr-setup` writes the script and updates Herdr config;
 `dl --install` writes the script and prints the config line for a manual setup.
 [docs/workspace-tools.md](docs/workspace-tools.md) has the rest.
@@ -350,7 +350,7 @@ clone, and [docs/cleanup.md](docs/cleanup.md) says what it carries one past and 
 
 ```bash
 $ dl --version
-dl 0.62.1
+dl 0.63.0
 ```
 
 `--devcontainer <variant|path>` picks a non-default `devcontainer.json`. A bare name means
@@ -383,20 +383,17 @@ precedence order and what a profile does not change.
 
 `dl --help` is the complete reference and is kept in step with the binary by a test.
 
-## aid: an agent instead of a shell
+## dla: an agent instead of a shell
 
 ```bash
-aid <user/repo>[@branch|@<pr-link>] [prompt...]
-aid resume [<workspace>]
+dla <user/repo>[@branch|@<pr-link>] [prompt...]
+dla resume [<workspace>]
 ```
 
-`dla` is the same program under a name that is easier to type: every `aid` line in this
-section works with `dla` in its place.
-
-`aid` is a shortcut, not a second launcher. It rewrites its command line into a `dl` one, so
+`dla` is a shortcut, not a second launcher. It rewrites its command line into a `dl` one, so
 
 ```bash
-aid blooop/devlaunch@fix/42 fix the flaky test
+dla blooop/devlaunch@fix/42 fix the flaky test
 ```
 
 is exactly
@@ -410,23 +407,23 @@ included, so it never needs quoting. The Remote Control session is named after t
 (`devlaunch-fix-42-eshv`, what `dl --ls` prints), because another agent's `SendMessage` refuses
 an address with a `/` in it.
 
-A pull request link works here too, in the same three spellings, and `aid` resolves it before it
+A pull request link works here too, in the same three spellings, and `dla` resolves it before it
 does anything else. So the prompt banner, the terminal tab, the background boot and the agent's
 Remote Control session name all follow the branch rather than the link, and the request is looked up
 once for the whole run:
 
 ```bash
-aid https://github.com/blooop/devlaunch/pull/579 address the review comments
+dla https://github.com/blooop/devlaunch/pull/579 address the review comments
 ```
 
-With no workspace on the line, `aid` on a terminal lets you pick one of your workspaces, as `dl`
-does. With no prompt on the line, `aid` starts the container booting and asks for the prompt while it
+With no workspace on the line, `dla` on a terminal lets you pick one of your workspaces, as `dl`
+does. With no prompt on the line, `dla` starts the container booting and asks for the prompt while it
 does. Type it free of shell quoting, with no escaping and no history expansion eating a `!`. A
 paste keeps its line breaks and can be any length, Alt-Enter or Ctrl-J adds a line, and an empty
-Enter starts the agent's plain session. A bare `aid`, which picks its workspace, also asks before
+Enter starts the agent's plain session. A bare `dla`, which picks its workspace, also asks before
 the prompt for the agent (one row per Claude login, then `codex` and `gemini`), the model and the
 effort, each in a picker that lists your recent choices first, so one Enter repeats the last
-launch. A flag on the line skips its picker, and Esc stops the boot. `aid <workspace>` asks for
+launch. A flag on the line skips its picker, and Esc stops the boot. `dla <workspace>` asks for
 none of them and goes straight to the prompt. See [docs/cli.md](docs/cli.md#the-pickers-ahead-of-the-prompt). Piping
 stdin or setting `DEVLAUNCH_NO_TTY=1` skips the question and launches one-shot, so scripts behave
 as they always have.
@@ -450,23 +447,23 @@ is `--dangerously-skip-permissions`, with `IS_SANDBOX=1` beside it because it ot
 that flag under `uid 0` and devcontainers that run as root are ordinary. That variable is scoped
 to the agent process and is not exported into your shell.
 
-The agent cannot reach your host, but it can rewrite the checkout it is in. Review an `aid`
+The agent cannot reach your host, but it can rewrite the checkout it is in. Review a `dla`
 workspace before pushing rather than treating it as a sandbox that will stop the agent for you.
 Because the agent runs with permissions skipped and Remote Control is on by default, the
 session is also drivable from the claude.ai account signed in inside the container.
 `DEVLAUNCH_AID_REMOTE_CONTROL=0` turns that off for every launch;
 [docs/cli.md](docs/cli.md) has the rest.
 
-This applies to agents `aid` starts, and nothing else. `dl <ws> -- claude` runs exactly what you
+This applies to agents `dla` starts, and nothing else. `dl <ws> -- claude` runs exactly what you
 typed.
 
-The agent's CLI has to be in the container already. `aid` runs it; it does not install it.
+The agent's CLI has to be in the container already. `dla` runs it; it does not install it.
 
-After a restart, `aid resume` is the way back into an agent session in one command. It
+After a restart, `dla resume` is the way back into an agent session in one command. It
 opens `dl`'s picker, starts the workspace you pick, and starts the agent with its own
-resume picker, Remote Control and full auto included. `aid resume <workspace>` skips the
-first picker. [docs/cli.md](docs/cli.md#aid-resume-back-into-a-session-after-a-restart)
-has the words per agent. In a [herdr](https://herdr.dev) pane you need neither: `aid` tells
+resume picker, Remote Control and full auto included. `dla resume <workspace>` skips the
+first picker. [docs/cli.md](docs/cli.md#dla-resume-back-into-a-session-after-a-restart)
+has the words per agent. In a [herdr](https://herdr.dev) pane you need neither: `dla` tells
 herdr how to reopen the session, and a herdr restart or a reboot brings the pane back into
 its own conversation. See
 [docs/workspace-tools.md](docs/workspace-tools.md#coming-back-after-herdr-restarts).
@@ -546,11 +543,11 @@ Images are yours: `docker system df` is what shows those.
 | `DEVLAUNCH_NO_TITLE=1` | Do not name the terminal after the workspace |
 | `DEVLAUNCH_DOTFILES_ON_ATTACH=1` | Refresh dotfiles before every interactive attach. Off by default |
 | `DEVLAUNCH_NO_TTY=1` | Never give a workspace command a terminal |
-| `DEVLAUNCH_AID_AGENT=<agent>` | Change `aid`'s default agent |
-| `DEVLAUNCH_AID_REMOTE_CONTROL=0` | Start `aid` sessions without Claude Code's Remote Control, which is otherwise on |
+| `DEVLAUNCH_AID_AGENT=<agent>` | Change `dla`'s default agent |
+| `DEVLAUNCH_AID_REMOTE_CONTROL=0` | Start `dla` sessions without Claude Code's Remote Control, which is otherwise on |
 | `DEVLAUNCH_HERDR=1` | Let an agent started *inside* a workspace report to the [herdr](https://herdr.dev) pane you launched from. Off by default: it lends herdr into the container and opens a second ssh connection. See [docs/workspace-tools.md](docs/workspace-tools.md) |
-| `NVIM_SPLIT=1` | In Herdr, open `$VISUAL`, then `$EDITOR`, or `nvim` in a vertical split beside an agent launched with `aid` or `dl`. Off by default. The agent pane keeps focus. Requires the pane shell installed by `dl --herdr-setup`. See [docs/workspace-tools.md](docs/workspace-tools.md) |
-| `HERDR_AGENT=<agent>` | Written, not read: an `aid` launch that starts an agent, or a `dl <ws> -- <agent>` whose command is one, names it here so a session manager can see it. See [docs/workspace-tools.md](docs/workspace-tools.md) |
+| `NVIM_SPLIT=1` | In Herdr, open `$VISUAL`, then `$EDITOR`, or `nvim` in a vertical split beside an agent launched with `dla` or `dl`. Off by default. The agent pane keeps focus. Requires the pane shell installed by `dl --herdr-setup`. See [docs/workspace-tools.md](docs/workspace-tools.md) |
+| `HERDR_AGENT=<agent>` | Written, not read: a `dla` launch that starts an agent, or a `dl <ws> -- <agent>` whose command is one, names it here so a session manager can see it. See [docs/workspace-tools.md](docs/workspace-tools.md) |
 | `DEVLAUNCH_TIMING=1\|json` | Write a timing summary to stderr. See [docs/performance.md](docs/performance.md) |
 | `DEVPOD_SSH_CONFIG=<path>` | devpod's own, honoured rather than set: it is where `devpod up` publishes host aliases, so it is where `dl` looks for them. See [docs/cli.md](docs/cli.md) |
 | `CLAUDE_CONFIG_DIR=<path>` | Claude Code's own, honoured rather than set: it is where the host keeps its Claude configuration, so it is where `dl` reads the login to forward. It replaces `~/.claude` rather than being tried before it, exactly as Claude Code treats it. See [docs/workspace-tools.md](docs/workspace-tools.md) |
@@ -564,7 +561,7 @@ rows are not switches and do not follow it: `DEVLAUNCH_AID_AGENT`, `DEVPOD_SSH_C
 turn it on, `DEVLAUNCH_AID_REMOTE_CONTROL` takes `1`/`true`/`on`/`yes` or
 `0`/`false`/`off`/`no` and refuses anything else rather than guessing, and `HERDR_AGENT` is
 the one written rather than read, so a value of your own survives only a line that starts
-no agent: an `aid` launch names the agent it picked, and `dl` names one whose command is an
+no agent: a `dla` launch names the agent it picked, and `dl` names one whose command is an
 agent by name.
 
 Changes to what a container gets land on `devpod up`, so a workspace that is already running
@@ -575,7 +572,7 @@ re-decides a mount.
 
 | Page | What is in it |
 |---|---|
-| [docs/cli.md](docs/cli.md) | The selector, which commands get a terminal, the `--rm` contract, `aid`'s Remote Control default, retired spellings, devpod exit codes |
+| [docs/cli.md](docs/cli.md) | The selector, which commands get a terminal, the `--rm` contract, `dla`'s Remote Control default, retired spellings, devpod exit codes |
 | [docs/workspaces.md](docs/workspaces.md) | How workspace ids are derived, and how fresh a launch is |
 | [docs/workspace-tools.md](docs/workspace-tools.md) | GitHub auth, `gh` and `claude`, zellij, terminal titles, the pixi cache |
 | [docs/cleanup.md](docs/cleanup.md) | `--prune`, `--purge`, `--reconcile`, and what a workspace costs on disk |
@@ -586,12 +583,12 @@ re-decides a mount.
 
 ## Development
 
-`dl` and `aid` are Rust. `rust/` is what ships: one cargo workspace, and where the tests of
+`dl` and `dla` are Rust. `rust/` is what ships: one cargo workspace, and where the tests of
 `dl`'s own behaviour live.
 
 ```bash
 cd rust
-cargo build --release     # target/release/{dl,aid}
+cargo build --release     # target/release/{dl,dla}
 cargo test
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check

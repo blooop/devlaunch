@@ -730,7 +730,7 @@ pub(crate) fn workspace_among(info: &herdr::PaneProcessInfo) -> Option<String> {
 /// machine. That coupling is the guard: an unrelated pane is never consulted.
 ///
 /// **Elements are compared whole, and the scan stops at the first bare `--`.** Both
-/// matter for one case. `aid <ws> add --claude-profile support to the docs` becomes a
+/// matter for one case. `dla <ws> add --claude-profile support to the docs` becomes a
 /// `dl` line whose prompt is a single argument containing that text, and the ssh
 /// transport carries the same string as one payload argument; neither is an argv
 /// *element* equal to `--claude-profile`, so neither is read as a flag. The `--` stop
@@ -1708,7 +1708,7 @@ mod tests {
 
     #[test]
     fn a_prompt_that_mentions_the_flag_is_not_a_profile() {
-        // The case that decides how this is written. `aid <ws> add --claude-profile
+        // The case that decides how this is written. `dla <ws> add --claude-profile
         // support to the docs` becomes a dl line whose prompt is one argument holding
         // that text, and the ssh transport carries the same string as one payload
         // argument. Elements are compared whole, so neither is a flag; the `--` stop

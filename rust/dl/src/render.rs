@@ -2634,7 +2634,7 @@ pub(crate) fn report_refusals<'a>(
     lines.push("Usually this means a container wrote them as a different user, and:".to_owned());
     // Quoted: these paths descend from $XDG_CACHE_HOME or $HOME, and a space in one
     // turns a pasted `sudo rm -rf` into two targets, the first of them wrong. The
-    // crate's one quoter does it, the same one `aid` builds its `dl` command line
+    // crate's one quoter does it, the same one `dla` builds its `dl` command line
     // with — a private copy here would be a third spelling of `shlex.quote` to keep
     // true.
     let by_hand: Vec<String> = remove_by_hand
@@ -3913,7 +3913,7 @@ pub(crate) fn wrong_owner_hint(refused: &LaunchRefusal, known: &CompletionData) 
     }
     // Each suggestion is a whole spec, branch included: a spec typed with a
     // `@branch` is offered back with the same one, so it can be retyped as it reads.
-    // A spec rather than a command line, because `aid` reaches this same rendering
+    // A spec rather than a command line, because `dla` reaches this same rendering
     // through `dl::run` and its own invocation carries an agent prompt after the
     // spec — naming the spec is right for both binaries, where naming `dl …` would
     // be right for one and misleading for the other.

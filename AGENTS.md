@@ -24,12 +24,12 @@ For tools installed as dependencies (like `gh`), you can run them via:
 
 ## Two installs: `dl` and `dl-next`
 
-`dl` and `aid` on PATH are the **released** build, installed by pixi global from
+`dl` and `dla` on PATH are the **released** build, installed by pixi global from
 the `blooop` channel (`~/.pixi/bin/dl`). Leave them alone: they are what keeps
 working while this checkout is mid-change, and what actually opens the user's
 workspaces.
 
-`dl-next` and `aid-next` are **this working tree**, compiled by `./dev.sh` into
+`dl-next` and `dla-next` are **this working tree**, compiled by `./dev.sh` into
 `~/.local/share/devlaunch-dev/bin` and symlinked from `~/.local/bin`. Both builds
 are on PATH at once under names that cannot collide, so running the wrong one is
 not possible by accident.
@@ -99,7 +99,7 @@ Three things to know about it:
 Everything above is about the host. This repo's devcontainer carries the same Rust
 toolchain the binaries ship from — see "cargo is in the project env too" below —
 so the container can build the tree itself. **Inside, run `pixi run dl` and
-`pixi run aid`.** They are `cargo run` over this working tree, and `--version`
+`pixi run dla`.** They are `cargo run` over this working tree, and `--version`
 says so: `dl <version>-dev`.
 
 They are pixi *tasks* now, not commands that happen to be in the environment.

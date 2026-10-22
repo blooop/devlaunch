@@ -70,7 +70,7 @@ def _command_seam(env_var: str, binary: str) -> List[str]:
     if not path.exists():
         pytest.fail(
             f"there is no {binary} to test at {path}. Build it first --\n"
-            f"    cd rust && cargo build --release -p dl -p aid\n"
+            f"    cd rust && cargo build --release -p dl -p dla\n"
             f"(`pixi run test-e2e` does this for you), or point the harness at "
             f"another build with {env_var}."
         )
@@ -82,14 +82,14 @@ def dl_command() -> List[str]:
     return _command_seam("DEVLAUNCH_DL_CMD", "dl")
 
 
-def aid_command() -> List[str]:
-    """The command under test for `aid`, as an argv prefix.
+def dla_command() -> List[str]:
+    """The command under test for `dla`, as an argv prefix.
 
     A seam of its own rather than a suffix rule on DEVLAUNCH_DL_CMD: the two
     entry points are separate binaries, and pointing the harness at one must not
     silently redirect the other.
     """
-    return _command_seam("DEVLAUNCH_AID_CMD", "aid")
+    return _command_seam("DEVLAUNCH_DLA_CMD", "dla")
 
 
 def require_devpod() -> None:

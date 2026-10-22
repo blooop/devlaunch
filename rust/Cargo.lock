@@ -12,18 +12,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "aid"
-version = "0.62.1"
-dependencies = [
- "devlaunch-test-support",
- "dl",
- "libc",
- "portable-pty",
- "serde_json",
- "tempfile",
-]
-
-[[package]]
 name = "android_system_properties"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -438,7 +426,7 @@ dependencies = [
 
 [[package]]
 name = "devlaunch-core"
-version = "0.62.1"
+version = "0.63.0"
 dependencies = [
  "devlaunch-runner",
  "devlaunch-test-support",
@@ -457,7 +445,7 @@ dependencies = [
 
 [[package]]
 name = "devlaunch-runner"
-version = "0.62.1"
+version = "0.63.0"
 dependencies = [
  "libc",
  "portable-pty",
@@ -466,7 +454,7 @@ dependencies = [
 
 [[package]]
 name = "devlaunch-test-support"
-version = "0.62.1"
+version = "0.63.0"
 dependencies = [
  "devlaunch-runner",
  "serde",
@@ -508,7 +496,7 @@ dependencies = [
 
 [[package]]
 name = "dl"
-version = "0.62.1"
+version = "0.63.0"
 dependencies = [
  "clap",
  "devlaunch-core",
@@ -522,6 +510,18 @@ dependencies = [
  "tempfile",
  "term",
  "unicode-width",
+]
+
+[[package]]
+name = "dla"
+version = "0.63.0"
+dependencies = [
+ "devlaunch-test-support",
+ "dl",
+ "libc",
+ "portable-pty",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

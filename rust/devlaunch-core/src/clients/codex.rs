@@ -1,6 +1,6 @@
 //! The host's Codex login, forwarded into a workspace.
 //!
-//! [`super::claude`]'s job for the other agent `aid` can start, and mostly the same
+//! [`super::claude`]'s job for the other agent `dla` can start, and mostly the same
 //! shape: a value the host produces, checked once at the boundary, delivered through
 //! devpod's environment so the secret never reaches an argv another user could read.
 //! Read that module first. Where this one differs is in what codex will accept, and
@@ -205,7 +205,7 @@ impl HostEnv {
 /// Why there is no Codex login to forward.
 ///
 /// [`super::claude::NoToken`] minus the two profile arms, which have no counterpart:
-/// `aid` has no `--codex-profile`, so there is no named account whose absence must
+/// `dla` has no `--codex-profile`, so there is no named account whose absence must
 /// stop a launch. Only [`Self::Unreadable`] is worth a warning. Opting out is a
 /// choice, and a host that never logged in is a fact about the host, but an
 /// `auth.json` that is there and yields nothing is a problem the user can fix.
@@ -351,7 +351,7 @@ pub(crate) fn extend_ssh_forwarding(base: Forwarding, auth: Option<&Credential>)
 /// The same, for the OpenSSH transport, whose flags are bare variable names.
 ///
 /// Both transports have to carry this for
-/// [`super::claude::extend_openssh_forwarding`]'s reason, and `aid --codex` is
+/// [`super::claude::extend_openssh_forwarding`]'s reason, and `dla --codex` is
 /// precisely the route that proves it: `dl <ws> -- codex` goes to OpenSSH rather
 /// than `devpod ssh`, because devpod never requests a pty and codex refuses a
 /// non-terminal stdin. Forwarding on one and not the other would leave the single

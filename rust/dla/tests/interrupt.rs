@@ -1,12 +1,12 @@
-//! Ctrl-C during an `aid` launch, judged at the binary boundary.
+//! Ctrl-C during a `dla` launch, judged at the binary boundary.
 //!
-//! `aid` runs the same launch flow as `dl`, in-process (`dl::run`), so a SIGINT
+//! `dla` runs the same launch flow as `dl`, in-process (`dl::run`), so a SIGINT
 //! mid-`devpod up` stages and orphans exactly what a `dl` launch does: the
 //! plaintext GitHub-token file (`$TMPDIR/devlaunch-gh-*.env`, mode 0600) and the
-//! `up` child. The audit that followed the port found aid's `main` had kept a bare
+//! `up` child. The audit that followed the port found dla's `main` had kept a bare
 //! `_exit` handler that cleaned up neither, where `dl`'s handler did — the two
 //! process entry points had drifted. Both now install one shared disposition
-//! (`dl::install_signal_handlers`); this is aid's half of the proof, the twin of
+//! (`dl::install_signal_handlers`); this is dla's half of the proof, the twin of
 //! `dl/tests/interrupt.rs`.
 //!
 //! Linux-only (as the whole port is, #254): it reads liveness through `kill -0` and
@@ -26,7 +26,7 @@ fn repo_root() -> PathBuf {
         .expect("the repository root")
 }
 
-/// A scratch world of the shape `aid/tests/rewrite.rs` builds (it reuses `dl`'s
+/// A scratch world of the shape `dla/tests/rewrite.rs` builds (it reuses `dl`'s
 /// `launch_scenario.py`), with `--gh` so a token is staged, then its `devpod`
 /// replaced by one that blocks on `up`.
 struct World {
@@ -139,10 +139,10 @@ fn a_ctrl_c_mid_up_removes_the_token_file_and_kills_the_up() {
     let up_pid = world.path("up.pid");
     let up_started = world.path("up.started");
 
-    // `aid <spec> <prompt>`: the agent runs only after `up` returns, and `up`
+    // `dla <spec> <prompt>`: the agent runs only after `up` returns, and `up`
     // blocks forever, so the token stages during `up` exactly as it does for `dl`
     // and the agent binary is never reached (none is installed).
-    let mut child = Command::new(env!("CARGO_BIN_EXE_aid"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_dla"))
         .args(["blooop/devlaunch@cold", "start"])
         .env_clear()
         .keeping_coverage()
@@ -163,7 +163,7 @@ fn a_ctrl_c_mid_up_removes_the_token_file_and_kills_the_up() {
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_CONFIG_SYSTEM", "/dev/null")
         .spawn()
-        .expect("the aid binary runs");
+        .expect("the dla binary runs");
 
     // Wait until `devpod up` is blocking and the token has been staged: both are
     // the preconditions the leak needs, so a test that interrupted earlier would
@@ -177,19 +177,19 @@ fn a_ctrl_c_mid_up_removes_the_token_file_and_kills_the_up() {
     let up = std::fs::read_to_string(&up_pid).expect("the up pid");
     let up = up.trim();
 
-    // The interrupt itself: SIGINT to `aid` alone, exactly as a terminal Ctrl-C
-    // reaches `aid`'s group while the `up` — now in its own group — does not.
+    // The interrupt itself: SIGINT to `dla` alone, exactly as a terminal Ctrl-C
+    // reaches `dla`'s group while the `up` — now in its own group — does not.
     assert!(
         Command::new("kill")
             .args(["-INT", &child.id().to_string()])
             .status()
             .expect("kill is installed")
             .success(),
-        "sending SIGINT to aid"
+        "sending SIGINT to dla"
     );
 
-    let status = child.wait().expect("aid exits");
-    assert_eq!(status.code(), Some(130), "aid exits 130 on interrupt");
+    let status = child.wait().expect("dla exits");
+    assert_eq!(status.code(), Some(130), "dla exits 130 on interrupt");
     assert!(
         token_file(&tmpdir).is_none(),
         "the token file must be gone after the interrupt, was {staged:?}"
