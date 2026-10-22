@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`dl <path>` opens a folder whose name has capitals, `_`, `.` or other characters
+  devpod does not take in an id.** `dl ./FIC_Interface` sent `--id FIC_Interface`, and
+  devpod refused it at once (`workspace name can only include lower case letters, numbers
+  or dashes`). dl now sends the id devpod itself gives that folder when no `--id` is
+  passed (its `ToID` rule): lowercased, `.` and other characters turned into dashes, `_`
+  dropped, cut to 48 characters. `FIC_Interface` is `ficinterface` and `My_Proj.v2` is
+  `myproj-v2`. A folder name devpod already accepted keeps the same id, except that a
+  leading or trailing dash is now dropped (`-odd` is `odd`), as devpod drops it. A folder
+  whose name leaves no letter or digit, such as `___`, is refused before devpod runs.
+
 ## [0.63.1] - 2026-10-22
 
 ### Fixed

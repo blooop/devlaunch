@@ -21,7 +21,8 @@
 //!   all five cases; [`SpecIdentity`] separates them, because they are not
 //!   interchangeable: a branchless `owner/repo` yields only a repo *label* (there
 //!   is no ref to hash, so there is no identity to derive), and a path spec's
-//!   name is the resolved directory leaf, which only the filesystem can answer.
+//!   name comes from the resolved directory leaf, which only the filesystem can
+//!   answer, run through devpod's own `ToID` rule.
 //!
 //! # Ported from `devlaunch/dl.py`
 //!
@@ -167,9 +168,11 @@ pub enum SpecIdentity<'a> {
     /// (Capped anyway, so no caller can get a string from here that overflows
     /// devpod's limit.)
     RepoLabel(String),
-    /// A path spec. devpod names it after the resolved directory, so the leaf is
-    /// the filesystem's answer, not this module's: expand `~`, resolve, take the
-    /// final component. The path carried here is the spec text before any `@`.
+    /// A path spec. Its id comes from the resolved directory, so the leaf is the
+    /// filesystem's answer, not this module's: expand `~`, resolve, take the
+    /// final component. That component is not yet an id. The caller runs it
+    /// through devpod's own `ToID` rule, so `FIC_Interface` is `ficinterface`
+    /// (`launch::plan`). The path carried here is the spec text before any `@`.
     PathLeaf(&'a str),
     /// The spec already named a workspace; it is its own identity.
     ExistingName(&'a str),

@@ -278,7 +278,8 @@ pub(crate) fn validate_ref_name(name: &str, part: NamePart) -> Result<(), Unsafe
 ///
 /// This is the only slug rule in devlaunch. It applies to the repo part and the
 /// ref part alike, so `my_repo` becomes `my-repo` everywhere rather than
-/// `my-repo` in one derivation and `myrepo` in another.
+/// `my-repo` in one derivation and `myrepo` in another. A path spec's id is the
+/// one id not made with it: that one is devpod's, see [`path_workspace_id`].
 pub(crate) fn slug(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut in_run = false;
@@ -293,6 +294,49 @@ pub(crate) fn slug(text: &str) -> String {
     }
     out.trim_matches('-').to_string()
 }
+
+/// Workspace id for a path spec whose directory is named *leaf*: the id devpod
+/// itself gives that directory when no `--id` is passed.
+///
+/// This is devpod's `ToID` (`pkg/workspace/id.go`) for a local path, and not
+/// [`slug`], on purpose. devpod refuses an explicit `--id` outside `[a-z0-9-]` or
+/// past 48 characters, so the raw leaf could not be sent. `ToID` keeps a name
+/// devpod already accepts byte for byte unless it starts or ends with a dash
+/// (`a--b` stays `a--b`, which `slug` would collapse; `-odd` becomes `odd`), and
+/// it names the workspace what a plain `devpod up <path>` names it when no
+/// directory above the leaf has an `@` in it (`ToID` splits the whole absolute
+/// path at an `@`). The rule, in `ToID`'s order:
+/// lowercase, drop a `.git` suffix, turn every character that is not a word
+/// character or a dash into a dash, delete what is still not `[0-9a-z-]` (the
+/// `_`), cut to 48, trim dashes. `FIC_Interface` is `ficinterface`.
+///
+/// Go's `strings.ToLower` maps rune to rune, so only two non-ASCII letters
+/// lowercase to ASCII there: `İ` (U+0130) to `i` and the Kelvin sign (U+212A) to
+/// `k`. Every other non-ASCII character is one dash, as `[^\w\-]` matches it.
+pub(crate) fn path_workspace_id(leaf: &str) -> String {
+    let lowered: String = leaf
+        .chars()
+        .map(|c| match c {
+            '\u{130}' => 'i',
+            '\u{212A}' => 'k',
+            _ => c.to_ascii_lowercase(),
+        })
+        .collect();
+    let stem = lowered.strip_suffix(".git").unwrap_or(&lowered);
+    let id: String = stem
+        .chars()
+        .filter_map(|c| match c {
+            'a'..='z' | '0'..='9' | '-' => Some(c),
+            '_' => None,
+            _ => Some('-'),
+        })
+        .take(DEVPOD_ID_LIMIT)
+        .collect();
+    id.trim_matches('-').to_owned()
+}
+
+/// devpod's own ceiling on a workspace id, which `ToID` cuts to.
+const DEVPOD_ID_LIMIT: usize = 48;
 
 /// Workspace id for a git source that names no ref, e.g. `github.com/owner/repo`.
 ///

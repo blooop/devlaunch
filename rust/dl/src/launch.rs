@@ -143,7 +143,8 @@ pub(crate) fn render_launch<'r>(
     resume: Option<AgentResume>,
 ) -> Ran {
     // A path or git source whose derived id is empty — `dl /`, `//`, `/.`, `/..`,
-    // all of which normalise to a leaf with no final component — would otherwise
+    // all of which normalise to a leaf with no final component, and a folder like
+    // `___` that devpod's `ToID` rule empties (`_` is deleted) — would otherwise
     // hand devpod `--id ""` and run a nameless workspace to a reported success
     // (exit 0). Python derived the same empty name and devpod's own lookup failed
     // it (exit 1). An empty id names nothing, so this refuses it before opening
@@ -154,7 +155,7 @@ pub(crate) fn render_launch<'r>(
         && workspace_id.is_empty()
     {
         eprintln!(
-            "{} does not name a workspace: its path has no final component to name one after.",
+            "{} does not name a workspace: the end of its path has no letter or digit to make an id from.",
             render::python_repr(target)
         );
         // Nothing was opened, so there is nothing for `--rm` to close.

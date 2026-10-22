@@ -989,6 +989,24 @@ fn a_path_spec_is_named_lexically_symlinks_and_all() {
     );
 }
 
+#[test]
+fn a_path_spec_whose_directory_devpod_cannot_take_as_an_id_is_sent_the_id_devpod_derives() {
+    // `dl ./FIC_Interface` used to send `--id FIC_Interface`, and devpod refuses an
+    // explicit id outside `[a-z0-9-]` before it does anything else. The id here is
+    // the one devpod's own `ToID` gives the same directory when no `--id` is
+    // passed: lowercased, `.` turned into a dash, `_` dropped.
+    let world = World::with(&[]);
+    let run = world.dl(&["{ROOT}/foreign/My_Proj.v2"]);
+    run.exited(0);
+    assert_eq!(
+        up_argv(&world),
+        format!(
+            "devpod up {{ROOT}}/foreign/My_Proj.v2 --id myproj-v2 --ide none --init-env \
+             DEVLAUNCH_WORKSPACE_ID=myproj-v2 {PIXI}"
+        )
+    );
+}
+
 // ===========================================================================
 // dl <ws> up, code
 // ===========================================================================
