@@ -1,5 +1,6 @@
 //! `dl <ws> rm`: a workspace, its clone, and the volumes its devcontainer made.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -19,6 +20,7 @@ use crate::flows::kill;
 use crate::flows::listing::CommandContext;
 use crate::flows::orphan_containers::{self, OrphanSweep};
 use crate::flows::workspace_clone::{RemoveWorkspaceError, Removed, WorkspaceCloneManager};
+use crate::flows::workspace_volumes::{self, Recording, Swept};
 use crate::notices::Notices;
 use crate::runner::{Exit, OsFailure, Runner};
 
@@ -278,6 +280,10 @@ pub(crate) fn workspace_delete(
     // Named before the delete for the same reason, and before the clone goes
     // with it: the leftover sweep below matches containers by the clone's path.
     let clone_path = managed_clone(clones, storage, workspace_id);
+    // Read while the containers are still there: what they mount is the only
+    // record of the volumes beyond the two above, and `devpod delete` takes the
+    // containers away. Removed only once devpod has let go, below.
+    let mounted = workspace_volumes::record(context.runner(), devpod_home, workspace_id);
     // The lock line is answered the way a launch answers it (devlaunch#602): said,
     // and then *cleared*, by the same sweep `up` runs. It used to be said and
     // nothing more, with advice to run `kill` in another terminal, which left an
@@ -379,6 +385,10 @@ pub(crate) fn workspace_delete(
             Err(error)
         }
     };
+    let tried = sweep_mounted(context.runner(), workspace_id, mounted, notices);
+    let named = named.and_then(|names| {
+        NonEmpty::of(names.iter().filter(|name| !tried.contains(*name)).cloned())
+    });
     let volumes = sweep_volumes(context.runner(), named);
     match &volumes {
         VolumeSweep::Refused(refusal) => notices.say(LifecycleNotice::VolumesNotRemoved {
@@ -449,6 +459,55 @@ fn sweep_leftovers(
     }
 }
 
+/// Remove the volumes only this workspace's containers used, and say what
+/// became of them. See [`workspace_volumes`] for which volumes count.
+///
+/// Every outcome is a notice and none fails the delete: the workspace is gone
+/// whatever docker says about its volumes. Returns every volume it tried, so the
+/// template sweep after it leaves those alone.
+fn sweep_mounted(
+    runner: &dyn Runner,
+    workspace_id: &str,
+    mounted: Recording,
+    notices: &mut dyn Notices<LifecycleNotice>,
+) -> BTreeSet<String> {
+    let mounted = match mounted {
+        Recording::Read(mounted) => mounted,
+        Recording::Nothing => return BTreeSet::new(),
+        Recording::Unread { reason } => {
+            notices.say(LifecycleNotice::WorkspaceVolumesNotRead {
+                workspace_id: workspace_id.to_owned(),
+                reason,
+            });
+            return BTreeSet::new();
+        }
+    };
+    let tried: BTreeSet<String> = workspace_volumes::owned(&mounted).into_iter().collect();
+    let mut removed = Vec::new();
+    for swept in workspace_volumes::sweep(runner, &mounted) {
+        match swept {
+            Swept::Removed(name) => removed.push(name),
+            Swept::NotRemoved { name, reason } => {
+                notices.say(LifecycleNotice::WorkspaceVolumeNotRemoved {
+                    workspace_id: workspace_id.to_owned(),
+                    name,
+                    reason,
+                });
+            }
+            // Something left uses it, so it is not this workspace's alone; and
+            // one already gone has nothing to say.
+            Swept::InUse(_) | Swept::Gone(_) => {}
+        }
+    }
+    if let Some(names) = NonEmpty::of(removed) {
+        notices.say(LifecycleNotice::WorkspaceVolumesRemoved {
+            workspace_id: workspace_id.to_owned(),
+            names,
+        });
+    }
+    tried
+}
+
 /// Remove the volumes `named`, and say what became of them.
 ///
 /// The one place a [`docker::Answer`] becomes a [`VolumeSweep`], so every removal
@@ -490,9 +549,8 @@ pub(super) fn sweep_volumes(runner: &dyn Runner, named: Option<NonEmpty<String>>
 /// disagree — a workspace opened before a rename, say. Neither *value* is guessed:
 /// a substitution that is not in the record names no volume. The two name
 /// **templates** are still this repository's own devcontainer and the
-/// `docker-in-docker` feature's, so a `mounts` entry naming some third volume is
-/// not swept — devlaunch#325's scope, and the follow-up that would end it is
-/// reading the mount sources out of the recorded merged config instead.
+/// `docker-in-docker` feature's; any other volume the workspace's containers
+/// mount is `workspace_volumes`'s to remove.
 ///
 /// [`sole_workspace_result`] is what finds the file, rather than a contexts walk of
 /// its own: an id under two contexts must answer nothing, and `devpod delete`

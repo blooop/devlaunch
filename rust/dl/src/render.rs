@@ -1261,6 +1261,25 @@ fn lifecycle_notice(notice: &LifecycleNotice) -> Option<String> {
             names,
             reason,
         } => leftovers_not_removed(workspace_id, names, reason),
+        LifecycleNotice::WorkspaceVolumesRemoved {
+            workspace_id,
+            names,
+        } => format!(
+            "Removed Docker volumes only {workspace_id} used: {}",
+            joined(names, ", ")
+        ),
+        LifecycleNotice::WorkspaceVolumeNotRemoved {
+            workspace_id,
+            name,
+            reason,
+        } => format!(
+            "Could not remove Docker volume {name} of {workspace_id} ({reason}). Remove it \
+             with: docker volume rm {name}"
+        ),
+        LifecycleNotice::WorkspaceVolumesNotRead {
+            workspace_id,
+            reason,
+        } => format!("Could not read which Docker volumes {workspace_id} used: {reason}"),
         LifecycleNotice::RecordNotDropped { path, refusal } => {
             format!(
                 "Could not drop the record for {}: {}",
@@ -6178,6 +6197,38 @@ mod tests {
         assert_eq!(
             removed.as_deref(),
             Some("Removed containers ws left behind: dev_ws, side_ws")
+        );
+
+        let volumes = lifecycle_notice(&LifecycleNotice::WorkspaceVolumesRemoved {
+            workspace_id: "ws".to_owned(),
+            names: NonEmpty::of(["ws-pixi".to_owned(), "dc_bazel-output".to_owned()])
+                .expect("two names"),
+        });
+        assert_eq!(
+            volumes.as_deref(),
+            Some("Removed Docker volumes only ws used: ws-pixi, dc_bazel-output")
+        );
+        let volume_kept = lifecycle_notice(&LifecycleNotice::WorkspaceVolumeNotRemoved {
+            workspace_id: "ws".to_owned(),
+            name: "ws-pixi".to_owned(),
+            reason: "docker volume rm failed".to_owned(),
+        });
+        assert_eq!(
+            volume_kept.as_deref(),
+            Some(
+                "Could not remove Docker volume ws-pixi of ws (docker volume rm failed). \
+                 Remove it with: docker volume rm ws-pixi"
+            )
+        );
+        let volumes_unread = lifecycle_notice(&LifecycleNotice::WorkspaceVolumesNotRead {
+            workspace_id: "ws".to_owned(),
+            reason: "docker ps failed (Code(1)): daemon down".to_owned(),
+        });
+        assert_eq!(
+            volumes_unread.as_deref(),
+            Some(
+                "Could not read which Docker volumes ws used: docker ps failed (Code(1)): daemon down"
+            )
         );
 
         let refused = lifecycle_notice(&LifecycleNotice::LeftoverContainersNotRemoved {

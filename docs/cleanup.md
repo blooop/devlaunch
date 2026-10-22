@@ -24,8 +24,8 @@ workspaces](#cleaning-up-workspaces)), and **the named Docker volumes that
 workspace's devcontainer created**. Every path that removes a workspace does all three:
 `dl <ws> rm`, `dl <ws> rme`, `dl <ws> --rm`, and `--purge`.
 
-Two volumes per workspace, both named from what devpod recorded substituting into
-the devcontainer:
+Two of them are named from what devpod recorded substituting into the
+devcontainer:
 
 | volume | declared by |
 | --- | --- |
@@ -41,11 +41,11 @@ removes the container and never a volume, and Docker never garbage-collects a
 Three things about how the removal behaves, all of them so that a delete cannot
 be made worse by it:
 
-- **The names are read from devpod's own record, never guessed from a pattern.**
-  devpod writes down what it substituted, and that is the only thing consulted. A
-  workspace devpod never finished creating has no such record, so nothing is named
-  and no `docker` command runs at all, rather than one carrying a made-up name,
-  which would be somebody else's disk.
+- **These two names are read from devpod's own record, never guessed.** devpod
+  writes down what it substituted, and that is the only thing consulted. A
+  workspace devpod never finished creating has no such record, so neither is
+  named, rather than a made-up name, which would be somebody else's disk. Every
+  other volume is one a workspace container mounts, [below](#every-other-volume-only-the-workspace-used).
 - **It is best-effort, and cannot fail a delete.** The workspace is gone either
   way; reporting failure would send you looking for a workspace that is not there.
   A volume Docker will not release, one another container still holds, say, is a
@@ -54,6 +54,31 @@ be made worse by it:
 - **Images are still yours.** See [the disk neither command
   frees](#the-disk-neither-command-frees). That boundary is about images now, and
   deliberately stays there.
+
+#### Every other volume only the workspace used
+
+The two templates above are not the whole list. A repository can declare any named
+volume: a compose named volume over a build cache, or a pixi volume it spells its own
+way. So `rm`, `rme`, `kill` and `--rm` also read, before `devpod delete`, the named
+volumes that every container of the workspace mounts: the dev container (by devpod's
+`dev.containers.id` label) and its compose sidecars (by the compose project devpod names
+after the same uid). After the delete, each such volume is removed when both of these
+hold:
+
+- **No container that is left uses it.** dl asks Docker after the workspace's own
+  containers are gone, so a volume another workspace still mounts stays.
+- **It is the workspace's own.** Compose made it for the workspace's project under
+  compose's default name, `<project>_<volume>`, or its name holds the workspace id or
+  devpod's uid as a whole part, as `<id>-pixi` does.
+
+Two kinds of volume are shared on purpose and always stay: a name the devcontainer config
+spells literally, with no `${...}` in it (`team-tracker-pixi`), and a volume compose made
+under an explicit `name:`, which compose labels with a name other than `<project>_<volume>`.
+A volume compose did not make, such as one marked `external: true`, has no compose label:
+it stays only when its name holds neither the workspace id nor devpod's uid. Each volume removed is named on stderr. A volume Docker will not
+remove is a line, never a failed delete. A delete that the guard refuses, that devpod
+refuses, or a `kill` whose `devpod delete` times out, removes no volume. `stop`, `up`, `recreate` and `--refresh-stale` never
+run this, so the caches a recreate keeps stay.
 
 ### The volumes of a workspace devpod has already forgotten
 

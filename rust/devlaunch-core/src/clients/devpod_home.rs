@@ -450,6 +450,17 @@ pub(crate) fn sole_workspace_result(
     result.is_file().then_some(result)
 }
 
+/// devpod's own record (`workspace.json`) for this workspace, when exactly one
+/// context holds it.
+pub(crate) fn sole_workspace_record(
+    devpod_home: Option<&DevpodHome>,
+    workspace_id: &str,
+) -> Option<PathBuf> {
+    let home = devpod_home?;
+    let context = home.sole_context_holding(workspace_id)?;
+    Some(home.record(&context, workspace_id))
+}
+
 /// Where this workspace's busy marker would be, if the context is unambiguous.
 ///
 /// Nothing for every ambiguity [`sole_workspace_result`] answers nothing to, and
