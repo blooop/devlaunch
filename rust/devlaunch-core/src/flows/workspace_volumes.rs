@@ -1171,7 +1171,7 @@ mod tests {
     #[test]
     fn a_nested_include_is_relative_to_the_file_that_includes_it() {
         // compose loads an included file with its own directory as its project
-        // directory, so `deep/inner.yml` named in `sub/a.yml` is `sub/deep/inner.yml`.
+        // directory, so `deep/inner.yml` named in `inc/a.yml` is `inc/deep/inner.yml`.
         assert_eq!(
             externals_in(
                 &[
