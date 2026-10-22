@@ -761,6 +761,70 @@ mod tests {
         );
     }
 
+    /// What docker would print for `format` and one container with these labels
+    /// and named volumes: each `{{index .Config.Labels "KEY"}}` becomes that
+    /// label, and the `{{range .Mounts}}` body repeats once per volume.
+    fn render_inspect(format: &str, labels: &[(&str, &str)], volumes: &[&str]) -> String {
+        let mut out = format.to_owned();
+        for (key, value) in labels {
+            out = out.replace(&format!("{{{{index .Config.Labels \"{key}\"}}}}"), value);
+        }
+        let (head, rest) = out
+            .split_once("{{range .Mounts}}")
+            .expect("the format ranges over the mounts");
+        let (body, tail) = rest
+            .rsplit_once("{{end}}{{end}}")
+            .expect("the mounts range closes");
+        let body = body.replace("{{if eq .Type \"volume\"}}", "");
+        let mounts: String = volumes
+            .iter()
+            .map(|name| body.replace("{{.Name}}", name))
+            .collect();
+        let rendered = format!("{head}{mounts}{tail}\n");
+        assert!(
+            !rendered.contains("{{"),
+            "an action the stand-in does not know: {rendered:?}"
+        );
+        rendered
+    }
+
+    #[test]
+    fn the_inspect_format_prints_the_fields_in_the_order_the_parser_reads() {
+        let asked = FakeRunner::new();
+        asked.script(["docker", "inspect"], Response::stdout(""));
+        let ids = NonEmpty::of(["aaa".to_owned()]).expect("one id");
+        let _ = container_mounts(&asked, &ids);
+        let argv = asked.argvs().pop().expect("one inspect");
+        let format = argv
+            .iter()
+            .skip_while(|arg| *arg != "--format")
+            .nth(1)
+            .expect("a --format");
+
+        let printed = render_inspect(
+            format,
+            &[
+                ("com.docker.compose.project", "proj"),
+                (
+                    "com.docker.compose.project.config_files",
+                    "/a/compose.yml,/b/override.yml",
+                ),
+            ],
+            &["v1", "v2"],
+        );
+        let docker = FakeRunner::new();
+        docker.script(["docker", "inspect"], Response::stdout(printed));
+
+        assert_eq!(
+            container_mounts(&docker, &ids).expect("an answer"),
+            [ContainerMounts {
+                project: Some("proj".to_owned()),
+                config_files: vec!["/a/compose.yml".into(), "/b/override.yml".into()],
+                volumes: vec!["v1".to_owned(), "v2".to_owned()],
+            }]
+        );
+    }
+
     #[test]
     fn a_compose_projects_containers_are_asked_for_by_label() {
         let fake = FakeRunner::new();
