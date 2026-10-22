@@ -22,6 +22,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   keeps key order, indentation and file mode, writes a scratch file and renames it, and
   follows a link only to another `.claude.json` inside the same directory. See docs/workspace-tools.md, "The trust
   prompt, which is keyed on a path".
+- **A delete removes every named volume only that workspace used.** `rm`, `rme`, `kill` and
+  `--rm` used to remove two volumes named from fixed templates (`<basename>-pixi` and the
+  docker-in-docker one), so any other per-workspace volume, such as a compose named volume
+  over a build cache, outlived the workspace. Before `devpod delete`, dl now reads the named
+  volumes every container of the workspace mounts (the dev container and its compose
+  sidecars). After the delete it removes each one that no remaining container uses and that
+  is the workspace's own: compose made it for the workspace's project under compose's default
+  `<project>_<volume>` name, or its name holds the workspace id or devpod's uid as a whole
+  part. A name the devcontainer config spells literally (`team-tracker-pixi`) is shared and
+  stays, and so does a volume compose made under an explicit `name:`. A volume compose did
+  not make (`external: true`, or one created before compose ran) has no compose label, so
+  it stays only when its name holds neither the id nor the uid. Each removed volume is named;
+  one docker will not remove is a line, never a failed delete. A `kill` whose delete times
+  out removes no volume. `stop`, `up`, `recreate` and
+  `--refresh-stale` keep every volume.
 
 ## [0.63.0] - 2026-10-22
 

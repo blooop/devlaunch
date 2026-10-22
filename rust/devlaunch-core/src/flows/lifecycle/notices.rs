@@ -66,6 +66,25 @@ pub enum LifecycleNotice {
         names: NonEmpty<String>,
         reason: String,
     },
+    /// Named docker volumes only this workspace's containers used were removed
+    /// with it, named. See `flows::workspace_volumes` for which volumes count.
+    WorkspaceVolumesRemoved {
+        workspace_id: String,
+        names: NonEmpty<String>,
+    },
+    /// One of this workspace's own volumes is still on this machine, and why.
+    /// The workspace is gone either way, so this is a notice.
+    WorkspaceVolumeNotRemoved {
+        workspace_id: String,
+        name: String,
+        reason: String,
+    },
+    /// docker would not say what this workspace's containers mounted, so none of
+    /// its own volumes beyond the two devlaunch names was removed.
+    WorkspaceVolumesNotRead {
+        workspace_id: String,
+        reason: String,
+    },
     /// A clone directory went and its `metadata.json` record could not be
     /// dropped. Named by the path, which is what the record described.
     ///

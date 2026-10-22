@@ -29,6 +29,8 @@ pub mod listing;
 pub mod migration;
 // Crate-private: what a sweep found reaches the binary as a notice.
 pub(crate) mod orphan_containers;
+// Crate-private: what a delete removed reaches the binary as a notice.
+pub(crate) mod workspace_volumes;
 // binary surface — not part of the frozen wf API (#251 §7)
 pub mod provision;
 // binary surface — not part of the frozen wf API (#251 §7)

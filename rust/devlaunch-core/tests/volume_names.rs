@@ -1,12 +1,12 @@
 //! Where a docker volume name can come from, and where it can be removed.
 //!
 //! devlaunch#325's rule is that **no volume name is ever synthesized from a
-//! pattern**: every name handed to `docker volume rm` originates in a substitution
-//! devpod performed and wrote down. devlaunch#451 asked for a test that no removal
+//! pattern**: every name handed to `docker volume rm` is one devpod wrote down, or
+//! one `docker inspect` read off a container of the workspace. devlaunch#451 asked for a test that no removal
 //! is issued for a name from anywhere else, and asked for it *by construction* —
 //! the absence of a path rather than a guard firing at runtime.
 //!
-//! That is what this is. Two spellings and one call site:
+//! That is what this is. Two spellings and two call sites:
 //!
 //! - The two name **templates** — `<basename>-pixi` and
 //!   `dind-var-lib-docker-<devcontainerId>` — are written in `flows::kept_copies`
@@ -14,9 +14,10 @@
 //!   `Substitutions::volume_names`, and a `Substitutions` can only be built by
 //!   parsing bytes devpod wrote or devlaunch copied. There is no constructor for an
 //!   inferred name to reach.
-//! - `clients::docker::remove_volumes` is *called* from exactly one place,
-//!   `flows::lifecycle::sweep_volumes`, so there is one door and it takes the names
-//!   those two reads produce.
+//! - `clients::docker::remove_volumes` and `remove_volume` are *called* from two
+//!   places: `flows::lifecycle::sweep_volumes`, which takes the names those
+//!   substitutions produce, and `flows::workspace_volumes`, which takes the names
+//!   the workspace's containers mount.
 //!
 //! Neither half is a behaviour test; both are guards, in `tests/devpod_layout.rs`'s
 //! shape and for its reason. The failure they catch is not a wrong answer — it is a
@@ -35,9 +36,12 @@ const NAMER: &str = "flows/kept_copies.rs";
 /// this guard is for elsewhere.
 const TEMPLATES: [&str; 2] = ["{basename}-pixi", "dind-var-lib-docker-{"];
 
-/// The one function that can remove a volume, and the one module that may call it.
-const REMOVAL: &str = "remove_volumes(";
+/// The functions that can remove a volume, and the modules that may call them.
+const REMOVAL: [&str; 2] = ["remove_volumes(", "remove_volume("];
 const DOOR: &str = "flows/lifecycle/delete.rs";
+/// The second door: a volume a deleted workspace's containers mounted, removed
+/// one at a time once nothing left uses it.
+const MOUNTED_DOOR: &str = "flows/workspace_volumes.rs";
 const DOORWAY: &str = "clients/docker.rs";
 
 fn crate_src() -> PathBuf {
@@ -112,23 +116,22 @@ fn that_module_does_build_them() {
     );
 }
 
-/// One door to `docker volume rm`, so every name that reaches docker went through
-/// the one function that turns docker's answer into a verdict.
-///
-/// Both reads — devpod's live create result at delete time, and devlaunch's kept
-/// copy at prune time — arrive at that same door, which is what makes "no name from
-/// anywhere else" checkable at all.
+/// Two doors to `docker volume rm`, so every name that reaches docker came from a
+/// read: devpod's create result or devlaunch's kept copy at [`DOOR`], a workspace
+/// container's mounts at [`MOUNTED_DOOR`].
 #[test]
 fn only_one_module_can_remove_a_volume() {
     let root = crate_src();
-    let strays: Vec<String> = mentions(&root, &[REMOVAL])
+    let strays: Vec<String> = mentions(&root, &REMOVAL)
         .into_iter()
-        .filter(|(file, _)| file != Path::new(DOOR) && file != Path::new(DOORWAY))
+        .filter(|(file, _)| {
+            file != Path::new(DOOR) && file != Path::new(MOUNTED_DOOR) && file != Path::new(DOORWAY)
+        })
         .map(|(file, line)| format!("  src/{}:{line}", file.display()))
         .collect();
     assert!(
         strays.is_empty(),
-        "`docker volume rm` is reachable outside {DOOR}:\n{}",
+        "`docker volume rm` is reachable outside {DOOR} and {MOUNTED_DOOR}:\n{}",
         strays.join("\n")
     );
 }
