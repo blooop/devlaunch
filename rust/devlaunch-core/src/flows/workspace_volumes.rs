@@ -324,10 +324,10 @@ fn external_volumes(
     }
     let mut names = BTreeSet::new();
     for (key, entry) in declared {
-        if entry.external != Some(true) {
+        let Some(External::Yes { legacy_name }) = entry.external else {
             continue;
-        }
-        let name = entry.name.or(entry.legacy_name).unwrap_or(key);
+        };
+        let name = entry.name.or(legacy_name).unwrap_or(key);
         let Some(literal) = unescape_dollars(&name) else {
             return Err(format!(
                 "the compose files name external volume {name} with a variable"
@@ -341,9 +341,18 @@ fn external_volumes(
 /// What the compose files so far say of one top-level volume.
 #[derive(Default)]
 struct Declared {
-    external: Option<bool>,
-    legacy_name: Option<String>,
+    /// `None` until a file says `external:`.
+    external: Option<External>,
     name: Option<String>,
+}
+
+/// A volume's `external:`, as the last file that set it said.
+enum External {
+    /// `external: false`.
+    No,
+    /// `external: true`, or the legacy `external: { name: }` form with the name
+    /// it gives.
+    Yes { legacy_name: Option<String> },
 }
 
 /// Add what `file` declares under its top-level `volumes:` to `declared`, after
@@ -395,13 +404,12 @@ fn declare_file(
             entry.name = Some(name.to_owned());
         }
         match &spec["external"] {
-            Yaml::Boolean(external) => {
-                entry.external = Some(*external);
-                entry.legacy_name = None;
-            }
+            Yaml::Boolean(false) => entry.external = Some(External::No),
+            Yaml::Boolean(true) => entry.external = Some(External::Yes { legacy_name: None }),
             external @ Yaml::Hash(_) => {
-                entry.external = Some(true);
-                entry.legacy_name = external["name"].as_str().map(str::to_owned);
+                entry.external = Some(External::Yes {
+                    legacy_name: external["name"].as_str().map(str::to_owned),
+                });
             }
             Yaml::BadValue | Yaml::Null => {}
             _ => {
