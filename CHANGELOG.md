@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.63.1] - 2026-10-22
+
 ### Fixed
 
 - **A new workspace is trusted by Claude Code when the container has no `python3`.**
