@@ -33,8 +33,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   part. A name the devcontainer config spells literally (`team-tracker-pixi`) is shared and
   stays, and so does a volume compose made under an explicit `name:`, and so does a volume
   the compose files mark `external: true` (or `external: { name: }`), read off the files
-  named by the containers' `com.docker.compose.project.config_files` label. If one of those
-  files cannot be read or parsed, or names an external volume with a `$VAR` or `${...}` variable, the
+  named by the containers' `com.docker.compose.project.config_files` label and the files
+  they `include:`. If one of those files cannot be read or parsed, or names an external
+  volume or an included path with a `$VAR` or `${...}` variable, the
   delete removes none of these volumes and says why. A volume created before compose ran,
   and not marked external, has no compose label, so it stays only when its name holds
   neither the id nor the uid. Each removed volume is named;

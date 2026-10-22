@@ -28,9 +28,10 @@
 //! `<project>_<volume>`) is shared across projects for the same reason, and so is a
 //! volume the compose file marks `external: true`: compose did not make it, so it
 //! carries no compose label, and it is read off the compose files instead (the
-//! ones the containers' `com.docker.compose.project.config_files` label names).
-//! A compose file that cannot be read, or an external name spelled with a
-//! variable, makes the whole read [`Recording::Unread`]: no volume of that
+//! ones the containers' `com.docker.compose.project.config_files` label names,
+//! and the files those `include:`).
+//! A compose file that cannot be read, or an external name or included path
+//! spelled with a variable, makes the whole read [`Recording::Unread`]: no volume of that
 //! workspace is removed beyond the two templates, because keeping a volume is
 //! the mistake that can be undone.
 //!
@@ -184,21 +185,25 @@ fn read_mounts(runner: &dyn Runner, uid: &str, mounted: &mut Mounted) -> Result<
         return Ok(());
     };
     let mut projects = BTreeSet::new();
-    let mut project_files: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
-    let mut projectless_files: Vec<Vec<PathBuf>> = Vec::new();
+    let mut project_files: BTreeMap<String, ComposeFiles> = BTreeMap::new();
+    let mut projectless_files: Vec<ComposeFiles> = Vec::new();
     for container in docker::container_mounts(runner, &ids)? {
         match container.project {
             Some(project) => {
-                let files = project_files.entry(project.clone()).or_default();
+                let group = project_files.entry(project.clone()).or_default();
+                group.working_dir = group.working_dir.take().or(container.working_dir);
                 for file in container.config_files {
-                    if !files.contains(&file) {
-                        files.push(file);
+                    if !group.files.contains(&file) {
+                        group.files.push(file);
                     }
                 }
                 projects.insert(project);
             }
             None if !container.config_files.is_empty() => {
-                projectless_files.push(container.config_files);
+                projectless_files.push(ComposeFiles {
+                    working_dir: container.working_dir,
+                    files: container.config_files,
+                });
             }
             None => {}
         }
@@ -207,10 +212,11 @@ fn read_mounts(runner: &dyn Runner, uid: &str, mounted: &mut Mounted) -> Result<
     if mounted.volumes.is_empty() {
         return Ok(());
     }
-    for files in project_files.values().chain(&projectless_files) {
-        mounted
-            .literal
-            .extend(external_volumes(files).map_err(Unlisted::Failed)?);
+    for group in project_files.values().chain(&projectless_files) {
+        mounted.literal.extend(
+            external_volumes(group.working_dir.as_deref(), &group.files)
+                .map_err(Unlisted::Failed)?,
+        );
     }
     for volume in docker::compose_volumes(runner)? {
         if !mounted.volumes.contains(&volume.name) {
@@ -223,6 +229,14 @@ fn read_mounts(runner: &dyn Runner, uid: &str, mounted: &mut Mounted) -> Result<
         }
     }
     Ok(())
+}
+
+/// The compose files of one project, and the directory compose resolved their
+/// relative paths against.
+#[derive(Default)]
+struct ComposeFiles {
+    working_dir: Option<PathBuf>,
+    files: Vec<PathBuf>,
 }
 
 /// Remove each owned volume nothing left uses, after the workspace's own
@@ -291,53 +305,22 @@ fn literal_volumes(result: &serde_json::Value) -> BTreeSet<String> {
 /// map (compose reads `"true"` or `yes` as true), or a name with a `$` variable in
 /// it that only compose's environment could expand, is an error, because a volume the
 /// read cannot name is one the sweep cannot be sure to spare.
-fn external_volumes(files: &[PathBuf]) -> Result<BTreeSet<String>, String> {
-    #[derive(Default)]
-    struct Declared {
-        external: Option<bool>,
-        legacy_name: Option<String>,
-        name: Option<String>,
-    }
+///
+/// A file's `include:` is followed, because an included file's top-level
+/// `volumes:` join the project: [`declare_file`] says how. A service's `extends:`
+/// is not, because it brings in one service and none of the base file's
+/// top-level volumes: compose refuses a service whose volume only the base file
+/// declares.
+fn external_volumes(
+    working_dir: Option<&Path>,
+    files: &[PathBuf],
+) -> Result<BTreeSet<String>, String> {
+    let project_dir = working_dir
+        .or_else(|| files.first().and_then(|file| file.parent()))
+        .unwrap_or(Path::new(""));
     let mut declared: IndexMap<String, Declared> = IndexMap::new();
     for file in files {
-        let text = std::fs::read_to_string(file)
-            .map_err(|error| format!("could not read compose file {}: {error}", file.display()))?;
-        let documents = YamlLoader::load_from_str(&text)
-            .map_err(|error| format!("could not parse compose file {}: {error}", file.display()))?;
-        let Some(document) = documents.first() else {
-            continue;
-        };
-        let document = apply_merge_keys(document)
-            .map_err(|error| format!("could not read compose file {}: {error}", file.display()))?;
-        let Some(volumes) = document["volumes"].as_hash() else {
-            continue;
-        };
-        for (key, spec) in volumes {
-            let Some(key) = yaml_text(key) else {
-                continue;
-            };
-            let entry = declared.entry(key.clone()).or_default();
-            if let Some(name) = spec["name"].as_str() {
-                entry.name = Some(name.to_owned());
-            }
-            match &spec["external"] {
-                Yaml::Boolean(external) => {
-                    entry.external = Some(*external);
-                    entry.legacy_name = None;
-                }
-                external @ Yaml::Hash(_) => {
-                    entry.external = Some(true);
-                    entry.legacy_name = external["name"].as_str().map(str::to_owned);
-                }
-                Yaml::BadValue | Yaml::Null => {}
-                _ => {
-                    return Err(format!(
-                        "compose file {} marks volume {key} external with a value that is not a bool",
-                        file.display()
-                    ));
-                }
-            }
-        }
+        declare_file(file, project_dir, &mut declared, &mut Vec::new())?;
     }
     let mut names = BTreeSet::new();
     for (key, entry) in declared {
@@ -353,6 +336,152 @@ fn external_volumes(files: &[PathBuf]) -> Result<BTreeSet<String>, String> {
         names.insert(literal);
     }
     Ok(names)
+}
+
+/// What the compose files so far say of one top-level volume.
+#[derive(Default)]
+struct Declared {
+    external: Option<bool>,
+    legacy_name: Option<String>,
+    name: Option<String>,
+}
+
+/// Add what `file` declares under its top-level `volumes:` to `declared`, after
+/// what the files it includes declare.
+///
+/// compose resolves an `include:` path against the project directory of the file
+/// that names it: `project_dir`, for a file compose was given, or for an
+/// included file the directory of the first of its paths, or the
+/// `project_directory:` its entry names. The included files come first, so a
+/// later file still overrides what an earlier one included. `including` is the
+/// chain of files being read, to refuse a file that includes itself.
+fn declare_file(
+    file: &Path,
+    project_dir: &Path,
+    declared: &mut IndexMap<String, Declared>,
+    including: &mut Vec<PathBuf>,
+) -> Result<(), String> {
+    let identity = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_owned());
+    if including.contains(&identity) {
+        return Err(format!("compose file {} includes itself", file.display()));
+    }
+    let text = std::fs::read_to_string(file)
+        .map_err(|error| format!("could not read compose file {}: {error}", file.display()))?;
+    let documents = YamlLoader::load_from_str(&text)
+        .map_err(|error| format!("could not parse compose file {}: {error}", file.display()))?;
+    let Some(document) = documents.first() else {
+        return Ok(());
+    };
+    let document = apply_merge_keys(document)
+        .map_err(|error| format!("could not read compose file {}: {error}", file.display()))?;
+    let included = includes(&document, project_dir)
+        .map_err(|error| format!("could not read compose file {}: {error}", file.display()))?;
+    including.push(identity);
+    for include in included {
+        for path in &include.paths {
+            declare_file(path, &include.project_dir, declared, including)?;
+        }
+    }
+    including.pop();
+    let Some(volumes) = document["volumes"].as_hash() else {
+        return Ok(());
+    };
+    for (key, spec) in volumes {
+        let Some(key) = yaml_text(key) else {
+            continue;
+        };
+        let entry = declared.entry(key.clone()).or_default();
+        if let Some(name) = spec["name"].as_str() {
+            entry.name = Some(name.to_owned());
+        }
+        match &spec["external"] {
+            Yaml::Boolean(external) => {
+                entry.external = Some(*external);
+                entry.legacy_name = None;
+            }
+            external @ Yaml::Hash(_) => {
+                entry.external = Some(true);
+                entry.legacy_name = external["name"].as_str().map(str::to_owned);
+            }
+            Yaml::BadValue | Yaml::Null => {}
+            _ => {
+                return Err(format!(
+                    "compose file {} marks volume {key} external with a value that is not a bool",
+                    file.display()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// One entry of a compose file's `include:`: the files it loads, merged in
+/// order, and the project directory their own relative paths resolve against.
+struct Include {
+    paths: Vec<PathBuf>,
+    project_dir: PathBuf,
+}
+
+/// The entries of `document`'s `include:`, its relative paths resolved against
+/// `project_dir`. An entry is a path, or a map whose `path:` is a path or a list
+/// of them, with an optional `project_directory:`. Anything else, or a path with
+/// a `$` variable in it, is an error.
+fn includes(document: &Yaml, project_dir: &Path) -> Result<Vec<Include>, String> {
+    let entries = match &document["include"] {
+        Yaml::BadValue | Yaml::Null => return Ok(Vec::new()),
+        Yaml::Array(entries) => entries,
+        _ => return Err("an `include:` that is not a list".to_owned()),
+    };
+    let resolve = |path: &str| {
+        unescape_dollars(path)
+            .map(|path| project_dir.join(path))
+            .ok_or_else(|| format!("an `include:` path {path} with a variable"))
+    };
+    entries
+        .iter()
+        .map(|entry| {
+            let (paths, directory) = match entry {
+                Yaml::String(path) => (vec![resolve(path)?], None),
+                Yaml::Hash(_) => {
+                    let paths = match &entry["path"] {
+                        Yaml::String(path) => vec![resolve(path)?],
+                        Yaml::Array(paths) => paths
+                            .iter()
+                            .map(|path| {
+                                path.as_str()
+                                    .ok_or_else(|| {
+                                        "an `include:` path that is not a string".to_owned()
+                                    })
+                                    .and_then(&resolve)
+                            })
+                            .collect::<Result<_, _>>()?,
+                        _ => return Err("an `include:` entry with no path".to_owned()),
+                    };
+                    let directory = match &entry["project_directory"] {
+                        Yaml::BadValue | Yaml::Null => None,
+                        Yaml::String(directory) => Some(resolve(directory)?),
+                        _ => {
+                            return Err(
+                                "an `include:` project_directory that is not a string".to_owned()
+                            );
+                        }
+                    };
+                    (paths, directory)
+                }
+                _ => return Err("an `include:` entry that is not a path or a map".to_owned()),
+            };
+            let project_dir = match directory {
+                Some(directory) => directory,
+                None => paths
+                    .first()
+                    .ok_or_else(|| "an `include:` entry with no path".to_owned())?
+                    .parent()
+                    .unwrap_or(Path::new(""))
+                    .to_owned(),
+            };
+            Ok(Include { paths, project_dir })
+        })
+        .collect()
 }
 
 /// `value` with every YAML merge key (`<<: *anchor`, or `<<: [*a, *b]`) applied the
@@ -534,7 +663,7 @@ mod tests {
         fake.script(
             ["docker", "inspect"],
             Response::stdout(format!(
-                "{UID}\t<no value>\t{WS}-pixi\t{UID}_bazel-output\t\n{UID}\t<no value>\tteam-cache\t\n"
+                "{UID}\t<no value>\t<no value>\t{WS}-pixi\t{UID}_bazel-output\t\n{UID}\t<no value>\t<no value>\tteam-cache\t\n"
             )),
         );
         fake.script(
@@ -598,7 +727,7 @@ mod tests {
         fake.script(
             ["docker", "inspect"],
             Response::stdout(format!(
-                "{UID}\t<no value>\tkinisi-bazel-cache\t{UID}_bazel-output\t\n"
+                "{UID}\t<no value>\t<no value>\tkinisi-bazel-cache\t{UID}_bazel-output\t\n"
             )),
         );
         fake.script(["docker", "volume", "ls"], Response::stdout(volume_ls));
@@ -631,10 +760,22 @@ mod tests {
     /// container compose started from `compose_file` (written to a scratch dir)
     /// and mounts `app-cache` and `app-pixi`. Compose labelled neither volume.
     fn record_bare_app(compose_file: Option<&str>) -> Recording {
+        match compose_file {
+            Some(text) => record_bare_app_with(&[("docker-compose.yml", text)]),
+            None => record_bare_app_with(&[]),
+        }
+    }
+
+    /// [`record_bare_app`], with these files written under the scratch dir by
+    /// their relative paths: `docker-compose.yml` is the one compose labelled, and
+    /// the scratch dir is the project directory.
+    fn record_bare_app_with(files: &[(&str, &str)]) -> Recording {
         let dir = tempfile::tempdir().expect("a scratch dir");
         let path = dir.path().join("docker-compose.yml");
-        if let Some(text) = compose_file {
-            std::fs::write(&path, text).expect("a compose file");
+        for (relative, text) in files {
+            let file = dir.path().join(relative);
+            std::fs::create_dir_all(file.parent().expect("a parent")).expect("a dir");
+            std::fs::write(&file, text).expect("a compose file");
         }
         let home = devpod_home_with(&[("default", "app", None)]);
         std::fs::write(
@@ -654,8 +795,9 @@ mod tests {
         fake.script(
             ["docker", "inspect"],
             Response::stdout(format!(
-                "{UID}\t{}\tapp-cache\tapp-pixi\t\n",
-                path.display()
+                "{UID}\t{}\t{}\tapp-cache\tapp-pixi\t\n",
+                path.display(),
+                dir.path().display()
             )),
         );
         fake.script(["docker", "volume", "ls"], Response::stdout(""));
@@ -747,7 +889,7 @@ mod tests {
         )
         .expect("compose");
         assert_eq!(
-            external_volumes(&[file]),
+            external_volumes(None, &[file]),
             Ok(["app-cache", "app-named"]
                 .map(str::to_owned)
                 .into_iter()
@@ -785,7 +927,7 @@ mod tests {
         )
         .expect("compose");
         assert_eq!(
-            external_volumes(&[file]),
+            external_volumes(None, &[file]),
             Ok(["a$b".to_owned()].into_iter().collect())
         );
     }
@@ -810,7 +952,7 @@ mod tests {
         let over_path = dir.path().join("over.yml");
         std::fs::write(&base_path, base).expect("base");
         std::fs::write(&over_path, over).expect("override");
-        external_volumes(&[base_path, over_path])
+        external_volumes(None, &[base_path, over_path])
     }
 
     #[test]
@@ -847,7 +989,7 @@ mod tests {
         )
         .expect("override");
         assert_eq!(
-            external_volumes(&[base.clone(), over.clone()]),
+            external_volumes(None, &[base.clone(), over.clone()]),
             Ok(["app-b", "app-cache"]
                 .map(str::to_owned)
                 .into_iter()
@@ -856,7 +998,7 @@ mod tests {
         // And the other way round, `external` from the first file stays unless
         // the second says otherwise.
         assert_eq!(
-            external_volumes(&[over, base]),
+            external_volumes(None, &[over, base]),
             Ok(["app-b", "app-cache"]
                 .map(str::to_owned)
                 .into_iter()
@@ -893,7 +1035,7 @@ mod tests {
         fake.script(
             ["docker", "inspect"],
             Response::stdout(format!(
-                "project-a\t{}\tapp-cache\t\n{UID}\t{}\tapp-pixi\t\n",
+                "project-a\t{}\t<no value>\tapp-cache\t\n{UID}\t{}\t<no value>\tapp-pixi\t\n",
                 a.display(),
                 b.display()
             )),
@@ -905,6 +1047,217 @@ mod tests {
         };
 
         assert_eq!(owned(&m), ["app-pixi".to_owned()]);
+    }
+
+    #[test]
+    fn an_external_volume_an_included_file_declares_stays() {
+        let Recording::Read(m) = record_bare_app_with(&[
+            (
+                "docker-compose.yml",
+                "include:\n  - sub/cache.yml\nservices:\n  dev:\n    image: x\n",
+            ),
+            (
+                "sub/cache.yml",
+                "volumes:\n  cache:\n    external: true\n    name: app-cache\n",
+            ),
+        ]) else {
+            panic!("read");
+        };
+        assert_eq!(owned(&m), ["app-pixi".to_owned()]);
+    }
+
+    #[test]
+    fn an_include_that_cannot_be_read_removes_nothing() {
+        let recording = record_bare_app_with(&[("docker-compose.yml", "include: [missing.yml]\n")]);
+        assert!(
+            matches!(&recording, Recording::Unread { reason } if reason.contains("missing.yml")),
+            "{recording:?}"
+        );
+    }
+
+    /// Write `files` under a scratch dir and read the external volumes of the
+    /// ones `labelled` names, in that order, with the scratch dir's `working_dir`
+    /// subdirectory as compose's project directory when one is given.
+    fn externals_in(
+        files: &[(&str, &str)],
+        labelled: &[&str],
+        working_dir: Option<&str>,
+    ) -> Result<BTreeSet<String>, String> {
+        let dir = tempfile::tempdir().expect("a scratch dir");
+        for (relative, text) in files {
+            let file = dir.path().join(relative);
+            std::fs::create_dir_all(file.parent().expect("a parent")).expect("a dir");
+            std::fs::write(&file, text).expect("a compose file");
+        }
+        let working_dir = working_dir.map(|sub| dir.path().join(sub));
+        let labelled: Vec<PathBuf> = labelled.iter().map(|file| dir.path().join(file)).collect();
+        external_volumes(working_dir.as_deref(), &labelled)
+    }
+
+    fn names(names: &[&str]) -> Result<BTreeSet<String>, String> {
+        Ok(names.iter().map(|name| (*name).to_owned()).collect())
+    }
+
+    #[test]
+    fn a_nested_include_is_relative_to_the_file_that_includes_it() {
+        // compose loads an included file with its own directory as its project
+        // directory, so `deep/inner.yml` named in `sub/a.yml` is `sub/deep/inner.yml`.
+        assert_eq!(
+            externals_in(
+                &[
+                    ("compose.yml", "include:\n  - path: inc/a.yml\n"),
+                    ("inc/a.yml", "include: [deep/inner.yml]\n"),
+                    (
+                        "inc/deep/inner.yml",
+                        "volumes:\n  v:\n    external: true\n    name: deep-cache\n"
+                    ),
+                ],
+                &["compose.yml"],
+                None,
+            ),
+            names(&["deep-cache"])
+        );
+    }
+
+    #[test]
+    fn an_include_in_a_later_file_is_relative_to_the_project_directory() {
+        // compose resolves a top-level `include:` against the project directory,
+        // the first file's directory, even when a later `-f` file in another
+        // directory names it.
+        let files = [
+            ("a/compose.yml", "services:\n  x:\n    image: x\n"),
+            ("b/over.yml", "include: [inc.yml]\n"),
+            (
+                "a/inc.yml",
+                "volumes:\n  v:\n    external: true\n    name: in-a\n",
+            ),
+            (
+                "b/inc.yml",
+                "volumes:\n  v:\n    external: true\n    name: in-b\n",
+            ),
+        ];
+        let labelled = ["a/compose.yml", "b/over.yml"];
+        assert_eq!(externals_in(&files, &labelled, None), names(&["in-a"]));
+        // The label names the project directory when compose was given one.
+        assert_eq!(externals_in(&files, &labelled, Some("b")), names(&["in-b"]));
+    }
+
+    #[test]
+    fn an_include_with_a_list_of_paths_merges_them_in_order() {
+        assert_eq!(
+            externals_in(
+                &[
+                    (
+                        "compose.yml",
+                        "include:\n  - path: [inc/x.yml, inc/y.yml]\n"
+                    ),
+                    (
+                        "inc/x.yml",
+                        "volumes:\n  v:\n    external: true\n    name: x-cache\n  w:\n    external: true\n"
+                    ),
+                    ("inc/y.yml", "volumes:\n  v:\n    external: false\n"),
+                ],
+                &["compose.yml"],
+                None,
+            ),
+            names(&["w"])
+        );
+    }
+
+    #[test]
+    fn an_include_with_a_project_directory_resolves_its_own_includes_there() {
+        assert_eq!(
+            externals_in(
+                &[
+                    (
+                        "compose.yml",
+                        "include:\n  - path: inc/x.yml\n    project_directory: inc/other\n",
+                    ),
+                    ("inc/x.yml", "include: [y.yml]\n"),
+                    (
+                        "inc/other/y.yml",
+                        "volumes:\n  v:\n    external: true\n    name: other-cache\n"
+                    ),
+                ],
+                &["compose.yml"],
+                None,
+            ),
+            names(&["other-cache"])
+        );
+    }
+
+    #[test]
+    fn a_later_file_overrides_a_volume_an_earlier_file_included() {
+        assert_eq!(
+            externals_in(
+                &[
+                    ("compose.yml", "include: [inc/x.yml]\n"),
+                    ("over.yml", "volumes:\n  v:\n    external: false\n"),
+                    (
+                        "inc/x.yml",
+                        "volumes:\n  v:\n    external: true\n    name: x-cache\n"
+                    ),
+                ],
+                &["compose.yml", "over.yml"],
+                None,
+            ),
+            Ok(BTreeSet::new())
+        );
+    }
+
+    #[test]
+    fn an_include_path_with_a_variable_removes_nothing() {
+        let read = externals_in(
+            &[("compose.yml", "include:\n  - ${DIR}/x.yml\n")],
+            &["compose.yml"],
+            None,
+        );
+        assert!(
+            matches!(&read, Err(reason) if reason.contains("${DIR}/x.yml")),
+            "{read:?}"
+        );
+    }
+
+    #[test]
+    fn an_include_dl_cannot_read_as_paths_removes_nothing() {
+        for include in [
+            "include: inc/x.yml\n",
+            "include: [3]\n",
+            "include:\n  - project_directory: inc\n",
+            "include:\n  - path: []\n",
+            "include:\n  - path: [inc/x.yml, 4]\n",
+            "include:\n  - path: inc/x.yml\n    project_directory: [inc]\n",
+        ] {
+            let read = externals_in(
+                &[
+                    ("compose.yml", include),
+                    ("inc/x.yml", "volumes:\n  v:\n    external: true\n"),
+                ],
+                &["compose.yml"],
+                None,
+            );
+            assert!(
+                matches!(&read, Err(reason) if reason.contains("compose.yml")),
+                "{include}: {read:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_include_cycle_removes_nothing() {
+        let read = externals_in(
+            &[
+                ("compose.yml", "include: [inc/a.yml]\n"),
+                ("inc/a.yml", "include: [b.yml]\n"),
+                ("inc/b.yml", "include: [a.yml]\n"),
+            ],
+            &["compose.yml"],
+            None,
+        );
+        assert!(
+            matches!(&read, Err(reason) if reason.contains("a.yml")),
+            "{read:?}"
+        );
     }
 
     #[test]

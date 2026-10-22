@@ -2885,7 +2885,9 @@ impl Deleting {
         );
         fake.script(
             ["docker", "inspect"],
-            Response::stdout("<no value>\t<no value>\tr-main-aa-cache\tteam-tracker-pixi\t\n"),
+            Response::stdout(
+                "<no value>\t<no value>\t<no value>\tr-main-aa-cache\tteam-tracker-pixi\t\n",
+            ),
         );
         self
     }
@@ -3071,7 +3073,7 @@ fn a_volume_docker_refused_is_tried_once_and_said_once() {
     );
     fake.script(
         ["docker", "inspect"],
-        Response::stdout("<no value>\t<no value>\tdind-var-lib-docker-dc9a8b7c\t\n"),
+        Response::stdout("<no value>\t<no value>\t<no value>\tdind-var-lib-docker-dc9a8b7c\t\n"),
     );
     fake.script(
         ["docker", "volume", "rm", "dind-var-lib-docker-dc9a8b7c"],

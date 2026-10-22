@@ -315,16 +315,21 @@ pub(crate) struct ContainerMounts {
     /// started the container from, in the order it read them. Empty for a
     /// container compose did not start.
     pub(crate) config_files: Vec<PathBuf>,
+    /// `com.docker.compose.project.working_dir`: the project directory compose
+    /// resolved the files' relative paths against, an `include:` among them.
+    pub(crate) working_dir: Option<PathBuf>,
     /// The names of the mounts of `Type` `volume`. Binds are not named here.
     pub(crate) volumes: Vec<String>,
 }
 
 /// The `--format` [`container_mounts`] reads back: the compose project, the
-/// compose files (comma-separated, as compose writes the label), then each named
+/// compose files (comma-separated, as compose writes the label), the project
+/// directory, then each named
 /// volume, tab-separated, one line per container. docker prints `<no value>` for
 /// a label the container does not carry.
 const MOUNTS_FORMAT: &str = "{{index .Config.Labels \"com.docker.compose.project\"}}\t\
 {{index .Config.Labels \"com.docker.compose.project.config_files\"}}\t\
+{{index .Config.Labels \"com.docker.compose.project.working_dir\"}}\t\
 {{range .Mounts}}{{if eq .Type \"volume\"}}{{.Name}}\t{{end}}{{end}}";
 
 /// What these containers mount, in one `docker inspect`.
@@ -358,6 +363,7 @@ pub(crate) fn container_mounts(
                         .collect()
                 })
                 .unwrap_or_default();
+            let working_dir = label(fields.next()).map(PathBuf::from);
             let volumes = fields
                 .map(str::trim)
                 .filter(|v| !v.is_empty())
@@ -366,6 +372,7 @@ pub(crate) fn container_mounts(
             ContainerMounts {
                 project,
                 config_files,
+                working_dir,
                 volumes,
             }
         })
@@ -737,7 +744,7 @@ mod tests {
         fake.script(
             ["docker", "inspect"],
             Response::stdout(
-                "p\t/a/compose.yml,/b/override.yml\tv1\tv2\t\n<no value>\t<no value>\tv3\t\n",
+                "p\t/a/compose.yml,/b/override.yml\t/a\tv1\tv2\t\n<no value>\t<no value>\t<no value>\tv3\t\n",
             ),
         );
         let ids = NonEmpty::of(["aaa".to_owned(), "bbb".to_owned()]).expect("two ids");
@@ -750,11 +757,13 @@ mod tests {
                 ContainerMounts {
                     project: Some("p".to_owned()),
                     config_files: vec!["/a/compose.yml".into(), "/b/override.yml".into()],
+                    working_dir: Some("/a".into()),
                     volumes: vec!["v1".to_owned(), "v2".to_owned()],
                 },
                 ContainerMounts {
                     project: None,
                     config_files: Vec::new(),
+                    working_dir: None,
                     volumes: vec!["v3".to_owned()],
                 },
             ]
@@ -809,6 +818,7 @@ mod tests {
                     "com.docker.compose.project.config_files",
                     "/a/compose.yml,/b/override.yml",
                 ),
+                ("com.docker.compose.project.working_dir", "/a"),
             ],
             &["v1", "v2"],
         );
@@ -820,6 +830,7 @@ mod tests {
             [ContainerMounts {
                 project: Some("proj".to_owned()),
                 config_files: vec!["/a/compose.yml".into(), "/b/override.yml".into()],
+                working_dir: Some("/a".into()),
                 volumes: vec!["v1".to_owned(), "v2".to_owned()],
             }]
         );
