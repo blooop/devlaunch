@@ -50,6 +50,19 @@ def check(wheel: Path, version: str) -> list[str]:
         if member not in names:
             problems.append(f"the wheel has no {member}")
 
+    # Present is not enough: a binary the list does not name, such as a retired
+    # `aid`, would install onto PATH beside the ones that belong there.
+    scripts = f"devlaunch-{version}.data/scripts/"
+    extra = sorted(
+        name
+        for name in names
+        if name.startswith(scripts)
+        and name[len(scripts) :] not in BINARIES
+        and not name.endswith("/")
+    )
+    if extra:
+        problems.append(f"the wheel ships binaries it does not list in BINARIES: {extra}")
+
     # A Python module in here would mean something got packaged alongside the
     # binaries that should not be. The Python build this used to guard against is
     # gone entirely (#267), so today this is a guard against a future maturin or
