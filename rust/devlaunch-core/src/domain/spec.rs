@@ -21,7 +21,8 @@
 //!   all five cases; [`SpecIdentity`] separates them, because they are not
 //!   interchangeable: a branchless `owner/repo` yields only a repo *label* (there
 //!   is no ref to hash, so there is no identity to derive), and a path spec's
-//!   name is the resolved directory leaf, which only the filesystem can answer.
+//!   name comes from the resolved directory leaf, which only the filesystem can
+//!   answer, run through devpod's own `ToID` rule.
 //!
 //! # Ported from `devlaunch/dl.py`
 //!

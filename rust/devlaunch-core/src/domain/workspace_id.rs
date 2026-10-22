@@ -300,10 +300,12 @@ pub(crate) fn slug(text: &str) -> String {
 ///
 /// This is devpod's `ToID` (`pkg/workspace/id.go`) for a local path, and not
 /// [`slug`], on purpose. devpod refuses an explicit `--id` outside `[a-z0-9-]` or
-/// past 48 characters, so the raw leaf could not be sent. `ToID` keeps every name
-/// devpod already accepts byte for byte (`a--b` stays `a--b`, which `slug` would
-/// collapse), and it names the workspace what a plain `devpod up <path>` names
-/// it, so the two reach the same workspace. The rule, in `ToID`'s order:
+/// past 48 characters, so the raw leaf could not be sent. `ToID` keeps a name
+/// devpod already accepts byte for byte unless it starts or ends with a dash
+/// (`a--b` stays `a--b`, which `slug` would collapse; `-odd` becomes `odd`), and
+/// it names the workspace what a plain `devpod up <path>` names it when no
+/// directory above the leaf has an `@` in it (`ToID` splits the whole absolute
+/// path at an `@`). The rule, in `ToID`'s order:
 /// lowercase, drop a `.git` suffix, turn every character that is not a word
 /// character or a dash into a dash, delete what is still not `[0-9a-z-]` (the
 /// `_`), cut to 48, trim dashes. `FIC_Interface` is `ficinterface`.
