@@ -785,6 +785,46 @@ mod tests {
     }
 
     #[test]
+    fn a_fifo_holding_a_valid_config_in_place_of_the_config_is_refused() {
+        // A reader held open keeps what was written after the writer closes, so the
+        // merge's own read gets a whole config and then end of file: only the check
+        // on what kind of file it opened stands between it and a write.
+        use rustix::fs::{Mode, OFlags};
+        use std::os::unix::fs::FileTypeExt as _;
+        let config = Config::new(None);
+        rustix::fs::mknodat(
+            rustix::fs::CWD,
+            config.file(),
+            rustix::fs::FileType::Fifo,
+            Mode::RUSR | Mode::WUSR,
+            0,
+        )
+        .expect("a FIFO");
+        let _held = rustix::fs::open(
+            config.file(),
+            OFlags::RDONLY | OFlags::NONBLOCK | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .expect("a reader on the FIFO");
+        let writer = rustix::fs::open(
+            config.file(),
+            OFlags::WRONLY | OFlags::NONBLOCK | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .expect("a writer on the FIFO");
+        rustix::io::write(&writer, br#"{"hasCompletedOnboarding":true}"#).expect("a config");
+        drop(writer);
+
+        assert_eq!(config.merge(), Merged::Declined);
+        assert!(
+            std::fs::symlink_metadata(config.file())
+                .expect("the FIFO")
+                .file_type()
+                .is_fifo()
+        );
+    }
+
+    #[test]
     fn the_merge_keeps_the_mode_of_the_file_it_replaces() {
         let config = Config::new(Some(r#"{"hasCompletedOnboarding":true}"#));
         std::fs::set_permissions(config.file(), std::fs::Permissions::from_mode(0o600))
