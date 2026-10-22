@@ -857,6 +857,43 @@ mod tests {
         }
     }
 
+    #[test]
+    fn is_key_byte_accepts_exactly_the_bytes_the_seeds_case_accepts() {
+        // `is_key_byte` is a second copy of the seed's glob, so this diffs the two:
+        // the glob as the seed's script spells it, run by the shell the pass uses.
+        let glob = super::super::workspace_path_lines()
+            .into_iter()
+            .find(|line| line.contains("*[!"))
+            .expect("the seed's charset case");
+        let script = format!(
+            "for ws in \"$@\"; do {glob}; if [ -n \"$ws\" ]; then echo 1; else echo 0; fi; done"
+        );
+        let bytes: Vec<u8> = (1..=u8::MAX).collect();
+        let paths = bytes.iter().map(|&byte| {
+            <std::ffi::OsString as std::os::unix::ffi::OsStringExt>::from_vec(
+                [b"/workspaces/r".as_slice(), &[byte], b"x"].concat(),
+            )
+        });
+        for locale in ["C", "C.UTF-8"] {
+            let answered = std::process::Command::new("bash")
+                .arg("-c")
+                .arg(&script)
+                .arg("bash")
+                .args(paths.clone())
+                .env("LC_ALL", locale)
+                .output()
+                .expect("bash ran");
+            let accepted: Vec<bool> = String::from_utf8_lossy(&answered.stdout)
+                .lines()
+                .map(|line| line == "1")
+                .collect();
+            assert_eq!(accepted.len(), bytes.len(), "{locale}: {answered:?}");
+            for (&byte, shell) in bytes.iter().zip(accepted) {
+                assert_eq!(is_key_byte(byte), shell, "{locale}: byte {byte:#04x}");
+            }
+        }
+    }
+
     fn reported(config_dir: &str, workspace: &str) -> Reported {
         Reported {
             config_dir: config_dir.to_owned(),
