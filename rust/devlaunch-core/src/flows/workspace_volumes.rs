@@ -804,6 +804,37 @@ mod tests {
         }
     }
 
+    fn externals_of(base: &str, over: &str) -> Result<BTreeSet<String>, String> {
+        let dir = tempfile::tempdir().expect("a scratch dir");
+        let base_path = dir.path().join("base.yml");
+        let over_path = dir.path().join("over.yml");
+        std::fs::write(&base_path, base).expect("base");
+        std::fs::write(&over_path, over).expect("override");
+        external_volumes(&[base_path, over_path])
+    }
+
+    #[test]
+    fn a_later_external_false_drops_an_earlier_external_true() {
+        assert_eq!(
+            externals_of(
+                "volumes:\n  cache:\n    external: true\n    name: app-cache\n",
+                "volumes:\n  cache:\n    external: false\n",
+            ),
+            Ok(BTreeSet::new())
+        );
+    }
+
+    #[test]
+    fn a_later_external_true_drops_an_earlier_legacy_name() {
+        assert_eq!(
+            externals_of(
+                "volumes:\n  cache:\n    external:\n      name: app-cache\n",
+                "volumes:\n  cache:\n    external: true\n",
+            ),
+            Ok(["cache".to_owned()].into_iter().collect())
+        );
+    }
+
     #[test]
     fn a_later_compose_file_overrides_an_earlier_one_key_by_key() {
         let dir = tempfile::tempdir().expect("a scratch dir");
