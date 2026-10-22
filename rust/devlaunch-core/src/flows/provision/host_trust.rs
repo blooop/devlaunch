@@ -12,7 +12,7 @@
 //! `~/.claude` (devlaunch's own claude-code feature mounts it and pins
 //! `CLAUDE_CONFIG_DIR` there) reads the host's `~/.claude/.claude.json`.
 //!
-//! The container ran a stranger's `postCreateCommand`, so both lines it prints are
+//! The container ran a stranger's `postCreateCommand`, so every line it prints is
 //! untrusted. [`target`] is where the host decides what they may touch, from
 //! `docker inspect` and devpod's own record of the `up`, never from the report alone.
 
@@ -29,6 +29,10 @@ use crate::runner::Runner;
 pub(crate) struct Reported {
     /// The container's Claude config directory, resolved in the container.
     pub(crate) config_dir: String,
+    /// The same directory as the container named it, links left in. `docker
+    /// inspect` reports a mount point as it was asked for, so a mount requested
+    /// under a link matches this spelling and not the resolved one.
+    pub(crate) config_dir_written: String,
     /// The workspace folder the pass stood in, `pwd -P` in the container.
     pub(crate) workspace: String,
 }
@@ -69,8 +73,8 @@ pub(crate) struct Target {
 /// word. `docker inspect` is what says where a container path lives on the host,
 /// and the host's own facts say which host paths are fair game:
 ///
-/// - **The file.** The reported config directory must be exactly the destination of
-///   a read-write bind mount whose host source is this machine's Claude config
+/// - **The file.** The reported config directory, in either of its two spellings,
+///   must be exactly the destination of a read-write bind mount whose host source is this machine's Claude config
 ///   directory (`$CLAUDE_CONFIG_DIR`) or `~/.claude` (what devlaunch's claude-code
 ///   feature mounts). Anything else is the container's own directory, which the seed
 ///   in the container already wrote, or somebody else's host directory, which is not
@@ -87,19 +91,30 @@ pub(crate) struct Target {
 ///   `workspaceMount` target, and a key there would name a real host directory the
 ///   host's own Claude Code would then stop asking about. `/` is above everything.
 pub(crate) fn target(reported: &Reported, mounts: &[Mount], host: HostSide<'_>) -> Option<Target> {
-    let dir = config_dir(&reported.config_dir, mounts, host)?;
+    let dir = config_dir(
+        &[&reported.config_dir, &reported.config_dir_written],
+        mounts,
+        host,
+    )?;
     let key = trusted_key(&reported.workspace, mounts, host)?;
     Some(Target { dir, key })
 }
 
 /// The host directory behind the container's config directory, resolved, if it is
-/// one of the host's own Claude config directories mounted read-write.
-fn config_dir(config_dir: &str, mounts: &[Mount], host: HostSide<'_>) -> Option<PathBuf> {
-    if !is_plain_absolute(config_dir) {
-        return None;
-    }
-    let inner_file = format!("{config_dir}/{CONFIG_FILE}");
-    if mounts.iter().any(|mount| mount.destination == inner_file) {
+/// one of the host's own Claude config directories mounted read-write. Either
+/// spelling may name the mount, and a mount over the file under either refuses.
+fn config_dir(spellings: &[&str], mounts: &[Mount], host: HostSide<'_>) -> Option<PathBuf> {
+    let spellings: Vec<&str> = spellings
+        .iter()
+        .copied()
+        .filter(|spelling| is_plain_absolute(spelling))
+        .collect();
+    let over_the_file = |destination: &str| {
+        spellings
+            .iter()
+            .any(|spelling| destination == format!("{spelling}/{CONFIG_FILE}"))
+    };
+    if mounts.iter().any(|mount| over_the_file(&mount.destination)) {
         return None;
     }
     let allowed: Vec<PathBuf> = std::iter::once(host.home.join(super::CLAUDE_CONFIG_RELPATH))
@@ -108,7 +123,9 @@ fn config_dir(config_dir: &str, mounts: &[Mount], host: HostSide<'_>) -> Option<
         .collect();
     mounts
         .iter()
-        .filter(|mount| mount.bind && mount.writable && mount.destination == config_dir)
+        .filter(|mount| {
+            mount.bind && mount.writable && spellings.contains(&mount.destination.as_str())
+        })
         .map(|mount| resolved(&mount.source))
         .find(|source| allowed.contains(source))
 }
@@ -171,20 +188,26 @@ pub(crate) enum Merged {
 
 /// The key the trust stage prints the container's resolved config directory under.
 pub(crate) const TRUST_DIR_KEY: &str = "trustdir";
+/// The key the trust stage prints the config directory under as the container named it.
+pub(crate) const TRUST_DIR_WRITTEN_KEY: &str = "trustdirwritten";
 /// The key the trust stage prints the workspace path under.
 pub(crate) const TRUST_PATH_KEY: &str = "trustpath";
 
 impl Reported {
-    /// Read the trust stage's two lines out of the pass's report, or `None` where
+    /// Read the trust stage's three lines out of the pass's report, or `None` where
     /// it printed none (no config file, or no workspace path worth recording).
     pub(crate) fn parse(report: &str) -> Option<Self> {
         let found = super::marked_lines(report);
         let config_dir = found.get(TRUST_DIR_KEY).filter(|value| !value.is_empty())?;
+        let config_dir_written = found
+            .get(TRUST_DIR_WRITTEN_KEY)
+            .filter(|value| !value.is_empty())?;
         let workspace = found
             .get(TRUST_PATH_KEY)
             .filter(|value| !value.is_empty())?;
         Some(Self {
             config_dir: config_dir.clone(),
+            config_dir_written: config_dir_written.clone(),
             workspace: workspace.clone(),
         })
     }
@@ -836,6 +859,7 @@ mod tests {
     fn reported(config_dir: &str, workspace: &str) -> Reported {
         Reported {
             config_dir: config_dir.to_owned(),
+            config_dir_written: config_dir.to_owned(),
             workspace: workspace.to_owned(),
         }
     }
@@ -849,6 +873,32 @@ mod tests {
                 &host.mounts(),
                 host.side()
             ),
+            Some(Target {
+                dir: host.home.join(".claude"),
+                key: "/workspaces/r-main-abcd".to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn a_config_dir_mounted_under_a_symlinked_path_merges_into_the_hosts_file() {
+        // `docker inspect` reports a destination as it was asked for, links and all:
+        // `-v ~/.claude:/var/run/cfg` reads `/var/run/cfg` there, where the
+        // container, with `/var/run` a link to `/run`, resolves it to `/run/cfg`.
+        let host = Host::new();
+        let mounts = vec![
+            host.bind(&host.clone, "/workspaces/r-main-abcd", true),
+            host.bind(&host.home.join(".claude"), "/var/run/cfg", true),
+        ];
+        let report = format!(
+            "{mark} trustdir /run/cfg\n\
+             {mark} trustdirwritten /var/run/cfg\n\
+             {mark} trustpath /workspaces/r-main-abcd\n",
+            mark = super::super::PROBE_MARK
+        );
+        let reported = Reported::parse(&report).expect("all three lines read");
+        assert_eq!(
+            target(&reported, &mounts, host.side()),
             Some(Target {
                 dir: host.home.join(".claude"),
                 key: "/workspaces/r-main-abcd".to_owned(),

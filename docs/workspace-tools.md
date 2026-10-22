@@ -396,7 +396,10 @@ container's word for either path, because the container has just run a stranger'
 
 - **The file.** `docker inspect` on the container devpod recorded for the workspace
   must show the reported config directory as exactly the target of a read-write
-  bind mount whose host source is your `$CLAUDE_CONFIG_DIR` or `~/.claude`. Then
+  bind mount whose host source is your `$CLAUDE_CONFIG_DIR` or `~/.claude`. The
+  container reports the directory both as it names it and with its links
+  resolved, and either may match, because `docker inspect` shows a target as it
+  was asked for and does not resolve links in it. Then
   the file is `.claude.json` in that host directory. A link there is followed only
   to a file that is also named `.claude.json` and is inside that same directory,
   because the container can put a link in a shared directory and the host would

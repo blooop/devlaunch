@@ -1274,13 +1274,13 @@ pub(crate) fn onboarding_script() -> String {
 /// `python3` in the container, and the default image (`python_template`) has none,
 /// so every workspace opened from it asked again.
 ///
-/// So the stage prints two marked lines and writes nothing: the directory its config
-/// is in and the folder it stands in, both resolved. [`host_trust::record`] reads
-/// them on the host, where `dl` always has a JSON parser, and merges only where
-/// `docker inspect` shows that directory is one of the host's own Claude directories
-/// mounted read-write, and that folder is the workspace folder devpod recorded. See
-/// [`host_trust::target`] for the whole rule, and why the host takes neither line on
-/// the container's word.
+/// So the stage prints three marked lines and writes nothing: the directory its
+/// config is in, as named and resolved, and the folder it stands in, resolved.
+/// [`host_trust::record`] reads them on the host, where `dl` always has a JSON
+/// parser, and merges only where `docker inspect` shows that directory is one of the
+/// host's own Claude directories mounted read-write, and that folder is the workspace
+/// folder devpod recorded. See [`host_trust::target`] for the whole rule, and why the
+/// host takes no line on the container's word.
 ///
 /// # What it does not promise
 ///
@@ -1301,11 +1301,16 @@ pub(crate) fn trust_script() -> String {
     lines.extend(workspace_path_lines());
     lines.extend([
         "if [ -z \"$ws\" ]; then exit 0; fi".to_owned(),
-        // Resolved, because a mount point in `docker inspect` is a real path, and
-        // the host compares this against one.
+        // Both spellings, because `docker inspect` reports a mount point as it was
+        // asked for, links left in: a mount at the name the container uses matches
+        // `$dir`, and one at the directory a link leads to matches `$cfg`.
         "cfg=$(readlink -f \"$dir\" 2>/dev/null || true)".to_owned(),
         "if [ -z \"$cfg\" ]; then exit 0; fi".to_owned(),
         format!("echo \"{PROBE_MARK} {} $cfg\"", host_trust::TRUST_DIR_KEY),
+        format!(
+            "echo \"{PROBE_MARK} {} $dir\"",
+            host_trust::TRUST_DIR_WRITTEN_KEY
+        ),
         format!("echo \"{PROBE_MARK} {} $ws\"", host_trust::TRUST_PATH_KEY),
     ]);
     lines.join("\n")
@@ -2024,7 +2029,7 @@ pub(crate) fn setup_stages(
     // already in it, and the host's merge finds it true and writes nothing.
     //
     // In a subshell for the zellij stage's reason, and unredirected because its
-    // whole output is the two marked lines the host reads off the outcome
+    // whole output is the three marked lines the host reads off the outcome
     // protocol's stdout (see [`host_trust::record`]).
     stages.push(Stage::new(TRUST_STAGE, in_subshell(&trust_script())));
     stages
@@ -3444,7 +3449,7 @@ else
 fi"#;
 
     /// The trust stage's snippet, spelled out for the reason the one above it is.
-    /// It reports and writes nothing, so what rides on it is the two marked lines
+    /// It reports and writes nothing, so what rides on it is the three marked lines
     /// the host reads: a quoting change that moved them would leave every workspace
     /// with the prompt and say nothing.
     const TRUST_STAGE_SNIPPET: &str = r#"if ( eval 'set -u
@@ -3465,6 +3470,7 @@ if [ -z "$ws" ]; then exit 0; fi
 cfg=$(readlink -f "$dir" 2>/dev/null || true)
 if [ -z "$cfg" ]; then exit 0; fi
 echo "devlaunch-probe trustdir $cfg"
+echo "devlaunch-probe trustdirwritten $dir"
 echo "devlaunch-probe trustpath $ws"' ); then
   echo "devlaunch-probe stage trust ok"
 else
@@ -6065,8 +6071,8 @@ fi
     #[test]
     fn the_trust_stage_reports_the_folder_and_the_config_dir_and_writes_nothing() {
         // The stage needs no JSON parser any more: it says where it stands and which
-        // directory its config is in, both resolved, and the host does the merge.
-        // So it runs the same in an image with no python3.
+        // directory its config is in, and the host does the merge. So it runs the
+        // same in an image with no python3.
         let world = TrustWorld::new(Some(r#"{"hasCompletedOnboarding":true}"#));
         let bin = world.scratch.path().join("bin");
         std::fs::create_dir_all(&bin).expect("a bin");
@@ -6088,11 +6094,41 @@ fi
                     .to_str()
                     .expect("a path")
                     .to_owned(),
+                config_dir_written: world.home.to_str().expect("a path").to_owned(),
                 workspace: world.keyed.clone(),
             })
         );
         assert_eq!(String::from_utf8_lossy(&answered.stderr), "");
         assert_eq!(world.read(), r#"{"hasCompletedOnboarding":true}"#);
+    }
+
+    #[test]
+    fn the_trust_stage_reports_a_config_dir_named_through_a_link_both_ways() {
+        // `docker inspect` reports a mount point as it was asked for, links left in,
+        // so the host needs the name the container used as well as where it leads.
+        let world = TrustWorld::new(Some(r#"{"hasCompletedOnboarding":true}"#));
+        let linked = world.scratch.path().join("linked-config");
+        std::os::unix::fs::symlink(&world.home, &linked).expect("a link to the config dir");
+
+        let answered = std::process::Command::new("bash")
+            .arg("-c")
+            .arg(trust_script())
+            .current_dir(&world.workspace)
+            .env("HOME", &world.home)
+            .env("CLAUDE_CONFIG_DIR", &linked)
+            .output()
+            .expect("bash ran");
+
+        let reported = host_trust::Reported::parse(&String::from_utf8_lossy(&answered.stdout))
+            .expect("a report");
+        assert_eq!(
+            reported.config_dir_written,
+            linked.to_str().expect("a path")
+        );
+        assert_eq!(
+            PathBuf::from(&reported.config_dir),
+            std::fs::canonicalize(&world.home).expect("a resolved home")
+        );
     }
 
     #[test]
