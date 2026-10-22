@@ -43,6 +43,8 @@ const HOST_CONFIG: &str = "{\n  \"hasCompletedOnboarding\": true,\n  \"themeMode
 
 struct World {
     root: PathBuf,
+    /// The host's `$CLAUDE_CONFIG_DIR`, relative to `root`, where it sets one.
+    claude_config_dir: Option<&'static str>,
     _scratch: tempfile::TempDir,
 }
 
@@ -54,6 +56,12 @@ fn executable(path: &Path, body: &str) {
 
 impl World {
     fn cold() -> Self {
+        Self::cold_with_host_claude_config_dir(None)
+    }
+
+    /// A cold world whose host sets `CLAUDE_CONFIG_DIR` to `dir` under the root, and
+    /// whose container mounts that directory rather than `~/.claude`.
+    fn cold_with_host_claude_config_dir(claude_config_dir: Option<&'static str>) -> Self {
         let scratch = tempfile::Builder::new()
             .prefix("dltrust")
             .tempdir_in("/tmp")
@@ -78,6 +86,9 @@ impl World {
         std::fs::create_dir_all(root.join("home/.claude")).expect("a host claude dir");
         std::fs::write(root.join("home/.claude/.claude.json"), HOST_CONFIG)
             .expect("the host's config");
+        let host_claude = root.join(claude_config_dir.unwrap_or("home/.claude"));
+        std::fs::create_dir_all(&host_claude).expect("the host's config dir");
+        std::fs::write(host_claude.join(".claude.json"), HOST_CONFIG).expect("the host's config");
 
         // The container: a config directory holding what the mount shows, and the
         // workspace folder the pass stands in.
@@ -159,17 +170,19 @@ impl World {
                 "#!/bin/sh\n\
                  if [ \"$1\" = inspect ] && [ \"$5\" = '{{{{json .Mounts}}}}' ] && [ \"$6\" = c0ffee ]; then\n\
                  \x20 clone=$(cat \"{root}/clone-path\")\n\
-                 \x20 printf '[{{\"Type\":\"bind\",\"Source\":\"%s\",\"Destination\":\"{ws}\",\"RW\":true}},{{\"Type\":\"bind\",\"Source\":\"{root}/home/.claude\",\"Destination\":\"{cfg}\",\"RW\":true}}]\\n' \"$clone\"\n\
+                 \x20 printf '[{{\"Type\":\"bind\",\"Source\":\"%s\",\"Destination\":\"{ws}\",\"RW\":true}},{{\"Type\":\"bind\",\"Source\":\"{host_claude}\",\"Destination\":\"{cfg}\",\"RW\":true}}]\\n' \"$clone\"\n\
                  fi\n\
                  exit 0\n",
                 root = root.display(),
                 ws = ctr_workspace.display(),
                 cfg = ctr_claude.display(),
+                host_claude = host_claude.display(),
             ),
         );
 
         World {
             root,
+            claude_config_dir,
             _scratch: scratch,
         }
     }
@@ -181,9 +194,12 @@ impl World {
     /// A cold `dl blooop/devlaunch@cold`, run to completion, and what it said.
     fn launched(&self) -> String {
         let root = self.root.display().to_string();
-        let done = Command::new(env!("CARGO_BIN_EXE_dl"))
-            .arg("blooop/devlaunch@cold")
-            .env_clear()
+        let mut command = Command::new(env!("CARGO_BIN_EXE_dl"));
+        command.arg("blooop/devlaunch@cold").env_clear();
+        if let Some(dir) = self.claude_config_dir {
+            command.env("CLAUDE_CONFIG_DIR", self.root.join(dir));
+        }
+        let done = command
             .keeping_coverage()
             .env("PATH", format!("{root}/bin:/usr/bin:/bin"))
             .env("HOME", format!("{root}/home"))
@@ -244,5 +260,30 @@ fn a_cold_launch_without_python3_in_the_container_trusts_the_workspace_on_the_ho
         world.config("ctr/home/vscode/.claude/.claude.json"),
         serde_json::from_str::<serde_json::Value>(HOST_CONFIG).expect("JSON"),
         "nothing in the container wrote it"
+    );
+}
+
+#[test]
+fn a_cold_launch_trusts_the_workspace_in_the_hosts_own_claude_config_dir() {
+    let world = World::cold_with_host_claude_config_dir(Some("profiles/work"));
+    let said = world.launched();
+
+    let key = world
+        .path("ctr/workspaces")
+        .join(COLD)
+        .to_str()
+        .expect("a path")
+        .replace('~', "~0")
+        .replace('/', "~1");
+    let host = world.config("profiles/work/.claude.json");
+    assert_eq!(
+        host.pointer(&format!("/projects/{key}/hasTrustDialogAccepted")),
+        Some(&true.into()),
+        "the config dir the host's CLAUDE_CONFIG_DIR names has no trust entry: {host}\n{said}"
+    );
+    assert_eq!(
+        world.config("home/.claude/.claude.json"),
+        serde_json::from_str::<serde_json::Value>(HOST_CONFIG).expect("JSON"),
+        "the default config dir is not the one the host uses"
     );
 }
