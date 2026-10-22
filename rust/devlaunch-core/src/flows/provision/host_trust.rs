@@ -629,6 +629,24 @@ mod tests {
     }
 
     #[test]
+    fn an_entry_claude_code_wrote_untrusted_is_turned_true_and_keeps_its_other_keys() {
+        // Claude Code writes the entry with the flag false before anyone answers.
+        let config = Config::new(Some(&format!(
+            r#"{{"projects":{{"{KEY}":{{"hasTrustDialogAccepted":false,"allowedTools":["Bash"]}}}}}}"#
+        )));
+
+        assert_eq!(config.merge(), Merged::Wrote);
+
+        assert_eq!(config.trusts(KEY), Some(true.into()));
+        assert_eq!(
+            config
+                .parsed()
+                .pointer("/projects/~1workspaces~1devlaunch-nb99-hicj/allowedTools"),
+            Some(&serde_json::json!(["Bash"]))
+        );
+    }
+
+    #[test]
     fn the_merge_leaves_a_file_it_cannot_read_alone() {
         // Somebody else's file in a shape this does not understand, or a read that
         // raced Claude Code's own whole-file rewrite. Not one to rewrite.
