@@ -77,6 +77,7 @@ use crate::runner::interrupt;
 use crate::runner::{Exit, OsFailure, Runner};
 use crate::timing;
 
+mod host_trust;
 pub mod verdict_cache;
 
 use verdict_cache::{Observed, VerdictCache};
