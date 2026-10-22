@@ -275,7 +275,8 @@ fn literal_volumes(result: &serde_json::Value) -> BTreeSet<String> {
 ///
 /// An external volume's name is its `name:`, or the legacy `external: { name: }`,
 /// or else its key: compose does not prefix an external name with the project.
-/// A file that cannot be read or parsed, or a name with a `${...}` in it that
+/// A file that cannot be read or parsed, an `external:` that is not a bool or a
+/// map (compose reads `"true"` or `yes` as true), or a name with a `${...}` in it that
 /// only compose's environment could expand, is an error, because a volume the
 /// read cannot name is one the sweep cannot be sure to spare.
 fn external_volumes(files: &[PathBuf]) -> Result<BTreeSet<String>, String> {
@@ -298,7 +299,7 @@ fn external_volumes(files: &[PathBuf]) -> Result<BTreeSet<String>, String> {
             let Some(key) = yaml_text(key) else {
                 continue;
             };
-            let entry = declared.entry(key).or_default();
+            let entry = declared.entry(key.clone()).or_default();
             if let Some(name) = spec["name"].as_str() {
                 entry.name = Some(name.to_owned());
             }
@@ -311,7 +312,13 @@ fn external_volumes(files: &[PathBuf]) -> Result<BTreeSet<String>, String> {
                     entry.external = Some(true);
                     entry.legacy_name = external["name"].as_str().map(str::to_owned);
                 }
-                _ => {}
+                Yaml::BadValue | Yaml::Null => {}
+                _ => {
+                    return Err(format!(
+                        "compose file {} marks volume {key} external with a value that is not a bool",
+                        file.display()
+                    ));
+                }
             }
         }
     }
@@ -655,6 +662,20 @@ mod tests {
             matches!(&recording, Recording::Unread { reason } if reason.contains("${PREFIX}-cache")),
             "{recording:?}"
         );
+    }
+
+    #[test]
+    fn an_external_flag_that_is_not_a_bool_removes_nothing() {
+        for flag in ["\"true\"", "yes", "1", "${EXT:-true}"] {
+            let recording = record_bare_app(Some(&format!(
+                "volumes:\n  app-cache:\n    external: {flag}\n"
+            )));
+            assert!(
+                matches!(&recording, Recording::Unread { reason }
+                    if reason.contains("app-cache") && reason.contains("docker-compose.yml")),
+                "{flag}: {recording:?}"
+            );
+        }
     }
 
     #[test]
