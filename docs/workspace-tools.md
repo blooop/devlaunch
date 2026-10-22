@@ -398,8 +398,9 @@ container's word for either path, because the container has just run a stranger'
   must show the reported config directory as exactly the target of a read-write
   bind mount whose host source is your `$CLAUDE_CONFIG_DIR` or `~/.claude`. Then
   the file is `.claude.json` in that host directory. A link there is followed only
-  to a file that is also named `.claude.json`, because the container can put a link
-  in a shared directory and the host would resolve it to a host path.
+  to a file that is also named `.claude.json` and is inside that same directory,
+  because the container can put a link in a shared directory and the host would
+  resolve it to a host path: `../.claude.json` is your own `~/.claude.json`.
 - **The key.** The path must be the workspace folder devpod recorded at `up`, and
   that folder must be the target of the bind mount of the clone `dl` made for the
   workspace (devpod's record names the clone), or a directory under it. A folder

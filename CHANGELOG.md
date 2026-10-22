@@ -20,7 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   which must be the clone's mount point or a folder under it, never your home directory,
   a folder in it or above it, or `/`. The merge
   keeps key order, indentation and file mode, writes a scratch file and renames it, and
-  follows a link only to another `.claude.json`. See docs/workspace-tools.md, "The trust
+  follows a link only to another `.claude.json` inside the same directory. See docs/workspace-tools.md, "The trust
   prompt, which is keyed on a path".
 
 ## [0.62.1] - 2026-10-19
