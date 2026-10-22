@@ -50,7 +50,7 @@ jobs:
   # reproducible against its lockfile, making that a thing to notice at lockfile
   # review rather than a hole in the gate.
   #
-  # `pixi run ci` compiles `rust/target/release/{dl,aid}` on the way in, because
+  # `pixi run ci` compiles `rust/target/release/{dl,dla}` on the way in, because
   # the harness spawns them (see the `build-release` task). That is a cargo build
   # this job pays for and the `e2e` job pays for again, and it is deliberately not
   # cached here: `Swatinem/rust-cache` keys on `rustc -vV`, and these two jobs have
@@ -235,26 +235,26 @@ jobs:
       - name: Test devlaunch-test-support
         working-directory: rust
         run: timeout 300 cargo test --locked -p devlaunch-test-support -- --test-threads=1 --nocapture
-      - name: Test aid (bins + rewrite)
+      - name: Test dla (bins + rewrite)
         working-directory: rust
-        run: timeout 300 cargo test --locked -p aid --bins --test rewrite -- --test-threads=1 --nocapture
+        run: timeout 300 cargo test --locked -p dla --bins --test rewrite -- --test-threads=1 --nocapture
       # Spawns and kills a real process tree (a blocking `devpod up`), so it gets
       # the same log-pipe fence as `dl`'s interrupt/lock_wait: output to a file,
       # cat after — an orphaned test child can hold the file, never this step's
       # log pipe, which is what the runner waits on before ending the step.
-      - name: Test aid interrupt
+      - name: Test dla interrupt
         working-directory: rust
         run: |
-          timeout -k 10 300 cargo test --locked -p aid --test interrupt -- --test-threads=1 --nocapture > aid_interrupt.log 2>&1; ec=$?
-          cat aid_interrupt.log; exit $ec
-      # Drives aid through a real pty (the editor only exists on a terminal), and
+          timeout -k 10 300 cargo test --locked -p dla --test interrupt -- --test-threads=1 --nocapture > dla_interrupt.log 2>&1; ec=$?
+          cat dla_interrupt.log; exit $ec
+      # Drives dla through a real pty (the editor only exists on a terminal), and
       # one of its cases is the interrupt suite's blocking `up` interrupted at the
       # editor — so it gets the same log-pipe fence, for the same reason.
-      - name: Test aid interactive
+      - name: Test dla interactive
         working-directory: rust
         run: |
-          timeout -k 10 300 cargo test --locked -p aid --test interactive -- --test-threads=1 --nocapture > aid_interactive.log 2>&1; ec=$?
-          cat aid_interactive.log; exit $ec
+          timeout -k 10 300 cargo test --locked -p dla --test interactive -- --test-threads=1 --nocapture > dla_interactive.log 2>&1; ec=$?
+          cat dla_interactive.log; exit $ec
       - name: Test dl (lib + unit)
         working-directory: rust
         run: timeout 300 cargo test --locked -p dl --lib --bins -- --test-threads=1 --nocapture
@@ -437,7 +437,7 @@ jobs:
             "-p devlaunch-runner" \
             "-p devlaunch-core" \
             "-p devlaunch-test-support" \
-            "-p aid --bins --test rewrite" \
+            "-p dla --bins --test rewrite" \
             "-p dl --lib --bins" \
             "-p dl --test read_side" \
             "-p dl --test grammar" \
@@ -473,7 +473,7 @@ jobs:
         working-directory: rust
         run: |
           set -eu
-          for crate in devlaunch-core dl aid; do
+          for crate in devlaunch-core dl dla; do
             grep -q "^SF:rust/${crate}/src/" lcov.info || {
               echo "::error::lcov.info records no repo-relative file under rust/${crate}/src/"
               exit 1
@@ -635,7 +635,7 @@ jobs:
           # asserts contents and version and says nothing about the tag.
           container: off
           args: --release --locked --out dist
-      - name: The wheel is the binaries, at the version rust/Cargo.toml names
+      - name: The wheel is the two binaries, at the version rust/Cargo.toml names
         run: |
           set -euo pipefail
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' rust/Cargo.toml | head -1)
@@ -644,8 +644,7 @@ jobs:
           python3 -m venv /tmp/wheel-check
           /tmp/wheel-check/bin/pip install --quiet "$wheel"
           test "$(/tmp/wheel-check/bin/dl --version)" = "dl $version"
-          test "$(/tmp/wheel-check/bin/aid --version)" = "aid $version"
-          test "$(/tmp/wheel-check/bin/dla --version)" = "aid $version"
+          test "$(/tmp/wheel-check/bin/dla --version)" = "dla $version"
       - uses: prefix-dev/setup-pixi@v0.10.2
         with:
           run-install: false

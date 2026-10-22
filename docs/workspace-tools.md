@@ -269,7 +269,7 @@ forwarding an account chosen weeks ago. Pass it per launch, or export
 
 Two things it does not change. It is not the claude.ai account the container's own
 `claude` is paired to for **Remote Control**, which lives in the container with the
-rest of the agent's state, so `aid --claude-profile work` still lists its session
+rest of the agent's state, so `dla --claude-profile work` still lists its session
 under whichever account the container is signed in to. And it does not weaken the
 check below: a repo whose devcontainer owns its Claude config forwards nothing,
 profile or no profile.
@@ -528,7 +528,7 @@ for as long as no pass had run.
 
 ## Codex authentication
 
-`aid --codex` needs two things a fresh container has neither of: a `codex` binary
+`dla --codex` needs two things a fresh container has neither of: a `codex` binary
 and a login. `dl` arranges both, by two different routes, because they belong on
 different trips.
 
@@ -541,9 +541,9 @@ would be streamed over the ssh channel on every cold provision. It is installed
 for it.
 
 One consequence worth knowing: a workspace first opened with `dl <ws>` and later
-used with `aid --codex <ws>` spends one extra pass, because the provisioning record
+used with `dla --codex <ws>` spends one extra pass, because the provisioning record
 remembers which stages a workspace was given and this launch wants one more. `dl`
-says so when it happens. The second `aid --codex` on the same workspace is warm.
+says so when it happens. The second `dla --codex` on the same workspace is warm.
 
 ### The login is a file, and a smaller one than the host's
 
@@ -599,13 +599,13 @@ warns once, naming the file. Either way the workspace opens. A codex that has to
 logged in by hand is a better outcome than no container.
 
 ```bash
-aid --codex <workspace>            # installs codex if absent, writes the login
+dla --codex <workspace>            # installs codex if absent, writes the login
 dl <workspace> -- codex exec "..." # the same two things, non-interactively
 ```
 
 ### Gemini
 
-`aid --gemini` gets neither half of this. `gemini-cli` is not on conda-forge, so the
+`dla --gemini` gets neither half of this. `gemini-cli` is not on conda-forge, so the
 pixi rung has nothing to install, and nothing forwards a Google credential. A
 workspace that needs it has to bring its own.
 
@@ -613,7 +613,7 @@ workspace that needs it has to bring its own.
 
 `gh` and `claude` are available in every workspace `dl` opens, in every kind of
 session: an interactive `dl <workspace>`, a one-shot `dl <workspace> -- <command>`,
-and `aid`. The repo's `devcontainer.json` does not have to provide them, and most
+and `dla`. The repo's `devcontainer.json` does not have to provide them, and most
 do not. `dl` launches arbitrary repos, so a guarantee that depended on the image
 would not be a guarantee.
 
@@ -1124,11 +1124,11 @@ and the workspace name is what stands, whoever started claude. What claude is do
 is on screen inside the pane; which workspace the pane *is* is not otherwise
 anywhere.
 
-**It used to be `aid`'s doing alone,** and that only ever covered the sessions aid
+**It used to be `dla`'s doing alone,** and that only ever covered the sessions dla
 launched. A `claude` you type at the prompt yourself, or a `dl <ws> -- claude ...`
 you wrote out in full, is your command, and dl does not rewrite it. That rule has
 not changed: an export in the profile is the environment your command inherits, not
-an edit to your command. aid still sets the variable on the claude it starts, since
+an edit to your command. dla still sets the variable on the claude it starts, since
 a prefix and an inherited value of the same variable agree, and the prefix works on
 a container that has not been re-entered yet.
 
@@ -1150,7 +1150,7 @@ export CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX=bencher-msg-b-r49i
 ```
 
 so the session is `bencher-msg-b-r49i-tender-snowflake`: the workspace id, which is
-the name `aid` gives its own sessions. Claude Code swaps the name for a title taken
+the name `dla` gives its own sessions. Claude Code swaps the name for a title taken
 from the conversation after the first message unless a flag named the session, and
 a flag on your own `claude` is your command, so dl does not add one. And it reaches login shells that start after it was written, so a
 workspace that was already running when this arrived wants a re-login or a
@@ -1214,22 +1214,22 @@ Unlike the escape, the rename **sticks**. herdr persists `custom_name`, so a tab
 named by a launch keeps that name after the workspace is closed, until something
 renames it again.
 
-### The window `aid` used to leave unnamed
+### The window `dla` used to leave unnamed
 
-Naming happens on the launch, and `aid` with no prompt on the line does not launch
+Naming happens on the launch, and `dla` with no prompt on the line does not launch
 straight away: it boots the workspace in the background and asks for the prompt
 while it does, which is the whole point of that mode. So there was a window with a
 booting container, a person typing, and a tab still showing whatever it showed
-before. Measured on live herdr 0.8.2, with `dl` and `aid` built from one commit:
+before. Measured on live herdr 0.8.2, with `dl` and `dla` built from one commit:
 
 | launch | tab label |
 |---|---|
 | `dl blooop/rocker@nb1` | `rocker@nb1` within 6s |
-| `aid --claude blooop/rocker@nb1 'prompt'` | `rocker@nb1` within 6s |
-| `aid blooop/rocker@nb1` | unchanged for the whole editor window, 40s in |
+| `dla --claude blooop/rocker@nb1 'prompt'` | `rocker@nb1` within 6s |
+| `dla blooop/rocker@nb1` | unchanged for the whole editor window, 40s in |
 | the same tab, after the prompt was submitted | `rocker@nb1` within 6s |
 
-`aid` names both halves itself now, before the banner and after the boot spawns,
+`dla` names both halves itself now, before the banner and after the boot spawns,
 through the same pair the launch uses. The boot child cannot do it: its stdout and
 stderr are a log file, so the gate refuses it a name, and correctly, because an OSC
 escape written into a log is not a title.
@@ -1257,7 +1257,7 @@ arm calls, so the row that costs a `git ls-remote` to settle is the whole of wha
 launch corrects. A spec that names nothing `dl` will accept is not named at all,
 because the name is derived through the same `plan` that refuses it.
 
-The row that mattered most was the third one. `aid devlaunch-herdr-title2-tg2z`
+The row that mattered most was the third one. `dla devlaunch-herdr-title2-tg2z`
 used to put that bare id on the tab and hold it there for the typing and for the
 whole of a cold `devpod up`, which is the string
 [#632](https://github.com/blooop/devlaunch/issues/632) was reported as, and the
@@ -1275,8 +1275,8 @@ reason is narrower than it looks.
 
 A manager learns what an agent is doing in two steps. First it decides *which*
 agent a pane holds, usually from the pane's foreground process. Then it matches
-that agent's rules against the pane's screen. Under `aid` the first step fails and
-takes the second with it: the foreground processes are `aid`, `ssh` and two
+that agent's rules against the pane's screen. Under `dla` the first step fails and
+takes the second with it: the foreground processes are `dla`, `ssh` and two
 `devpod`s, with no `claude` anywhere, so no agent is identified and no rules are
 ever run.
 
@@ -1284,13 +1284,13 @@ The second step was never broken. `dl <ws> -- <agent>` pipes the agent's own TUI
 through the pane, so the pane holds the real screen, prompt box and permission
 dialogs included. Only the name was missing.
 
-So the launcher supplies it. Every `aid` launch that starts an agent exports
+So the launcher supplies it. Every `dla` launch that starts an agent exports
 `HERDR_AGENT=<agent>` for the session, naming whichever agent it picked, and `dl`
 does the same for a command whose program is an agent by name:
 
 ```bash
-aid blooop/devlaunch@fix/42        # exports HERDR_AGENT=claude
-aid --codex blooop/devlaunch       # exports HERDR_AGENT=codex
+dla blooop/devlaunch@fix/42        # exports HERDR_AGENT=claude
+dla --codex blooop/devlaunch       # exports HERDR_AGENT=codex
 dl blooop/devlaunch -- claude      # exports HERDR_AGENT=claude
 dl blooop/devlaunch -- make test   # exports nothing: make is not an agent
 ```
@@ -1303,12 +1303,12 @@ workspace a pane is and what its agent is doing.
 
 ### Why it is written every time
 
-`aid` writes the variable on every launch that starts an agent, over whatever the
+`dla` writes the variable on every launch that starts an agent, over whatever the
 environment already held, and without checking whether a manager is running.
 
-Writing over is the point. `aid` is the thing that *decides* which agent starts, so
+Writing over is the point. `dla` is the thing that *decides* which agent starts, so
 it is the only thing that can be right about it. A `HERDR_AGENT=codex` left in a
-shell profile for some other wrapper is wrong the moment `aid --claude` runs, and a
+shell profile for some other wrapper is wrong the moment `dla --claude` runs, and a
 manager that believed it would match codex's rules against Claude's screen, which
 classifies nothing and says nothing about why.
 
@@ -1328,12 +1328,12 @@ over, the program is compared by its last path component so `/usr/local/bin/clau
 and `claude` answer alike, and everything past the program is ignored because
 nothing after it can change which agent starts.
 
-Only a name on the list `dl` and `aid` share is a name it will write, which is the
+Only a name on the list `dl` and `dla` share is a name it will write, which is the
 one part of this worth arguing about. `dl <ws> -- make test` could as easily export
 `HERDR_AGENT=make`, and that would be worse than the silence it gets: a manager
 would be told the pane holds an agent it has never heard of, look for detection
 rules under that label, and find none. So the list is the list of agents devlaunch
-knows, `aid`'s own table is held against it by a test, and a command naming
+knows, `dla`'s own table is held against it by a test, and a command naming
 anything else is a command `dl` says nothing about.
 
 It is still a reading and not a parse. A command holding a pipe or a `&&` gets the
@@ -1357,7 +1357,7 @@ manager-specific words in the two binaries: the others are the `HERDR_TAB_ID` an
 `HERDR_BIN_PATH` that [the herdr tab](#the-herdr-tab-which-is-renamed-and-not-written-to)
 and [a new pane](#opening-a-new-pane-in-the-workspace-its-tab-already-holds) both
 read. The direction is opposite in the two cases, which is why they stay separate
-features. This one is a name `aid` *writes* for herdr to read, and it is written
+features. This one is a name `dla` *writes* for herdr to read, and it is written
 whether or not herdr is there. Those two are names herdr *exports* for `dl` to
 read, so their absence is the whole of the detection. A manager with an equivalent
 override needs that override set some other way; a manager with none is still
@@ -1387,7 +1387,7 @@ list and no agent inside sees it.
 
 ## Reporting an agent started inside the workspace
 
-The section above covers an agent `dl` or `aid` started, whose screen the pane
+The section above covers an agent `dl` or `dla` started, whose screen the pane
 already holds. It cannot cover the other way of working, which is the common one:
 
 ```bash
@@ -1472,18 +1472,18 @@ resume_agents_on_restore = true
 ```
 
 It saves one command line per pane and, on restore, types it into a new shell in the
-pane's saved directory. `dl` is what tells it the line, for an agent `aid` started:
+pane's saved directory. `dl` is what tells it the line, for an agent `dla` started:
 
 ```bash
 dl <workspace id> -- CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 IS_SANDBOX=1 claude --dangerously-skip-permissions --remote-control=<workspace id> --resume <session id>
 ```
 
 The line starts with the `dl` that was run, by its file name, so a pane started with the
-dev build `dl-next` (or `aid-next`, or `dla-next`) comes back under `dl-next` and not under
+dev build `dl-next` (or `dla-next`) comes back under `dl-next` and not under
 the released `dl`.
 
 So after a herdr server restart, or a reboot, every such pane comes back into its own
-conversation with no `aid resume` and no pickers. The workspace starts if it is stopped.
+conversation with no `dla resume` and no pickers. The workspace starts if it is stopped.
 Measured against herdr 0.9.2: about 20 seconds from the server start to the claude
 prompt with the container stopped, and about 5 seconds with it running.
 [docs/cli.md](cli.md#in-a-herdr-pane-the-restart-needs-no-command-at-all) has the line per
@@ -1515,18 +1515,18 @@ failed with `bash: dl: command not found`.
 **What it does not cover.** herdr clears the line the moment the agent exits, which is
 right for `/exit` and for a closed pane, and also happens when the container stops under
 the agent. So a shutdown that stops the container before herdr has saved the session,
-as some reboot orders do, leaves nothing to restore, and `aid resume` is still the way
-back. A `dl <ws> -- claude ...` typed by hand tells herdr nothing, because only `aid`
+as some reboot orders do, leaves nothing to restore, and `dla resume` is still the way
+back. A `dl <ws> -- claude ...` typed by hand tells herdr nothing, because only `dla`
 knows which session its line opens.
 
 ## Opening a new pane in the workspace its tab already holds
 
 The two sections above are about *watching* a pane. This one is about working in
-one. Split a pane in an `aid` tab and you used to get a shell on this host, several
+one. Split a pane in a `dla` tab and you used to get a shell on this host, several
 namespaces away from the container the tab is about:
 
 ```bash
-aid blooop/devlaunch@fix/42   # a tab, an agent, a container
+dla blooop/devlaunch@fix/42   # a tab, an agent, a container
 # split the pane, and the new one is on your laptop
 ```
 
@@ -1554,10 +1554,10 @@ default:
 
 ```bash
 export NVIM_SPLIT=1
-aid blooop/devlaunch@my-branch
+dla blooop/devlaunch@my-branch
 ```
 
-This applies to `aid` and to a direct `dl <workspace> -- claude`, `codex`, or
+This applies to `dla` and to a direct `dl <workspace> -- claude`, `codex`, or
 `gemini` launch. `dl` waits until Herdr recognises the agent, splits its pane to
 the right with `--no-focus`, and starts the editor there. The new pane passes
 through `dl-herdr-shell`, so it enters the same devlaunch container as the agent.
@@ -1709,7 +1709,7 @@ if one of its panes has a `dl` transport in its foreground right now:
 | transport | what the pane is running |
 |---|---|
 | a bare `dl <ws>` | `devpod ssh <workspace-id> ...` |
-| `dl <ws> -- <cmd>`, which is every `aid` | `ssh ... <workspace-id>.devpod ...` |
+| `dl <ws> -- <cmd>`, which is every `dla` | `ssh ... <workspace-id>.devpod ...` |
 
 Both are argvs `dl` itself builds, so reading the workspace out of them is `dl`
 reading its own writing. herdr publishes a pane's whole foreground chain, which is
@@ -1982,7 +1982,7 @@ Both command lines take flags ahead of the workspace, and the completion reads
 them rather than counting words:
 
 ```
-$ aid --codex kin<TAB>
+$ dla --codex kin<TAB>
 kinisi-robotics/
 $ dl --devcontainer robot kin<TAB>
 kinisi-robotics/
@@ -1990,12 +1990,12 @@ kinisi-robotics/
 
 Counting is what this used to do, and it put the spec at the second word alone,
 so every one of those lines completed nothing. The rule each command actually
-follows is different. aid reads its leading flags and calls the first word that
-is not one the spec, which is `parse_aid_args`, and dl is a clap grammar, which
+follows is different. dla reads its leading flags and calls the first word that
+is not one the spec, which is `parse_dla_args`, and dl is a clap grammar, which
 lets an option sit anywhere among the positional words.
 
 The flags a spec may follow are the ones that modify a launch: `--rm`,
-`--devcontainer` and `--claude-profile` for `dl`, and for `aid` those two plus
+`--devcontainer` and `--claude-profile` for `dl`, and for `dla` those two plus
 the agent flags and either polarity of `--remote-control`. Every other flag ends
 the line, and nothing is offered after one:
 
@@ -2017,7 +2017,7 @@ which is the same bar the profile names are held to under
 [Naming a profile](#naming-a-profile).
 
 Once one modifier is on the line the only flags still offered are the other
-modifiers, since `dl --rm --ls` is refused and `aid --codex --help` is not aid's
+modifiers, since `dl --rm --ls` is refused and `dla --codex --help` is not dla's
 help but an unknown option handed to dl.
 
 ### Owners come before workspace ids, and why

@@ -1,12 +1,12 @@
-//! `aid` at the binary boundary: what it prints, what it hands dl, and how it ends.
+//! `dla` at the binary boundary: what it prints, what it hands dl, and how it ends.
 //!
 //! Every expectation here was captured by running the frozen Python build —
-//! `python -m devlaunch.aid` — against `dl/tests/launch_scenario.py`'s world with
+//! `python -m devlaunch.dla` — against `dl/tests/launch_scenario.py`'s world with
 //! `test/fixtures/devpod_shim.py` on PATH as `devpod`, under a scratch
 //! `HOME`/`XDG_CACHE_HOME`/`XDG_CONFIG_HOME`/`DEVPOD_HOME`, and pasting what it
 //! printed. Nothing here was read off the Rust implementation.
 //!
-//! The world is `dl`'s, deliberately: aid's whole contract is that it reaches a
+//! The world is `dl`'s, deliberately: dla's whole contract is that it reaches a
 //! workspace through dl and through nothing else, so the fixture that judges it has
 //! to be the one that judges dl.
 
@@ -33,7 +33,7 @@ fn repo_root() -> PathBuf {
         .expect("the repository root")
 }
 
-/// One scratch world, and the `aid` runs against it.
+/// One scratch world, and the `dla` runs against it.
 struct World {
     root: PathBuf,
     _scratch: tempfile::TempDir,
@@ -68,22 +68,22 @@ impl World {
         }
     }
 
-    fn aid(&self, args: &[&str]) -> Run {
-        self.aid_with(args, &[])
+    fn dla(&self, args: &[&str]) -> Run {
+        self.dla_with(args, &[])
     }
 
     /// `extra` is keyed by [`OsStr`] values rather than `&str` because one of the
     /// values a caller has to be able to set is not a string: a
     /// `DEVLAUNCH_AID_AGENT` holding undecodable bytes is the case the reader used
     /// to report as unset, and it cannot be written as one.
-    fn aid_with(&self, args: &[&str], extra: &[(&str, &OsStr)]) -> Run {
+    fn dla_with(&self, args: &[&str], extra: &[(&str, &OsStr)]) -> Run {
         let mut command = self.command(args, extra);
-        Run::of(&command.output().expect("the aid binary runs"), &self.root)
+        Run::of(&command.output().expect("the dla binary runs"), &self.root)
     }
 
-    /// `aid` in a session of its own with stdin closed: no controlling terminal, so
+    /// `dla` in a session of its own with stdin closed: no controlling terminal, so
     /// a developer's terminal can never be handed a real picker.
-    fn aid_detached(&self, args: &[&str]) -> Run {
+    fn dla_detached(&self, args: &[&str]) -> Run {
         use std::os::unix::process::CommandExt as _;
         let mut command = self.command(args, &[]);
         command.stdin(std::process::Stdio::null());
@@ -96,12 +96,12 @@ impl World {
                 Ok(())
             });
         }
-        Run::of(&command.output().expect("the aid binary runs"), &self.root)
+        Run::of(&command.output().expect("the dla binary runs"), &self.root)
     }
 
     fn command(&self, args: &[&str], extra: &[(&str, &OsStr)]) -> Command {
         let root = self.root.display().to_string();
-        let mut command = Command::new(env!("CARGO_BIN_EXE_aid"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_dla"));
         command
             .args(args)
             .env_clear()
@@ -161,7 +161,7 @@ impl World {
     }
 }
 
-/// Text with every `--session-id <uuid>` aid adds taken out.
+/// Text with every `--session-id <uuid>` dla adds taken out.
 ///
 /// The id is random per launch, so a byte-for-byte assertion cannot hold it; every
 /// other byte of the line is still the assertion. `a_fresh_claude_session_is_named`
@@ -213,54 +213,23 @@ impl Run {
 }
 
 // ===========================================================================
-// dla: aid under a second name
-// ===========================================================================
-
-#[test]
-fn dla_answers_exactly_as_aid_does() {
-    // `dla` is a second bin target over the same `main.rs` (`aid/Cargo.toml`), so
-    // it is aid in every respect, its own name in `--version` included. The two
-    // lines here are the ones aid answers without a workspace, which is enough to
-    // prove the binary is aid's and not some other program wearing the name.
-    for args in [&["--version"][..], &["--help"][..]] {
-        let aid = Command::new(env!("CARGO_BIN_EXE_aid"))
-            .args(args)
-            .keeping_coverage()
-            .output()
-            .expect("the aid binary runs");
-        let dla = Command::new(env!("CARGO_BIN_EXE_dla"))
-            .args(args)
-            .keeping_coverage()
-            .output()
-            .expect("the dla binary runs");
-        assert!(aid.status.success(), "aid {args:?}: {aid:?}");
-        assert_eq!(dla.status.code(), aid.status.code(), "dla {args:?}");
-        assert_eq!(
-            String::from_utf8_lossy(&dla.stdout),
-            String::from_utf8_lossy(&aid.stdout),
-            "dla {args:?}"
-        );
-    }
-}
-
-// ===========================================================================
-// the three answers aid gives on its own
+// the three answers dla gives on its own
 // ===========================================================================
 
 #[test]
 fn help_is_asked_for_by_flag_and_printed_by_accident() {
     // Python's pair of endings for one body (`aid.py`:220): the help is what a
-    // person who typed `aid` alone needs, and typing `aid` alone is still a command
+    // person who typed `dla` alone needs, and typing `dla` alone is still a command
     // line that named no workspace.
     let world = World::with(&["--warm"]);
 
     for (args, code) in [(vec!["--help"], 0), (vec!["-h"], 0), (vec![], 1)] {
-        let run = world.aid_with(&args, &[]);
+        let run = world.dla_with(&args, &[]);
         run.exited(code);
         assert!(
             run.out
-                .starts_with("aid - AI Develop: start a coding agent in a devlaunch workspace\n"),
-            "aid {args:?} printed {:?}",
+                .starts_with("dla - AI Develop: start a coding agent in a devlaunch workspace\n"),
+            "dla {args:?} printed {:?}",
             run.out
         );
         // The usage text ends with a blank line, as Python's `print(f\"\"\"…\n\"\"\")`
@@ -276,36 +245,36 @@ fn help_is_asked_for_by_flag_and_printed_by_accident() {
 }
 
 #[test]
-fn resume_help_prints_aids_help_rather_than_opening_the_picker() {
+fn resume_help_prints_dlas_help_rather_than_opening_the_picker() {
     let world = World::with(&["--warm"]);
 
     for flag in ["--help", "-h"] {
-        let run = world.aid(&["resume", flag]);
+        let run = world.dla(&["resume", flag]);
         run.exited(0);
         assert!(
-            run.out.contains("aid resume"),
-            "aid resume {flag} printed {:?}",
+            run.out.contains("dla resume"),
+            "dla resume {flag} printed {:?}",
             run.out
         );
         assert!(
             world.devpod_calls().is_empty(),
-            "aid resume {flag} asked devpod something: {:?}",
+            "dla resume {flag} asked devpod something: {:?}",
             world.devpod_calls()
         );
     }
 }
 
 #[test]
-fn the_version_is_dls_under_aids_name_with_dls_build_marker() {
-    // Both halves come from `dl`, so `aid-next` and `dl-next` cannot disagree
+fn the_version_is_dls_under_dlas_name_with_dls_build_marker() {
+    // Both halves come from `dl`, so `dla-next` and `dl-next` cannot disagree
     // about which build they are (#268): the marker is empty in the released build
     // and `-dev` in a working-tree one. **Divergence row 16**: what Python put
     // after the version here was `(dev, editable from <tree>)`, which a compiled
     // binary has no metadata for.
     let world = World::with(&["--warm"]);
-    let run = world.aid(&["--version"]);
+    let run = world.dla(&["--version"]);
     run.exited(0);
-    assert_eq!(run.out, format!("aid {VERSION}{}\n", dl::BUILD_MARKER));
+    assert_eq!(run.out, format!("dla {VERSION}{}\n", dl::BUILD_MARKER));
     assert_eq!(run.err, "");
 }
 
@@ -316,11 +285,11 @@ fn a_command_line_with_no_workspace_never_reaches_dl() {
     // `--gemini` picks an agent and names no workspace; `--devcontainer robot` takes
     // its value with it and leaves nothing either.
     for args in [vec!["--gemini"], vec!["--devcontainer", "robot"]] {
-        let run = world.aid_with(&args, &[]);
+        let run = world.dla_with(&args, &[]);
         run.exited(1);
         assert_eq!(
             run.err,
-            "aid needs a workspace: aid <user/repo>[@branch] [prompt]\n"
+            "dla needs a workspace: dla <user/repo>[@branch] [prompt]\n"
         );
         assert_eq!(run.out, "");
         assert!(world.devpod_calls().is_empty(), "{args:?} reached devpod");
@@ -330,7 +299,7 @@ fn a_command_line_with_no_workspace_never_reaches_dl() {
 #[test]
 fn an_agent_the_environment_invented_is_refused_before_anything_opens() {
     let world = World::with(&["--warm"]);
-    let run = world.aid_with(
+    let run = world.dla_with(
         &[MAIN, "hi"],
         &[("DEVLAUNCH_AID_AGENT", OsStr::new("nope"))],
     );
@@ -344,10 +313,10 @@ fn an_agent_the_environment_invented_is_refused_before_anything_opens() {
 
 #[test]
 fn an_agent_name_that_does_not_decode_is_refused_rather_than_read_as_unset() {
-    // The same refusal as above, for the value that used to slip past it. `aid`
+    // The same refusal as above, for the value that used to slip past it. `dla`
     // read this variable with `std::env::var(..).ok()`, which reports a value that
     // is not valid UTF-8 as *absent* -- so `DEVLAUNCH_AID_AGENT=$'\xff'` was not a
-    // broken agent name, it was no agent name, and aid quietly started the default
+    // broken agent name, it was no agent name, and dla quietly started the default
     // agent instead of saying the variable is wrong. That is the inversion
     // `osext::env_str` exists to prevent, one hatch along from the
     // `DEVLAUNCH_NO_TTY` one.
@@ -357,7 +326,7 @@ fn an_agent_name_that_does_not_decode_is_refused_rather_than_read_as_unset() {
     // makes the value a name to refuse rather than a variable to ignore.
     let world = World::with(&["--warm"]);
     let undecodable = OsStr::from_bytes(b"\xff");
-    let run = world.aid_with(&[MAIN, "hi"], &[("DEVLAUNCH_AID_AGENT", undecodable)]);
+    let run = world.dla_with(&[MAIN, "hi"], &[("DEVLAUNCH_AID_AGENT", undecodable)]);
     run.exited(1);
     assert_eq!(
         run.err,
@@ -376,13 +345,13 @@ fn a_fresh_claude_session_is_named() {
     // The name is what lets herdr bring the session back after a restart: the line
     // that reopens it is `--resume <the same id>`, known before the session exists.
     let world = World::with(&["--warm"]);
-    let run = world.aid(&[MAIN, "hi"]);
+    let run = world.dla(&[MAIN, "hi"]);
     run.exited(0);
     let calls = world.devpod_calls_as_made();
     let session = calls.last().expect("a session");
     let at = session
         .find("--session-id ")
-        .expect("aid named the session")
+        .expect("dla named the session")
         + "--session-id ".len();
     let id = &session[at..at + 36];
     assert_eq!(id.len(), 36, "{session}");
@@ -392,23 +361,23 @@ fn a_fresh_claude_session_is_named() {
 
 #[test]
 fn a_prompt_reaches_the_agent_as_one_argument_through_dls_own_launch() {
-    // The whole of aid, observed from outside: the rewritten command line on stderr,
+    // The whole of dla, observed from outside: the rewritten command line on stderr,
     // dl's own launch of the workspace, and one `devpod ssh --command` carrying the
     // agent. Byte for byte Python's, quoting included — the payload travels in argv.
     //
-    // The echoed `aid -> dl` line shows the tail as the words it is, because that is
-    // what aid now hands dl; the `--command` below is unchanged, since dl puts back
-    // the same quoting aid used to apply itself.
+    // The echoed `dla -> dl` line shows the tail as the words it is, because that is
+    // what dla now hands dl; the `--command` below is unchanged, since dl puts back
+    // the same quoting dla used to apply itself.
     //
     // Remote Control rides along with nothing typed, which is what it is now: the
     // default. The name is the spec, which here is the workspace the line named.
     let world = World::with(&["--warm"]);
-    let run = world.aid(&[MAIN, "fix", "the", "bug"]);
+    let run = world.dla(&[MAIN, "fix", "the", "bug"]);
     run.exited(0);
     assert_eq!(
         run.err.lines().collect::<Vec<&str>>(),
         [
-            "aid -> dl devlaunch-main-3j1t -- CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 \
+            "dla -> dl devlaunch-main-3j1t -- CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 \
              IS_SANDBOX=1 claude --dangerously-skip-permissions \
              --remote-control=devlaunch-main-3j1t 'fix the bug'",
             "Workspace devlaunch-main-3j1t is already running, attaching...",
@@ -440,7 +409,7 @@ fn no_remote_control_is_the_one_way_back_to_a_purely_local_session() {
     // claude.ai by somebody who thought they had said no.
     for flag in ["--no-remote-control", "--no-remote"] {
         let world = World::with(&["--warm"]);
-        world.aid(&[flag, MAIN, "hi"]).exited(0);
+        world.dla(&[flag, MAIN, "hi"]).exited(0);
         assert_eq!(
             world.devpod_calls().last().expect("a session"),
             &format!(
@@ -454,7 +423,7 @@ fn no_remote_control_is_the_one_way_back_to_a_purely_local_session() {
 
     let by_variable = World::with(&["--warm"]);
     by_variable
-        .aid_with(
+        .dla_with(
             &[MAIN, "hi"],
             &[("DEVLAUNCH_AID_REMOTE_CONTROL", OsStr::new("0"))],
         )
@@ -478,7 +447,7 @@ fn an_appended_off_switch_is_observed_from_outside_to_turn_it_off() {
     // hand claude `--no-remote` to read as its prompt.
     let world = World::with(&["--warm"]);
     world
-        .aid(&[MAIN, "fix", "the", "bug", "--no-remote"])
+        .dla(&[MAIN, "fix", "the", "bug", "--no-remote"])
         .exited(0);
 
     assert_eq!(
@@ -497,7 +466,7 @@ fn a_remote_control_variable_that_is_neither_a_yes_nor_a_no_is_refused() {
     // anything opens: both readings of a value like this are a guess, and both leave
     // somebody sure they set something they did not.
     let world = World::with(&["--warm"]);
-    let run = world.aid_with(
+    let run = world.dla_with(
         &[MAIN, "hi"],
         &[("DEVLAUNCH_AID_REMOTE_CONTROL", OsStr::new("maybe"))],
     );
@@ -515,11 +484,11 @@ fn no_prompt_starts_the_agents_plain_session() {
     // The Python `test_interactive_command::TestAidReachesTheTtyTransport`'s first
     // case at the boundary (that suite retired with the Python tree in #267, and
     // this is where the case lives now): no prompt, so no prompt flags — and the
-    // same transport `dl <ws>` uses, which is what makes aid a rewrite rather than
+    // same transport `dl <ws>` uses, which is what makes dla a rewrite rather than
     // a launcher. (The OpenSSH pty half of that class needs a published ssh alias
     // and is M9's.)
     let world = World::with(&["--warm"]);
-    let run = world.aid(&[MAIN]);
+    let run = world.dla(&[MAIN]);
     run.exited(0);
     assert_eq!(
         world.devpod_calls().last().expect("a session"),
@@ -529,7 +498,7 @@ fn no_prompt_starts_the_agents_plain_session() {
              --dangerously-skip-permissions --remote-control={MAIN}'"
         )
     );
-    // `Command::output()` gives aid no terminal, and off a terminal the promptless
+    // `Command::output()` gives dla no terminal, and off a terminal the promptless
     // line must stay the one-shot launch it always was: no editor, no question. The
     // interactive default is pinned by `tests/interactive.rs`, on a pty.
     assert!(
@@ -540,33 +509,33 @@ fn no_prompt_starts_the_agents_plain_session() {
 }
 
 #[test]
-fn the_detached_cache_refresh_reaches_dl_through_aids_own_name() {
-    // dl re-spawns its completion refresh through `current_exe`, which under aid
-    // *is* aid — so `aid --update-cache` must be dl's `--update-cache`, not a
+fn the_detached_cache_refresh_reaches_dl_through_dlas_own_name() {
+    // dl re-spawns its completion refresh through `current_exe`, which under dla
+    // *is* dla — so `dla --update-cache` must be dl's `--update-cache`, not a
     // command line that lost its workspace. Before this arm existed, every refresh
-    // an aid launch fired died as "aid needs a workspace" and completions silently
+    // a dla launch fired died as "dla needs a workspace" and completions silently
     // never refreshed.
     let world = World::with(&["--warm"]);
-    let run = world.aid(&["--update-cache"]);
+    let run = world.dla(&["--update-cache"]);
     run.exited(0);
     assert!(
-        !run.err.contains("aid needs a workspace"),
-        "the refresh was refused as an aid line: {}",
+        !run.err.contains("dla needs a workspace"),
+        "the refresh was refused as a dla line: {}",
         run.err
     );
 }
 
 #[test]
-fn the_detached_editor_waiter_reaches_dl_through_aids_own_name() {
-    // The editor waiter is re-spawned through `current_exe` too. An aid launch
-    // therefore re-enters as aid and must hand this internal word straight back
+fn the_detached_editor_waiter_reaches_dl_through_dlas_own_name() {
+    // The editor waiter is re-spawned through `current_exe` too. A dla launch
+    // therefore re-enters as dla and must hand this internal word straight back
     // to dl instead of parsing it as a user launch with no workspace.
     let world = World::with(&["--warm"]);
-    let run = world.aid(&["--herdr-editor-ready"]);
+    let run = world.dla(&["--herdr-editor-ready"]);
     run.exited(0);
     assert!(
-        !run.err.contains("aid needs a workspace"),
-        "the waiter was refused as an aid line: {}",
+        !run.err.contains("dla needs a workspace"),
+        "the waiter was refused as a dla line: {}",
         run.err
     );
 }
@@ -577,9 +546,9 @@ fn each_agent_is_started_the_way_its_own_cli_takes_a_prompt() {
     // flag only appears beside a prompt; codex takes no prompt flag and no
     // variable. Each line also carries the agent's full-auto flag, which is the
     // spelling of one rule in three CLIs and is held as a rule by
-    // `every_agent_starts_in_full_auto` (rust/aid/src/rewrite.rs).
+    // `every_agent_starts_in_full_auto` (rust/dla/src/rewrite.rs).
     let world = World::with(&["--warm"]);
-    world.aid(&["--gemini", MAIN, "explain", "this"]).exited(0);
+    world.dla(&["--gemini", MAIN, "explain", "this"]).exited(0);
     assert_eq!(
         world.devpod_calls().last().expect("a session"),
         &format!(
@@ -588,7 +557,7 @@ fn each_agent_is_started_the_way_its_own_cli_takes_a_prompt() {
     );
 
     let bare = World::with(&["--warm"]);
-    bare.aid(&["--gemini", MAIN]).exited(0);
+    bare.dla(&["--gemini", MAIN]).exited(0);
     assert_eq!(
         bare.devpod_calls().last().expect("a session"),
         &format!("devpod ssh {MAIN} --log-output json --command bash -lc 'gemini --yolo'")
@@ -601,7 +570,7 @@ fn each_agent_is_started_the_way_its_own_cli_takes_a_prompt() {
     // rather than as one string, since the prefix is a shell block and the point
     // here is that codex gets one and the other agents do not.
     let codex = World::with(&["--warm"]);
-    codex.aid(&["--codex", MAIN, "hi"]).exited(0);
+    codex.dla(&["--codex", MAIN, "hi"]).exited(0);
     let session = codex.devpod_calls().last().expect("a session").clone();
     for part in [
         "DEVLAUNCH_CODEX_AUTH",
@@ -620,7 +589,7 @@ fn remote_control_reaches_claude_as_one_named_flag_and_dl_never_sees_it() {
     // to arrive as one argv word, since `--remote-control [name]` would otherwise
     // read the prompt as the name.
     let world = World::with(&["--warm"]);
-    let run = world.aid(&["--remote-control", MAIN, "fix", "the", "bug"]);
+    let run = world.dla(&["--remote-control", MAIN, "fix", "the", "bug"]);
     run.exited(0);
     assert_eq!(
         world.devpod_calls().last().expect("a session"),
@@ -634,10 +603,10 @@ fn remote_control_reaches_claude_as_one_named_flag_and_dl_never_sees_it() {
 
 #[test]
 fn remote_control_beside_an_agent_that_has_none_is_refused_before_anything_opens() {
-    // The refusal is aid's, and it lands where every other usage refusal does:
+    // The refusal is dla's, and it lands where every other usage refusal does:
     // ahead of the boot, so nothing is created for a line that cannot run.
     let world = World::with(&["--warm"]);
-    let run = world.aid(&["--codex", "--remote-control", MAIN, "hi"]);
+    let run = world.dla(&["--codex", "--remote-control", MAIN, "hi"]);
     run.exited(1);
     assert_eq!(
         run.err,
@@ -653,7 +622,7 @@ fn a_model_and_an_effort_reach_the_agent_and_dl_never_sees_either() {
     // either through as an unknown leading option would exit 2 here.
     let world = World::with(&["--warm"]);
     world
-        .aid(&["--model", "opus", "--effort=max", MAIN, "fix", "it"])
+        .dla(&["--model", "opus", "--effort=max", MAIN, "fix", "it"])
         .exited(0);
     assert_eq!(
         world.devpod_calls().last().expect("a session"),
@@ -667,7 +636,7 @@ fn a_model_and_an_effort_reach_the_agent_and_dl_never_sees_either() {
 
     let codex = World::with(&["--warm"]);
     codex
-        .aid(&["--codex", "--effort", "high", MAIN, "hi"])
+        .dla(&["--codex", "--effort", "high", MAIN, "hi"])
         .exited(0);
     let session = codex.devpod_calls().last().expect("a session").clone();
     assert!(
@@ -681,7 +650,7 @@ fn a_model_and_an_effort_reach_the_agent_and_dl_never_sees_either() {
 #[test]
 fn an_effort_beside_an_agent_that_has_none_is_refused_before_anything_opens() {
     let world = World::with(&["--warm"]);
-    let run = world.aid(&["--gemini", "--effort", "high", MAIN, "hi"]);
+    let run = world.dla(&["--gemini", "--effort", "high", MAIN, "hi"]);
     run.exited(1);
     assert_eq!(
         run.err,
@@ -697,7 +666,7 @@ fn a_dl_option_is_passed_through_and_a_flag_after_the_spec_is_prompt() {
     // that is already running; `--verbose` after the spec is a word of the prompt,
     // and dl never sees it as a flag.
     let world = World::with(&["--warm"]);
-    let run = world.aid(&[
+    let run = world.dla(&[
         "--devcontainer",
         "robot",
         MAIN,
@@ -730,10 +699,10 @@ fn a_dl_option_is_passed_through_and_a_flag_after_the_spec_is_prompt() {
 
 #[test]
 fn the_exit_code_is_the_one_dl_ends_with() {
-    // aid returns `dl.main(...)` and adds nothing: an unknown workspace is dl's
+    // dla returns `dl.main(...)` and adds nothing: an unknown workspace is dl's
     // refusal and dl's 1, and a devpod that is not installed is dl's 127.
     let unknown = World::with(&["--warm"]);
-    let refused = unknown.aid(&["nope"]);
+    let refused = unknown.dla(&["nope"]);
     refused.exited(1);
     assert!(
         refused.err.contains("Unknown workspace 'nope'"),
@@ -742,7 +711,7 @@ fn the_exit_code_is_the_one_dl_ends_with() {
     );
 
     let missing = World::with(&["--warm", "--no-devpod"]);
-    let lost = missing.aid(&[MAIN]);
+    let lost = missing.dla(&[MAIN]);
     lost.exited(127);
     assert!(
         lost.err.contains("devpod not found on PATH"),
@@ -754,19 +723,19 @@ fn the_exit_code_is_the_one_dl_ends_with() {
 #[test]
 fn a_remote_agent_that_failed_ends_with_the_agents_status() {
     // The session's own ending, whichever process the number came from — the
-    // property `dl` already pins, reached through aid to show it is not re-decided
+    // property `dl` already pins, reached through dla to show it is not re-decided
     // here.
     let world = World::with(&["--warm", "--remote-exit"]);
-    world.aid(&[MAIN, "boom"]).exited(130);
+    world.dla(&[MAIN, "boom"]).exited(130);
 }
 
-/// The full-auto table `docs/cli.md` prints, held to the lines `aid` actually runs.
+/// The full-auto table `docs/cli.md` prints, held to the lines `dla` actually runs.
 ///
 /// The "Full auto: every agent, every launch" section writes each agent's flag into
 /// a table. That is a hand-maintained copy of a fact owned by `rewrite.rs`'s agent
 /// table, and this repository allows a second copy only with a test beside it that
 /// diffs it against the first. `every_agent_starts_in_full_auto` in
-/// `rust/aid/src/rewrite.rs` is not that test: it pins the *behaviour*, and would
+/// `rust/dla/src/rewrite.rs` is not that test: it pins the *behaviour*, and would
 /// still pass with a flag changed and the page left naming the old one.
 ///
 /// Diffed against the command as devpod receives it, rather than against the source
@@ -793,11 +762,11 @@ fn the_full_auto_section_names_the_flags_each_agent_is_actually_started_with() {
 
     for (agent, flag) in rows {
         let world = World::with(&["--warm"]);
-        world.aid(&[&format!("--{agent}"), MAIN]).exited(0);
+        world.dla(&[&format!("--{agent}"), MAIN]).exited(0);
         let command = world
             .devpod_calls()
             .last()
-            .unwrap_or_else(|| panic!("`aid --{agent}` opened no session"))
+            .unwrap_or_else(|| panic!("`dla --{agent}` opened no session"))
             .clone();
 
         // As a whole word and not by `contains`, which is the same trap
@@ -871,13 +840,13 @@ fn full_auto_rows(document: &str) -> Vec<(String, String)> {
 
 #[test]
 fn resume_reopens_a_session_in_the_named_workspace_through_dls_own_launch() {
-    // Newer than the Python build, so this one was not captured from it: `aid
+    // Newer than the Python build, so this one was not captured from it: `dla
     // resume` is the Rust tree's own. What it pins is the one thing that makes it a
     // resume and not a launch, observed where the agent is actually started:
     // `--resume` is the last word of the payload, after the Remote Control name
     // that makes the resumed session drivable from claude.ai as the first one was.
     let world = World::with(&["--warm"]);
-    world.aid(&["resume", MAIN]).exited(0);
+    world.dla(&["resume", MAIN]).exited(0);
     assert_eq!(
         world.devpod_calls(),
         [
@@ -894,11 +863,11 @@ fn resume_reopens_a_session_in_the_named_workspace_through_dls_own_launch() {
 #[test]
 fn resume_with_no_terminal_says_why_nothing_was_picked_and_what_to_type() {
     let world = World::with(&["--warm"]);
-    let run = world.aid_detached(&["resume"]);
+    let run = world.dla_detached(&["resume"]);
     run.exited(1);
     assert!(
         run.err.contains(
-            "aid resume needs a terminal to pick a workspace. Name one instead: aid resume <workspace>"
+            "dla resume needs a terminal to pick a workspace. Name one instead: dla resume <workspace>"
         ),
         "{:?}",
         run.err
@@ -913,7 +882,7 @@ fn resume_with_no_terminal_says_why_nothing_was_picked_and_what_to_type() {
 #[test]
 fn resume_with_no_workspaces_says_how_to_make_one() {
     let world = World::with(&["--no-workspaces"]);
-    let run = world.aid_detached(&["resume"]);
+    let run = world.dla_detached(&["resume"]);
     run.exited(1);
     assert!(
         run.err
@@ -931,11 +900,11 @@ fn resume_with_no_workspaces_says_how_to_make_one() {
 #[test]
 fn a_resume_line_with_a_prompt_never_reaches_dl() {
     let world = World::with(&["--warm"]);
-    let run = world.aid(&["resume", MAIN, "fix", "it"]);
+    let run = world.dla(&["resume", MAIN, "fix", "it"]);
     run.exited(1);
     assert!(
         run.err
-            .contains("aid resume takes a workspace and nothing after it"),
+            .contains("dla resume takes a workspace and nothing after it"),
         "{}",
         run.err
     );

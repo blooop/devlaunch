@@ -4,7 +4,7 @@
 //!
 //! `gh` and `claude` are not optional extras for the way these workspaces get
 //! used: `dl` already forwards the host's GitHub login into every container,
-//! which is worth nothing when the container has no `gh` to spend it, and `aid`
+//! which is worth nothing when the container has no `gh` to spend it, and `dla`
 //! exists to run `claude` in there. A guarantee that depends on the repo's own
 //! devcontainer.json is not a guarantee, so the tools come from the invocation —
 //! the same argument [`crate::clients::gh`] makes for the token.
@@ -366,7 +366,7 @@ pub(crate) const REQUIRED_TOOLS: [Tool; 2] = [
 /// and named by construction.
 pub(crate) const ZELLIJ_TOOL: Tool = Tool::new("zellij", "zellij");
 
-/// The other agent `aid` can start (`aid --codex`). A `codex` on PATH is the whole
+/// The other agent `dla` can start (`dla --codex`). A `codex` on PATH is the whole
 /// of what that needs from a container.
 ///
 /// **Not lent from the host, unlike claude, and the size is the reason.** The lending
@@ -478,7 +478,7 @@ impl ZellijSwitch {
 /// one signature are three a caller can swap without the compiler noticing — but
 /// derived from a different kind of fact, which is the part worth reading. The other
 /// two answer environment variables. This one answers **what this launch was asked
-/// to run**: `aid --codex` becomes `dl <ws> -- codex ...`, so the command already
+/// to run**: `dla --codex` becomes `dl <ws> -- codex ...`, so the command already
 /// names the agent and [`crate::flows::launch::RemoteCommand::agent`] already reads
 /// it for the session manager. Installing codex into every workspace on the chance
 /// somebody wants it would be a 244MB package most launches never call, and a
@@ -486,7 +486,7 @@ impl ZellijSwitch {
 /// find out about.
 ///
 /// The consequence worth naming: a workspace first provisioned by `dl <ws>` and then
-/// used by `aid --codex <ws>` is a cache miss in [`verdict_cache`], because the
+/// used by `dla --codex <ws>` is a cache miss in [`verdict_cache`], because the
 /// switches a marker was written under are part of its key. That costs the second
 /// launch one pass — the pass that installs codex — which is exactly what has to
 /// happen and is why the switch belongs in [`Switches`] rather than beside it.
@@ -789,10 +789,10 @@ const LOCAL_BIN_LINE: &str = r#"export PATH="$HOME/.local/bin:$PATH""#;
 /// close that hole, because it only repaints at a prompt and claude overwrites
 /// between prompts.
 ///
-/// `aid` set this variable in the same commit that first named a pane, so the
+/// `dla` set this variable in the same commit that first named a pane, so the
 /// contest was answered the day it was created -- but only as an env prefix on the
 /// claude *it* decided to start, correctly, since a `dl <ws> -- claude ...`
-/// somebody typed themselves is their command and not aid's to rewrite. That left
+/// somebody typed themselves is their command and not dla's to rewrite. That left
 /// every claude a person started for themselves losing the pane name, which is
 /// most of them. Writing it to the login profile keeps that rule and reaches those
 /// sessions anyway: it is not a rewrite of anyone's command, it is the environment
@@ -818,7 +818,7 @@ const CLAUDE_TITLE_EXPORT: &str = "export CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1";
 /// not.
 ///
 /// The id and nothing new: it is the string `dl --ls` prints, devpod is addressed
-/// by and `aid` names its own sessions with, and it has no `/`, which Claude Code's
+/// by and `dla` names its own sessions with, and it has no `/`, which Claude Code's
 /// `SendMessage` refuses in an address. Claude Code replaces the name with a title
 /// taken from the conversation after the first message unless the session was
 /// named explicitly, which only a flag does, and a flag on somebody's own `claude`
@@ -7758,7 +7758,7 @@ fi
 
     #[test]
     fn a_real_bash_over_the_title_stage_also_silences_claudes_own_titling() {
-        // The half `aid` could never cover. aid sets
+        // The half `dla` could never cover. dla sets
         // `CLAUDE_CODE_DISABLE_TERMINAL_TITLE` as an env prefix on the claude *it*
         // decided to start, and deliberately does not rewrite a `dl <ws> -- claude`
         // somebody typed themselves -- so that session, and every `claude` typed at

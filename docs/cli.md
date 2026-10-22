@@ -5,8 +5,8 @@ selector decides what you picked, which verb refreshes git state and which only
 touch the container, what a pull request link resolves to, which commands get a
 terminal, what `--rm` promises and where
 it stops, which exits fire it, the spellings that were retired and what they say
-now, which full-auto flag `aid` starts each agent with and why codex gets the one it
-gets, what `aid`'s Remote Control default starts and how to turn it off, what
+now, which full-auto flag `dla` starts each agent with and why codex gets the one it
+gets, what `dla`'s Remote Control default starts and how to turn it off, what
 `kill` does to a workspace that will not answer, and what happens when devpod is
 missing, will not answer, or injects the wrong agent binary.
 
@@ -192,8 +192,8 @@ A merged or closed request still resolves, and `dl` says which it is before the
 checkout runs. GitHub deletes the head branch of most merged requests, and
 "couldn't find branch" is a confusing way to be told that something landed.
 
-`aid` accepts the same three spellings, and resolves the reference itself before
-anything else happens. It has to: `aid` holds the spec in three places `dl` never
+`dla` accepts the same three spellings, and resolves the reference itself before
+anything else happens. It has to: `dla` holds the spec in three places `dl` never
 sees, and one of them is a second `dl` run. The banner names the spec, the early
 terminal tab is named after it, and the background boot the interactive flow
 spawns is `dl <spec> up` in a process of its own. Leaving the reference in place
@@ -220,7 +220,7 @@ One exception, and it is deliberate. The quoting leaves a word alone when it nee
 none, and `=` counts as needing none, so a leading `NAME=value` still reaches the
 shell as an assignment prefix and sets that variable for that command only. That
 is what makes `dl <ws> -- IS_SANDBOX=1 claude ...` work, which is the spelling
-`aid` uses and the one the README shows.
+`dla` uses and the one the README shows.
 
 The exception ends where the quoting begins, and it ends abruptly. It is the
 whole word that has to need no quoting, value included, so `FOO=bar` is an
@@ -310,7 +310,7 @@ applies to the two forms that hand a session over and come back from it:
 ```bash
 dl kinisi/repo@fix/x --rm                # shell; the workspace goes when you exit
 dl kinisi/repo@fix/x --rm -- make test   # one command, then the workspace goes
-aid kinisi/repo@fix/x 'fix the flaky test' --rm
+dla kinisi/repo@fix/x 'fix the flaky test' --rm
 ```
 
 **The word and the flag are docker's two commands, not two spellings of one.**
@@ -358,7 +358,7 @@ Three more things it does not promise:
   run exiting first removes it from under that one. Use `--rm` for the workspace
   you opened to throw away, not for one you may already be sitting in elsewhere.
 
-On an `aid` line it is **appendable**, and it keeps the prompt: recall the line, type
+On a `dla` line it is **appendable**, and it keeps the prompt: recall the line, type
 `--rm` at the end, and the agent still runs, with the workspace going when it is done. That
 is the shape a shell makes cheap, appending to the previous line rather than editing
 the front of it. Note that a `--` command tail is not appendable this way. Everything
@@ -374,7 +374,7 @@ the session or kills `dl`.
 a pty. A bare `dl <ws>` runs `devpod ssh <id>`, and `dl <ws> -- <cmd>` on a terminal
 runs `ssh -t`. That puts your local terminal in raw mode and clears `ISIG`, so Ctrl-C is
 a byte travelling to the remote pty rather than a signal to `dl`: the program *inside* the
-container gets the interrupt. So `aid repo 'fix it' --rm` and Ctrl-C twice to leave
+container gets the interrupt. So `dla repo 'fix it' --rm` and Ctrl-C twice to leave
 Claude Code ends the remote command, ends the session, and the workspace goes. In an
 interactive shell Ctrl-C just hands you a fresh prompt, and `exit` or Ctrl-D is what ends
 that session, either of which fires the removal.
@@ -503,7 +503,7 @@ the one you are still working in.
 workspace is the one the herdr tab you type it in is named after.
 
 A launch in a herdr pane renames its tab after the workspace's record, `repo@branch`, and
-herdr keeps that name after the session ends. So when you close an `aid` session, the shell
+herdr keeps that name after the session ends. So when you close a `dla` session, the shell
 left in the tab still knows which workspace the tab was for. `dl rmt` asks herdr for the
 tab's name (`herdr tab get $HERDR_TAB_ID`) and deletes that workspace:
 
@@ -548,7 +548,7 @@ workspace.
 
 `--stop` is a genuine withdrawal, and so is the thing `--rm` used to do. Both were the
 *suffix* form of a verb, appended to a line that already asked for something, and
-winning over it, so that `aid <ws> 'review this pr' --rm` deleted the workspace and
+winning over it, so that `dla <ws> 'review this pr' --rm` deleted the workspace and
 printed `--rm overrode the rest of the line`. That shape cannot survive `--rm` meaning
 "delete when the session ends": the two spellings look alike, and one cancelling the
 line while the other runs it is the one pair a person cannot keep straight.
@@ -560,7 +560,7 @@ dl <ws> rm            # the workspace named
 dl rm                 # or pick it; TAB marks several, and rm takes each in turn
 ```
 
-For a long `aid` prompt line that is the cheaper edit anyway: `dl rm` and a pick
+For a long `dla` prompt line that is the cheaper edit anyway: `dl rm` and a pick
 beats recalling the line to type at the end of it. What is genuinely gone is deleting
 a workspace *without naming or picking it*, by appending to whatever the last line
 happened to be.
@@ -629,7 +629,7 @@ section back and diffs them against what the binary prints.
 
 ## Full auto: every agent, every launch
 
-`aid` exists to hand a repo to an agent and walk away, so every agent it starts is
+`dla` exists to hand a repo to an agent and walk away, so every agent it starts is
 started in that agent's full auto mode. There is no flag to type and no flag to
 type differently per agent:
 
@@ -644,7 +644,7 @@ The flag and not the whole command line, which is longer than one column: a defa
 `--remote-control=<workspace id>`, and gemini takes its initial prompt through
 `--prompt-interactive`.
 
-One rule, three spellings, and the table in `rust/aid/src/rewrite.rs` is where they
+One rule, three spellings, and the table in `rust/dla/src/rewrite.rs` is where they
 live. `every_agent_starts_in_full_auto` holds the rule against that table rather
 than against one row of it, so an agent added without its flag fails a test instead
 of stopping someone's unattended run to ask about its first edit.
@@ -671,21 +671,21 @@ machine that is not there. It is scoped to the agent process and is not exported
 into your shell.
 
 What this buys and what it costs is the same sentence: the agent will not stop to
-ask, so an `aid owner/repo fix the bug` can run to the end unattended, and it can
+ask, so a `dla owner/repo fix the bug` can run to the end unattended, and it can
 also rewrite the checkout it is in without asking. It cannot reach your host. Review
-an `aid` workspace before pushing rather than treating it as something that will
+a `dla` workspace before pushing rather than treating it as something that will
 stop the agent for you.
 
 None of this reaches a command you typed yourself. `dl <ws> -- claude` runs claude,
 exactly as written, with no flags added and no variables set.
 
-## Remote Control: every `aid` session, on your phone too
+## Remote Control: every `dla` session, on your phone too
 
-Every `aid` launch of claude starts with Claude Code's Remote Control on. There is no
+Every `dla` launch of claude starts with Claude Code's Remote Control on. There is no
 flag to type:
 
 ```bash
-aid blooop/devlaunch@fix/42 fix the flaky test
+dla blooop/devlaunch@fix/42 fix the flaky test
 ```
 
 The session is still the one in your terminal, running in the container on your
@@ -695,7 +695,7 @@ phone without the workspace being anywhere but where it was.
 
 **The session is named after the workspace id**, the name `dl --ls` prints, so the list
 on claude.ai reads as the workspaces you opened rather than as a row of untitled
-sessions. `aid` always sends a name, because `claude --remote-control [name]` takes an
+sessions. `dla` always sends a name, because `claude --remote-control [name]` takes an
 optional one and a bare flag would read the first word of your prompt as the name
 instead.
 
@@ -704,7 +704,7 @@ agents message it by. Claude Code's `SendMessage` refuses any address with a `/`
 ("to must be a bare teammate name"), so a session named `blooop/devlaunch@fix/42` was
 listed in every other agent's `ListAgents` and could be messaged by none of them.
 `devlaunch-fix-42-eshv` has no `/`, is unique, and is the name devpod, the hostname
-stage and `dl --ls` already use. `aid` asks dl which workspace the spec names the way
+stage and `dl --ls` already use. `dla` asks dl which workspace the spec names the way
 `dl <ws> kill` does: a bare id costs nothing, and a triple costs one `devpod status`
 with a five second limit, after which the id derived from the triple is used.
 
@@ -717,8 +717,8 @@ inside the workspace.
 ### Turning it off
 
 ```bash
-aid --no-remote-control blooop/devlaunch@fix/42    # this launch only
-aid --no-remote blooop/devlaunch@fix/42            # the same, shorter
+dla --no-remote-control blooop/devlaunch@fix/42    # this launch only
+dla --no-remote blooop/devlaunch@fix/42            # the same, shorter
 
 export DEVLAUNCH_AID_REMOTE_CONTROL=0              # every launch from this shell
 ```
@@ -729,16 +729,16 @@ command line beats it in both directions, so `--remote-control` (or `--remote`) 
 turns one launch back on.
 
 Either switch can also be appended to the end of the line, the way `--rm` can, so a
-recalled line can be turned off without retyping the front of it: `aid owner/repo fix
+recalled line can be turned off without retyping the front of it: `dla owner/repo fix
 the bug --no-remote` starts a purely local session and the prompt survives. That is
 bounded the way `--rm` is, to the exact word as a whole argument in the run at the very
-end, so a prompt that merely mentions a switch is still a prompt. `aid owner/repo
+end, so a prompt that merely mentions a switch is still a prompt. `dla owner/repo
 explain --remote-control please` ends on `please` and asks the agent what you typed.
 
 ### Four things worth knowing
 
 **It is claude's and nothing else's.** Remote Control is a Claude Code feature, so
-`aid --codex` and `aid --gemini` start with no Remote Control and say nothing about
+`dla --codex` and `dla --gemini` start with no Remote Control and say nothing about
 it: a default that refused would refuse every launch of those two. Typing
 `--remote-control` beside either of them is different, because you asked for
 something by name, and that is refused by name before anything boots. So is a
@@ -747,9 +747,9 @@ something by name, and that is refused by name before anything boots. So is a
 **It needs a claude.ai login inside the workspace.** Remote Control pairs the session
 with a Pro, Max or Team account, so a container whose `claude` is signed in with an API
 key, or not signed in at all, cannot start one. That login lives in the container along
-with the rest of the agent's state, which is what `aid` was already relying on.
+with the rest of the agent's state, which is what `dla` was already relying on.
 
-**A drivable session is a drivable agent.** `aid` runs claude with
+**A drivable session is a drivable agent.** `dla` runs claude with
 `--dangerously-skip-permissions`, so whoever is signed in to that claude.ai account
 can send the agent work and it will not stop to ask. `DEVLAUNCH_AID_REMOTE_CONTROL=0`
 is how to turn that off everywhere.
@@ -762,22 +762,22 @@ than anything still running on your machine.
 
 ## Model and effort, in each agent's spelling
 
-`--model` and `--effort` are `aid`'s own words. Each agent is told them in the
+`--model` and `--effort` are `dla`'s own words. Each agent is told them in the
 spelling its own CLI takes:
 
 ```bash
-aid --model opus --effort max blooop/devlaunch      # claude --model opus --effort max
-aid --codex --model gpt-5.5 --effort high blooop/devlaunch
+dla --model opus --effort max blooop/devlaunch      # claude --model opus --effort max
+dla --codex --model gpt-5.5 --effort high blooop/devlaunch
                                                    # codex --model gpt-5.5 -c model_reasoning_effort=high
-aid --gemini --model gemini-3-pro blooop/devlaunch  # gemini --model gemini-3-pro
+dla --gemini --model gemini-3-pro blooop/devlaunch  # gemini --model gemini-3-pro
 ```
 
 Both take their value as the next word or joined with `=`, and both go ahead of the
 workspace like the agent flags do. After the workspace they are prompt text.
 
-**`aid` does not check the values.** Each agent adds models and effort levels on its
+**`dla` does not check the values.** Each agent adds models and effort levels on its
 own release schedule, and codex already takes effort values it does not know by
-name. A list in `aid` would be wrong a few weeks after each release. So `aid` holds
+name. A list in `dla` would be wrong a few weeks after each release. So `dla` holds
 only the spelling of each flag, in its agent table, and passes the value on as you
 typed it. A value the agent does not know is the agent's to answer for, in its own words: `claude` warns about an unknown effort and uses its default.
 Leave a flag off and no flag is passed, so the agent starts on its own default.
@@ -785,16 +785,16 @@ Leave a flag off and no flag is passed, so the agent starts on its own default.
 **gemini has no effort setting.** `--effort` beside `--gemini` is refused before
 anything boots, the same way `--remote-control` is refused beside an agent without
 Remote Control. A value that is missing, empty or starts with `-` is refused too:
-`aid --model --codex <ws>` is a typo, not a model called `--codex`.
+`dla --model --codex <ws>` is a typo, not a model called `--codex`.
 
 ## The pickers ahead of the prompt
 
-`aid` with no workspace and no prompt on a terminal asks for up to three settings
+`dla` with no workspace and no prompt on a terminal asks for up to three settings
 after the workspace picker and before it opens the prompt editor. The workspace
 boots in the background the whole time. A line of flags with no workspace, such as
-`aid --codex`, is asked the same way.
+`dla --codex`, is asked the same way.
 
-`aid <workspace>` asks for none of them. A line that names its workspace said what
+`dla <workspace>` asks for none of them. A line that names its workspace said what
 it wanted, so it goes straight to the prompt editor, and every setting its flags
 left open stays at the agent's default.
 
@@ -833,15 +833,15 @@ Where the name is part of a listed row, such as `gpt-5.5` beside `gpt-5.5-codex`
 Alt-Enter uses the text as typed instead of the row.
 
 A setting that a flag on the line already gave is not asked for, so
-`aid --model opus --effort max` asks for the workspace and the agent only. A line with a
+`dla --model opus --effort max` asks for the workspace and the agent only. A line with a
 prompt on it asks for nothing, as before.
 
 **Esc cancels the launch.** In a picker Esc and Ctrl-C are keys, not signals, so
-`aid` stops the background boot itself, the same way a Ctrl-C at the prompt editor
+`dla` stops the background boot itself, the same way a Ctrl-C at the prompt editor
 does: its `devpod up` is killed and its staged token file is removed. The exit
 status is 130.
 
-The recent choices live in `aid-recent.tsv` in the devlaunch cache, so
+The recent choices live in `dla-recent.tsv` in the devlaunch cache, so
 `XDG_CACHE_HOME` scopes them with everything else. A file that is missing or
 broken reads as no history, and never stops a launch.
 
@@ -851,7 +851,7 @@ its default.
 
 ## The prompt editor
 
-After the pickers, `aid` draws a `> ` prompt under one line that says what is
+After the pickers, `dla` draws a `> ` prompt under one line that says what is
 booting. It is a small editor of its own, not the terminal's line mode, because
 the line mode could not take a paste: it holds 4096 bytes of a line, it
 submitted at the first line break of a paste, and the lines of a paste that came
@@ -873,16 +873,16 @@ A prompt taller than the screen shows its last lines under a line that counts th
 ones not shown. All of it is sent. Keys typed after the Enter are not read, so
 they reach the agent.
 
-## `aid resume`: back into a session after a restart
+## `dla resume`: back into a session after a restart
 
 ```bash
-aid resume [<workspace>]
+dla resume [<workspace>]
 ```
 
 A machine that turns off ends every agent session and stops every container. The
 conversation is not lost: the agent keeps it on disk inside the container, and a
 stopped container keeps its disk.
-`aid resume` is the way back in, in one command. With no workspace it opens the same
+`dla resume` is the way back in, in one command. With no workspace it opens the same
 picker `dl` does. Then it starts the workspace and hands the agent its own resume
 words, so for claude it is exactly
 
@@ -891,7 +891,7 @@ dl <picked-id> -- CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 IS_SANDBOX=1 claude --dan
 ```
 
 and claude's picker lists the sessions that were run in that workspace. Everything a
-fresh `aid` launch does still happens: the same full-auto flag, the same Remote Control
+fresh `dla` launch does still happens: the same full-auto flag, the same Remote Control
 name, `--no-remote` and `--rm` from either end of the line, and the agent flags. The
 words per agent are these:
 
@@ -905,8 +905,8 @@ The claude row was checked against `claude --help`. The codex and gemini rows fo
 those CLIs' documentation and were not run.
 
 `resume` is a verb only in the first positional slot, the way `dl stop` is. After the
-workspace it is prompt text like any other word, so `aid owner/repo resume the work`
-still sends a prompt. A workspace that is itself called `resume` is `aid resume
+workspace it is prompt text like any other word, so `dla owner/repo resume the work`
+still sends a prompt. A workspace that is itself called `resume` is `dla resume
 resume`. Words after the workspace on a resume line are refused before anything
 boots, because the three agents would each read them as something different: a
 search term, a session id, a session index.
@@ -917,8 +917,8 @@ not known until the pick is made.
 
 ### In a herdr pane, the restart needs no command at all
 
-A fresh claude launch carries `--session-id <uuid>`, a UUID v4 that `aid` makes up, so
-the line that reopens that session is known before the session exists. `aid` hands it to
+A fresh claude launch carries `--session-id <uuid>`, a UUID v4 that `dla` makes up, so
+the line that reopens that session is known before the session exists. `dla` hands it to
 `dl`, and `dl` tells the herdr pane it runs in:
 
 ```bash
@@ -927,13 +927,13 @@ dl <workspace id> -- CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 IS_SANDBOX=1 claude --
 
 That is the fresh line with the prompt taken out and `--resume <uuid>` in its place, so a
 restore does not send the prompt again. herdr saves it with the pane and types it into
-the pane when it restores the session. When the id is not `aid`'s to know, the line asks
+the pane when it restores the session. When the id is not `dla`'s to know, the line asks
 for the latest session instead:
 
 | Line | What herdr is told |
 |---|---|
-| `aid <ws> ...` with claude | `claude ... --resume <uuid>` |
-| `aid resume <ws>` with claude | `claude ... --continue` |
+| `dla <ws> ...` with claude | `claude ... --resume <uuid>` |
+| `dla resume <ws>` with claude | `claude ... --continue` |
 | codex, either line | `codex ... resume --last` |
 | gemini, either line | `gemini ... --resume` |
 
@@ -1081,8 +1081,8 @@ children, and nothing on the machine is ever going to reap it.
 On Linux dl makes that orphan hard to create. Each `devpod up` it starts is set to
 take a SIGKILL from the kernel when its `dl` dies (`PR_SET_PDEATHSIG`), so a `dl`
 that is SIGKILLed, or whose interrupt handler signals an `up` that does not stop,
-takes the `up` with it. `aid`'s background boot gets a SIGINT the same way, so an
-`aid` that dies cancels its boot as a Ctrl-C would. A holder started some other way,
+takes the `up` with it. `dla`'s background boot gets a SIGINT the same way, so an
+`dla` that dies cancels its boot as a Ctrl-C would. A holder started some other way,
 or on another host, can still wedge the workspace, and the sweep below is for that.
 
 dl watches for that line. **An `rm`, `rme` or `--rm` behind the lock does not wait

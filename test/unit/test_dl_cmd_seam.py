@@ -1,4 +1,4 @@
-"""The DEVLAUNCH_DL_CMD / DEVLAUNCH_AID_CMD seams (#252 §1).
+"""The DEVLAUNCH_DL_CMD / DEVLAUNCH_DLA_CMD seams (#252 §1).
 
 The acceptance harness judges *a binary*, and which binary is a run-time
 parameter: unset, the suite tests the release binaries this checkout builds; set,
@@ -20,7 +20,7 @@ import pytest
 
 from fixtures.e2e_helpers import (
     DLRunner,
-    aid_command,
+    dla_command,
     dl_command,
 )
 
@@ -46,10 +46,10 @@ class TestTheDefaultIsTheReleaseBinary:
         """cargo honours CARGO_TARGET_DIR, so the harness must not look elsewhere."""
         monkeypatch.delenv("DEVLAUNCH_DL_CMD", raising=False)
         monkeypatch.setenv("CARGO_TARGET_DIR", str(tmp_path / "elsewhere"))
-        built = tmp_path / "elsewhere" / "release" / "aid"
+        built = tmp_path / "elsewhere" / "release" / "dla"
         built.parent.mkdir(parents=True)
         built.touch()
-        assert aid_command() == [str(built)]
+        assert dla_command() == [str(built)]
 
     def test_a_missing_binary_fails_the_test_that_asked(self, monkeypatch, tmp_path):
         """Not skipped, and not built on the spot.
@@ -111,16 +111,16 @@ class TestTheOverride:
 
 
 class TestTwoEntryPointsTwoSeams:
-    def test_aid_ignores_the_dl_override(self, monkeypatch, tmp_path):
+    def test_dla_ignores_the_dl_override(self, monkeypatch, tmp_path):
         """Pointing the harness at one binary must not silently redirect the other."""
         monkeypatch.setenv("CARGO_TARGET_DIR", str(tmp_path))
-        built = tmp_path / "release" / "aid"
+        built = tmp_path / "release" / "dla"
         built.parent.mkdir(parents=True)
         built.touch()
         monkeypatch.setenv("DEVLAUNCH_DL_CMD", "/opt/rust/dl")
-        monkeypatch.delenv("DEVLAUNCH_AID_CMD", raising=False)
+        monkeypatch.delenv("DEVLAUNCH_DLA_CMD", raising=False)
         assert dl_command() == ["/opt/rust/dl"]
-        assert aid_command() == [str(built)]
+        assert dla_command() == [str(built)]
 
 
 class TestDLRunnerRoutesThroughSeam:

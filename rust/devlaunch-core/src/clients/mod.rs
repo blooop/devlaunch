@@ -25,7 +25,7 @@ pub mod git;
 // Crate-private, like `claude` and unlike the rest, but for one list: nothing
 // outside core builds the environment a session manager reads, while
 // `AGENT_NAMES` is the single copy of which agents devlaunch knows by name and
-// `aid`'s richer table is held against it.
+// `dla`'s richer table is held against it.
 pub(crate) mod herdr;
 // Binary surface: `dl` uses the same agent-name reader before it arranges a
 // Herdr editor split, and the same executable repair before it asks Herdr to do

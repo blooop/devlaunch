@@ -978,7 +978,7 @@ enum ForcePlace {
 /// `dl <flag> ws --force rm` read the verb-slot `--force` as trailing and
 /// force-deleted `ws` where `dl ws --force rm` refuses. No spelling of `<flag>`
 /// existed, but only because five unrelated rules each happened to refuse or strip
-/// one first, and `aid` hands dl every leading `-` word it is given without knowing
+/// one first, and `dla` hands dl every leading `-` word it is given without knowing
 /// what any of them mean. A slot is a place a *word* goes, so counting words is the
 /// rule and counting tokens was a coincidence that held.
 fn force_placement(argv: &[String]) -> Option<ForcePlace> {
@@ -2319,7 +2319,7 @@ mod tests {
     #[test]
     fn a_word_the_grammar_cannot_read_is_still_refused_beside_the_flag() {
         // The line row 30 taught `--rm` to rescue, and row 32 hands back: an
-        // `aid`-style line recalled with the flag typed at the end. `--rm` no
+        // `dla`-style line recalled with the flag typed at the end. `--rm` no
         // longer overrides anything, so the two words that are not a verb are
         // what they were before — a refusal that names the word and how to run it.
         assert_eq!(
@@ -2504,7 +2504,7 @@ mod tests {
     /// point rather than a weakness in the test: it was true only because
     /// `--json`/`--size` need `--ls`, `--yes` and the retired spellings and the
     /// `--rm` pair are each refused above, and `--devcontainer` is skipped by hand.
-    /// Five unrelated rules are not an invariant, and `aid` hands dl every leading
+    /// Five unrelated rules are not an invariant, and `dla` hands dl every leading
     /// `-` word it is given.
     #[test]
     fn a_flag_before_the_words_does_not_move_the_slots() {
@@ -2518,18 +2518,18 @@ mod tests {
         );
     }
 
-    /// `aid` emits the pair *leading*, which is the one spelling no dl test wrote
-    /// out and the one aid actually produces.
+    /// `dla` emits the pair *leading*, which is the one spelling no dl test wrote
+    /// out and the one dla actually produces.
     ///
-    /// aid pushes every leading `-` word into the options it puts ahead of the spec,
-    /// without knowing what any of them mean, so `aid --rm --force <ws> <prompt>`
-    /// reaches dl as `--rm --force <ws> -- <agent command>`. Nothing on aid's side
+    /// dla pushes every leading `-` word into the options it puts ahead of the spec,
+    /// without knowing what any of them mean, so `dla --rm --force <ws> <prompt>`
+    /// reaches dl as `--rm --force <ws> -- <agent command>`. Nothing on dla's side
     /// decides that is safe: what makes it safe is that the pair is answered here
-    /// before the placement of `--force` is read at all. `rust/aid`'s
+    /// before the placement of `--force` is read at all. `rust/dla`'s
     /// `a_leading_pair_reaches_dl_as_the_pair_it_is` pins the other half, that this
-    /// really is the line aid emits.
+    /// really is the line dla emits.
     #[test]
-    fn the_pair_aid_emits_is_refused_ahead_of_where_force_sits() {
+    fn the_pair_dla_emits_is_refused_ahead_of_where_force_sits() {
         assert_eq!(
             parse(&["--rm", "--force", "ws", "--", "claude -p 'fix it'"]),
             Err(GrammarError::RmForced)
@@ -2666,7 +2666,7 @@ mod tests {
             );
             // The pair, over the same space: refused by name from every ordering,
             // ahead of the verb and ahead of the placement reading. This is where
-            // `aid --rm --force <ws> <prompt>` lands, which aid emits as a *leading*
+            // `dla --rm --force <ws> <prompt>` lands, which dla emits as a *leading*
             // pair (`a_leading_pair_reaches_dl_as_the_pair_it_is` is its half).
             if line.contains(&"--rm") && line.contains(&"--force") {
                 assert_eq!(

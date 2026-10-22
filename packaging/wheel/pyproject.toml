@@ -49,15 +49,15 @@ build-backend = "maturin"
 
 [tool.maturin]
 bindings = "bin"
-# The `dl` package owns both bin targets: its own `dl`, and an `aid` compiled from
-# `rust/aid/src/main.rs` behind the `wheel` feature. See the comment on that
+# The `dl` package owns both bin targets: its own `dl`, and a `dla` compiled from
+# `rust/dla/src/main.rs` behind the `wheel` feature. See the comment on that
 # feature in `rust/dl/Cargo.toml` for why it is arranged that way; the short of it
 # is that a bin-wheel ships one cargo package's bins and this release ships two.
 manifest-path = "../../rust/dl/Cargo.toml"
 features = ["wheel"]
 # No `[project.scripts]`: maturin refuses a bin-bindings project that defines any
 # ("Defining scripts and working with a binary doesn't mix well"), and there is
-# nothing to point one at. The wheel installs `dl` and `aid` as
+# nothing to point one at. The wheel installs `dl` and `dla` as
 # `devlaunch-<version>.data/scripts/`, which pip drops straight into the
 # environment's `bin/` -- the binaries themselves, not Python wrappers around
 # them.

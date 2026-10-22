@@ -9,10 +9,9 @@
 # internal completion state and doesn't reliably prevent word splitting in all
 # bash versions. Direct parsing gives us full control over word boundaries.
 #
-# The same function serves `aid`, whose first argument is a dl workspace spec
+# The same function serves `dla`, whose first argument is a dl workspace spec
 # too. Only the flag list and what follows the spec differ, so the two places
-# that care branch on $cmd rather than the script being copied for aid. `dla` is
-# aid under a second name and completes as aid.
+# that care branch on $cmd rather than the script being copied for dla.
 _dl_completion() {
     local cur prev opts
     COMPREPLY=()
@@ -49,13 +48,10 @@ _dl_completion() {
         fi
     fi
 
-    # The command being completed: dl or aid. `dla` is aid's second name.
+    # The command being completed: dl or dla.
     local cmd=""
     if (( ${#words[@]} > 0 )); then
         cmd="${words[0]##*/}"
-    fi
-    if [[ "$cmd" == dla ]]; then
-        cmd=aid
     fi
 
     # The options offered where a workspace spec goes.
@@ -74,7 +70,7 @@ _dl_completion() {
     # hand: the grammar marks them `hide = true`, and the test drops every hidden
     # flag, so a spelling this build only still answers for is never offered.
     local global_opts="--ls --install --refresh --refresh-stale --prune --reconcile --purge --herdr-shell --herdr-setup --herdr-env --herdr-workspace --rm --devcontainer --claude-profile --claude-profiles --help -h --version"
-    if [[ "$cmd" == aid ]]; then
+    if [[ "$cmd" == dla ]]; then
         global_opts="--claude --codex --gemini --model --effort --devcontainer --claude-profile --help -h --version"
     fi
 
@@ -88,13 +84,13 @@ _dl_completion() {
     # Options that take a value; a variant name, a profile name or a path follows.
     local value_opts="--devcontainer --claude-profile --herdr-workspace"
 
-    # aid's own value-taking flags, from `AGENT_VALUE_OPTIONS`. Nothing completes
+    # dla's own value-taking flags, from `AGENT_VALUE_OPTIONS`. Nothing completes
     # their values: the models and efforts are each agent's to list, they change
-    # with every agent release, and aid holds no copy of them on purpose. Empty
+    # with every agent release, and dla holds no copy of them on purpose. Empty
     # for dl, which has neither flag.
-    local aid_value_opts=""
-    if [[ "$cmd" == aid ]]; then
-        aid_value_opts="--model --effort"
+    local dla_value_opts=""
+    if [[ "$cmd" == dla ]]; then
+        dla_value_opts="--model --effort"
     fi
 
     # The flags a workspace spec may still follow: they modify a launch instead
@@ -120,13 +116,13 @@ _dl_completion() {
     # thing that follows is not a spec, and the branch below that handles `./`
     # is inside the spec position.
     local spec_follows="--rm --devcontainer --claude-profile"
-    if [[ "$cmd" == aid ]]; then
-        # aid's own, from `parse_aid_args`: it reads an agent flag, a remote
+    if [[ "$cmd" == dla ]]; then
+        # dla's own, from `parse_dla_args`: it reads an agent flag, a remote
         # control flag or a dl value option and keeps looking for the spec. The
         # three it answers itself (--help, -h, --version) are absent because they
-        # end the line, and so is an unknown flag -- aid cannot tell whether one
-        # takes a value, so on `aid --unknown-taking-a-value foo owner/repo` it
-        # calls `foo` the spec, and completing a slot aid itself cannot place is
+        # end the line, and so is an unknown flag -- dla cannot tell whether one
+        # takes a value, so on `dla --unknown-taking-a-value foo owner/repo` it
+        # calls `foo` the spec, and completing a slot dla itself cannot place is
         # worse than completing nothing.
         spec_follows="--claude --codex --gemini --remote-control --remote --no-remote-control --no-remote --model --effort --devcontainer --claude-profile"
     fi
@@ -185,7 +181,7 @@ _dl_completion() {
         return 0
     fi
 
-    if [[ -n "${aid_value_opts}" && " ${aid_value_opts} " == *" ${prev} "* ]]; then
+    if [[ -n "${dla_value_opts}" && " ${dla_value_opts} " == *" ${prev} "* ]]; then
         return 0
     fi
 
@@ -225,10 +221,10 @@ _dl_completion() {
     #
     # Read off the words before it rather than counted from the command, because
     # a flag can precede the spec in both grammars and counting cannot see that.
-    # `aid --codex owner/repo` is the line that reported this: the spec was
+    # `dla --codex owner/repo` is the line that reported this: the spec was
     # offered at word two alone, so every agent-flag line completed nothing, and
     # so did `dl --devcontainer robot owner/repo`. dl's rule is clap's -- options
-    # sit anywhere among the positional words -- and aid's is `parse_aid_args`,
+    # sit anywhere among the positional words -- and dla's is `parse_dla_args`,
     # which reads the leading flags and calls the first word that is not one the
     # spec.
     #
@@ -249,7 +245,7 @@ _dl_completion() {
             else
                 ends_here=1
             fi
-            if [[ " ${value_opts} ${aid_value_opts} " == *" ${scanned} "* ]]; then
+            if [[ " ${value_opts} ${dla_value_opts} " == *" ${scanned} "* ]]; then
                 # Its value is not a positional word, so step over the pair.
                 (( scan += 2 ))
             else
@@ -272,7 +268,7 @@ _dl_completion() {
     if (( position == 0 )); then
         # Flags. Once one modifier is on the line the line is a launch, so the
         # only flags that can still precede the spec are the other modifiers:
-        # `dl --rm --ls` is refused, and `aid --codex --help` is not aid's help
+        # `dl --rm --ls` is refused, and `dla --codex --help` is not dla's help
         # (that is `argv[0]`) but an unknown option handed to dl.
         if [[ ${cur} == -* ]]; then
             if (( modified )); then
@@ -365,9 +361,9 @@ _dl_completion() {
         return 0
     fi
 
-    # The verb's position, after the spec. Everything after an aid workspace is
+    # The verb's position, after the spec. Everything after a dla workspace is
     # the prompt, so there is nothing to offer there.
-    if (( position == 1 )) && [[ "$cmd" != aid ]]; then
+    if (( position == 1 )) && [[ "$cmd" != dla ]]; then
         COMPREPLY=( $(compgen -W "${ws_cmds}" -- ${cur}) )
         return 0
     fi
@@ -378,6 +374,5 @@ _dl_completion() {
 
 # Use -o default for better completion behavior
 complete -o default -F _dl_completion dl
-complete -o default -F _dl_completion aid
 complete -o default -F _dl_completion dla
 # end dl completion

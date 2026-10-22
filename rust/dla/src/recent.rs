@@ -1,4 +1,4 @@
-//! The choices aid's pickers list first: the recent ones, per agent and setting.
+//! The choices dla's pickers list first: the recent ones, per agent and setting.
 //!
 //! This is what keeps the pickers current without a release. The table in
 //! `rewrite` suggests a few values for a first run, and from then on the rows a
@@ -6,9 +6,9 @@
 //! last choice and one Enter repeats it. A model that came out yesterday is typed
 //! once and listed from then on.
 //!
-//! The file is `<devlaunch cache>/aid-recent.tsv`, one choice per line:
+//! The file is `<devlaunch cache>/dla-recent.tsv`, one choice per line:
 //! `<agent> TAB <setting> TAB <value>`, newest first, with an empty value for the
-//! default. Plain text rather than JSON because aid's one dependency is `dl`, and
+//! default. Plain text rather than JSON because dla's one dependency is `dl`, and
 //! the format needs nothing a `split` cannot read.
 //!
 //! **Nothing in here can stop a launch.** A file that is missing, unreadable,
@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use crate::rewrite::Knob;
 
 /// The file's name inside the devlaunch cache.
-const FILE_NAME: &str = "aid-recent.tsv";
+const FILE_NAME: &str = "dla-recent.tsv";
 
 /// How many choices are kept per agent and setting.
 const KEPT: usize = 8;

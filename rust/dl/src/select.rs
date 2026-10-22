@@ -1006,7 +1006,7 @@ pub enum Choice {
 
 /// Offer `rows` under `header` and wait for one, or for text that is none of them.
 ///
-/// Exported for `aid`, whose model and effort pickers are this with rows `aid`
+/// Exported for `dla`, whose model and effort pickers are this with rows `dla`
 /// builds. The same skim and the same layout as the workspace picker, with two
 /// differences. Matching is **exact** (substring), not fuzzy: a query is often a
 /// name that is not in the list yet, and fuzzy matching finds a listed row for

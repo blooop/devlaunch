@@ -1,45 +1,22 @@
 [package]
-name = "aid"
-description = "aid: dl, with a coding agent started for you"
+name = "dla"
+description = "dla: dl, with a coding agent started for you"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
-# Two names for one program. `dla` is `aid` under a name that is easier to type
-# (`dl` plus one letter), built from the same `main.rs`, so there is nothing for
-# the two to disagree about: same flags, same messages, and `dla --version` still
-# answers `aid <version>`. A copy rather than a symlink because a bin-wheel and a
-# conda package ship files, and neither can carry a link. Naming the bins at all
-# turns off cargo's discovery of `src/main.rs`, which is why `aid` is listed too.
-#
-# Cargo warns that `main.rs` is "present in multiple build targets". That warning
-# is the arrangement, not a mistake in it. The ways around it cost more: a
-# `dla.rs` that loads `main.rs` as a module breaks the `crate::` paths in the
-# submodules, and `include!` refuses `main.rs`'s `//!` docs. `test = false`
-# keeps a plain `cargo test` from running `main.rs`'s unit tests twice; an
-# explicit `--bins`, which CI passes, selects `dla` anyway, and the second run
-# costs a link and well under a second.
-[[bin]]
-name = "aid"
-path = "src/main.rs"
-
-[[bin]]
-name = "dla"
-path = "src/main.rs"
-test = false
-
 [dependencies]
-# The only devlaunch crate named here, and deliberately: aid is a command-line
+# The only devlaunch crate named here, and deliberately: dla is a command-line
 # rewrite that hands the result to dl, so what it can reach is whatever dl makes
-# public and nothing else. That is the whole of what this line enforces. aid
+# public and nothing else. That is the whole of what this line enforces. dla
 # cannot name `devlaunch-core` or `devlaunch-runner`, so a new reach into either
 # has to be a `pub use` somebody adds to dl and reviews there.
 #
 # It is a looser rule than Python's, which is worth saying rather than glossing:
 # `test_aid` walked aid.py's AST and refused any use of `dl` beyond `main`,
 # `get_version` and `DL_VALUE_OPTIONS` (that suite retired with the Python tree
-# in #267). Nothing counts names here, and the count is well past three: aid's
+# in #267). Nothing counts names here, and the count is well past three: dla's
 # source reaches dl's signal handlers, terminal helpers, version markers and
 # rendering, and some of what it reaches is devlaunch-core's own arriving
 # through a dl re-export (`shell`, `env_str`). The surface is a review question
@@ -53,12 +30,12 @@ dl = { path = "../dl" }
 dev-build = ["dl/dev-build"]
 
 [dev-dependencies]
-# `setsid` for the tests that need `aid` to run with no controlling terminal.
+# `setsid` for the tests that need `dla` to run with no controlling terminal.
 libc = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 # The harness crate, and only ever that: `KeepingCoverage`, so the boundary tests
-# below keep the coverage counters of the `aid` they spawn with `env_clear()`. Not
+# below keep the coverage counters of the `dla` they spawn with `env_clear()`. Not
 # a hole in the `[dependencies]` rule above -- that rule is about what the shipped
 # binary can reach, and this is a dev-dependency of the tests. The test-support
 # crate's own docs already name dl's and core's tests as its callers.

@@ -357,7 +357,7 @@ mod tests {
         assert_eq!(bound(Vetting::ByDevpod), None);
     }
 
-    /// The name aid gives a Remote Control session, which another agent then has
+    /// The name dla gives a Remote Control session, which another agent then has
     /// to be able to type into `SendMessage`: Claude Code refuses any `to` holding
     /// a `/`. So a triple comes back as its id, never as the spec it was typed as.
     #[test]
@@ -386,7 +386,7 @@ mod tests {
     }
 
     /// A bare id is the id, and finding that out costs nothing, as it does for
-    /// `kill`: aid asks this on every Remote Control launch.
+    /// `kill`: dla asks this on every Remote Control launch.
     #[test]
     fn a_bare_id_names_itself_without_a_spawn() {
         let fake = FakeRunner::new();

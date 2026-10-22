@@ -1,10 +1,10 @@
-//! `aid` — AI Develop: `dl`, with a coding agent started for you.
+//! `dla` — AI Develop: `dl`, with a coding agent started for you.
 //!
-//! aid is a shortcut, not a second launcher. It rewrites its own command line into a
+//! dla is a shortcut, not a second launcher. It rewrites its own command line into a
 //! `dl` one and hands that to [`dl::run`], so
 //!
 //! ```text
-//! aid owner/repo@branch fix the flaky test
+//! dla owner/repo@branch fix the flaky test
 //! ```
 //!
 //! is exactly
@@ -17,13 +17,13 @@
 //! Everything that decides how a workspace is obtained — the bare repo cache, the
 //! worktree clone, the workspace id, the devpod container, the fast attach to one
 //! that is already running, the forwarded gh login — happens inside dl, once. There
-//! is no container machinery in this binary, deliberately: an aid that built its own
+//! is no container machinery in this binary, deliberately: a dla that built its own
 //! would drift from dl and start rebuilding containers dl would have reused.
 //!
 //! **In-process, as Python's `aid.py` is.** `dl::run` is called, not spawned: one
 //! process, one `devpod` resolved from one PATH, one timing summary, and one exit
 //! code. Spawning `dl` would also mean finding it — the two binaries are installed
-//! together but nothing guarantees `dl` is on PATH of a run that reached `aid`
+//! together but nothing guarantees `dl` is on PATH of a run that reached `dla`
 //! through an absolute path.
 
 mod interactive;
@@ -39,7 +39,7 @@ use rewrite::UsageError;
 /// herdr's name for it, and the one manager-specific word in either binary. It is
 /// here because of what devlaunch#549 measured on hardware: the *rules* half of
 /// screen detection already works through a dl workspace and only the
-/// *identification* half does not. A herdr pane running aid has `aid`, `ssh` and
+/// *identification* half does not. A herdr pane running dla has `dla`, `ssh` and
 /// two `devpod`s as its foreground processes and no `claude` anywhere, so herdr
 /// never decides which agent's manifest applies and never runs the rules that
 /// would have classified the pane. The rules themselves are fine: the pane holds
@@ -48,8 +48,8 @@ use rewrite::UsageError;
 /// correctly, with nothing else changed — which is the whole of devlaunch#548.
 ///
 /// Written unconditionally, and written over a value the environment already
-/// holds. Both follow from aid being the thing that *decides* which agent starts:
-/// a `HERDR_AGENT=codex` left in a profile is wrong the moment `aid --claude`
+/// holds. Both follow from dla being the thing that *decides* which agent starts:
+/// a `HERDR_AGENT=codex` left in a profile is wrong the moment `dla --claude`
 /// runs, and a machine with no herdr pays one `setenv` for a name nothing reads.
 /// Detecting herdr first (`HERDR_ENV=1`) was the alternative and buys nothing —
 /// the detection is a second thing to be wrong about, and being wrong about it
@@ -66,7 +66,7 @@ const SESSION_MANAGER_AGENT_VAR: &str = "HERDR_AGENT";
 fn main() {
     dl::install_signal_handlers();
     // `args_os` and a lossy decode, not `args`: `std::env::args()` panics on an
-    // argument that is not valid UTF-8, which would end `aid $'\xff'` with an exit
+    // argument that is not valid UTF-8, which would end `dla $'\xff'` with an exit
     // 101 and a traceback. Python decoded argv lossily and carried on
     // (docs/rust-rewrite-plan.md rows 4 and 12).
     let argv: Vec<String> = std::env::args_os()
@@ -80,15 +80,15 @@ fn main() {
     std::process::exit(ending);
 }
 
-/// One `aid` command line: the three answers aid gives on its own, and dl for the
+/// One `dla` command line: the three answers dla gives on its own, and dl for the
 /// rest.
 fn run(argv: &[String]) -> i32 {
     // The internal re-entries, before anything user-facing. `--boot-up` is the
-    // background boot the interactive flow spawns — aid's argv, because the one
-    // binary aid can find without guessing at PATH is itself. `--update-cache` is
+    // background boot the interactive flow spawns — dla's argv, because the one
+    // binary dla can find without guessing at PATH is itself. `--update-cache` is
     // the detached completion refresh dl re-spawns through `current_exe`, which
-    // under aid *is* aid: without this arm every refresh an aid launch fired died
-    // as "aid needs a workspace", and completions silently never refreshed.
+    // under dla *is* dla: without this arm every refresh a dla launch fired died
+    // as "dla needs a workspace", and completions silently never refreshed.
     if argv
         .first()
         .is_some_and(|word| word == interactive::BOOT_WORD)
@@ -105,15 +105,15 @@ fn run(argv: &[String]) -> i32 {
         return dl::run(argv);
     }
     // No arguments is the help *and* a failure, which is Python's pair of endings for
-    // one body: somebody who typed `aid` asked for a workspace and named none, and
-    // somebody who typed `aid --help` got what they asked for.
+    // one body: somebody who typed `dla` asked for a workspace and named none, and
+    // somebody who typed `dla --help` got what they asked for.
     let is_help = |word: &String| word == "--help" || word == "-h";
     let asked_for_help = match argv {
         [first, second, ..] if first == rewrite::RESUME_WORD => is_help(second),
         [first, ..] => is_help(first),
         [] => false,
     };
-    // A bare `aid` on a terminal picks a workspace below, as a bare `dl` does. The
+    // A bare `dla` on a terminal picks a workspace below, as a bare `dl` does. The
     // help is for a run with nobody at a terminal to pick.
     let picks = argv.is_empty() && dl::interactive_terminal();
     if (argv.is_empty() && !picks) || asked_for_help {
@@ -121,12 +121,12 @@ fn run(argv: &[String]) -> i32 {
         return if argv.is_empty() { 1 } else { 0 };
     }
     if argv.first().is_some_and(|word| word == "--version") {
-        // `aid <version>`, the version dl prints under aid's name, and the same
+        // `dla <version>`, the version dl prints under dla's name, and the same
         // build marker: `dl::BUILD_MARKER` is empty in a released build and `-dev`
-        // in a working-tree one, so `aid-next` says which build it is exactly as
+        // in a working-tree one, so `dla-next` says which build it is exactly as
         // `dl-next` does (#268). **Divergence row 16**: what Python appended here
         // was an editable install's provenance, which a compiled binary has none of.
-        println!("aid {}{}", dl::VERSION, dl::BUILD_MARKER);
+        println!("dla {}{}", dl::VERSION, dl::BUILD_MARKER);
         return 0;
     }
 
@@ -134,7 +134,7 @@ fn run(argv: &[String]) -> i32 {
     // is not valid UTF-8 as *unset*, so `DEVLAUNCH_AID_AGENT=$'\xff'` used to name
     // no agent at all and quietly start the default one instead of being refused
     // by name. Core's reading is reached through dl, like `shell` and
-    // `python_repr`, so aid still sees nothing of devlaunch but dl.
+    // `python_repr`, so dla still sees nothing of devlaunch but dl.
     //
     // Read here rather than inside `rewrite`, which is one function from strings to
     // strings and stays that way: an environment read down there is a fact its tests
@@ -146,7 +146,7 @@ fn run(argv: &[String]) -> i32 {
         remote_control: remote_control.as_deref(),
     };
     // A line with no workspace, on a terminal, gets dl's workspace picker. For
-    // `aid resume` the pick completes the line it parsed to. For any other line the
+    // `dla resume` the pick completes the line it parsed to. For any other line the
     // id is added to the end of the line, after the leading flags, which is where a
     // typed spec goes, and from here on the line is that longer one, because the
     // agent picker parses it again.
@@ -155,11 +155,11 @@ fn run(argv: &[String]) -> i32 {
     // model and effort pickers: a line that names its workspace goes straight to
     // the editor.
     let with_pick: Vec<String>;
-    let (argv, parsed, pickers) = match rewrite::parse_aid_args(argv, environment) {
+    let (argv, parsed, pickers) = match rewrite::parse_dla_args(argv, environment) {
         Ok(rewrite::Line::Ready(parsed)) => (argv, parsed, interactive::Pickers::Skip),
-        // `aid resume` with no workspace. The pick comes before everything below,
+        // `dla resume` with no workspace. The pick comes before everything below,
         // which is all about one named workspace, so from here on this line is an
-        // `aid resume <id>` like any other.
+        // `dla resume <id>` like any other.
         Ok(rewrite::Line::Unpicked(unpicked)) => match dl::pick_workspace() {
             Ok(workspace_id) => (
                 argv,
@@ -176,7 +176,7 @@ fn run(argv: &[String]) -> i32 {
                 Err(code) => return code,
             };
             with_pick = argv.iter().cloned().chain([spec]).collect();
-            match rewrite::parse_aid_args(&with_pick, environment) {
+            match rewrite::parse_dla_args(&with_pick, environment) {
                 Ok(rewrite::Line::Ready(parsed)) => {
                     (with_pick.as_slice(), parsed, interactive::Pickers::Ask)
                 }
@@ -201,7 +201,7 @@ fn run(argv: &[String]) -> i32 {
     // a shell. Anything else — an inline prompt, a verb line, a pipe — comes back
     // unchanged with no boot, and takes the path it always took.
     // Before the interactive flow and before the boot it spawns, because all
-    // three of aid's own uses of the spec are downstream of here: the banner
+    // three of dla's own uses of the spec are downstream of here: the banner
     // names it, `name_before_launch` names the tab after it, and
     // `build_boot_args` puts it in a `dl::run` of its own. One lookup in front of
     // them is what keeps them naming one workspace -- see `dl::pull_request_spec`.
@@ -214,7 +214,7 @@ fn run(argv: &[String]) -> i32 {
         // 130, the code a Ctrl-C at the prompt editor ends with, because a cancel
         // in a picker is the same request made with a different key.
         interactive::Collected::Cancelled => {
-            eprintln!("aid: cancelled; the background boot was stopped and nothing launched.");
+            eprintln!("dla: cancelled; the background boot was stopped and nothing launched.");
             return 130;
         }
     };
@@ -234,10 +234,10 @@ fn run(argv: &[String]) -> i32 {
         return 1;
     };
     // Python's `logging.info("aid -> dl %s", shlex.join(dl_args))`, which lands on
-    // stderr as the bare message. It is how a person sees what aid actually asked
+    // stderr as the bare message. It is how a person sees what dla actually asked
     // for, and the quoting is what makes it a line they can paste.
     eprintln!(
-        "aid -> dl {}",
+        "dla -> dl {}",
         dl::shell::join(launch.dl_args.iter().map(String::as_str))
     );
     // The boot the interactive flow started is waited out *after* the echo names
@@ -253,7 +253,7 @@ fn run(argv: &[String]) -> i32 {
     }
 }
 
-/// A fresh UUID v4, for the session aid names before it starts it.
+/// A fresh UUID v4, for the session dla names before it starts it.
 ///
 /// From the kernel's random source rather than a crate, because sixteen bytes and
 /// two masked nibbles are the whole of v4. `None` when the source cannot be read,
@@ -287,13 +287,13 @@ fn uuid_v4(mut bytes: [u8; 16]) -> String {
 ///
 /// Here and not in dl, because dl is not what knows: `dl <ws> -- claude` somebody
 /// typed themselves is their command, and reading an agent back out of a command
-/// tail would be a guess. aid picked the agent from its own table, so aid is what
+/// tail would be a guess. dla picked the agent from its own table, so dla is what
 /// can say so — the same reasoning that puts `IS_SANDBOX` in that table rather
 /// than in dl.
 ///
 /// **It reaches a session manager through the ssh child, not through this
 /// process.** A `setenv` after start does not rewrite `/proc/<pid>/environ`, which
-/// the kernel fixes at exec, so aid's own row still shows no agent however early
+/// the kernel fixes at exec, so dla's own row still shows no agent however early
 /// this is called. What carries it is the `ssh` that [`dl::run`] spawns below,
 /// which builds its environment from this one at its own exec; herdr walks the
 /// pane's foreground processes rather than reading only the shell, and that ssh is
@@ -306,25 +306,25 @@ fn uuid_v4(mut bytes: [u8; 16]) -> String {
 /// plausible-looking version of this function is a silent no-op, which is why it
 /// was checked rather than argued.
 ///
-/// A line that starts no agent names none. [`AidArgs::agent`] answers `None` for a
+/// A line that starts no agent names none. [`DlaArgs::agent`] answers `None` for a
 /// retired spelling, which dl is about to refuse, and refusals have no session for
 /// anyone to classify.
 fn name_agent_for_session_manager(agent: Option<&str>) {
     let Some(agent) = agent else { return };
     // Safety: `set_var` is unsound only against a concurrent reader in another
-    // thread. aid is single-threaded here — the interactive boot is a *process*,
+    // thread. dla is single-threaded here — the interactive boot is a *process*,
     // already finished above — and the reader this is for is a later `execve`.
     unsafe { std::env::set_var(SESSION_MANAGER_AGENT_VAR, agent) };
 }
 
 /// Why the command line could not be understood.
 ///
-/// aid's own words, and Python's: the first is what somebody who typed `aid` alone
+/// dla's own words, and Python's: the first is what somebody who typed `dla` alone
 /// sees, and the second names the variable that has to be fixed.
 fn refusal(refused: &UsageError) -> String {
     match refused {
         UsageError::NoWorkspace => {
-            "aid needs a workspace: aid <user/repo>[@branch] [prompt]".to_owned()
+            "dla needs a workspace: dla <user/repo>[@branch] [prompt]".to_owned()
         }
         // `{name!r}` in Python: `dl::python_repr` is that repr, reached through dl
         // rather than hand-quoted here, so a name holding a quote or a control byte
@@ -355,7 +355,7 @@ fn refusal(refused: &UsageError) -> String {
             rewrite::remote_control_values().join(", ")
         ),
         UsageError::MissingValue { flag } => {
-            format!("{flag} needs a value: aid {flag} <value> <workspace> [prompt]")
+            format!("{flag} needs a value: dla {flag} <value> <workspace> [prompt]")
         }
         // The agents that can take one are listed, because the fix is either to
         // drop the flag or to pick one of them.
@@ -370,17 +370,17 @@ fn refusal(refused: &UsageError) -> String {
                 .join(", ")
         ),
         UsageError::ResumeTakesNoPrompt { words } => format!(
-            "aid resume takes a workspace and nothing after it, not {}: the agent's own \
-             picker chooses the session. Use aid resume [<workspace>].",
+            "dla resume takes a workspace and nothing after it, not {}: the agent's own \
+             picker chooses the session. Use dla resume [<workspace>].",
             dl::python_repr(words)
         ),
     }
 }
 
-/// aid's usage text.
+/// dla's usage text.
 ///
 /// Hand-written rather than generated, and unlike `dl`'s (**divergence row 3**) it is
-/// Python's own text: aid's grammar is not a clap grammar and could not be one — an
+/// Python's own text: dla's grammar is not a clap grammar and could not be one — an
 /// unknown leading flag is *passed through to dl* and everything after the workspace
 /// is the prompt, flags and all, which a parser that rejects unknown flags would
 /// refuse. What generates a `--help` here would have to be the parser that cannot
@@ -397,27 +397,27 @@ fn help() -> String {
     let manager_variable = SESSION_MANAGER_AGENT_VAR;
     format!(
         "\
-aid - AI Develop: start a coding agent in a devlaunch workspace
+dla - AI Develop: start a coding agent in a devlaunch workspace
 
-aid is a shortcut for `dl <workspace> -- <agent> '<prompt>'`. The workspace is
+dla is a shortcut for `dl <workspace> -- <agent> '<prompt>'`. The workspace is
 opened by dl itself, so it is the same workspace, container and clone that
 `dl <workspace>` gives you — started if it is stopped, attached to if it is
-already running, and never rebuilt just because aid asked for it.
+already running, and never rebuilt just because dla asked for it.
 
 Usage:
-    aid                                    Pick a workspace, then start the agent
-    aid <user/repo>[@branch] [prompt...]   Open the workspace and start the agent
-    aid <workspace> [prompt...]            Same, for an existing workspace or ./path
-    aid resume [<workspace>]               Reopen an earlier agent session in the
+    dla                                    Pick a workspace, then start the agent
+    dla <user/repo>[@branch] [prompt...]   Open the workspace and start the agent
+    dla <workspace> [prompt...]            Same, for an existing workspace or ./path
+    dla resume [<workspace>]               Reopen an earlier agent session in the
                                            workspace. With no workspace, pick one
                                            from dl's picker first
 
-`aid resume` starts the agent the way a fresh launch does (same agent flag,
+`dla resume` starts the agent the way a fresh launch does (same agent flag,
 full-auto, Remote Control named after the workspace) and hands it its own
 resume words: claude and codex open their session picker, and gemini
 reopens its latest session.
 
-With no workspace on a terminal, aid lets you pick one of your workspaces, as
+With no workspace on a terminal, dla lets you pick one of your workspaces, as
 dl does. Then it asks for each setting the line left open: the agent (one row
 per Claude login, then each other agent), the model and the effort. Each
 picker lists your recent choices first, so one Enter repeats the last launch.
@@ -425,7 +425,7 @@ Type a name that is not listed to use it. Alt-Enter uses the text as typed
 where it is part of a listed name. A line that names its workspace asks for
 none of these, and the agent starts on its defaults and the line's flags.
 
-With no prompt on a terminal, aid boots the workspace in the background and
+With no prompt on a terminal, dla boots the workspace in the background and
 asks for the prompt while it does.
 
 Then type the prompt free of shell quoting and press Enter to launch. A paste
@@ -441,7 +441,7 @@ Options:
                                      Pick the agent (default: {default})
     --model <model>                  The model the agent runs, passed on as typed
                                      in the agent's own spelling. Any name the
-                                     agent takes works; aid does not check it.
+                                     agent takes works; dla does not check it.
                                      Default: the agent's own default
     --effort <level>                 How hard the agent thinks, the same way:
                                      claude's --effort, codex's
@@ -487,15 +487,15 @@ Environment:
                                      pane is doing. Overwrites whatever you set
 
 Examples:
-    aid blooop/devlaunch                       # Start {default} in the workspace
-    aid blooop/devlaunch@fix/42 fix the bug    # Open the branch, hand over the prompt
-    aid --gemini ./my-project explain this     # Pick a different agent
-    aid --no-remote blooop/devlaunch           # Nothing but the session in front of you
-    aid --model opus --effort max blooop/devlaunch
+    dla blooop/devlaunch                       # Start {default} in the workspace
+    dla blooop/devlaunch@fix/42 fix the bug    # Open the branch, hand over the prompt
+    dla --gemini ./my-project explain this     # Pick a different agent
+    dla --no-remote blooop/devlaunch           # Nothing but the session in front of you
+    dla --model opus --effort max blooop/devlaunch
                                                # Pick the model and how hard it thinks
-    aid resume                                 # Pick a workspace, then a session in it
-    aid resume blooop/devlaunch@fix/42         # Pick a session in that workspace
-    aid blooop/devlaunch@fix/42 fix the bug --rm
+    dla resume                                 # Pick a workspace, then a session in it
+    dla resume blooop/devlaunch@fix/42         # Pick a session in that workspace
+    dla blooop/devlaunch@fix/42 fix the bug --rm
                                                # The line above, recalled, with the
                                                # workspace deleted once the agent is
                                                # done with it
@@ -594,7 +594,7 @@ mod tests {
     /// lives in herdr and not in this tree. The convention is stated on
     /// [`rewrite`]'s agent table instead, where a new row is written.
     #[test]
-    fn aid_names_the_agent_it_starts() {
+    fn dla_names_the_agent_it_starts() {
         for name in rewrite::agent_names() {
             with_the_environment(|| {
                 name_agent_for_session_manager(Some(name));
@@ -608,10 +608,10 @@ mod tests {
         }
     }
 
-    /// A stale value in somebody's profile does not survive the agent aid picked.
+    /// A stale value in somebody's profile does not survive the agent dla picked.
     ///
     /// This is the whole reason the write is unconditional. `HERDR_AGENT=codex`
-    /// exported for some other wrapper is *wrong* about an `aid --claude` launch,
+    /// exported for some other wrapper is *wrong* about a `dla --claude` launch,
     /// and a session manager that believed it would run codex's rules against
     /// Claude's screen — which classifies nothing, silently, the way everything in
     /// devlaunch#548 fails.
@@ -635,7 +635,7 @@ mod tests {
     ///
     /// A retired spelling is about to become dl's refusal. There is no session for
     /// anyone to classify, so the environment is left exactly as it was found —
-    /// including a value somebody set themselves, which aid has no launch to
+    /// including a value somebody set themselves, which dla has no launch to
     /// contradict.
     #[test]
     fn a_line_that_starts_no_agent_leaves_the_environment_alone() {
@@ -697,7 +697,7 @@ mod tests {
     fn the_help_names_resume_and_what_it_opens() {
         let help = help();
 
-        assert!(help.contains("aid resume [<workspace>]"), "{help}");
+        assert!(help.contains("dla resume [<workspace>]"), "{help}");
         assert!(help.contains("from dl's picker"), "{help}");
     }
 
@@ -757,7 +757,7 @@ mod tests {
     fn a_flag_with_no_value_says_where_the_value_goes() {
         assert_eq!(
             refusal(&UsageError::MissingValue { flag: "--model" }),
-            "--model needs a value: aid --model <value> <workspace> [prompt]"
+            "--model needs a value: dla --model <value> <workspace> [prompt]"
         );
     }
 
@@ -776,7 +776,7 @@ mod tests {
     fn a_command_line_with_no_workspace_says_what_one_looks_like() {
         assert_eq!(
             refusal(&UsageError::NoWorkspace),
-            "aid needs a workspace: aid <user/repo>[@branch] [prompt]"
+            "dla needs a workspace: dla <user/repo>[@branch] [prompt]"
         );
     }
 
