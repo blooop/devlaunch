@@ -944,6 +944,35 @@ mod tests {
     }
 
     #[test]
+    fn a_folder_beside_the_home_under_a_clone_mounted_above_it_is_never_recorded() {
+        // The folder itself is not near the home, but the clone's mount point is
+        // its parent, which holds the home: the mount point alone decides.
+        let host = Host::new();
+        let parent = host
+            .home
+            .parent()
+            .and_then(Path::to_str)
+            .expect("a parent")
+            .to_owned();
+        let folder = format!("{parent}/other");
+        let mounts = vec![
+            host.bind(&host.clone, &parent, true),
+            host.bind(&host.home.join(".claude"), "/home/vscode/.claude", true),
+        ];
+        assert_eq!(
+            target(
+                &reported("/home/vscode/.claude", &folder),
+                &mounts,
+                HostSide {
+                    workspace_folder: &folder,
+                    ..host.side()
+                }
+            ),
+            None
+        );
+    }
+
+    #[test]
     fn a_workspace_folder_that_is_not_the_clone_is_never_recorded() {
         // Only the clone dl made is a workspace folder. Another host directory the
         // repo mounts is the repo's choice, not dl's.
