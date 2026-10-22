@@ -373,7 +373,8 @@ enum External {
 }
 
 /// Add what `file` declares under its top-level `volumes:` to `declared`, after
-/// what the files it includes declare.
+/// what the files it includes declare. compose merges every YAML document of a
+/// file in order, as it merges files, so each document is read in turn.
 ///
 /// compose resolves an `include:` path against the project directory of the file
 /// that names it: `project_dir`, for a file compose was given, or for an
@@ -391,24 +392,33 @@ fn declare_file(
     if including.contains(&identity) {
         return Err(format!("compose file {} includes itself", file.display()));
     }
-    let text = std::fs::read_to_string(file)
-        .map_err(|error| format!("could not read compose file {}: {error}", file.display()))?;
-    let documents = YamlLoader::load_from_str(&text)
-        .map_err(|error| format!("could not parse compose file {}: {error}", file.display()))?;
-    let Some(document) = documents.first() else {
-        return Ok(());
+    let failed = |what: &str, error: &dyn std::fmt::Display| {
+        format!("could not {what} compose file {}: {error}", file.display())
     };
-    let document = apply_merge_keys(document)
-        .map_err(|error| format!("could not read compose file {}: {error}", file.display()))?;
-    let included = includes(&document, project_dir)
-        .map_err(|error| format!("could not read compose file {}: {error}", file.display()))?;
+    let text = std::fs::read_to_string(file).map_err(|error| failed("read", &error))?;
+    let documents = YamlLoader::load_from_str(&text).map_err(|error| failed("parse", &error))?;
     including.push(identity);
-    for include in included {
-        for path in &include.paths {
-            declare_file(path, &include.project_dir, declared, including)?;
+    for document in &documents {
+        let document = apply_merge_keys(document).map_err(|error| failed("read", &error))?;
+        let included = includes(&document, project_dir).map_err(|error| failed("read", &error))?;
+        for include in included {
+            for path in &include.paths {
+                declare_file(path, &include.project_dir, declared, including)?;
+            }
         }
+        declare_volumes(&document, file, declared)?;
     }
     including.pop();
+    Ok(())
+}
+
+/// Add what one YAML document of `file` declares under its top-level `volumes:`
+/// to `declared`.
+fn declare_volumes(
+    document: &Yaml,
+    file: &Path,
+    declared: &mut IndexMap<String, Declared>,
+) -> Result<(), String> {
     let Some(volumes) = document["volumes"].as_hash() else {
         return Ok(());
     };
@@ -1089,6 +1099,41 @@ mod tests {
             panic!("read");
         };
         assert_eq!(owned(&m), ["app-pixi".to_owned()]);
+    }
+
+    #[test]
+    fn an_external_volume_a_later_yaml_document_declares_stays() {
+        // compose merges every document of a file in order, as it merges files.
+        let Recording::Read(m) = record_bare_app(Some(
+            "services:\n  dev:\n    image: x\n    volumes: [cache:/c]\n\
+             ---\nvolumes:\n  cache:\n    external: true\n    name: app-cache\n",
+        )) else {
+            panic!("read");
+        };
+        assert_eq!(owned(&m), ["app-pixi".to_owned()]);
+    }
+
+    #[test]
+    fn a_later_yaml_document_overrides_an_earlier_one_and_may_include() {
+        assert_eq!(
+            externals_in(
+                &[
+                    (
+                        "compose.yml",
+                        "---\n---\nvolumes:\n  v:\n    external: true\n\
+                         ---\nvolumes:\n  v:\n    external: false\n\
+                         ---\ninclude: [inc/x.yml]\n",
+                    ),
+                    (
+                        "inc/x.yml",
+                        "volumes:\n  w:\n    external: true\n    name: x-cache\n"
+                    ),
+                ],
+                &["compose.yml"],
+                None,
+            ),
+            names(&["x-cache"])
+        );
     }
 
     #[test]
