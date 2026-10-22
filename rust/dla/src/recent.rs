@@ -6,7 +6,7 @@
 //! last choice and one Enter repeats it. A model that came out yesterday is typed
 //! once and listed from then on.
 //!
-//! The file is `<devlaunch cache>/dla-recent.tsv`, one choice per line:
+//! The file is `<devlaunch cache>/aid-recent.tsv`, one choice per line:
 //! `<agent> TAB <setting> TAB <value>`, newest first, with an empty value for the
 //! default. Plain text rather than JSON because dla's one dependency is `dl`, and
 //! the format needs nothing a `split` cannot read.
@@ -20,8 +20,9 @@ use std::path::{Path, PathBuf};
 
 use crate::rewrite::Knob;
 
-/// The file's name inside the devlaunch cache.
-const FILE_NAME: &str = "dla-recent.tsv";
+/// The file's name inside the devlaunch cache. It keeps the name the program had
+/// when it was written, so the choices survive the rename to dla.
+const FILE_NAME: &str = "aid-recent.tsv";
 
 /// How many choices are kept per agent and setting.
 const KEPT: usize = 8;
@@ -197,6 +198,14 @@ mod tests {
 
     fn some(value: &str) -> Option<String> {
         Some(value.to_owned())
+    }
+
+    #[test]
+    fn the_file_keeps_the_name_released_builds_wrote_it_under() {
+        assert_eq!(FILE_NAME, "aid-recent.tsv");
+        if let Some(path) = path() {
+            assert_eq!(path.file_name().unwrap(), "aid-recent.tsv");
+        }
     }
 
     #[test]

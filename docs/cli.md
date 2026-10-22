@@ -841,7 +841,7 @@ prompt on it asks for nothing, as before.
 does: its `devpod up` is killed and its staged token file is removed. The exit
 status is 130.
 
-The recent choices live in `dla-recent.tsv` in the devlaunch cache, so
+The recent choices live in `aid-recent.tsv` in the devlaunch cache, so
 `XDG_CACHE_HOME` scopes them with everything else. A file that is missing or
 broken reads as no history, and never stops a launch.
 
