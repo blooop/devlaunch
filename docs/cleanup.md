@@ -74,8 +74,17 @@ hold:
 Two kinds of volume are shared on purpose and always stay: a name the devcontainer config
 spells literally, with no `${...}` in it (`team-tracker-pixi`), and a volume compose made
 under an explicit `name:`, which compose labels with a name other than `<project>_<volume>`.
-A volume compose did not make, such as one marked `external: true`, has no compose label:
-it stays only when its name holds neither the workspace id nor devpod's uid. Each volume removed is named on stderr. A volume Docker will not
+A volume the compose files mark `external: true` (or `external: { name: ... }`) stays as
+well. Compose did not make it, so it has no compose label, and dl reads the compose files
+instead: the ones each container names in its `com.docker.compose.project.config_files`
+label, and the files those name in `include:`, resolved the way compose resolves them.
+`extends:` brings in one service and no top-level volume, so dl does not follow it. If dl
+cannot read or parse one of those files, or a file names an external volume or an
+included path with a `$VAR` or `${...}` variable, the delete removes none of these volumes
+and says why on stderr.
+Keeping a volume can be undone; deleting a shared one cannot. A volume created before
+compose ran, and not marked external, has no compose label: it stays only when its name
+holds neither the workspace id nor devpod's uid. Each volume removed is named on stderr. A volume Docker will not
 remove is a line, never a failed delete. A delete that the guard refuses, that devpod
 refuses, or a `kill` whose `devpod delete` times out, removes no volume. `stop`, `up`, `recreate` and `--refresh-stale` never
 run this, so the caches a recreate keeps stay.

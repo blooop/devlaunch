@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A delete keeps a volume that compose marks `external`.** Since 0.63.1, `rm`, `rme`,
+  `kill` and `--rm` removed a mounted volume whose name holds the workspace id or devpod's
+  uid as a whole part. A volume a compose file marks `external: true` (or
+  `external: { name: }`) has no compose label, so a shared external volume such as
+  `<id>-cache` went too. dl now reads the compose files that the containers name in their
+  `com.docker.compose.project.config_files` label, and the files they `include:`, and keeps
+  each external volume. If one of those files cannot be read or parsed, or names an
+  external volume or an included path with a `$VAR` or `${...}` variable, the delete
+  removes none of the volumes it read off the containers and says why.
+
 ## [0.63.1] - 2026-10-22
 
 ### Fixed

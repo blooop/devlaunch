@@ -79,8 +79,10 @@ pub enum LifecycleNotice {
         name: String,
         reason: String,
     },
-    /// docker would not say what this workspace's containers mounted, so none of
-    /// its own volumes beyond the two devlaunch names was removed.
+    /// docker would not say what this workspace's containers mounted, or a
+    /// compose file they were started from could not be read for its external
+    /// volumes, so none of its own volumes beyond the two devlaunch names was
+    /// removed.
     WorkspaceVolumesNotRead {
         workspace_id: String,
         reason: String,
