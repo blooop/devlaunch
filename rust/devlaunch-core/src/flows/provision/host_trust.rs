@@ -296,7 +296,8 @@ const CONFIG_FILE: &str = ".claude.json";
 /// - already true: the commonest case after the first launch.
 ///
 /// A link that stays inside `dir` is resolved first and written *through* rather
-/// than replaced by a regular file.
+/// than replaced by a regular file. Every step after that check goes through the
+/// folder handle [`locate`] opened, never through the path again (see [`Located`]).
 ///
 /// **Write to a scratch file beside it and rename, or do not write.** There is no
 /// in-place fallback: writing in place means truncating first, and the file being
@@ -308,66 +309,144 @@ const CONFIG_FILE: &str = ".claude.json";
 /// non-ASCII, which is how Claude Code writes it. So a merge into a file Claude Code
 /// wrote moves no line but the one before the new entry.
 pub(crate) fn merge(dir: &Path, key: &str) -> Merged {
-    let Ok(dir) = std::fs::canonicalize(dir) else {
-        return Merged::Declined;
-    };
-    let Ok(path) = std::fs::canonicalize(dir.join(CONFIG_FILE)) else {
-        return Merged::Declined;
-    };
+    locate(dir).map_or(Merged::Declined, |located| located.merge(key))
+}
+
+/// The `.claude.json` that [`merge`] may write, found but not yet read.
+///
+/// It holds the folder the file is in as an open handle, reached from `dir` one
+/// real folder at a time with no link followed. The container can still change the
+/// shared directory while the host merges: it can swap a folder on the path for a
+/// link to `..` after the check. A write that named the path again would follow
+/// that link out to the host's `~/.claude.json`. A write relative to the handle
+/// stays in the folder that passed the check.
+pub(crate) struct Located {
+    folder: std::os::fd::OwnedFd,
+}
+
+/// Resolve `dir/.claude.json`, or `None` for a file [`merge`] must not touch.
+pub(crate) fn locate(dir: &Path) -> Option<Located> {
+    use rustix::fs::{Mode, OFlags};
+
+    let dir = std::fs::canonicalize(dir).ok()?;
+    let path = std::fs::canonicalize(dir.join(CONFIG_FILE)).ok()?;
     if !path.starts_with(&dir) || path.file_name() != Some(std::ffi::OsStr::new(CONFIG_FILE)) {
-        return Merged::Declined;
+        return None;
     }
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        return Merged::Declined;
-    };
-    let Ok(serde_json::Value::Object(mut config)) = serde_json::from_str(&text) else {
-        return Merged::Declined;
-    };
-    let projects = config
-        .entry("projects")
-        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
-    let Some(projects) = projects.as_object_mut() else {
-        return Merged::Declined;
-    };
-    let entry = projects
-        .entry(key)
-        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
-    let Some(entry) = entry.as_object_mut() else {
-        return Merged::Declined;
-    };
-    if entry.get(super::TRUST_FLAG_KEY) == Some(&serde_json::Value::Bool(true)) {
-        return Merged::AlreadyTrusted;
+    let below = path.strip_prefix(&dir).ok()?.parent()?;
+    let walk = OFlags::DIRECTORY | OFlags::RDONLY | OFlags::CLOEXEC;
+    let mut folder = rustix::fs::open(&dir, walk, Mode::empty()).ok()?;
+    for part in below.components() {
+        let std::path::Component::Normal(part) = part else {
+            return None;
+        };
+        folder = rustix::fs::openat(&folder, part, walk | OFlags::NOFOLLOW, Mode::empty()).ok()?;
     }
-    entry.insert(super::TRUST_FLAG_KEY.to_owned(), true.into());
-    let Ok(mut body) = serde_json::to_string_pretty(&config) else {
-        return Merged::Declined;
-    };
-    if text.ends_with('\n') {
-        body.push('\n');
+    Some(Located { folder })
+}
+
+impl Located {
+    fn merge(self, key: &str) -> Merged {
+        let Ok((text, before)) = self.read() else {
+            return Merged::Declined;
+        };
+        let Ok(serde_json::Value::Object(mut config)) = serde_json::from_str(&text) else {
+            return Merged::Declined;
+        };
+        let projects = config
+            .entry("projects")
+            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+        let Some(projects) = projects.as_object_mut() else {
+            return Merged::Declined;
+        };
+        let entry = projects
+            .entry(key)
+            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+        let Some(entry) = entry.as_object_mut() else {
+            return Merged::Declined;
+        };
+        if entry.get(super::TRUST_FLAG_KEY) == Some(&serde_json::Value::Bool(true)) {
+            return Merged::AlreadyTrusted;
+        }
+        entry.insert(super::TRUST_FLAG_KEY.to_owned(), true.into());
+        let Ok(mut body) = serde_json::to_string_pretty(&config) else {
+            return Merged::Declined;
+        };
+        if text.ends_with('\n') {
+            body.push('\n');
+        }
+        match self.replace(body.as_bytes(), &before) {
+            Ok(()) => Merged::Wrote,
+            Err(_) => Merged::Declined,
+        }
     }
-    match replace(&path, body.as_bytes()) {
-        Ok(()) => Merged::Wrote,
-        Err(_) => Merged::Declined,
+
+    /// The file's text and metadata, read through the folder handle. A link put
+    /// there since the check, or anything but a regular file (a FIFO would block
+    /// the read for good), is refused.
+    fn read(&self) -> std::io::Result<(String, std::fs::Metadata)> {
+        use rustix::fs::{Mode, OFlags};
+        use std::io::Read as _;
+
+        let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
+        let mut file = std::fs::File::from(rustix::fs::openat(
+            &self.folder,
+            CONFIG_FILE,
+            flags,
+            Mode::empty(),
+        )?);
+        let before = file.metadata()?;
+        if !before.is_file() {
+            return Err(std::io::ErrorKind::InvalidInput.into());
+        }
+        let mut text = String::new();
+        file.read_to_string(&mut text)?;
+        Ok((text, before))
+    }
+
+    /// Put `body` in the file by renaming a scratch file over it, both named
+    /// relative to the folder handle.
+    fn replace(&self, body: &[u8], before: &std::fs::Metadata) -> std::io::Result<()> {
+        use rustix::fs::{AtFlags, Mode, OFlags};
+        use std::io::Write as _;
+        use std::os::unix::fs::MetadataExt as _;
+
+        let flags =
+            OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+        let (name, file) = (0..16)
+            .find_map(|attempt| {
+                let name = scratch_name(attempt);
+                match rustix::fs::openat(&self.folder, &name, flags, Mode::RUSR | Mode::WUSR) {
+                    Err(rustix::io::Errno::EXIST) => None,
+                    opened => Some(opened.map(|fd| (name, std::fs::File::from(fd)))),
+                }
+            })
+            .unwrap_or(Err(rustix::io::Errno::EXIST))?;
+        let written = (|| -> std::io::Result<()> {
+            let mut file = file;
+            file.write_all(body)?;
+            file.sync_all()?;
+            file.set_permissions(before.permissions())?;
+            // Only root may give a file away, and a host `dl` is rarely root: the
+            // file it replaces is then this user's already, which is what the
+            // scratch file is.
+            let _ = std::os::unix::fs::fchown(&file, Some(before.uid()), Some(before.gid()));
+            rustix::fs::renameat(&self.folder, &name, &self.folder, CONFIG_FILE)?;
+            Ok(())
+        })();
+        if written.is_err() {
+            let _ = rustix::fs::unlinkat(&self.folder, &name, AtFlags::empty());
+        }
+        written
     }
 }
 
-/// Put `body` at `path` by renaming a scratch file over it.
-fn replace(path: &Path, body: &[u8]) -> std::io::Result<()> {
-    use std::io::Write as _;
-    use std::os::unix::fs::MetadataExt as _;
-
-    let before = std::fs::metadata(path)?;
-    let dir = path.parent().unwrap_or(Path::new("."));
-    // Dropped, and so unlinked, on every early return below.
-    let mut scratch = tempfile::NamedTempFile::new_in(dir)?;
-    scratch.write_all(body)?;
-    scratch.as_file().sync_all()?;
-    std::fs::set_permissions(scratch.path(), before.permissions())?;
-    // Only root may give a file away, and a host `dl` is rarely root: the file it
-    // replaces is then this user's already, which is what the scratch file is.
-    let _ = std::os::unix::fs::chown(scratch.path(), Some(before.uid()), Some(before.gid()));
-    scratch.persist(path).map_err(|failed| failed.error)?;
-    Ok(())
+/// A name for the scratch file beside `.claude.json`, new for each attempt.
+fn scratch_name(attempt: u32) -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.subsec_nanos());
+    format!(".claude.json.dl-{}-{nanos}-{attempt}", std::process::id())
 }
 
 #[cfg(test)]
@@ -614,6 +693,53 @@ mod tests {
             std::fs::read_to_string(&outside).expect("the host's main config"),
             theirs
         );
+    }
+
+    #[test]
+    fn a_folder_swapped_for_a_link_after_the_check_does_not_carry_the_write_out() {
+        // The container still runs while the host merges, and it can write the
+        // shared directory. A link to `real/.claude.json` passes the check; then
+        // `real` becomes a link to `..`. A write that names the path again lands
+        // in `~/.claude.json`, the host's own main config.
+        let config = Config::new(None);
+        let real = config.dir.join("real");
+        std::fs::create_dir_all(&real).expect("a nested dir");
+        std::fs::write(
+            real.join(".claude.json"),
+            r#"{"hasCompletedOnboarding":true}"#,
+        )
+        .expect("the decoy config");
+        std::os::unix::fs::symlink("real/.claude.json", config.file()).expect("a planted link");
+        let outside = config.scratch.path().join(".claude.json");
+        let theirs = r#"{"hasCompletedOnboarding":true}"#;
+        std::fs::write(&outside, theirs).expect("the host's main config");
+
+        let located = locate(&config.dir).expect("a link that stays inside the dir");
+        std::fs::rename(&real, config.dir.join("moved")).expect("the folder moved away");
+        std::os::unix::fs::symlink("..", &real).expect("the folder swapped for a link");
+        let _ = located.merge(KEY);
+
+        assert_eq!(
+            std::fs::read_to_string(&outside).expect("the host's main config"),
+            theirs
+        );
+    }
+
+    #[test]
+    fn a_fifo_in_place_of_the_config_is_refused_rather_than_read_for_good() {
+        // The container can put a FIFO in the shared directory. A blocking read
+        // of it would hang `dl` on the host with nobody ever writing to it.
+        let config = Config::new(None);
+        rustix::fs::mknodat(
+            rustix::fs::CWD,
+            config.file(),
+            rustix::fs::FileType::Fifo,
+            rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+            0,
+        )
+        .expect("a FIFO");
+
+        assert_eq!(config.merge(), Merged::Declined);
     }
 
     #[test]
