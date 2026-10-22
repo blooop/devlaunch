@@ -3880,10 +3880,11 @@ impl TerminalTitle {
 /// dashes and nothing else, which excludes `$`, a backtick and a backslash
 /// outright; the one control it lets through is a trailing newline, and
 /// `as_typed` drops that beside the cut. So nothing legitimate is lost here. The
-/// filter is for the two arms that title without deriving an id --
-/// `Plan::Existing`'s raw spec and `Plan::Creatable`'s path leaf -- which this
-/// crate never validated. devpod's own name rules would refuse most of what is
-/// dangerous here, but that is a guarantee borrowed from another program's
+/// filter is for the one arm that titles without deriving an id --
+/// `Plan::Existing`'s raw spec -- which this crate never validated. (A path
+/// leaf was the second, until it went through devpod's `ToID` rule.) devpod's
+/// own name rules would refuse most of what is dangerous here, but that is a
+/// guarantee borrowed from another program's
 /// validation, which is the difference between a safe title and a title that is
 /// safe until devpod loosens a rule. Dropping rather than escaping keeps both
 /// sinks with nothing to decide, and there is no escaping that would work for
@@ -4224,9 +4225,14 @@ pub fn plan(raw_spec: &str) -> Result<Plan, UnsafeName> {
     })
 }
 
-/// The name devpod gives a path spec: the resolved directory's final component.
+/// The name devpod gives a path spec: the resolved directory's final component,
+/// made into the id devpod's own `ToID` makes of it
+/// ([`path_workspace_id`](crate::domain::workspace_id::path_workspace_id)).
 ///
-/// Python spells this `Path(spec).expanduser().resolve().name`, and `resolve()`
+/// The leaf alone is not an id: devpod refuses an explicit `--id` like
+/// `FIC_Interface` before it does anything else.
+///
+/// Python spells the leaf `Path(spec).expanduser().resolve().name`, and `resolve()`
 /// there is non-strict — a directory that is not there yet still yields a name.
 /// [`std::fs::canonicalize`] is strict and follows symlinks, so this normalises
 /// lexically after expanding `~` and absolutizing: for every path that exists and
@@ -4262,7 +4268,7 @@ fn path_leaf(path: &str) -> String {
         .last()
         // The filesystem root has no name, which is what Python's `.name` answers
         // for it: the empty string.
-        .map(|name| name.to_string_lossy().into_owned())
+        .map(|name| crate::domain::workspace_id::path_workspace_id(&name.to_string_lossy()))
         .unwrap_or_default()
 }
 
@@ -9289,9 +9295,9 @@ mod tests {
     fn a_label_starting_with_a_dash_is_sent_bare_because_the_separator_would_be_named() {
         // `sanitize_title` keeps a leading dash. It takes out the controls the
         // escape fears and the three characters `PS1` would re-expand, and a dash
-        // is none of them -- and the two arms that title without deriving an id,
-        // `Plan::Existing`'s raw spec and `Plan::Creatable`'s path leaf, are
-        // exactly where one arrives from. So `dl ./-odd` reaches here as `-odd`.
+        // is none of them -- and the arm that titles without deriving an id,
+        // `Plan::Existing`'s raw spec, is exactly where one arrives from. (A path
+        // leaf no longer does: `dl ./-odd` is named `odd`, as devpod names it.)
         //
         // The reflex is to guard it with `--`, and that is the bug rather than the
         // fix. herdr's `<LABEL>...` is variadic and joins everything it collects,
@@ -11710,6 +11716,36 @@ mod tests {
                 workspace_id: "a-project".to_owned(),
             }
         );
+    }
+
+    #[test]
+    fn a_path_spec_is_named_what_devpod_itself_would_name_its_directory() {
+        // Expected ids are devpod's own `ToID` (pkg/workspace/id.go) run over the
+        // same absolute paths. An explicit `--id` outside `[a-z0-9-]`, or past 48
+        // characters, is refused by devpod before it does anything.
+        let cases = [
+            ("/tmp/FIC_Interface", "ficinterface"),
+            ("/tmp/My_Proj.v2", "myproj-v2"),
+            ("/tmp/fic-interface", "fic-interface"),
+            ("/tmp/a--b", "a--b"),
+            ("/tmp/Repo.GIT", "repo"),
+            ("/tmp/café Ünï", "caf---n"),
+            ("/tmp/\u{130}\u{212A}", "ik"),
+            ("/tmp/-lead_", "lead"),
+            ("/tmp/__", ""),
+            (
+                "/tmp/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-b",
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            ),
+        ];
+        for (spec, id) in cases {
+            match plan(spec).expect("a plan") {
+                Plan::Creatable { workspace_id, .. } => {
+                    assert_eq!(workspace_id, id, "for {spec:?}");
+                }
+                other => panic!("expected a creatable plan for {spec:?}, got {other:?}"),
+            }
+        }
     }
 
     // -------------------------------- the cold path's refusal, as a reason
