@@ -303,8 +303,8 @@ const CONFIG_FILE: &str = ".claude.json";
 /// truncated is the host's whole Claude configuration. The scratch file takes the
 /// mode and, where this process may set it, the owner of the file it replaces.
 ///
-/// The keys keep their order (`serde_json`'s `preserve_order`, which the workspace
-/// enables) and the file is written back two-space indented without escaping
+/// The keys keep their order and every float its digits (`serde_json`'s
+/// `preserve_order` and `float_roundtrip`, which the workspace enables) and the file is written back two-space indented without escaping
 /// non-ASCII, which is how Claude Code writes it. So a merge into a file Claude Code
 /// wrote moves no line but the one before the new entry.
 pub(crate) fn merge(dir: &Path, key: &str) -> Merged {
@@ -474,6 +474,23 @@ mod tests {
                     + ","
             ),
             "every line before the new entry is the line that was there"
+        );
+    }
+
+    #[test]
+    fn the_merge_keeps_every_digit_of_a_float_in_the_config() {
+        // Claude Code keeps costs and rates as floats with seventeen significant
+        // digits. A parse that is off by one ulp writes back a different number.
+        let config = Config::new(Some(
+            r#"{"lastCost":0.0013015855369760793,"themeMode":"dark"}"#,
+        ));
+
+        assert_eq!(config.merge(), Merged::Wrote);
+
+        assert!(
+            config.read().contains("0.0013015855369760793"),
+            "{}",
+            config.read()
         );
     }
 
