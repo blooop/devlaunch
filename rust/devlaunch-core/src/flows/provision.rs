@@ -5681,7 +5681,22 @@ fi
     /// else: the host half of the trust merge makes that one call and no other.
     struct DockerInspect {
         mounts: String,
+        exit: i32,
         seen: Mutex<Vec<Vec<String>>>,
+    }
+
+    impl DockerInspect {
+        fn answering(mounts: String, exit: i32) -> Self {
+            Self {
+                mounts,
+                exit,
+                seen: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn calls(&self) -> Vec<Vec<String>> {
+            self.seen.lock().expect("the recording").clone()
+        }
     }
 
     impl Runner for DockerInspect {
@@ -5690,7 +5705,7 @@ fi
             self.seen.lock().expect("the recording").push(argv.clone());
             assert_eq!(argv.first().map(String::as_str), Some("docker"), "{argv:?}");
             Outcome::Ran {
-                exit: Exit::Code(0),
+                exit: Exit::Code(self.exit),
                 io: CapturedText {
                     stdout: self.mounts.clone(),
                     stderr: String::new(),
@@ -5748,26 +5763,32 @@ fi
 
             let devpod =
                 crate::clients::devpod_home::devpod_home_with(&[("default", SHARED_WS, Some(()))]);
-            fs::write(
-                devpod.result("default", SHARED_WS),
-                serde_json::json!({
-                    "ContainerDetails": {"ID": "c0ffee"},
-                    "SubstitutionContext": {
-                        "LocalWorkspaceFolder": clone,
-                        "ContainerWorkspaceFolder": container_workspace,
-                    },
-                })
-                .to_string(),
-            )
-            .expect("devpod's result");
-            Self {
+            let world = Self {
                 scratch,
                 host_home,
                 clone,
                 container_config,
                 container_workspace,
                 devpod,
-            }
+            };
+            world.record_up("c0ffee", world.clone.to_str().expect("a path"));
+            world
+        }
+
+        /// Write devpod's record of the `up` as naming `container` and `clone`.
+        fn record_up(&self, container: &str, clone: &str) {
+            fs::write(
+                self.devpod.result("default", SHARED_WS),
+                serde_json::json!({
+                    "ContainerDetails": {"ID": container},
+                    "SubstitutionContext": {
+                        "LocalWorkspaceFolder": clone,
+                        "ContainerWorkspaceFolder": self.container_workspace,
+                    },
+                })
+                .to_string(),
+            )
+            .expect("devpod's result");
         }
 
         fn mounts(&self) -> String {
@@ -5849,10 +5870,7 @@ fi
         // this folder?". The container now only reports, and the host merges.
         let world = SharedConfigWorld::new(r#"{"hasCompletedOnboarding":true}"#);
         let report = world.run_the_stages();
-        let runner = DockerInspect {
-            mounts: world.mounts(),
-            seen: Mutex::new(Vec::new()),
-        };
+        let runner = DockerInspect::answering(world.mounts(), 0);
 
         let merged = host_trust::record(&runner, SHARED_WS, &report, &world.host());
 
@@ -5869,9 +5887,72 @@ fi
             Some(&true.into())
         );
         assert_eq!(
-            runner.seen.lock().expect("the recording").as_slice(),
-            &[inspect_of_c0ffee()],
+            runner.calls(),
+            [inspect_of_c0ffee()],
             "the container devpod recorded, and nothing else"
+        );
+    }
+
+    #[test]
+    fn an_up_devpod_recorded_with_no_container_costs_the_host_nothing() {
+        let world = SharedConfigWorld::new(r#"{"hasCompletedOnboarding":true}"#);
+        let report = world.run_the_stages();
+        world.record_up("", world.clone.to_str().expect("a path"));
+        let runner = DockerInspect::answering(world.mounts(), 0);
+
+        assert_eq!(
+            host_trust::record(&runner, SHARED_WS, &report, &world.host()),
+            None
+        );
+        assert_eq!(
+            runner.calls(),
+            Vec::<Vec<String>>::new(),
+            "no container to ask about"
+        );
+    }
+
+    #[test]
+    fn an_up_devpod_recorded_with_a_relative_clone_costs_the_host_nothing() {
+        // A relative folder would resolve against whatever directory dl runs in.
+        let world = SharedConfigWorld::new(r#"{"hasCompletedOnboarding":true}"#);
+        let report = world.run_the_stages();
+        let relative = world
+            .clone
+            .strip_prefix("/")
+            .expect("an absolute clone")
+            .to_str()
+            .expect("a path")
+            .to_owned();
+        world.record_up("c0ffee", &relative);
+        let runner = DockerInspect::answering(world.mounts(), 0);
+
+        assert_eq!(
+            host_trust::record(&runner, SHARED_WS, &report, &world.host()),
+            None
+        );
+        assert_eq!(
+            runner.calls(),
+            Vec::<Vec<String>>::new(),
+            "refused at devpod's record"
+        );
+    }
+
+    #[test]
+    fn a_docker_inspect_that_failed_costs_the_host_nothing() {
+        // The container is gone by the time the host asks: docker prints no mounts
+        // and exits 1. `inspect_formatted` keeps stdout whatever the exit, so it is
+        // the empty answer that leaves the host's file alone here.
+        let world = SharedConfigWorld::new(r#"{"hasCompletedOnboarding":true}"#);
+        let report = world.run_the_stages();
+        let runner = DockerInspect::answering(String::new(), 1);
+
+        assert_eq!(
+            host_trust::record(&runner, SHARED_WS, &report, &world.host()),
+            None
+        );
+        assert_eq!(
+            world.host_config(),
+            serde_json::json!({"hasCompletedOnboarding": true})
         );
     }
 
@@ -5896,10 +5977,7 @@ fi
         // whole of it, and the host writes nothing of its own.
         let world = SharedConfigWorld::new(r#"{"hasCompletedOnboarding":true}"#);
         let report = world.run_the_stages();
-        let runner = DockerInspect {
-            mounts: serde_json::json!([]).to_string(),
-            seen: Mutex::new(Vec::new()),
-        };
+        let runner = DockerInspect::answering(serde_json::json!([]).to_string(), 0);
         assert_eq!(
             host_trust::record(&runner, SHARED_WS, &report, &world.host()),
             None
@@ -5909,8 +5987,8 @@ fi
             serde_json::json!({"hasCompletedOnboarding": true})
         );
         assert_eq!(
-            runner.seen.lock().expect("the recording").as_slice(),
-            &[inspect_of_c0ffee()],
+            runner.calls(),
+            [inspect_of_c0ffee()],
             "the host looked at the mounts and decided, rather than never asking"
         );
     }

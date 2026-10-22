@@ -973,6 +973,52 @@ mod tests {
     }
 
     #[test]
+    fn a_claude_dir_that_is_a_link_on_the_host_matches_the_mount_of_its_target() {
+        // A dotfiles manager links `~/.claude` to its own tree, and docker reports a
+        // bind mount's source with the link resolved.
+        let host = Host::new();
+        let real = host.home.join("dotfiles/claude");
+        std::fs::create_dir_all(&real).expect("the dotfiles' claude dir");
+        std::fs::remove_dir(host.home.join(".claude")).expect("the plain claude dir gone");
+        std::os::unix::fs::symlink(&real, host.home.join(".claude")).expect("a linked claude dir");
+        let mounts = vec![
+            host.bind(&host.clone, "/workspaces/r-main-abcd", true),
+            host.bind(&real, "/home/vscode/.claude", true),
+        ];
+        assert_eq!(
+            target(
+                &reported("/home/vscode/.claude", "/workspaces/r-main-abcd"),
+                &mounts,
+                host.side()
+            ),
+            Some(Target {
+                dir: real,
+                key: "/workspaces/r-main-abcd".to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn mounts_docker_did_not_describe_in_full_are_no_mounts() {
+        assert_eq!(parse_mounts("not json"), Vec::new());
+        let printed = serde_json::json!([
+            {"Type": "bind", "Source": "/srv/a", "Destination": "/a"},
+            {"Type": "bind", "Source": "/srv/b", "Destination": "/b", "RW": true},
+        ])
+        .to_string();
+        assert_eq!(
+            parse_mounts(&printed),
+            vec![Mount {
+                bind: true,
+                source: PathBuf::from("/srv/b"),
+                destination: "/b".to_owned(),
+                writable: true,
+            }],
+            "the mount with no RW is dropped, not read as writable or read-only"
+        );
+    }
+
+    #[test]
     fn a_workspace_folder_that_is_not_the_clone_is_never_recorded() {
         // Only the clone dl made is a workspace folder. Another host directory the
         // repo mounts is the repo's choice, not dl's.
