@@ -5870,17 +5870,24 @@ fi
         );
         assert_eq!(
             runner.seen.lock().expect("the recording").as_slice(),
-            &[vec![
-                "docker".to_owned(),
-                "inspect".to_owned(),
-                "--type".to_owned(),
-                "container".to_owned(),
-                "--format".to_owned(),
-                "{{json .Mounts}}".to_owned(),
-                "c0ffee".to_owned(),
-            ]],
+            &[inspect_of_c0ffee()],
             "the container devpod recorded, and nothing else"
         );
+    }
+
+    /// The one call the host half makes: the mounts of the container devpod recorded.
+    fn inspect_of_c0ffee() -> Vec<String> {
+        [
+            "docker",
+            "inspect",
+            "--type",
+            "container",
+            "--format",
+            "{{json .Mounts}}",
+            "c0ffee",
+        ]
+        .map(str::to_owned)
+        .to_vec()
     }
 
     #[test]
@@ -5900,6 +5907,11 @@ fi
         assert_eq!(
             world.host_config(),
             serde_json::json!({"hasCompletedOnboarding": true})
+        );
+        assert_eq!(
+            runner.seen.lock().expect("the recording").as_slice(),
+            &[inspect_of_c0ffee()],
+            "the host looked at the mounts and decided, rather than never asking"
         );
     }
 
