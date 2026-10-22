@@ -4,7 +4,7 @@ members = [
     "devlaunch-runner",
     "devlaunch-core",
     "dl",
-    "aid",
+    "dla",
     "devlaunch-test-support",
 ]
 

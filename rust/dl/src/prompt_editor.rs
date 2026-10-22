@@ -1,4 +1,4 @@
-//! The prompt editor `aid` opens while a workspace boots: a raw-mode line editor
+//! The prompt editor `dla` opens while a workspace boots: a raw-mode line editor
 //! that takes a pasted prompt whole, line breaks and all.
 //!
 //! It replaced a cooked-mode read, and the reasons are the ones that read had no
@@ -17,7 +17,7 @@
 //!
 //! **One byte at a time from descriptor 0**, as the cooked read did, and for the
 //! same reason: whatever this does not read stays in the terminal's queue for the
-//! agent session `aid` attaches next. Reading stops at the Enter that submits, so
+//! agent session `dla` attaches next. Reading stops at the Enter that submits, so
 //! keys typed after it are the agent's.
 //!
 //! The editor only ever appends. There is no cursor to move, so the arrow keys

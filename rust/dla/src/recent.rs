@@ -1,4 +1,4 @@
-//! The choices aid's pickers list first: the recent ones, per agent and setting.
+//! The choices dla's pickers list first: the recent ones, per agent and setting.
 //!
 //! This is what keeps the pickers current without a release. The table in
 //! `rewrite` suggests a few values for a first run, and from then on the rows a
@@ -8,7 +8,7 @@
 //!
 //! The file is `<devlaunch cache>/aid-recent.tsv`, one choice per line:
 //! `<agent> TAB <setting> TAB <value>`, newest first, with an empty value for the
-//! default. Plain text rather than JSON because aid's one dependency is `dl`, and
+//! default. Plain text rather than JSON because dla's one dependency is `dl`, and
 //! the format needs nothing a `split` cannot read.
 //!
 //! **Nothing in here can stop a launch.** A file that is missing, unreadable,
@@ -20,7 +20,8 @@ use std::path::{Path, PathBuf};
 
 use crate::rewrite::Knob;
 
-/// The file's name inside the devlaunch cache.
+/// The file's name inside the devlaunch cache. It keeps the name the program had
+/// when it was written, so the choices survive the rename to dla.
 const FILE_NAME: &str = "aid-recent.tsv";
 
 /// How many choices are kept per agent and setting.
@@ -197,6 +198,14 @@ mod tests {
 
     fn some(value: &str) -> Option<String> {
         Some(value.to_owned())
+    }
+
+    #[test]
+    fn the_file_keeps_the_name_released_builds_wrote_it_under() {
+        assert_eq!(FILE_NAME, "aid-recent.tsv");
+        if let Some(path) = path() {
+            assert_eq!(path.file_name().unwrap(), "aid-recent.tsv");
+        }
     }
 
     #[test]

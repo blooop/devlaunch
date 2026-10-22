@@ -1,7 +1,7 @@
 //! The `dl` binary: three things the library cannot do for itself.
 //!
 //! The command line, the rendering and the flows are [`dl`]'s — the same library
-//! `aid` runs, so the two entry points cannot drift. What is left here is what
+//! `dla` runs, so the two entry points cannot drift. What is left here is what
 //! belongs to a *process*: the signal dispositions, the argv it was started with,
 //! and the exit code it leaves behind.
 

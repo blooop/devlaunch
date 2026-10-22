@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **`aid` is gone, and `dla` is its only name** (#689). `dla` arrived in 0.60.0 as a second name for
+  `aid` (#679). It is now the program itself: the crate is `rust/dla`, `dla --version` answers
+  `dla <version>`, and every message, usage line and help text says `dla`. The wheel, the conda
+  package and `./dev.sh` (as `dla-next`) no longer ship an `aid` or an `aid-next`, and bash
+  completion no longer completes `aid`. A script that runs `aid` must run `dla` instead. The
+  two settings keep their names, `DEVLAUNCH_AID_AGENT` and `DEVLAUNCH_AID_REMOTE_CONTROL`, so a
+  shell that sets them needs no change, and so does the file of recent picks,
+  `<cache>/aid-recent.tsv`, so the pickers keep their recent choices. `./dev.sh` removes an
+  `aid-next` that an earlier run of it installed.
+
 ## [0.62.1] - 2026-10-19
 
 ### Fixed

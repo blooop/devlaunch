@@ -1,8 +1,7 @@
 #!/bin/bash
 # Development installation script for DevLaunch
-# Builds this working tree and installs it as `dl-next` and `aid-next` (and
-# `dla-next`, aid's second name), beside the
-# released `dl` and `aid` rather than on top of them, so both are on PATH at once
+# Builds this working tree and installs it as `dl-next` and `dla-next`, beside the
+# released `dl` and `dla` rather than on top of them, so both are on PATH at once
 # and running the wrong one is not possible by accident. The released build is what
 # keeps working while this checkout is mid-change; it is installed by pixi global
 # from the blooop channel and this script never touches it.
@@ -61,7 +60,7 @@ fi
 # `--features .../dev-build` is the whole reason `dl-next --version` can be told
 # apart from the released `dl --version`: it appends `-dev` to the version line
 # (see the feature's comment in rust/dl/Cargo.toml). The feature is named per
-# package because this is a multi-package build; `aid`'s forwards to `dl`'s, so
+# package because this is a multi-package build; `dla`'s forwards to `dl`'s, so
 # the two binaries cannot report different provenance.
 #
 # `--locked` so this builds what the lockfile says, exactly as CI does. A tree
@@ -81,8 +80,8 @@ trap 'rm -f "${BUILD_LOG}"' EXIT
 (
     cd "${CARGO_DIR}"
     cargo build --release --locked \
-        -p dl -p aid \
-        --features dl/dev-build,aid/dev-build \
+        -p dl -p dla \
+        --features dl/dev-build,dla/dev-build \
         --message-format=json-render-diagnostics
 ) > "${BUILD_LOG}"
 
@@ -120,6 +119,31 @@ for built in "${BUILT[@]}"; do
         echo "Created symlink: ${link} -> ${copy}"
     fi
 done
+
+# Retire what an older run of this script left for `aid`, which this tree no
+# longer builds. The loop above only visits the names cargo reports, so without
+# this an `aid-next` from before the rename keeps running a stale build and says
+# nothing. Only a symlink into our own bin directory is ours to remove; anything
+# else at that path was put there by someone else and stays.
+stale_link="${BIN_DIR}/aid-next"
+stale_copy="${INSTALL_DIR}/bin/aid"
+if [ -L "${stale_link}" ]; then
+    case "$(readlink "${stale_link}")" in
+        "${INSTALL_DIR}/bin/"*)
+            rm "${stale_link}"
+            echo "Removed stale symlink: ${stale_link} (aid is now dla)"
+            ;;
+        *)
+            echo "Note: ${stale_link} points outside ${INSTALL_DIR}/bin. Leaving it alone."
+            ;;
+    esac
+elif [ -e "${stale_link}" ]; then
+    echo "Note: ${stale_link} exists and is not a symlink. Leaving it alone."
+fi
+if [ -e "${stale_copy}" ]; then
+    rm -f "${stale_copy}"
+    echo "Removed stale copy: ${stale_copy} (aid is now dla)"
+fi
 
 # Verify the installation, and verify the thing worth verifying: that these
 # binaries say which build they are. A `-next` that printed the released version
@@ -159,8 +183,7 @@ echo "  dl-next --help"
 echo "  dl-next --version           # prints <version>-dev; plain dl does not"
 echo "  dl-next owner/repo          # clone + DevPod workspace (default branch)"
 echo "  dl-next owner/repo@branch   # clone + DevPod workspace (specific branch)"
-echo "  aid-next owner/repo@branch  # ...with a coding agent started in it"
-echo "  dla-next owner/repo@branch  # the same as aid-next, shorter to type"
+echo "  dla-next owner/repo@branch  # ...with a coding agent started in it"
 echo ""
 echo "Against throwaway state, leaving the real workspace list alone:"
 echo "  XDG_CACHE_HOME=/tmp/dl-scratch/cache dl-next ..."
@@ -169,4 +192,4 @@ echo ""
 echo "Re-run this script after every change you want dl-next to pick up; it is a"
 echo "compiled snapshot, not an editable install."
 echo ""
-echo "Plain 'dl' and 'aid' remain the released build, untouched by this script."
+echo "Plain 'dl' and 'dla' remain the released build, untouched by this script."

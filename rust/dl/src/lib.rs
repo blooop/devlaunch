@@ -2,11 +2,11 @@
 //!
 //! The binary is [`main.rs`](../main.rs) and holds three things — the signal
 //! dispositions, the process's argv, and `exit()`. Everything else is here, because
-//! `aid` is a second entry point into the *same* command line rather than a second
+//! `dla` is a second entry point into the *same* command line rather than a second
 //! launcher: Python's `aid.py` rewrites its argv and calls `dl.main(dl_args)`
-//! in-process, and [`run`] is that function. An `aid` that spawned `dl` instead
+//! in-process, and [`run`] is that function. A `dla` that spawned `dl` instead
 //! would be a second process, a second `devpod` resolution and a second timing
-//! summary; an `aid` with launch logic of its own is the drift the Python module was
+//! summary; a `dla` with launch logic of its own is the drift the Python module was
 //! written to end.
 //!
 //! Four modules, and the boundary between them is the invariant (#251's invariant 1:
@@ -44,7 +44,7 @@ use devlaunch_core::flows::lifecycle::{Refresh, RefreshReason};
 use devlaunch_core::runner::ProcessRunner;
 use devlaunch_core::timing;
 
-/// Re-exported for `aid`, which may name nothing but `dl`.
+/// Re-exported for `dla`, which may name nothing but `dl`.
 ///
 /// `build_agent_command` returns the agent's argv, and an empty one is not a
 /// degenerate answer but a wrong one: `build_dl_args` would emit `[<spec>, "--"]`,
@@ -52,24 +52,24 @@ use devlaunch_core::timing;
 /// An agent was asked for and a shell would arrive. The type is what refuses it.
 pub use devlaunch_core::domain::workspace_state::NonEmpty;
 /// `shlex.quote`, for the entry point that builds a `dl` command line out of its
-/// own: `aid` reaches it through here rather than through `devlaunch-core`, so the
+/// own: `dla` reaches it through here rather than through `devlaunch-core`, so the
 /// only thing it can see of devlaunch is `dl`'s command line and the quoting that
 /// composes one.
 pub use devlaunch_core::shell;
 
 /// Python's `repr()`, for the entry point that quotes an untrusted name the way
-/// Python did: `aid` names a bad `DEVLAUNCH_AID_AGENT` value with `{name!r}`, and
+/// Python did: `dla` names a bad `DEVLAUNCH_AID_AGENT` value with `{name!r}`, and
 /// reaches the one renderer through here rather than carrying a second copy, so a
 /// name holding a quote or a control byte is spelled the same as everywhere else
 /// `dl` quotes what a tool or an environment said.
 pub use render::python_repr;
 
-/// The one-row chooser `aid`'s model and effort pickers are drawn with. See
+/// The one-row chooser `dla`'s model and effort pickers are drawn with. See
 /// [`select::choose`].
 pub use select::{Choice, choose};
 
 /// `os.environ.get`, for the entry point that has environment variables of its
-/// own: `aid` reads `DEVLAUNCH_AID_AGENT` through here rather than through
+/// own: `dla` reads `DEVLAUNCH_AID_AGENT` through here rather than through
 /// `std::env::var(..).ok()`, which reports a value that is not valid UTF-8 as
 /// *unset* — so an undecodable agent name silently started the default agent
 /// instead of being refused by name. The reading is core's, reached the same way
@@ -84,7 +84,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// What both binaries append to [`VERSION`] to say which build this is.
 ///
 /// Empty for everything that ships. `-dev` for a build of somebody's working
-/// tree, which is what `./dev.sh` installs as `dl-next`/`aid-next` beside the
+/// tree, which is what `./dev.sh` installs as `dl-next`/`dla-next` beside the
 /// released pair (#268): two names on one PATH are only worth having if the
 /// builds behind them are told apart by their output too, and a compiled binary
 /// has no editable-install metadata to describe the way Python's did
@@ -216,9 +216,9 @@ const DRAINED: [(libc::c_int, InheritedIgnore); 3] = [
 /// it left the session — neither reaches this code, and neither needs to.
 ///
 /// It lives in the library both entry points share rather than in either `main`
-/// because `dl` and `aid` must install the *same* disposition: `aid` runs [`run`]
-/// in-process, so a signal during an `aid` launch stages and orphans exactly what a
-/// `dl` launch does. Two copies in two `main`s drifted once — aid's stayed a bare
+/// because `dl` and `dla` must install the *same* disposition: `dla` runs [`run`]
+/// in-process, so a signal during a `dla` launch stages and orphans exactly what a
+/// `dl` launch does. Two copies in two `main`s drifted once — dla's stayed a bare
 /// `_exit` that left the token file on disk and the `up` child running — which is
 /// the drift a single definition ends.
 /// Whether SIGHUP was already `SIG_IGN` when this process started.
@@ -282,10 +282,10 @@ pub fn install_signal_handlers() {
 /// a piped stdout gives them no echo to type against. `DEVLAUNCH_NO_TTY` is the
 /// same escape hatch it is for the ssh transport — set to anything but a falsey
 /// value it means "behave as if there were no terminal", so one variable turns
-/// off everything dl and aid only do on one.
+/// off everything dl and dla only do on one.
 ///
-/// Exported for `aid`, whose interactive prompt is gated on it: aid's one
-/// dependency is `dl`, so the isatty call lives here rather than giving aid a
+/// Exported for `dla`, whose interactive prompt is gated on it: dla's one
+/// dependency is `dl`, so the isatty call lives here rather than giving dla a
 /// libc of its own.
 pub fn interactive_terminal() -> bool {
     // SAFETY: `isatty` reads a property of the descriptor and touches nothing.
@@ -299,13 +299,13 @@ pub fn interactive_terminal() -> bool {
 
 /// Name the terminal and the herdr tab for `spec`, before anything is launched.
 ///
-/// Exported for `aid`, and for one call in it. With no prompt on the line aid opens
+/// Exported for `dla`, and for one call in it. With no prompt on the line dla opens
 /// the prompt editor and boots the workspace behind it, so the launch that would
 /// name the pane has not happened yet and does not for as long as the typing takes.
-/// Measured on live herdr 0.8.2: `aid blooop/rocker@nb1` left its tab reading the
+/// Measured on live herdr 0.8.2: `dla blooop/rocker@nb1` left its tab reading the
 /// label it already had for the whole editor window, 40 seconds in, and renamed it
 /// to `rocker@nb1` within 6 seconds of the prompt being submitted. `dl` on the same
-/// build, and `aid` with a prompt on the line, both named it within 6 seconds.
+/// build, and `dla` with a prompt on the line, both named it within 6 seconds.
 ///
 /// **The name is read off the spec rather than resolved from it, with one
 /// exception,** and the difference is deliberate. The launch's title is a fact
@@ -364,13 +364,13 @@ pub fn name_before_launch(spec: &str) {
 /// `owner/repo@branch`; one that could not is reported the same way and comes back
 /// as the code to exit with.
 ///
-/// **Public for `aid`, and for that one reason.** `dl` does this itself, inside
+/// **Public for `dla`, and for that one reason.** `dl` does this itself, inside
 /// `dispatch`, at the one point a typed target exists before anything reads it.
-/// aid cannot use that: it holds the spec in three places dl never sees — the
+/// dla cannot use that: it holds the spec in three places dl never sees — the
 /// banner, the early tab name, and the background boot's own argv — and the boot
 /// and the launch after it are two separate `dl::run` calls, so leaving the
 /// reference in place would look it up twice and could resolve the two to
-/// different branches. aid calls this once, in front of all three, and dl's own
+/// different branches. dla calls this once, in front of all three, and dl's own
 /// rewrite then sees an ordinary spec and does nothing.
 pub fn pull_request_spec(word: &str) -> Result<String, i32> {
     commands::resolve_pull_request(&ProcessRunner, word.to_owned()).map_err(commands::Ending::code)
@@ -378,7 +378,7 @@ pub fn pull_request_spec(word: &str) -> Result<String, i32> {
 
 /// The workspace id `spec` names, the way `dl <spec> kill` works it out.
 ///
-/// **Public for `aid`, which names Claude Code's Remote Control session with it.**
+/// **Public for `dla`, which names Claude Code's Remote Control session with it.**
 /// The session used to be named after the spec as typed, and `blooop/bencher@fix`
 /// is a name no other agent can message: Claude Code's `SendMessage` reads a `/` in
 /// its `to` as `team/member` and refuses the address before it looks for a peer
@@ -404,15 +404,15 @@ pub fn workspace_id_of(spec: &str) -> Option<String> {
 /// The id of one workspace the user picks from dl's own picker, or the exit code
 /// to end on.
 ///
-/// **Public for `aid resume`, which needs the id before it can build its line.**
+/// **Public for `dla resume`, which needs the id before it can build its line.**
 /// `dl -- <command>` with no workspace already opens this picker, and a plain
-/// `aid resume` could have ridden on that. It does not, because the agent line
+/// `dla resume` could have ridden on that. It does not, because the agent line
 /// names Claude Code's Remote Control session after the workspace id
-/// ([`workspace_id_of`]), and inside dl's picker the line is already built. So aid
+/// ([`workspace_id_of`]), and inside dl's picker the line is already built. So dla
 /// asks for the pick first and builds a line for a named workspace, which is the
-/// path every other aid launch takes.
+/// path every other dla launch takes.
 ///
-/// A bare `aid`, and a line of flags with no workspace, take the same pick for the
+/// A bare `dla`, and a line of flags with no workspace, take the same pick for the
 /// same reason: the agent, model and effort pickers, the banner and the background
 /// boot all come between the pick and the launch.
 ///
@@ -446,7 +446,7 @@ fn early_name(spec: &str, cache_dir: &Path) -> Option<String> {
     // is silence, where `Plan::Existing` below would otherwise label the tab
     // `owner/repo@#579`.
     //
-    // aid, the only caller in this tree, resolves the reference before it names
+    // dla, the only caller in this tree, resolves the reference before it names
     // anything (`dl::pull_request_spec`), so it never reaches this guard. It
     // stays because this function is public and cannot assume its caller did:
     // the whole point of naming early is to name before a launch, and a caller
@@ -510,7 +510,7 @@ fn early_name(spec: &str, cache_dir: &Path) -> Option<String> {
 
 /// Send SIGINT to one process, as a terminal Ctrl-C would.
 ///
-/// Exported for `aid`. A cancel in its picker is a key, not a signal, so its
+/// Exported for `dla`. A cancel in its picker is a key, not a signal, so its
 /// background boot never sees it. SIGINT is what makes that boot run the handler
 /// [`install_signal_handlers`] installs: kill its `devpod up` group and unlink its
 /// staged token file. `Child::kill` sends SIGKILL, which does neither.
@@ -527,22 +527,22 @@ pub fn interrupt(pid: u32) {
 
 /// Have the child `command` spawns take a SIGINT when this process dies.
 ///
-/// For `aid`'s background boot, which is `aid --boot-up` and runs a whole launch:
-/// an `aid` that is SIGKILLed, or that dies any other way that runs no handler,
+/// For `dla`'s background boot, which is `dla --boot-up` and runs a whole launch:
+/// a `dla` that is SIGKILLed, or that dies any other way that runs no handler,
 /// used to leave the boot running with nobody to cancel it, and the boot's
 /// `devpod up` behind it. SIGINT because it is what `cancel` already sends, so the
 /// boot's own handler kills its `devpod up` group and unlinks its staged token, as
 /// a cancelled boot does. A SIGKILL here would skip that handler and leave the
 /// token file on disk. See
 /// [`devlaunch_runner::interrupt::ends_with_this_process`], and its note on
-/// threads: `aid` spawns the boot from `main`.
+/// threads: `dla` spawns the boot from `main`.
 pub fn interrupted_with_this_process(command: &mut std::process::Command) {
     devlaunch_runner::interrupt::ends_with_this_process(command, libc::SIGINT);
 }
 
 pub use render::ClaudeProfileOffer;
 
-/// The Claude logins this host can launch with, for `aid`'s account picker: the
+/// The Claude logins this host can launch with, for `dla`'s account picker: the
 /// heading of the `dl --claude-profiles` table, and one row per login that can
 /// launch. See [`render::claude_profile_offers`].
 pub fn claude_profile_offers() -> (String, Vec<ClaudeProfileOffer>) {
@@ -554,7 +554,7 @@ pub const DEFAULT_CLAUDE_PROFILE: &str = devlaunch_core::flows::claude_profiles:
 
 /// devlaunch's cache directory, or `None` with no home directory to find it by.
 ///
-/// Exported for `aid`, which keeps its recent model and effort choices there, so
+/// Exported for `dla`, which keeps its recent model and effort choices there, so
 /// `XDG_CACHE_HOME` scopes them with everything else devlaunch stores.
 pub fn cache_dir() -> Option<std::path::PathBuf> {
     devlaunch_core::domain::xdg::devlaunch_cache().ok()
@@ -576,7 +576,7 @@ pub fn run(argv: &[String]) -> i32 {
 /// [`run`], for a caller that also knows how the agent it asked for is started
 /// again after herdr restarts.
 ///
-/// `aid` is that caller: it wrote the agent's line, so it is what can say which
+/// `dla` is that caller: it wrote the agent's line, so it is what can say which
 /// session the line opens. A typed value beside the command line rather than words
 /// in it, because a `dl` that read a resume line back out of a command tail would be
 /// guessing at another program's flags.
@@ -593,7 +593,7 @@ fn run_with(argv: &[String], resume: Option<AgentResume>) -> i32 {
     ending
 }
 
-/// How the agent `aid` starts is started again after herdr restarts, re-exported
+/// How the agent `dla` starts is started again after herdr restarts, re-exported
 /// for [`run_resumable`]'s one caller.
 pub use devlaunch_core::clients::AgentResume;
 
@@ -643,7 +643,7 @@ fn one_command(argv: &[String], resume: Option<AgentResume>) -> i32 {
 /// The command this argv asks for, or the exit code the refusal already printed.
 fn command_line(argv: &[String]) -> Result<cli::Command, i32> {
     // The program name clap wants at argv[0] is written here rather than taken from
-    // the process: for `aid` the process is `aid`, and the usage line a refused `dl`
+    // the process: for `dla` the process is `dla`, and the usage line a refused `dl`
     // command line prints has to name the grammar it was refused by.
     let words = std::iter::once("dl".to_owned()).chain(argv.iter().cloned());
     let parsed = match <cli::Cli as clap::Parser>::try_parse_from(words) {
@@ -881,7 +881,7 @@ mod early_name_tests {
     /// The row that does read the records is `recorded_label_in`'s, and
     /// `devlaunch-core` owns the test of what it derives; what reaches a real
     /// record through this function is watched on a pty in
-    /// `aid/tests/interactive.rs`.
+    /// `dla/tests/interactive.rs`.
     fn no_records() -> &'static Path {
         Path::new("/nonexistent/devlaunch-cache")
     }
@@ -914,7 +914,7 @@ mod early_name_tests {
             ),
             early_name("blooop/devlaunch@feature/auth", no_records())
         );
-        // Measured on live herdr 0.8.2: `aid blooop/rocker@nb1` named the tab
+        // Measured on live herdr 0.8.2: `dla blooop/rocker@nb1` named the tab
         // `rocker@nb1` during the editor and the launch afterwards named it
         // `rocker@nb1` again, so nothing moved.
     }

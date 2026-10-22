@@ -421,7 +421,7 @@ impl MarkerSwitches {
             tools: matches!(switches.tools, ToolsSwitch::Install),
             zellij: matches!(switches.zellij, ZellijSwitch::Install),
             // Part of the key, which is what makes a workspace provisioned by
-            // `dl <ws>` re-provision under `aid --codex <ws>`: the marker written
+            // `dl <ws>` re-provision under `dla --codex <ws>`: the marker written
             // without codex disagrees with the switches this launch wants, so the
             // pass travels again and the codex stage lands. See
             // `provision::CodexSwitch`.

@@ -15,8 +15,8 @@
 //! process list, which is what makes the child enough — measured against herdr
 //! 0.8.2 on a pane whose parent's environ was deliberately empty of it.
 //!
-//! `aid` already does this for the session it opens (`aid/src/main.rs`), because
-//! aid *picked* the agent. dl is the other half: it did not pick the agent, but
+//! `dla` already does this for the session it opens (`dla/src/main.rs`), because
+//! dla *picked* the agent. dl is the other half: it did not pick the agent, but
 //! when the command it was handed **is** an agent by name, saying so is a reading
 //! of the command rather than a guess about it.
 
@@ -34,9 +34,9 @@ pub(crate) const AGENT_VAR: &str = "HERDR_AGENT";
 
 /// Every agent devlaunch knows by name, in the spelling a session manager uses.
 ///
-/// `aid`'s own table (`aid/src/rewrite.rs`) knows the same agents and much more
+/// `dla`'s own table (`dla/src/rewrite.rs`) knows the same agents and much more
 /// about each of them — the command, the prompt flags, the environment — so the
-/// names exist twice by necessity: this const is `pub(crate)` and aid is a
+/// names exist twice by necessity: this const is `pub(crate)` and dla is a
 /// different binary. `test/unit/test_session_manager.py` diffs the two lists, per
 /// the standing rule in CLAUDE.md that a second hand-maintained copy of a fact
 /// needs a test beside it doing exactly that.
@@ -49,7 +49,7 @@ pub(crate) const AGENT_VAR: &str = "HERDR_AGENT";
 pub(crate) const AGENT_NAMES: &[&str] = &["claude", "codex", "gemini"];
 
 /// The words after each agent's program that pick its last conversation up again,
-/// one row per name in [`AGENT_NAMES`]. aid's `AGENTS` table spells the same
+/// one row per name in [`AGENT_NAMES`]. dla's `AGENTS` table spells the same
 /// words as each row's `resume`, and `test/unit/test_session_manager.py` diffs
 /// the two.
 const AGENT_RESUMES: &[(&str, &str)] = &[
@@ -208,7 +208,7 @@ mod tests {
         );
     }
 
-    /// What `aid` composes reaches dl as a path in some layouts and a bare name in
+    /// What `dla` composes reaches dl as a path in some layouts and a bare name in
     /// others, and the two are one agent.
     #[test]
     fn a_path_names_the_agent_its_last_component_does() {
@@ -216,7 +216,7 @@ mod tests {
         assert_eq!(agent_in("~/.local/bin/codex"), Some("codex"));
     }
 
-    /// The shape `aid` uses for the two variables its table sets.
+    /// The shape `dla` uses for the two variables its table sets.
     #[test]
     fn assignments_are_stepped_over() {
         assert_eq!(agent_in("IS_SANDBOX=1 claude"), Some("claude"));
@@ -1093,7 +1093,7 @@ mod tests {
 // ===========================================================================
 //
 // Everything above is about a pane whose screen holds the agent, which is what
-// `dl <ws> -- <agent>` and `aid` give a manager. This half is about the other
+// `dl <ws> -- <agent>` and `dla` give a manager. This half is about the other
 // case, and it is the one a host-side variable cannot reach: `dl <ws>` opens a
 // shell, somebody types `claude` at it, and the agent is a process inside the
 // container. herdr's own documentation is explicit that the hint "cannot see it
@@ -1966,7 +1966,7 @@ pub(crate) fn agent_reading_in(answer: &str) -> AgentReading {
 ///
 /// Two lines and not one, because a session can change under the agent. `line`
 /// reopens the session this launch knows about (`claude ... --resume <uuid>` for a
-/// fresh launch, `--continue` when aid does not know the id). `by_id` is the same
+/// fresh launch, `--continue` when dla does not know the id). `by_id` is the same
 /// line with its id left off, for the container hook to complete when the agent
 /// reports a new session id (`/clear`, an in-agent `/resume`); `None` for an agent
 /// with no hook.
@@ -2043,21 +2043,15 @@ fn restore_line<'a>(
 /// reason (`dl-herdr-shell`): the directory a path names is replaced by
 /// `pixi global update`, and herdr refuses a path anyway. Not `current_exe()`,
 /// which resolves pixi global's trampoline to a path that moves on upgrade.
-/// `aid` runs dl in process, so its `aid-next` resumes under `dl-next`, and
-/// `dla`, which is aid under a second name, maps the same way. A name a
+/// `dla` runs dl in process, so its `dla-next` resumes under `dl-next`. A name a
 /// line cannot carry (empty, an option, a space or an apostrophe) falls back to
 /// `dl`. Pinned by `a_restored_pane_runs_the_dl_that_was_started`.
 pub(crate) fn restore_program(invoked_as: Option<&str>) -> String {
     let name = invoked_as
         .and_then(|path| path.rsplit('/').next())
-        .map(|name| {
-            match name
-                .strip_prefix("aid")
-                .or_else(|| name.strip_prefix("dla"))
-            {
-                Some(rest) => format!("{RESTORE_PROGRAM}{rest}"),
-                None => name.to_owned(),
-            }
+        .map(|name| match name.strip_prefix("dla") {
+            Some(rest) => format!("{RESTORE_PROGRAM}{rest}"),
+            None => name.to_owned(),
         });
     match name {
         Some(name)
@@ -2378,7 +2372,7 @@ mod resume_tests {
     }
 
     /// The dl a restored pane runs is the one that was run, by file name: a path
-    /// is one herdr refuses and `pixi global update` moves, `aid` (or `dla`) resumes
+    /// is one herdr refuses and `pixi global update` moves, `dla` resumes
     /// under its own `dl`, and a name no shell can type falls back to the released `dl`.
     #[test]
     fn a_restored_pane_runs_the_dl_that_was_started() {
@@ -2386,10 +2380,8 @@ mod resume_tests {
             (Some("dl"), "dl"),
             (Some("dl-next"), "dl-next"),
             (Some("/home/u/.local/bin/dl-next"), "dl-next"),
-            (Some("aid"), "dl"),
-            (Some("/home/u/.pixi/bin/aid-next"), "dl-next"),
             (Some("dla"), "dl"),
-            (Some("/home/u/.local/bin/dla-next"), "dl-next"),
+            (Some("/home/u/.pixi/bin/dla-next"), "dl-next"),
             (Some("./target/debug/dl"), "dl"),
             (None, "dl"),
             (Some(""), "dl"),

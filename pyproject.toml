@@ -5,7 +5,7 @@
 # table whose version was read out of `rust/Cargo.toml` -- served a Python `dl`
 # that no longer exists.
 #
-# What ships is a linux-64 wheel of the compiled binaries (`dl`, `aid`, `dla`),
+# What ships is a linux-64 wheel of the two compiled binaries (`dl`, `dla`),
 # built by maturin from `packaging/wheel/pyproject.toml`, and a conda package of
 # the same binaries from `conda.recipe/recipe.yaml`. Both read their version from
 # `rust/Cargo.toml`, which is the one place it lives; a release is one edit.
@@ -130,7 +130,7 @@ ty = ">=0.0.12,<=0.0.19"
 default = { features = ["test", "rust"], solve-group = "default" }
 
 [tool.pixi.tasks]
-# `pixi run dl` and `pixi run aid`: this working tree, compiled and run (#268).
+# `pixi run dl` and `pixi run dla`: this working tree, compiled and run (#268).
 #
 # Tasks now, where they used to be console scripts the editable Python install put
 # in the environment. Nothing resolves `dl` in here by accident any more, which is
@@ -147,9 +147,7 @@ default = { features = ["test", "rust"], solve-group = "default" }
 # `--features .../dev-build` marks the version line `-dev`, exactly as `./dev.sh`
 # does on the host: a build of somebody's tree says so wherever it runs.
 dl = "cargo run -q --locked --manifest-path rust/Cargo.toml -p dl --bin dl --features dl/dev-build --"
-aid = "cargo run -q --locked --manifest-path rust/Cargo.toml -p aid --bin aid --features aid/dev-build --"
-# `dla` is aid under a second name (rust/aid/Cargo.toml), so it is the same task.
-dla = "cargo run -q --locked --manifest-path rust/Cargo.toml -p aid --bin dla --features aid/dev-build --"
+dla = "cargo run -q --locked --manifest-path rust/Cargo.toml -p dla --bin dla --features dla/dev-build --"
 dev-add-docker = "python scripts/devpod_provider.py docker"
 dev = { cmd = "devpod up . --ide none && ssh pythontemplate.devpod", depends-on = ["dev-add-docker"] }
 dev-vs = { cmd = "devpod up . --ide vscode", depends-on = ["dev-add-docker"] }
@@ -208,7 +206,7 @@ commit-format = "git commit -a -m'autoformat code' || true"
 # a debug build would be judging something nobody runs. Point the seam at a debug
 # build by hand when the compile time matters more than the fidelity:
 #   DEVLAUNCH_DL_CMD='cargo run -q --manifest-path rust/Cargo.toml -p dl --bin dl --' pixi run pytest
-build-release = "cargo build --release --locked --manifest-path rust/Cargo.toml -p dl -p aid"
+build-release = "cargo build --release --locked --manifest-path rust/Cargo.toml -p dl -p dla"
 test = { cmd = "pytest", depends-on = ["build-release"] }
 # Median wall time of a command over N runs; see "Measuring launch time" in docs/performance.md.
 bench = "python scripts/bench_launch.py"

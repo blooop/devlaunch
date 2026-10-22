@@ -1927,11 +1927,11 @@ fn render_select<'r>(
 }
 
 /// One workspace from the picker, for a caller that builds its own command line
-/// around the answer: `aid resume` with no workspace named.
+/// around the answer: `dla resume` with no workspace named.
 ///
 /// The same picker, the same listing and the same `Picked <row> -> <id>` line as
 /// [`render_select`], and one thing left out: the help a pick that never came ends
-/// on. That help is dl's, and somebody who typed `aid resume` did not ask for dl's
+/// on. That help is dl's, and somebody who typed `dla resume` did not ask for dl's
 /// grammar. An empty list keeps dl's sentence, which says how to make a workspace.
 /// A run with no terminal gets one of its own in place of the invitation, which
 /// would ask for a pick nobody can make: it says a terminal is missing and how to
@@ -1960,14 +1960,14 @@ pub(crate) fn pick_one(runner: &dyn Runner) -> Result<String, Ending> {
         }
         select::Pick::NoTerminal => {
             eprintln!(
-                "aid resume needs a terminal to pick a workspace. Name one instead: aid resume <workspace>"
+                "dla resume needs a terminal to pick a workspace. Name one instead: dla resume <workspace>"
             );
             Err(Ending::Refused)
         }
         select::Pick::Undrawable(reason) => {
             eprintln!(
-                "{reason}, so aid resume cannot draw its picker. Name the workspace instead: \
-                 aid resume <workspace>"
+                "{reason}, so dla resume cannot draw its picker. Name the workspace instead: \
+                 dla resume <workspace>"
             );
             Err(Ending::Refused)
         }

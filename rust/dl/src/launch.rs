@@ -176,7 +176,7 @@ pub(crate) fn render_launch<'r>(
     // megabytes, and a warning about it is worth something while it is still
     // happening.
     let mut lending = render::Saying;
-    // `for_verb` is what turns `aid --codex` into a pass that installs codex: the
+    // `for_verb` is what turns `dla --codex` into a pass that installs codex: the
     // verb holds the command, and core reads the agent out of it.
     let provision = ToolProvisioning::from_env(cache, &mut lending).for_verb(verb);
     // Verbatim and as it happens: this is devpod's own stderr, minus the line it

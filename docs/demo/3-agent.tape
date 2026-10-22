@@ -13,7 +13,7 @@
 #
 # See 1-launch.tape for how to run these.
 
-Require aid
+Require dla
 Source "_common.tape"
 Output "3-agent.gif"
 
@@ -27,7 +27,7 @@ Type "clear" Enter
 Wait
 Show
 
-Type "aid blooop/devlaunch@fix/flaky-test"
+Type "dla blooop/devlaunch@fix/flaky-test"
 Sleep 900ms
 Enter
 
