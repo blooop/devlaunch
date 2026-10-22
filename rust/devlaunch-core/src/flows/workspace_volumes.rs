@@ -1321,6 +1321,29 @@ mod tests {
         );
     }
 
+    /// The devcontainer spec substitutes only `${...}`, so `$PREFIX` and `$$` in a
+    /// mount source are literal text, unlike in a compose file. Such a source can
+    /// only add to the names a delete keeps. And docker refuses a volume name with
+    /// a `$`, `{` or `}` in it, so no volume a container mounts can match a source
+    /// this read leaves out for its `${`: the read cannot make a delete remove one.
+    #[test]
+    fn a_dollar_with_no_brace_in_a_devcontainer_mount_is_literal_text() {
+        let result = serde_json::json!({
+            "DevContainerConfigWithPath": { "config": { "mounts": [
+                { "type": "volume", "source": "$PREFIX-cache", "target": "/x" },
+                "source=a$$b,target=/y,type=volume",
+                { "type": "volume", "source": "${localEnv:TEAM}-cache", "target": "/z" },
+            ]}},
+        });
+        assert_eq!(
+            literal_volumes(&result),
+            ["$PREFIX-cache", "a$$b"]
+                .map(str::to_owned)
+                .into_iter()
+                .collect()
+        );
+    }
+
     #[test]
     fn a_volume_nothing_left_uses_is_removed_and_one_in_use_stays() {
         let m = mounted(&[&format!("{WS}-pixi"), &format!("{WS}-cache"), "shared"]);
