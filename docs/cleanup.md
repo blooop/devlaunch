@@ -72,8 +72,10 @@ hold:
   devpod's uid as a whole part, as `<id>-pixi` does.
 
 Two kinds of volume are shared on purpose and always stay: a name the devcontainer config
-spells literally, with no `${...}` in it (`team-tracker-pixi`), and a compose volume with
-an explicit `name:`. Each volume removed is named on stderr. A volume Docker will not
+spells literally, with no `${...}` in it (`team-tracker-pixi`), and a volume compose made
+under an explicit `name:`, which compose labels with a name other than `<project>_<volume>`.
+A volume compose did not make, such as one marked `external: true`, has no compose label:
+it stays only when its name holds neither the workspace id nor devpod's uid. Each volume removed is named on stderr. A volume Docker will not
 remove is a line, never a failed delete. A delete that the guard refuses, or that devpod
 refuses, removes no volume. `stop`, `up`, `recreate` and `--refresh-stale` never
 run this, so the caches a recreate keeps stay.

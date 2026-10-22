@@ -350,31 +350,45 @@ pub(crate) fn container_mounts(
         .collect())
 }
 
-/// Every volume compose made for `project`, as `(name, compose's own name for
-/// it)` — `com.docker.compose.volume`, the key under the file's `volumes:`.
-pub(crate) fn compose_volumes(
-    runner: &dyn Runner,
-    project: &str,
-) -> Result<Vec<(String, String)>, Unlisted> {
+/// One volume compose made: its name, the project that made it, and compose's
+/// own name for it — `com.docker.compose.volume`, the key under the file's
+/// `volumes:`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ComposeVolume {
+    pub(crate) name: String,
+    pub(crate) project: String,
+    pub(crate) key: String,
+}
+
+/// Every volume compose made, for any project.
+///
+/// Compose labels a volume with the project that made it first, also when the
+/// file gives it an explicit `name:` and a later project uses it too.
+pub(crate) fn compose_volumes(runner: &dyn Runner) -> Result<Vec<ComposeVolume>, Unlisted> {
     let stdout = listing(
         runner,
         [
             "volume",
             "ls",
             "--filter",
-            &format!("label=com.docker.compose.project={project}"),
+            "label=com.docker.compose.project",
             "--format",
-            "{{.Name}}\t{{.Label \"com.docker.compose.volume\"}}",
+            "{{.Name}}\t{{.Label \"com.docker.compose.project\"}}\t{{.Label \"com.docker.compose.volume\"}}",
         ]
         .map(str::to_owned),
     )?;
     Ok(stdout
         .lines()
         .filter_map(|line| {
-            let (name, key) = line.split_once('\t')?;
-            Some((name.trim().to_owned(), key.trim().to_owned()))
+            let mut fields = line.split('\t').map(str::trim);
+            let (name, project, key) = (fields.next()?, fields.next()?, fields.next()?);
+            Some(ComposeVolume {
+                name: name.to_owned(),
+                project: project.to_owned(),
+                key: key.to_owned(),
+            })
         })
-        .filter(|(name, _)| !name.is_empty())
+        .filter(|volume| !volume.name.is_empty())
         .collect())
 }
 

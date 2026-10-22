@@ -24,8 +24,10 @@
 //! A name the devcontainer config spells literally, with no substitution in it
 //! (`team-tracker-pixi`), is shared by every checkout of that repository by
 //! design and is never one workspace's, whatever the id. A compose volume with an
-//! explicit `name:` is shared across projects for the same reason, which is why
-//! a compose label alone is not enough.
+//! explicit `name:` (one compose labelled with a name other than its default
+//! `<project>_<volume>`) is shared across projects for the same reason. A volume
+//! the compose file marks `external: true` carries no compose label, so only the
+//! rules above decide it.
 //!
 //! # Only the delete paths reach this
 //!
@@ -54,7 +56,8 @@ pub(crate) struct Mounted {
     /// The volumes compose made for one of the workspace's projects under
     /// compose's own default name.
     pub(crate) compose_made: BTreeSet<String>,
-    /// Volume names the devcontainer config spells with no substitution in them.
+    /// Volume names spelled on purpose: with no substitution in the devcontainer
+    /// config, or as an explicit compose `name:`.
     pub(crate) literal: BTreeSet<String>,
 }
 
@@ -178,13 +181,14 @@ fn read_mounts(runner: &dyn Runner, uid: &str, mounted: &mut Mounted) -> Result<
     if mounted.volumes.is_empty() {
         return Ok(());
     }
-    for project in projects {
-        for (name, key) in docker::compose_volumes(runner, &project)? {
-            // Compose's default name. A volume with an explicit `name:` is
-            // shared across projects on purpose, label or not.
-            if name == format!("{project}_{key}") && mounted.volumes.contains(&name) {
-                mounted.compose_made.insert(name);
-            }
+    for volume in docker::compose_volumes(runner)? {
+        if !mounted.volumes.contains(&volume.name) {
+            continue;
+        }
+        if volume.name != format!("{}_{}", volume.project, volume.key) {
+            mounted.literal.insert(volume.name);
+        } else if projects.contains(&volume.project) {
+            mounted.compose_made.insert(volume.name);
         }
     }
     Ok(())
@@ -367,7 +371,7 @@ mod tests {
         fake.script(
             ["docker", "volume", "ls"],
             Response::stdout(format!(
-                "{UID}_bazel-output\tbazel-output\nnamed-cache\tcache\n"
+                "{UID}_bazel-output\t{UID}\tbazel-output\nnamed-cache\t{UID}\tcache\n"
             )),
         );
 
@@ -401,6 +405,55 @@ mod tests {
             "{:?}",
             fake.argvs()
         );
+    }
+
+    /// Read the mounts of a workspace opened as the bare id `kinisi`, whose
+    /// dev container mounts `kinisi-bazel-cache` and `{UID}_bazel-output`, with
+    /// docker's compose labels for its volumes as `volume_ls` gives them.
+    fn record_bare_kinisi(volume_ls: String) -> Mounted {
+        let home = devpod_home_with(&[("default", "kinisi", None)]);
+        std::fs::write(
+            home.record("default", "kinisi"),
+            serde_json::json!({ "id": "kinisi", "uid": UID }).to_string(),
+        )
+        .expect("a record");
+        let fake = FakeRunner::new();
+        fake.script(
+            container_ps(&format!("label=dev.containers.id={UID}")),
+            Response::stdout("aaa\n"),
+        );
+        fake.script(
+            container_ps(&format!("label=com.docker.compose.project={UID}")),
+            Response::stdout("aaa\n"),
+        );
+        fake.script(
+            ["docker", "inspect"],
+            Response::stdout(format!("{UID}\tkinisi-bazel-cache\t{UID}_bazel-output\t\n")),
+        );
+        fake.script(["docker", "volume", "ls"], Response::stdout(volume_ls));
+        let Recording::Read(m) = record(&fake, Some(&home), "kinisi") else {
+            panic!("read");
+        };
+        m
+    }
+
+    #[test]
+    fn a_compose_volume_named_on_purpose_stays_when_the_bare_id_is_a_part_of_it() {
+        // `bazel-cache: { name: kinisi-bazel-cache }` in the workspace's own
+        // compose file.
+        let m = record_bare_kinisi(format!(
+            "{UID}_bazel-output\t{UID}\tbazel-output\nkinisi-bazel-cache\t{UID}\tbazel-cache\n"
+        ));
+        assert_eq!(owned(&m), [format!("{UID}_bazel-output")]);
+    }
+
+    #[test]
+    fn a_compose_volume_named_on_purpose_by_another_project_stays_too() {
+        // Compose keeps the label of the project that made the volume first.
+        let m = record_bare_kinisi(format!(
+            "{UID}_bazel-output\t{UID}\tbazel-output\nkinisi-bazel-cache\tdefault-ki-0ld11\tbazel-cache\n"
+        ));
+        assert_eq!(owned(&m), [format!("{UID}_bazel-output")]);
     }
 
     #[test]
