@@ -165,13 +165,30 @@ pub(crate) fn record(
     };
     match read_mounts(runner, &uid, &mut mounted) {
         Ok(()) => Recording::Read(mounted),
-        Err(Unlisted::NotInstalled) => Recording::Nothing,
-        Err(Unlisted::Failed(reason)) => Recording::Unread { reason },
+        Err(NotRead::Docker(Unlisted::NotInstalled)) => Recording::Nothing,
+        Err(NotRead::Docker(Unlisted::Failed(reason)) | NotRead::ComposeFile(reason)) => {
+            Recording::Unread { reason }
+        }
+    }
+}
+
+/// Why [`read_mounts`] could not say which volumes are the workspace's.
+enum NotRead {
+    /// docker is not there, or did not answer.
+    Docker(Unlisted),
+    /// A compose file the containers were started from, or one it includes,
+    /// could not be read for its external volumes, in these words.
+    ComposeFile(String),
+}
+
+impl From<Unlisted> for NotRead {
+    fn from(unlisted: Unlisted) -> Self {
+        Self::Docker(unlisted)
     }
 }
 
 /// The docker half of [`record`].
-fn read_mounts(runner: &dyn Runner, uid: &str, mounted: &mut Mounted) -> Result<(), Unlisted> {
+fn read_mounts(runner: &dyn Runner, uid: &str, mounted: &mut Mounted) -> Result<(), NotRead> {
     let mut ids: BTreeSet<String> = BTreeSet::new();
     ids.extend(docker::containers_labelled(
         runner,
@@ -215,7 +232,7 @@ fn read_mounts(runner: &dyn Runner, uid: &str, mounted: &mut Mounted) -> Result<
     for group in project_files.values().chain(&projectless_files) {
         mounted.literal.extend(
             external_volumes(group.working_dir.as_deref(), &group.files)
-                .map_err(Unlisted::Failed)?,
+                .map_err(NotRead::ComposeFile)?,
         );
     }
     for volume in docker::compose_volumes(runner)? {
