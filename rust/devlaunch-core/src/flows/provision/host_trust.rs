@@ -85,8 +85,11 @@ pub(crate) struct Target {
 ///   (absolute, no `.`, `..`, empty or trailing component, and only
 ///   `[-a-zA-Z0-9_/.@+]`), and it must be the workspace folder devpod recorded at
 ///   `up`, which must itself be the mount point of the clone dl made for this
-///   workspace or a directory under it. A sub-folder the pass stood in is not
-///   enough: a login profile can `cd` anywhere. Neither that mount point nor the
+///   workspace or a directory under it. A directory under it only gets an entry
+///   when it holds its own `.git` (a submodule or a nested repo), because the
+///   seed reports no path without one; a plain sub-folder never does. A
+///   sub-folder the pass stood in is not enough: a login profile can `cd`
+///   anywhere. Neither that mount point nor the
 ///   path may be the host's home, inside it, or above it: a repo picks its own
 ///   `workspaceMount` target, and a key there would name a real host directory the
 ///   host's own Claude Code would then stop asking about. `/` is above everything.
@@ -1011,6 +1014,10 @@ mod tests {
     #[test]
     fn a_recorded_workspace_folder_under_the_clones_mount_point_is_recorded() {
         // A devcontainer.json `workspaceFolder` may name a folder inside the clone.
+        // The seed reports it only where it holds its own `.git` (a submodule or a
+        // nested repo); a plain sub-folder never gets an entry, because the seed's
+        // floor requires `.git`. The end-to-end case is the submodule test in
+        // `provision`'s tests.
         let host = Host::new();
         let side = HostSide {
             workspace_folder: "/workspaces/r-main-abcd/app",

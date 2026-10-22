@@ -5744,13 +5744,18 @@ fi
 
         /// Write devpod's record of the `up` as naming `container` and `clone`.
         fn record_up(&self, container: &str, clone: &str) {
+            self.record_up_at(container, clone, &self.container_workspace);
+        }
+
+        /// The same, with `folder` as the workspace folder in the container.
+        fn record_up_at(&self, container: &str, clone: &str, folder: &Path) {
             fs::write(
                 self.devpod.result("default", SHARED_WS),
                 serde_json::json!({
                     "ContainerDetails": {"ID": container},
                     "SubstitutionContext": {
                         "LocalWorkspaceFolder": clone,
-                        "ContainerWorkspaceFolder": self.container_workspace,
+                        "ContainerWorkspaceFolder": folder,
                     },
                 })
                 .to_string(),
@@ -5781,6 +5786,11 @@ fi
         /// The onboarding and trust stages, run "in the container" under a PATH
         /// with no python3 on it, and the report the pass would have sent back.
         fn run_the_stages(&self) -> String {
+            self.run_the_stages_in(&self.container_workspace)
+        }
+
+        /// The same, standing in `dir` rather than the workspace's mount point.
+        fn run_the_stages_in(&self, dir: &Path) -> String {
             let stages: Vec<Stage> = setup_stages(
                 SHARED_WS,
                 ToolsSwitch::Skip,
@@ -5796,7 +5806,7 @@ fi
             let ran = Command::new(bash())
                 .arg("-c")
                 .arg(setup_script(&stages))
-                .current_dir(&self.container_workspace)
+                .current_dir(dir)
                 .env_clear()
                 .env("HOME", self.scratch.path().join("ctr/home/vscode"))
                 .env("CLAUDE_CONFIG_DIR", &self.container_config)
@@ -5862,6 +5872,36 @@ fi
             [inspect_of_c0ffee()],
             "the container devpod recorded, and nothing else"
         );
+    }
+
+    #[test]
+    fn a_workspace_folder_at_a_submodule_inside_the_clone_is_trusted_end_to_end() {
+        // A devcontainer.json `workspaceFolder` may name a folder inside the clone,
+        // and the pass reports it when it holds its own `.git`: the seed's floor is
+        // `-e "$ws/.git"`, which a submodule's `.git` file passes. So devpod's
+        // recorded folder is a sub-folder of the clone's mount point, and the host
+        // must still trust it.
+        let world = SharedConfigWorld::new(r#"{"hasCompletedOnboarding":true}"#);
+        let sub = world.container_workspace.join("sub");
+        fs::create_dir_all(world.container_workspace.join(".git/modules/sub"))
+            .expect("the submodule's git dir");
+        fs::create_dir_all(&sub).expect("the submodule");
+        fs::write(sub.join(".git"), "gitdir: ../.git/modules/sub\n").expect("its .git file");
+        world.record_up_at("c0ffee", world.clone.to_str().expect("a path"), &sub);
+        let report = world.run_the_stages_in(&sub);
+        let runner = docker_inspect_answering(world.mounts(), 0);
+
+        host_trust::record(&runner, SHARED_WS, &report, &world.host());
+
+        let key = sub.to_str().expect("a path").replace('/', "~1");
+        assert_eq!(
+            world
+                .host_config()
+                .pointer(&format!("/projects/{key}/hasTrustDialogAccepted")),
+            Some(&true.into()),
+            "{report}"
+        );
+        assert_eq!(runner.argvs(), [inspect_of_c0ffee()]);
     }
 
     #[test]
