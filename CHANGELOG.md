@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.63.0] - 2026-10-22
+
 ### Removed
 
 - **`aid` is gone, and `dla` is its only name** (#689). `dla` arrived in 0.60.0 as a second name for
