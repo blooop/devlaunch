@@ -400,11 +400,14 @@ container's word for either path, because the container has just run a stranger'
   the file is `.claude.json` in that host directory. A link there is followed only
   to a file that is also named `.claude.json`, because the container can put a link
   in a shared directory and the host would resolve it to a host path.
-- **The key.** The path must be the target of the bind mount of the clone `dl`
-  made for the workspace (devpod's record names the clone), or a directory under
-  it. It must be spelled the one way Claude Code keys it, with the same characters
-  the seed allows, and neither the path nor that mount target may be your home
-  directory, inside it, or above it, which also rules out `/`.
+- **The key.** The path must be the workspace folder devpod recorded at `up`, and
+  that folder must be the target of the bind mount of the clone `dl` made for the
+  workspace (devpod's record names the clone), or a directory under it. A folder
+  under the workspace folder is not enough, because a login profile can change
+  directory before the pass runs. The path must be spelled the one way Claude Code
+  keys it, with the same characters the seed allows, and neither the path nor that
+  mount target may be your home directory, inside it, or above it, which also rules
+  out `/`.
 
 The merge adds the one key, keeps the order and the indentation of everything
 else, writes a scratch file beside the original and renames it over, and keeps its

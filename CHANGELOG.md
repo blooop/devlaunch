@@ -16,8 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "Do you trust the files in this folder?". The stage now only reports the workspace path
   and its config directory, and `dl` does the merge on the host with `serde_json`. It
   merges only where `docker inspect` shows that directory is your `$CLAUDE_CONFIG_DIR` or
-  `~/.claude` bind-mounted read-write, and only for the clone's mount point or a folder
-  under it, never your home directory, a folder in it or above it, or `/`. The merge
+  `~/.claude` bind-mounted read-write, and only for the workspace folder devpod recorded,
+  which must be the clone's mount point or a folder under it, never your home directory,
+  a folder in it or above it, or `/`. The merge
   keeps key order, indentation and file mode, writes a scratch file and renames it, and
   follows a link only to another `.claude.json`. See docs/workspace-tools.md, "The trust
   prompt, which is keyed on a path".

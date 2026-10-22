@@ -51,6 +51,8 @@ pub(crate) struct HostSide<'a> {
     pub(crate) claude_dir: Option<&'a Path>,
     /// The clone devpod mounted as this workspace's folder.
     pub(crate) clone: &'a Path,
+    /// The workspace folder in the container, as devpod recorded it at `up`.
+    pub(crate) workspace_folder: &'a str,
 }
 
 /// The host config directory to merge into, resolved, and the key to merge.
@@ -77,9 +79,11 @@ pub(crate) struct Target {
 ///   with its links resolved, and [`merge`] follows no link out of it.
 /// - **The key.** The reported path must be spelled the one way Claude Code keys it
 ///   (absolute, no `.`, `..`, empty or trailing component, and only
-///   `[-a-zA-Z0-9_/.@+]`), and it must be the mount point of the clone dl made for
-///   this workspace, or a directory under it. Neither that mount point nor the path
-///   may be the host's home, inside it, or above it: a repo picks its own
+///   `[-a-zA-Z0-9_/.@+]`), and it must be the workspace folder devpod recorded at
+///   `up`, which must itself be the mount point of the clone dl made for this
+///   workspace or a directory under it. A sub-folder the pass stood in is not
+///   enough: a login profile can `cd` anywhere. Neither that mount point nor the
+///   path may be the host's home, inside it, or above it: a repo picks its own
 ///   `workspaceMount` target, and a key there would name a real host directory the
 ///   host's own Claude Code would then stop asking about. `/` is above everything.
 pub(crate) fn target(reported: &Reported, mounts: &[Mount], host: HostSide<'_>) -> Option<Target> {
@@ -111,7 +115,10 @@ fn config_dir(config_dir: &str, mounts: &[Mount], host: HostSide<'_>) -> Option<
 
 /// The reported workspace path, if the host agrees it is this workspace's folder.
 fn trusted_key(workspace: &str, mounts: &[Mount], host: HostSide<'_>) -> Option<String> {
-    if !is_plain_absolute(workspace) || !workspace.bytes().all(is_key_byte) {
+    if workspace != host.workspace_folder
+        || !is_plain_absolute(workspace)
+        || !workspace.bytes().all(is_key_byte)
+    {
         return None;
     }
     let home = resolved(host.home);
@@ -214,28 +221,39 @@ pub(crate) fn record(
     host: &HostLayout,
 ) -> Option<Merged> {
     let reported = Reported::parse(report)?;
-    let (container, clone) = created(host.devpod_home.as_ref(), workspace)?;
+    let up = created(host.devpod_home.as_ref(), workspace)?;
     let printed = docker::inspect_formatted(
         runner,
         "container",
         "{{json .Mounts}}",
-        &NonEmpty::of([container])?,
+        &NonEmpty::of([up.container])?,
     )?;
     let side = HostSide {
         home: &host.home,
         claude_dir: host.claude_dir.as_deref(),
-        clone: &clone,
+        clone: &up.clone,
+        workspace_folder: &up.workspace_folder,
     };
     let found = target(&reported, &parse_mounts(&printed), side)?;
     Some(merge(&found.dir, &found.key))
 }
 
-/// The container devpod made for this workspace, and the host folder it mounted as
-/// the workspace, from devpod's own record of the `up`.
+/// What devpod's own record of the `up` says it made for this workspace.
+struct Created {
+    /// The container.
+    container: String,
+    /// The host folder it mounted as the workspace.
+    clone: PathBuf,
+    /// The workspace folder in the container.
+    workspace_folder: String,
+}
+
+/// Read devpod's own record of the `up` for this workspace.
 ///
 /// devpod writes that record on the host, from the source dl gave it, so a repo's
-/// devcontainer.json cannot move the folder it names.
-fn created(devpod_home: Option<&DevpodHome>, workspace: &str) -> Option<(String, PathBuf)> {
+/// devcontainer.json cannot move the folder it names, and nothing the container
+/// runs after the `up` can move the workspace folder it records.
+fn created(devpod_home: Option<&DevpodHome>, workspace: &str) -> Option<Created> {
     let path = sole_workspace_result(devpod_home, workspace)?;
     let document: serde_json::Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
     let container = document
@@ -246,7 +264,15 @@ fn created(devpod_home: Option<&DevpodHome>, workspace: &str) -> Option<(String,
         .pointer("/SubstitutionContext/LocalWorkspaceFolder")?
         .as_str()
         .filter(|folder| folder.starts_with('/'))?;
-    Some((container.to_owned(), PathBuf::from(clone)))
+    let workspace_folder = document
+        .pointer("/SubstitutionContext/ContainerWorkspaceFolder")?
+        .as_str()
+        .filter(|folder| is_plain_absolute(folder))?;
+    Some(Created {
+        container: container.to_owned(),
+        clone: PathBuf::from(clone),
+        workspace_folder: workspace_folder.to_owned(),
+    })
 }
 
 /// The name every Claude config file has, and the only name a link is followed to.
@@ -641,6 +667,7 @@ mod tests {
                 home: &self.home,
                 claude_dir: None,
                 clone: &self.clone,
+                workspace_folder: "/workspaces/r-main-abcd",
             }
         }
 
@@ -684,15 +711,57 @@ mod tests {
                 key: "/workspaces/r-main-abcd".to_owned(),
             })
         );
-        // A git root under the workspace folder is the workspace folder's to claim.
+    }
+
+    #[test]
+    fn a_recorded_workspace_folder_under_the_clones_mount_point_is_recorded() {
+        // A devcontainer.json `workspaceFolder` may name a folder inside the clone.
+        let host = Host::new();
+        let side = HostSide {
+            workspace_folder: "/workspaces/r-main-abcd/app",
+            ..host.side()
+        };
+        assert_eq!(
+            target(
+                &reported("/home/vscode/.claude", "/workspaces/r-main-abcd/app"),
+                &host.mounts(),
+                side
+            )
+            .map(|found| found.key),
+            Some("/workspaces/r-main-abcd/app".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_recorded_workspace_folder_off_the_clones_mount_point_is_never_recorded() {
+        let host = Host::new();
+        let side = HostSide {
+            workspace_folder: "/workspaces/other",
+            ..host.side()
+        };
+        assert_eq!(
+            target(
+                &reported("/home/vscode/.claude", "/workspaces/other"),
+                &host.mounts(),
+                side
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn a_folder_under_the_workspace_folder_is_never_recorded() {
+        // A login profile can `cd` into a sub-folder with its own `.git`, and the
+        // pass would report that. devpod recorded the workspace folder at `up`, and
+        // only that folder is the workspace's to claim.
+        let host = Host::new();
         assert_eq!(
             target(
                 &reported("/home/vscode/.claude", "/workspaces/r-main-abcd/sub"),
                 &host.mounts(),
                 host.side()
-            )
-            .map(|found| found.key),
-            Some("/workspaces/r-main-abcd/sub".to_owned())
+            ),
+            None
         );
     }
 
@@ -846,7 +915,10 @@ mod tests {
                 target(
                     &reported("/home/vscode/.claude", &destination),
                     &mounts,
-                    host.side()
+                    HostSide {
+                        workspace_folder: &destination,
+                        ..host.side()
+                    }
                 ),
                 None,
                 "{destination}"

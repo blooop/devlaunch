@@ -103,9 +103,10 @@ impl World {
         executable(&nopy.join("sudo"), "#!/bin/sh\nexit 0\n");
         assert!(!nopy.join("python3").exists());
 
-        // devpod: `up` records the container and the clone it mounted, as real
-        // devpod does in workspace_result.json; `ssh --command` runs the pass in
-        // the container tree.
+        // devpod: `up` records the container, the clone it mounted and the
+        // workspace folder in the container, as real devpod does in
+        // workspace_result.json; `ssh --command` runs the pass in the container
+        // tree.
         let devpod = root.join("bin/devpod");
         let original = std::fs::read_to_string(&devpod).expect("the scenario's devpod");
         let delegate = original
@@ -126,7 +127,7 @@ impl World {
              \x20 mkdir -p \"$d\"\n\
              \x20 printf '{{}}' > \"$d/workspace.json\"\n\
              \x20 printf '%s' \"$2\" > \"{root}/clone-path\"\n\
-             \x20 printf '{{\"ContainerDetails\":{{\"ID\":\"c0ffee\"}},\"SubstitutionContext\":{{\"LocalWorkspaceFolder\":\"%s\"}}}}' \"$2\" > \"$d/workspace_result.json\"\n\
+             \x20 printf '{{\"ContainerDetails\":{{\"ID\":\"c0ffee\"}},\"SubstitutionContext\":{{\"LocalWorkspaceFolder\":\"%s\",\"ContainerWorkspaceFolder\":\"{ws}\"}}}}' \"$2\" > \"$d/workspace_result.json\"\n\
              \x20 exit 0\n\
              fi\n\
              if [ \"$1\" = \"ssh\" ]; then\n\

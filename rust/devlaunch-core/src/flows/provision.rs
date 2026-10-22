@@ -1278,7 +1278,7 @@ pub(crate) fn onboarding_script() -> String {
 /// is in and the folder it stands in, both resolved. [`host_trust::record`] reads
 /// them on the host, where `dl` always has a JSON parser, and merges only where
 /// `docker inspect` shows that directory is one of the host's own Claude directories
-/// mounted read-write, and that folder is the clone dl made or under it. See
+/// mounted read-write, and that folder is the workspace folder devpod recorded. See
 /// [`host_trust::target`] for the whole rule, and why the host takes neither line on
 /// the container's word.
 ///
@@ -5752,7 +5752,10 @@ fi
                 devpod.result("default", SHARED_WS),
                 serde_json::json!({
                     "ContainerDetails": {"ID": "c0ffee"},
-                    "SubstitutionContext": {"LocalWorkspaceFolder": clone},
+                    "SubstitutionContext": {
+                        "LocalWorkspaceFolder": clone,
+                        "ContainerWorkspaceFolder": container_workspace,
+                    },
                 })
                 .to_string(),
             )
