@@ -3251,6 +3251,7 @@ mod tests {
     use std::sync::Mutex;
 
     use super::*;
+    use devlaunch_test_support::{FakeRunner, Response, Unscripted};
     // The other reader of the one zellij signal, so the drift test can ask both.
     use crate::flows::launch;
     use crate::runner::{CapturedText, DetachOutcome, Invocation, Outcome, SpawnSpec, StdinPlan};
@@ -5680,57 +5681,20 @@ fi
     // the trust stage
     // =======================================================================
 
-    /// A runner that answers `docker inspect` with `mounts` and refuses anything
-    /// else: the host half of the trust merge makes that one call and no other.
-    struct DockerInspect {
-        mounts: String,
-        exit: i32,
-        seen: Mutex<Vec<Vec<String>>>,
-    }
-
-    impl DockerInspect {
-        fn answering(mounts: String, exit: i32) -> Self {
-            Self {
-                mounts,
-                exit,
-                seen: Mutex::new(Vec::new()),
-            }
-        }
-
-        fn calls(&self) -> Vec<Vec<String>> {
-            self.seen.lock().expect("the recording").clone()
-        }
-    }
-
-    impl Runner for DockerInspect {
-        fn capture(&self, spec: &SpawnSpec) -> Outcome<CapturedText> {
-            let argv = spec.invocation.argv();
-            self.seen.lock().expect("the recording").push(argv.clone());
-            assert_eq!(argv.first().map(String::as_str), Some("docker"), "{argv:?}");
-            Outcome::Ran {
-                exit: Exit::Code(self.exit),
-                io: CapturedText {
-                    stdout: self.mounts.clone(),
-                    stderr: String::new(),
-                },
-            }
-        }
-
-        fn passthrough(&self, _spec: &SpawnSpec) -> Outcome {
-            panic!("the trust merge never streams")
-        }
-
-        fn session(&self, _spec: &SpawnSpec, _on_stderr_line: &mut dyn FnMut(&str)) -> Outcome {
-            panic!("the trust merge never opens a session")
-        }
-
-        fn watched(&self, _spec: &SpawnSpec, _on_line: &mut dyn FnMut(&str)) -> Outcome {
-            panic!("the trust merge never watches a run")
-        }
-
-        fn detach(&self, _what: &Invocation) -> DetachOutcome {
-            panic!("the trust merge never detaches")
-        }
+    /// A [`FakeRunner`] that answers `docker inspect` with `mounts` and `exit` and
+    /// fails the test on any other spawn: the host half of the trust merge makes
+    /// that one call and no other.
+    fn docker_inspect_answering(mounts: String, exit: i32) -> FakeRunner {
+        let fake = FakeRunner::new().with_unscripted(Unscripted::Panic);
+        fake.script(
+            ["docker", "inspect"],
+            Response::Ran {
+                exit: Exit::Code(exit),
+                stdout: mounts,
+                stderr: String::new(),
+            },
+        );
+        fake
     }
 
     /// The bencher shape, on one machine: a host home whose `~/.claude` holds the
@@ -5873,7 +5837,7 @@ fi
         // this folder?". The container now only reports, and the host merges.
         let world = SharedConfigWorld::new(r#"{"hasCompletedOnboarding":true}"#);
         let report = world.run_the_stages();
-        let runner = DockerInspect::answering(world.mounts(), 0);
+        let runner = docker_inspect_answering(world.mounts(), 0);
 
         let merged = host_trust::record(&runner, SHARED_WS, &report, &world.host());
 
@@ -5890,7 +5854,7 @@ fi
             Some(&true.into())
         );
         assert_eq!(
-            runner.calls(),
+            runner.argvs(),
             [inspect_of_c0ffee()],
             "the container devpod recorded, and nothing else"
         );
@@ -5901,14 +5865,14 @@ fi
         let world = SharedConfigWorld::new(r#"{"hasCompletedOnboarding":true}"#);
         let report = world.run_the_stages();
         world.record_up("", world.clone.to_str().expect("a path"));
-        let runner = DockerInspect::answering(world.mounts(), 0);
+        let runner = docker_inspect_answering(world.mounts(), 0);
 
         assert_eq!(
             host_trust::record(&runner, SHARED_WS, &report, &world.host()),
             None
         );
         assert_eq!(
-            runner.calls(),
+            runner.argvs(),
             Vec::<Vec<String>>::new(),
             "no container to ask about"
         );
@@ -5927,14 +5891,14 @@ fi
             .expect("a path")
             .to_owned();
         world.record_up("c0ffee", &relative);
-        let runner = DockerInspect::answering(world.mounts(), 0);
+        let runner = docker_inspect_answering(world.mounts(), 0);
 
         assert_eq!(
             host_trust::record(&runner, SHARED_WS, &report, &world.host()),
             None
         );
         assert_eq!(
-            runner.calls(),
+            runner.argvs(),
             Vec::<Vec<String>>::new(),
             "refused at devpod's record"
         );
@@ -5947,7 +5911,7 @@ fi
         // the empty answer that leaves the host's file alone here.
         let world = SharedConfigWorld::new(r#"{"hasCompletedOnboarding":true}"#);
         let report = world.run_the_stages();
-        let runner = DockerInspect::answering(String::new(), 1);
+        let runner = docker_inspect_answering(String::new(), 1);
 
         assert_eq!(
             host_trust::record(&runner, SHARED_WS, &report, &world.host()),
@@ -5980,7 +5944,7 @@ fi
         // whole of it, and the host writes nothing of its own.
         let world = SharedConfigWorld::new(r#"{"hasCompletedOnboarding":true}"#);
         let report = world.run_the_stages();
-        let runner = DockerInspect::answering(serde_json::json!([]).to_string(), 0);
+        let runner = docker_inspect_answering(serde_json::json!([]).to_string(), 0);
         assert_eq!(
             host_trust::record(&runner, SHARED_WS, &report, &world.host()),
             None
@@ -5990,7 +5954,7 @@ fi
             serde_json::json!({"hasCompletedOnboarding": true})
         );
         assert_eq!(
-            runner.calls(),
+            runner.argvs(),
             [inspect_of_c0ffee()],
             "the host looked at the mounts and decided, rather than never asking"
         );
