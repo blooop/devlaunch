@@ -3251,7 +3251,7 @@ mod tests {
     use std::sync::Mutex;
 
     use super::*;
-    use devlaunch_test_support::{FakeRunner, Response, Unscripted};
+    use devlaunch_test_support::{Call, FakeRunner, Response, Unscripted};
     // The other reader of the one zellij signal, so the drift test can ask both.
     use crate::flows::launch;
     use crate::runner::{CapturedText, DetachOutcome, Invocation, Outcome, SpawnSpec, StdinPlan};
@@ -5681,9 +5681,9 @@ fi
     // the trust stage
     // =======================================================================
 
-    /// A [`FakeRunner`] that answers `docker inspect` with `mounts` and `exit` and
-    /// fails the test on any other spawn: the host half of the trust merge makes
-    /// that one call and no other.
+    /// A [`FakeRunner`] that answers `docker inspect` with `mounts` and `exit`.
+    /// A `devpod` spawn still gets the fake's devpod answer, and any other spawn
+    /// fails the test, so each test pins its calls with `runner.argvs()`.
     fn docker_inspect_answering(mounts: String, exit: i32) -> FakeRunner {
         let fake = FakeRunner::new().with_unscripted(Unscripted::Panic);
         fake.script(
@@ -5976,6 +5976,8 @@ fi
             before,
             "the host's config was touched"
         );
+        assert_eq!(runner.argvs(), [inspect_of_c0ffee()]);
+        assert!(matches!(runner.calls()[..], [Call::Capture(_)]));
     }
 
     /// The one call the host half makes: the mounts of the container devpod recorded.
