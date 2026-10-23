@@ -197,9 +197,11 @@ def _clone(root, origin, path, branch, dirty=False):
 # calls go to a log of their own, `shim-log-refresh.jsonl`, so `shim-log.jsonl`
 # holds what the command itself asked devpod and nothing that races it. The
 # wrapper's parent is whichever process ran `devpod`, and its argv is NUL-separated
-# in `/proc/<pid>/cmdline`.
+# in `/proc/<pid>/cmdline`. A run with no `DEVPOD_SHIM_LOG` logs nothing, and the
+# wrapper leaves it that way rather than log to `-refresh.jsonl` in the cwd.
 REFRESH_CHILD_LOG = (
-    "if grep -qxz -- --update-cache /proc/$PPID/cmdline 2>/dev/null; then\n"
+    'if [ -n "$DEVPOD_SHIM_LOG" ] '
+    "&& grep -qxz -- --update-cache /proc/$PPID/cmdline 2>/dev/null; then\n"
     '  DEVPOD_SHIM_LOG="${DEVPOD_SHIM_LOG%.jsonl}-refresh.jsonl"\n'
     "  export DEVPOD_SHIM_LOG\n"
     "fi\n"
