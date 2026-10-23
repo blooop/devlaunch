@@ -816,6 +816,31 @@ mod tests {
         );
     }
 
+    #[test]
+    fn inspect_output_renders_the_line_docker_prints() {
+        assert_eq!(
+            inspect_output(&[
+                ContainerMounts {
+                    project: Some("p".to_owned()),
+                    compose: ComposeFiles {
+                        working_dir: Some("/a".into()),
+                        files: vec!["/a/compose.yml".into(), "/b/override.yml".into()],
+                    },
+                    volumes: vec!["v1".to_owned(), "v2".to_owned()],
+                },
+                ContainerMounts {
+                    project: None,
+                    compose: ComposeFiles {
+                        working_dir: None,
+                        files: Vec::new(),
+                    },
+                    volumes: vec!["v3".to_owned()],
+                },
+            ]),
+            "p\t/a/compose.yml,/b/override.yml\t/a\tv1\tv2\t\n<no value>\t<no value>\t<no value>\tv3\t\n"
+        );
+    }
+
     /// What docker would print for `format` and one container with these labels
     /// and named volumes: each `{{index .Config.Labels "KEY"}}` becomes that
     /// label, and the `{{range .Mounts}}` body repeats once per volume.
