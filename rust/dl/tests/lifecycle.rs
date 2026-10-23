@@ -135,6 +135,7 @@ impl World {
             .expect("stdin is writable");
         let output = child.wait_with_output().expect("dl finishes");
         descendants.wait();
+        self.refresh_child_only_listed();
         Run::of(&output, &self.root)
     }
 
@@ -219,6 +220,7 @@ impl World {
             .output()
             .expect("/bin/sh runs");
         descendants.spawned().wait();
+        self.refresh_child_only_listed();
         Hung::of(&output, &self.root)
     }
 
@@ -443,6 +445,17 @@ impl World {
     /// `lifecycle_scenario.py`'s wrapper logs apart from the command's own calls.
     fn refresh_child_calls(&self) -> Vec<String> {
         self.calls_in("shim-log-refresh.jsonl")
+    }
+
+    /// Goldens read only `devpod_calls`, so every run must fail a refresh child that did more than list.
+    fn refresh_child_only_listed(&self) {
+        let calls = self.refresh_child_calls();
+        assert!(
+            calls
+                .iter()
+                .all(|call| call.split(' ').nth(1) == Some("list")),
+            "the refresh child asked devpod for more than list: {calls:?}"
+        );
     }
 
     fn calls_in(&self, log: &str) -> Vec<String> {
