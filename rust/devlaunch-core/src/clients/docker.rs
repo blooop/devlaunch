@@ -313,7 +313,7 @@ pub(crate) struct ContainerMounts {
     /// `com.docker.compose.project`, when the container has one.
     pub(crate) project: Option<String>,
     /// The compose files compose started the container from, and its project
-    /// directory. Empty for a container compose did not start.
+    /// directory. No files for a container compose did not start.
     pub(crate) compose: ComposeFiles,
     /// The names of the mounts of `Type` `volume`. Binds are not named here.
     pub(crate) volumes: Vec<String>,
