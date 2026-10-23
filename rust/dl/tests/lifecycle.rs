@@ -25,7 +25,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use devlaunch_test_support::KeepingCoverage;
 
@@ -459,22 +459,6 @@ impl World {
             .collect()
     }
 
-    /// Wait for `relative` to appear, for as long as a detached child could
-    /// reasonably take. Answers whether it did.
-    ///
-    /// The one thing a *detached* child can be observed by from out here: nothing
-    /// waits on it, so its arrival is the assertion. Polling rather than sleeping
-    /// so a machine that is quick pays nothing.
-    fn appears(&self, relative: &str) -> bool {
-        let deadline = Instant::now() + Duration::from_secs(20);
-        while Instant::now() < deadline {
-            if self.exists(relative) {
-                return true;
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        false
-    }
 }
 
 /// Every process one run started, `dl` and whatever outlives it, watched as one.
@@ -2385,13 +2369,13 @@ fn an_rme_devpod_would_not_finish_leaves_the_shell_up_too() {
 fn a_command_that_changed_the_workspace_list_refreshes_the_completions_behind_it() {
     // The Python `test_dl`'s refresh classes, spawn half: the child is this build, run as
     // `<program> --update-cache --force`, detached — so what can be observed from
-    // out here is that a completion cache appears without this process waiting for
-    // one, and that the child asked devpod for the list.
+    // out here is that a completion cache exists once the run is over (the run
+    // waits for the child too), and that the child asked devpod for the list.
     let world = World::base();
     assert!(!world.exists("cache/devlaunch/completions.json"));
     world.dl(&["someones-project", "stop"]).exited(0);
     assert!(
-        world.appears("cache/devlaunch/completions.json"),
+        world.exists("cache/devlaunch/completions.json"),
         "no detached refresh wrote a completion cache"
     );
     assert!(
@@ -2440,7 +2424,7 @@ fn a_read_only_command_warms_the_cache_on_the_way_in() {
     let world = World::base();
     world.dl(&["--ls"]).exited(0);
     assert!(
-        world.appears("cache/devlaunch/completions.json"),
+        world.exists("cache/devlaunch/completions.json"),
         "no startup refresh wrote a completion cache"
     );
 }
