@@ -341,6 +341,45 @@ mod tests {
     }
 
     #[test]
+    fn a_merge_into_an_empty_group_gives_the_other_group() {
+        let other = ComposeFiles {
+            working_dir: Some("/p".into()),
+            files: vec!["/p/a.yml".into(), "/p/b.yml".into()],
+        };
+        let mut group = ComposeFiles::default();
+        group.merge(other.clone());
+        assert_eq!(group, other);
+    }
+
+    #[test]
+    fn a_merge_of_an_empty_group_changes_nothing() {
+        let before = ComposeFiles {
+            working_dir: Some("/p".into()),
+            files: vec!["/p/a.yml".into(), "/p/b.yml".into()],
+        };
+        let mut group = before.clone();
+        group.merge(ComposeFiles::default());
+        assert_eq!(group, before);
+    }
+
+    #[test]
+    fn a_merge_adds_a_file_the_other_group_names_twice_once() {
+        let mut group = in_order(vec!["/p/a.yml".into()]);
+        group.merge(in_order(vec!["/p/b.yml".into(), "/p/b.yml".into()]));
+        assert_eq!(group, in_order(vec!["/p/a.yml".into(), "/p/b.yml".into()]));
+    }
+
+    #[test]
+    fn a_merge_keeps_the_project_directory_when_the_other_group_has_none() {
+        let mut group = ComposeFiles {
+            working_dir: Some("/p".into()),
+            files: vec!["/p/a.yml".into()],
+        };
+        group.merge(in_order(vec!["/p/b.yml".into()]));
+        assert_eq!(group.working_dir, Some("/p".into()));
+    }
+
+    #[test]
     fn a_merge_key_is_applied_before_external_is_read() {
         let dir = tempfile::tempdir().expect("a scratch dir");
         let file = dir.path().join("compose.yml");
