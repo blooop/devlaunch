@@ -491,9 +491,17 @@ impl World {
 /// close-on-exec, `dl` passes it to everything it starts (std's `Command` closes
 /// nothing it was not told to), and the read end sees end-of-file only once the
 /// last process that holds it has exited.
+///
+/// This value is the armed state: it holds the write end until [`Self::spawned`]
+/// consumes it. Only the [`Spawned`] it returns can be waited on.
 struct Descendants {
     reader: std::io::PipeReader,
-    writer: Option<std::io::PipeWriter>,
+    writer: std::io::PipeWriter,
+}
+
+/// The spawn has returned and this process's write end is gone.
+struct Spawned {
+    reader: std::io::PipeReader,
 }
 
 impl Descendants {
@@ -508,7 +516,7 @@ impl Descendants {
         let fd = writer.as_raw_fd();
         // SAFETY: `fcntl` is async-signal-safe and allocates nothing, which is the
         // bar for a `pre_exec` closure. `fd` is open in the child: `fork` copied it,
-        // and `writer` is kept alive until the spawn has returned.
+        // and `writer` lives in the returned value until `spawned` consumes it.
         unsafe {
             command.pre_exec(move || {
                 if libc::fcntl(fd, libc::F_SETFD, 0) == -1 {
@@ -517,19 +525,19 @@ impl Descendants {
                 Ok(())
             });
         }
-        Descendants {
-            reader,
-            writer: Some(writer),
-        }
+        Descendants { reader, writer }
     }
 
     /// The spawn has returned: drop this process's write end, so the children's
     /// copies are the only ones left.
-    fn spawned(mut self) -> Self {
-        self.writer = None;
-        self
+    fn spawned(self) -> Spawned {
+        let Descendants { reader, writer } = self;
+        drop(writer);
+        Spawned { reader }
     }
+}
 
+impl Spawned {
     /// Wait for every process that holds the write end to exit.
     ///
     /// A deadline rather than an unbounded read, so a process that never exits
@@ -537,7 +545,6 @@ impl Descendants {
     fn wait(self) {
         use std::io::Read as _;
 
-        assert!(self.writer.is_none(), "wait() before spawned()");
         let mut reader = self.reader;
         let (done, finished) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
