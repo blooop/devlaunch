@@ -149,38 +149,10 @@ impl World {
              {{\"tab_id\":\"'\"$3\"'\",\"workspace_id\":\"w1\",\"number\":4,\"label\":\"{label}\",\
              \"focused\":true,\"pane_count\":1,\"agent_status\":\"none\"}}}}}}'\n"
         );
-        self.install_program("bin/herdr", &script);
-    }
-
-    /// Write an executable script at `relative`, from a child process.
-    ///
-    /// Not with `std::fs::write` from this process, because this process is the
-    /// test binary, and its other threads fork all the time. A thread that forks
-    /// while the write is open hands its child a copy of the writable descriptor,
-    /// and the child holds it until its `exec`. A `dl` that runs the script in that
-    /// window gets `ETXTBSY` from `execve` ("text file busy"), and it reads that as
-    /// a program that did not answer: `rmt` said herdr "did not say what tab w1:t7
-    /// is called" and never ran the fake at all. A `/bin/sh` child that writes the
-    /// file is a process no test thread forks from, so when it exits no writer is
-    /// left anywhere.
-    fn install_program(&self, relative: &str, script: &str) {
-        use std::io::Write as _;
-        use std::process::Stdio;
-
-        let mut writer = Command::new("/bin/sh")
-            .args(["-c", "cat > \"$1\" && chmod 755 \"$1\"", "sh"])
-            .arg(self.path(relative))
-            .stdin(Stdio::piped())
-            .spawn()
-            .expect("/bin/sh runs");
-        writer
-            .stdin
-            .take()
-            .expect("a pipe")
-            .write_all(script.as_bytes())
-            .expect("the script reaches sh");
-        let status = writer.wait().expect("sh finishes");
-        assert!(status.success(), "could not install {relative}: {status}");
+        let path = self.root.join("bin/herdr");
+        std::fs::write(&path, script).expect("the scratch bin is writable");
+        std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .expect("the fake herdr is executable");
     }
 
     /// Run `dl` from inside a shell, and report what became of *the shell*.
@@ -342,9 +314,10 @@ impl World {
             .map(Path::new)
             .find(|candidate| candidate.exists())
             .expect("git is installed");
-        self.install_program(
-            "bin/git",
-            &format!(
+        let shim = self.path("bin/git");
+        std::fs::write(
+            &shim,
+            format!(
                 "#!/bin/sh\n\
                  for argument in \"$@\"; do\n\
                  \x20 if [ \"$argument\" = pack-refs ]; then\n\
@@ -355,7 +328,11 @@ impl World {
                  exec {} \"$@\"\n",
                 real.display()
             ),
-        );
+        )
+        .expect("a git that will not pack");
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755))
+            .expect("an executable fake");
     }
 
     /// Wind every repository's fetch clock back to before the interval.
@@ -449,7 +426,10 @@ impl World {
     }
 
     fn install_gh(&self, script: &str) {
-        self.install_program("bin/gh", script);
+        let path = self.root.join("bin/gh");
+        std::fs::write(&path, script).expect("the scratch bin is writable");
+        std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .expect("the fake gh is executable");
     }
 
     /// The devpod calls made so far, in order, as `devpod <argv>` lines.
@@ -1275,7 +1255,10 @@ fn rmt_in_a_tab_herdr_cannot_find_removes_nothing() {
         "#!/bin/sh\necho \"$*\" >> '{root}/herdr-log'\n\
          printf '%s' '{{\"error\":{{\"code\":\"tab_not_found\"}}}}'\nexit 1\n"
     );
-    world.install_program("bin/herdr", &script);
+    let path = world.path("bin/herdr");
+    std::fs::write(&path, script).expect("the scratch bin is writable");
+    std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+        .expect("the fake herdr is executable");
     let hung = world.shell_run("export HERDR_TAB_ID=w1:t7; ", &["rmt"]);
     hung.survived_with(1);
     assert_eq!(world.read("herdr-log"), "tab get w1:t7\n");
