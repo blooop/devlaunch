@@ -2316,6 +2316,29 @@ fn a_command_that_changed_the_workspace_list_refreshes_the_completions_behind_it
 }
 
 #[test]
+fn a_run_is_over_only_when_the_refresh_child_it_started_is_over() {
+    // The harness's own promise, which every devpod-call golden in this file leans
+    // on. `stop` and `delete` start a detached `--update-cache --force` child, and
+    // that child asks the same fake devpod for `list` and logs it to the same file.
+    // A run that handed back as soon as `dl` itself exited would let a test read the
+    // log while the child was still writing it, and a golden whose last call is the
+    // stop would sometimes end in the child's `devpod list` instead. So no polling
+    // here: the cache the child writes is already there when the run is.
+    let world = World::base();
+    world.dl(&["someones-project", "stop"]).exited(0);
+    assert!(
+        world.exists("cache/devlaunch/completions.json"),
+        "the run came back before the refresh child had written its cache"
+    );
+    assert_eq!(
+        world.devpod_calls().last().map(String::as_str),
+        Some("devpod list --output json"),
+        "the refresh child's call is not the last one in the log: {:?}",
+        world.devpod_calls()
+    );
+}
+
+#[test]
 fn a_read_only_command_warms_the_cache_on_the_way_in() {
     // The other half of the same latch: `--ls` reads the cache and leaves the
     // workspace list alone, so it warms it before running rather than after.
