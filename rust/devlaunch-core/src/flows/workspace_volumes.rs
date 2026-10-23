@@ -42,9 +42,9 @@
 //! never reach it, so the caches a recreate is meant to keep stay put.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use crate::clients::compose_files::external_volumes;
+use crate::clients::compose_files::ComposeFiles;
 use crate::clients::devpod_home::{DevpodHome, sole_workspace_record, sole_workspace_result};
 use crate::clients::docker::{self, Unlisted, VolumeRemoval};
 use crate::domain::workspace_state::NonEmpty;
@@ -199,26 +199,19 @@ fn read_mounts(runner: &dyn Runner, uid: &str, mounted: &mut Mounted) -> Result<
     let Some(ids) = NonEmpty::of(ids) else {
         return Ok(());
     };
-    let mut projects = BTreeSet::new();
     let mut project_files: BTreeMap<String, ComposeFiles> = BTreeMap::new();
     let mut projectless_files: Vec<ComposeFiles> = Vec::new();
     for container in docker::container_mounts(runner, &ids)? {
         match container.project {
-            Some(project) => {
-                let group = project_files.entry(project.clone()).or_default();
-                group.working_dir = group.working_dir.take().or(container.working_dir);
-                for file in container.config_files {
-                    if !group.files.contains(&file) {
-                        group.files.push(file);
-                    }
-                }
-                projects.insert(project);
-            }
-            None if !container.config_files.is_empty() => {
-                projectless_files.push(ComposeFiles {
-                    working_dir: container.working_dir,
-                    files: container.config_files,
-                });
+            Some(project) => project_files
+                .entry(project)
+                .or_default()
+                .merge(container.compose),
+            // docker sets each compose label on its own, so a container can name
+            // compose files with no project. Its files are read as a group of
+            // their own: dropping them would find fewer external volumes.
+            None if !container.compose.files.is_empty() => {
+                projectless_files.push(container.compose);
             }
             None => {}
         }
@@ -228,10 +221,9 @@ fn read_mounts(runner: &dyn Runner, uid: &str, mounted: &mut Mounted) -> Result<
         return Ok(());
     }
     for group in project_files.values().chain(&projectless_files) {
-        mounted.literal.extend(
-            external_volumes(group.working_dir.as_deref(), &group.files)
-                .map_err(NotRead::ComposeFile)?,
-        );
+        mounted
+            .literal
+            .extend(group.external_volumes().map_err(NotRead::ComposeFile)?);
     }
     for volume in docker::compose_volumes(runner)? {
         if !mounted.volumes.contains(&volume.name) {
@@ -239,19 +231,11 @@ fn read_mounts(runner: &dyn Runner, uid: &str, mounted: &mut Mounted) -> Result<
         }
         if volume.name != format!("{}_{}", volume.project, volume.key) {
             mounted.literal.insert(volume.name);
-        } else if projects.contains(&volume.project) {
+        } else if project_files.contains_key(&volume.project) {
             mounted.compose_made.insert(volume.name);
         }
     }
     Ok(())
-}
-
-/// The compose files of one project, and the directory compose resolved their
-/// relative paths against.
-#[derive(Default)]
-struct ComposeFiles {
-    working_dir: Option<PathBuf>,
-    files: Vec<PathBuf>,
 }
 
 /// Remove each owned volume nothing left uses, after the workspace's own

@@ -11,47 +11,73 @@ use std::path::{Path, PathBuf};
 use indexmap::IndexMap;
 use yaml_rust2::{Yaml, YamlLoader};
 
-/// The names of the volumes these compose files mark `external`, read the way
-/// compose merges them: file by file in order, a later file's fields over an
-/// earlier one's, per key under the top-level `volumes:`.
-///
-/// An external volume's name is its `name:`, or the legacy `external: { name: }`,
-/// or else its key: compose does not prefix an external name with the project.
-/// A file that cannot be read or parsed, an `external:` that is not a bool or a
-/// map (compose reads `"true"` or `yes` as true), or a name with a `$` variable in
-/// it that only compose's environment could expand, is an error, because a volume the
-/// read cannot name is one the sweep cannot be sure to spare.
-///
-/// A file's `include:` is followed, because an included file's top-level
-/// `volumes:` join the project: [`declare_file`] says how. A service's `extends:`
-/// is not, because it brings in one service and none of the base file's
-/// top-level volumes: compose refuses a service whose volume only the base file
-/// declares.
-pub(crate) fn external_volumes(
-    working_dir: Option<&Path>,
-    files: &[PathBuf],
-) -> Result<BTreeSet<String>, String> {
-    let project_dir = working_dir
-        .or_else(|| files.first().and_then(|file| file.parent()))
-        .unwrap_or(Path::new(""));
-    let mut declared: IndexMap<String, Declared> = IndexMap::new();
-    for file in files {
-        declare_file(file, project_dir, &mut declared, &mut Vec::new())?;
+/// The compose files one compose project came from, as a container's
+/// `com.docker.compose.project.config_files` label names them, and the project
+/// directory compose resolved their relative paths against
+/// (`com.docker.compose.project.working_dir`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ComposeFiles {
+    /// The project directory, when the container carries the label.
+    pub(crate) working_dir: Option<PathBuf>,
+    /// The files, in the order compose read them. Empty for a container compose
+    /// did not start.
+    pub(crate) files: Vec<PathBuf>,
+}
+
+impl ComposeFiles {
+    /// Add another container's files of the same project: the first project
+    /// directory named stays, and each file is added once, in the order first
+    /// seen.
+    pub(crate) fn merge(&mut self, other: ComposeFiles) {
+        self.working_dir = self.working_dir.take().or(other.working_dir);
+        for file in other.files {
+            if !self.files.contains(&file) {
+                self.files.push(file);
+            }
+        }
     }
-    let mut names = BTreeSet::new();
-    for (key, entry) in declared {
-        let Some(External::Yes { legacy_name }) = entry.external else {
-            continue;
-        };
-        let name = entry.name.or(legacy_name).unwrap_or(key);
-        let Some(literal) = unescape_dollars(&name) else {
-            return Err(format!(
-                "the compose files name external volume {name} with a variable"
-            ));
-        };
-        names.insert(literal);
+
+    /// The names of the volumes these compose files mark `external`, read the way
+    /// compose merges them: file by file in order, a later file's fields over an
+    /// earlier one's, per key under the top-level `volumes:`.
+    ///
+    /// An external volume's name is its `name:`, or the legacy `external: { name: }`,
+    /// or else its key: compose does not prefix an external name with the project.
+    /// A file that cannot be read or parsed, an `external:` that is not a bool or a
+    /// map (compose reads `"true"` or `yes` as true), or a name with a `$` variable in
+    /// it that only compose's environment could expand, is an error, because a volume the
+    /// read cannot name is one the sweep cannot be sure to spare.
+    ///
+    /// A file's `include:` is followed, because an included file's top-level
+    /// `volumes:` join the project: [`declare_file`] says how. A service's `extends:`
+    /// is not, because it brings in one service and none of the base file's
+    /// top-level volumes: compose refuses a service whose volume only the base file
+    /// declares.
+    pub(crate) fn external_volumes(&self) -> Result<BTreeSet<String>, String> {
+        let project_dir = self
+            .working_dir
+            .as_deref()
+            .or_else(|| self.files.first().and_then(|file| file.parent()))
+            .unwrap_or(Path::new(""));
+        let mut declared: IndexMap<String, Declared> = IndexMap::new();
+        for file in &self.files {
+            declare_file(file, project_dir, &mut declared, &mut Vec::new())?;
+        }
+        let mut names = BTreeSet::new();
+        for (key, entry) in declared {
+            let Some(External::Yes { legacy_name }) = entry.external else {
+                continue;
+            };
+            let name = entry.name.or(legacy_name).unwrap_or(key);
+            let Some(literal) = unescape_dollars(&name) else {
+                return Err(format!(
+                    "the compose files name external volume {name} with a variable"
+                ));
+            };
+            names.insert(literal);
+        }
+        Ok(names)
     }
-    Ok(names)
 }
 
 /// What the compose files so far say of one top-level volume.
@@ -286,6 +312,34 @@ fn yaml_text(value: &Yaml) -> Option<String> {
 mod tests {
     use super::*;
 
+    /// These files, with no project directory label.
+    fn in_order(files: Vec<PathBuf>) -> ComposeFiles {
+        ComposeFiles {
+            working_dir: None,
+            files,
+        }
+    }
+
+    #[test]
+    fn a_merge_keeps_the_first_project_directory_and_each_file_once() {
+        let mut group = in_order(vec!["/p/a.yml".into()]);
+        group.merge(ComposeFiles {
+            working_dir: Some("/p".into()),
+            files: vec!["/p/b.yml".into(), "/p/a.yml".into()],
+        });
+        group.merge(ComposeFiles {
+            working_dir: Some("/q".into()),
+            files: vec!["/p/c.yml".into()],
+        });
+        assert_eq!(
+            group,
+            ComposeFiles {
+                working_dir: Some("/p".into()),
+                files: vec!["/p/a.yml".into(), "/p/b.yml".into(), "/p/c.yml".into()],
+            }
+        );
+    }
+
     #[test]
     fn a_merge_key_is_applied_before_external_is_read() {
         let dir = tempfile::tempdir().expect("a scratch dir");
@@ -299,7 +353,7 @@ mod tests {
         )
         .expect("compose");
         assert_eq!(
-            external_volumes(None, &[file]),
+            in_order(vec![file]).external_volumes(),
             Ok(["app-cache", "app-named"]
                 .map(str::to_owned)
                 .into_iter()
@@ -317,7 +371,7 @@ mod tests {
         )
         .expect("compose");
         assert_eq!(
-            external_volumes(None, &[file]),
+            in_order(vec![file]).external_volumes(),
             Ok(["a$b".to_owned()].into_iter().collect())
         );
     }
@@ -328,7 +382,7 @@ mod tests {
         let over_path = dir.path().join("over.yml");
         std::fs::write(&base_path, base).expect("base");
         std::fs::write(&over_path, over).expect("override");
-        external_volumes(None, &[base_path, over_path])
+        in_order(vec![base_path, over_path]).external_volumes()
     }
 
     #[test]
@@ -365,7 +419,7 @@ mod tests {
         )
         .expect("override");
         assert_eq!(
-            external_volumes(None, &[base.clone(), over.clone()]),
+            in_order(vec![base.clone(), over.clone()]).external_volumes(),
             Ok(["app-b", "app-cache"]
                 .map(str::to_owned)
                 .into_iter()
@@ -374,7 +428,7 @@ mod tests {
         // And the other way round, `external` from the first file stays unless
         // the second says otherwise.
         assert_eq!(
-            external_volumes(None, &[over, base]),
+            in_order(vec![over, base]).external_volumes(),
             Ok(["app-b", "app-cache"]
                 .map(str::to_owned)
                 .into_iter()
@@ -421,7 +475,11 @@ mod tests {
         }
         let working_dir = working_dir.map(|sub| dir.path().join(sub));
         let labelled: Vec<PathBuf> = labelled.iter().map(|file| dir.path().join(file)).collect();
-        external_volumes(working_dir.as_deref(), &labelled)
+        ComposeFiles {
+            working_dir,
+            files: labelled,
+        }
+        .external_volumes()
     }
 
     fn names(names: &[&str]) -> Result<BTreeSet<String>, String> {

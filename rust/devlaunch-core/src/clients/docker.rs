@@ -25,6 +25,7 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crate::clients::compose_files::ComposeFiles;
 use crate::domain::workspace_state::NonEmpty;
 use crate::runner::{CapturedText, Exit, Invocation, OsFailure, Outcome, Runner, SpawnSpec};
 
@@ -311,13 +312,9 @@ fn ids_from(stdout: String) -> Result<Vec<String>, Unlisted> {
 pub(crate) struct ContainerMounts {
     /// `com.docker.compose.project`, when the container has one.
     pub(crate) project: Option<String>,
-    /// `com.docker.compose.project.config_files`: the compose files compose
-    /// started the container from, in the order it read them. Empty for a
-    /// container compose did not start.
-    pub(crate) config_files: Vec<PathBuf>,
-    /// `com.docker.compose.project.working_dir`: the project directory compose
-    /// resolved the files' relative paths against, an `include:` among them.
-    pub(crate) working_dir: Option<PathBuf>,
+    /// The compose files compose started the container from, and its project
+    /// directory. Empty for a container compose did not start.
+    pub(crate) compose: ComposeFiles,
     /// The names of the mounts of `Type` `volume`. Binds are not named here.
     pub(crate) volumes: Vec<String>,
 }
@@ -371,8 +368,10 @@ pub(crate) fn container_mounts(
                 .collect();
             ContainerMounts {
                 project,
-                config_files,
-                working_dir,
+                compose: ComposeFiles {
+                    working_dir,
+                    files: config_files,
+                },
                 volumes,
             }
         })
@@ -756,14 +755,18 @@ mod tests {
             [
                 ContainerMounts {
                     project: Some("p".to_owned()),
-                    config_files: vec!["/a/compose.yml".into(), "/b/override.yml".into()],
-                    working_dir: Some("/a".into()),
+                    compose: ComposeFiles {
+                        working_dir: Some("/a".into()),
+                        files: vec!["/a/compose.yml".into(), "/b/override.yml".into()],
+                    },
                     volumes: vec!["v1".to_owned(), "v2".to_owned()],
                 },
                 ContainerMounts {
                     project: None,
-                    config_files: Vec::new(),
-                    working_dir: None,
+                    compose: ComposeFiles {
+                        working_dir: None,
+                        files: Vec::new(),
+                    },
                     volumes: vec!["v3".to_owned()],
                 },
             ]
@@ -829,8 +832,10 @@ mod tests {
             container_mounts(&docker, &ids).expect("an answer"),
             [ContainerMounts {
                 project: Some("proj".to_owned()),
-                config_files: vec!["/a/compose.yml".into(), "/b/override.yml".into()],
-                working_dir: Some("/a".into()),
+                compose: ComposeFiles {
+                    working_dir: Some("/a".into()),
+                    files: vec!["/a/compose.yml".into(), "/b/override.yml".into()],
+                },
                 volumes: vec!["v1".to_owned(), "v2".to_owned()],
             }]
         );
