@@ -55,7 +55,7 @@ jiff = "0.2"
 shlex = "2"
 # The top-level `volumes:` of a workspace's compose files, read before a delete
 # to keep the volumes they mark `external` (devlaunch-core's
-# `flows::workspace_volumes`). Pure Rust, no libyaml.
+# `clients::compose_files`). Pure Rust, no libyaml.
 yaml-rust2 = "0.10"
 tempfile = "3"
 portable-pty = "0.9"

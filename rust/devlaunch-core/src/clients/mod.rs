@@ -8,6 +8,7 @@ pub use claude::ProfileName;
 // nothing outside core names the Codex login either, and what it produces reaches
 // a caller as flags and an environment through `flows::launch`.
 pub(crate) mod codex;
+pub(crate) mod compose_files;
 // binary surface — not part of the frozen wf API (#251 §7)
 pub mod devpod;
 // devpod-the-filesystem, where `devpod` above is devpod-the-command.
