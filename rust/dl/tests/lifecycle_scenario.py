@@ -228,7 +228,8 @@ def build(root: pathlib.Path, shim: pathlib.Path, wanted: set) -> None:
         )
     else:
         devpod.write_text(
-            f'#!/bin/sh\n{REFRESH_CHILD_LOG}exec "{sys.executable}" "{shim}" "$@"\n', encoding="utf-8"
+            f'#!/bin/sh\n{REFRESH_CHILD_LOG}exec "{sys.executable}" "{shim}" "$@"\n',
+            encoding="utf-8",
         )
     devpod.chmod(0o755)
 
