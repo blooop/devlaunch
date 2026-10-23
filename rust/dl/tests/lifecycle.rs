@@ -101,6 +101,7 @@ impl World {
         let root = self.root.display().to_string();
         let mut command = Command::new(env!("CARGO_BIN_EXE_dl"));
         child_hears_sighup(&mut command);
+        let descendants = Descendants::of(&mut command);
         let mut child = command
             .args(args)
             .env_clear()
@@ -125,6 +126,7 @@ impl World {
             .stderr(Stdio::piped())
             .spawn()
             .expect("the dl binary runs");
+        let descendants = descendants.spawned();
         child
             .stdin
             .take()
@@ -132,6 +134,7 @@ impl World {
             .write_all(stdin.as_bytes())
             .expect("stdin is writable");
         let output = child.wait_with_output().expect("dl finishes");
+        descendants.wait();
         Run::of(&output, &self.root)
     }
 
@@ -192,6 +195,7 @@ impl World {
         deaf_to_sighup();
         let mut command = Command::new("/bin/sh");
         child_hears_sighup(&mut command);
+        let descendants = Descendants::of(&mut command);
         let output = command
             .arg("-c")
             .arg(script)
@@ -214,6 +218,7 @@ impl World {
             .stderr(Stdio::piped())
             .output()
             .expect("/bin/sh runs");
+        descendants.spawned().wait();
         Hung::of(&output, &self.root)
     }
 
@@ -429,7 +434,17 @@ impl World {
 
     /// The devpod calls made so far, in order, as `devpod <argv>` lines.
     fn devpod_calls(&self) -> Vec<String> {
-        self.read("shim-log.jsonl")
+        self.calls_in("shim-log.jsonl")
+    }
+
+    /// What the detached `--update-cache` child asked devpod, which
+    /// `lifecycle_scenario.py`'s wrapper logs apart from the command's own calls.
+    fn refresh_child_calls(&self) -> Vec<String> {
+        self.calls_in("shim-log-refresh.jsonl")
+    }
+
+    fn calls_in(&self, log: &str) -> Vec<String> {
+        self.read(log)
             .lines()
             .map(|line| {
                 let call: serde_json::Value = serde_json::from_str(line).expect("a log line");
@@ -459,6 +474,82 @@ impl World {
             std::thread::sleep(Duration::from_millis(50));
         }
         false
+    }
+}
+
+/// Every process one run started, `dl` and whatever outlives it, watched as one.
+///
+/// `stop`, `delete` and the read-side commands start a detached
+/// `dl --update-cache` child that nothing waits for, and that child asks the fake
+/// devpod for `list` and logs the call to the same file the goldens read. So the
+/// end of `dl` is not the end of the run: a test that read the log as soon as `dl`
+/// exited raced the child, and a golden that ends in the stop sometimes ended in
+/// the child's `devpod list --output json` instead — rarely on a quiet machine,
+/// often under coverage on a busy runner.
+///
+/// The child is in a session of its own with all three stdio streams on
+/// `/dev/null`, so neither a pid nor a pipe on stdio reaches it. An inherited
+/// descriptor does: the write end of a pipe is handed to the run without
+/// close-on-exec, `dl` passes it to everything it starts (std's `Command` closes
+/// nothing it was not told to), and the read end sees end-of-file only once the
+/// last process that holds it has exited.
+struct Descendants {
+    reader: std::io::PipeReader,
+    writer: Option<std::io::PipeWriter>,
+}
+
+impl Descendants {
+    /// Hand the write end to whatever `command` starts.
+    fn of(command: &mut Command) -> Self {
+        use std::os::fd::AsRawFd as _;
+        use std::os::unix::process::CommandExt as _;
+
+        // Close-on-exec in this process, so the children other tests start
+        // concurrently never hold it; cleared in this child alone.
+        let (reader, writer) = std::io::pipe().expect("a pipe");
+        let fd = writer.as_raw_fd();
+        // SAFETY: `fcntl` is async-signal-safe and allocates nothing, which is the
+        // bar for a `pre_exec` closure. `fd` is open in the child: `fork` copied it,
+        // and `writer` is kept alive until the spawn has returned.
+        unsafe {
+            command.pre_exec(move || {
+                if libc::fcntl(fd, libc::F_SETFD, 0) == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        Descendants {
+            reader,
+            writer: Some(writer),
+        }
+    }
+
+    /// The spawn has returned: drop this process's write end, so the children's
+    /// copies are the only ones left.
+    fn spawned(mut self) -> Self {
+        self.writer = None;
+        self
+    }
+
+    /// Wait for every process that holds the write end to exit.
+    ///
+    /// A deadline rather than an unbounded read, so a process that never exits
+    /// fails this one test by name instead of holding the whole run.
+    fn wait(self) {
+        use std::io::Read as _;
+
+        assert!(self.writer.is_none(), "wait() before spawned()");
+        let mut reader = self.reader;
+        let (done, finished) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut sink = Vec::new();
+            let _ = reader.read_to_end(&mut sink);
+            let _ = done.send(());
+        });
+        finished
+            .recv_timeout(Duration::from_secs(60))
+            .expect("a process the run started was still running a minute after dl exited");
     }
 }
 
@@ -2305,13 +2396,11 @@ fn a_command_that_changed_the_workspace_list_refreshes_the_completions_behind_it
     );
     assert!(
         world
-            .devpod_calls()
+            .refresh_child_calls()
             .iter()
-            .filter(|call| call.starts_with("devpod list"))
-            .count()
-            >= 1,
+            .any(|call| call.starts_with("devpod list")),
         "the refresh child never asked devpod anything: {:?}",
-        world.devpod_calls()
+        world.refresh_child_calls()
     );
 }
 
@@ -2319,11 +2408,12 @@ fn a_command_that_changed_the_workspace_list_refreshes_the_completions_behind_it
 fn a_run_is_over_only_when_the_refresh_child_it_started_is_over() {
     // The harness's own promise, which every devpod-call golden in this file leans
     // on. `stop` and `delete` start a detached `--update-cache --force` child, and
-    // that child asks the same fake devpod for `list` and logs it to the same file.
-    // A run that handed back as soon as `dl` itself exited would let a test read the
-    // log while the child was still writing it, and a golden whose last call is the
-    // stop would sometimes end in the child's `devpod list` instead. So no polling
-    // here: the cache the child writes is already there when the run is.
+    // that child asks the same fake devpod for `list`. A golden whose last call is
+    // the stop used to end, now and then, in the child's `devpod list` instead:
+    // the child logged to the same file, and a run handed back as soon as `dl`
+    // itself exited, while the child could still be running. So the child's calls
+    // are logged apart, and no polling here: the cache the child writes is already
+    // there when the run is.
     let world = World::base();
     world.dl(&["someones-project", "stop"]).exited(0);
     assert!(
@@ -2332,9 +2422,14 @@ fn a_run_is_over_only_when_the_refresh_child_it_started_is_over() {
     );
     assert_eq!(
         world.devpod_calls().last().map(String::as_str),
-        Some("devpod list --output json"),
-        "the refresh child's call is not the last one in the log: {:?}",
+        Some("devpod stop someones-project"),
+        "the command's own calls end in something it did not ask: {:?}",
         world.devpod_calls()
+    );
+    assert_eq!(
+        world.refresh_child_calls(),
+        ["devpod list --output json"],
+        "the refresh child's calls are not logged apart"
     );
 }
 

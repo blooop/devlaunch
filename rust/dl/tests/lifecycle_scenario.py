@@ -20,7 +20,9 @@ fixture:
 
 The base world, under the root it is given:
 
-- `bin/devpod` — the fake devpod, a two-line shell wrapper around the shim.
+- `bin/devpod` — the fake devpod, a short shell wrapper around the shim. A call
+  from the `--update-cache` child goes to `shim-log-refresh.jsonl` instead of
+  `DEVPOD_SHIM_LOG`, so the main log is only what the command asked devpod.
 - `bin/docker` — a fake docker that logs its argv to `docker-log` and exits 0.
   In every world, not just the one that asserts about it: `bin` is first on the
   test's PATH, and without it a delete would reach the real docker on whatever
@@ -190,6 +192,20 @@ def _clone(root, origin, path, branch, dirty=False):
     return path
 
 
+# The detached `dl --update-cache` child that a stop or a delete starts asks devpod
+# for `list` too, after the command that started it may already have exited. Its
+# calls go to a log of their own, `shim-log-refresh.jsonl`, so `shim-log.jsonl`
+# holds what the command itself asked devpod and nothing that races it. The
+# wrapper's parent is whichever process ran `devpod`, and its argv is NUL-separated
+# in `/proc/<pid>/cmdline`.
+REFRESH_CHILD_LOG = (
+    "if grep -qxz -- --update-cache /proc/$PPID/cmdline 2>/dev/null; then\n"
+    '  DEVPOD_SHIM_LOG="${DEVPOD_SHIM_LOG%.jsonl}-refresh.jsonl"\n'
+    "  export DEVPOD_SHIM_LOG\n"
+    "fi\n"
+)
+
+
 def build(root: pathlib.Path, shim: pathlib.Path, wanted: set) -> None:
     cache = root / "cache" / "devlaunch"
     repos = cache / "repos"
@@ -203,7 +219,7 @@ def build(root: pathlib.Path, shim: pathlib.Path, wanted: set) -> None:
         # holding no record for the id. The shim keeps its state in its own file
         # and never touches `contexts/`.
         devpod.write_text(
-            f'#!/bin/sh\n"{sys.executable}" "{shim}" "$@"\nstatus=$?\n'
+            f'#!/bin/sh\n{REFRESH_CHILD_LOG}"{sys.executable}" "{shim}" "$@"\nstatus=$?\n'
             'if [ "$1" = delete ] && [ "$status" = 0 ]; then\n'
             '  rm -rf "$DEVPOD_HOME/contexts/default/workspaces/$2"\n'
             "fi\n"
@@ -211,7 +227,9 @@ def build(root: pathlib.Path, shim: pathlib.Path, wanted: set) -> None:
             encoding="utf-8",
         )
     else:
-        devpod.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{shim}" "$@"\n', encoding="utf-8")
+        devpod.write_text(
+            f'#!/bin/sh\n{REFRESH_CHILD_LOG}exec "{sys.executable}" "{shim}" "$@"\n', encoding="utf-8"
+        )
     devpod.chmod(0o755)
 
     # A fake docker, in *every* world and not only the one that asserts about it:
