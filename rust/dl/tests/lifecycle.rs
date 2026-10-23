@@ -432,7 +432,9 @@ impl World {
             .expect("the fake gh is executable");
     }
 
-    /// The devpod calls made so far, in order, as `devpod <argv>` lines.
+    /// The devpod calls the command itself made, in order, as `devpod <argv>`
+    /// lines. The refresh child's are in [`Self::refresh_child_calls`], so they
+    /// cannot race the end of a golden.
     fn devpod_calls(&self) -> Vec<String> {
         self.calls_in("shim-log.jsonl")
     }
@@ -465,10 +467,10 @@ impl World {
 ///
 /// `stop`, `delete` and the read-side commands start a detached
 /// `dl --update-cache` child that nothing waits for, and that child asks the fake
-/// devpod for `list` and logs the call to the same file the goldens read. So the
-/// end of `dl` is not the end of the run: a test that read the log as soon as `dl`
-/// exited raced the child, and a golden that ends in the stop sometimes ended in
-/// the child's `devpod list --output json` instead — rarely on a quiet machine,
+/// devpod for `list`. So the end of `dl` is not the end of the run: a test that
+/// read the cache or the refresh log as soon as `dl` exited raced the child. When
+/// the child logged to the goldens' file, a golden that ends in the stop sometimes
+/// ended in its `devpod list --output json` instead — rarely on a quiet machine,
 /// often under coverage on a busy runner.
 ///
 /// The child is in a session of its own with all three stdio streams on
