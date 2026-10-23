@@ -383,6 +383,20 @@ mod tests {
         .to_vec()
     }
 
+    /// One container of compose project `project`, started from `compose`, that
+    /// mounts `volumes`.
+    fn inspected(
+        project: &str,
+        compose: ComposeFiles,
+        volumes: &[&str],
+    ) -> docker::ContainerMounts {
+        docker::ContainerMounts {
+            project: Some(project.to_owned()),
+            compose,
+            volumes: volumes.iter().map(|v| (*v).to_owned()).collect(),
+        }
+    }
+
     /// A devpod home whose record for WS carries UID.
     fn home_with_uid() -> crate::clients::devpod_home::ScratchHome {
         let home = devpod_home_with(&[("default", WS, None)]);
@@ -408,9 +422,14 @@ mod tests {
         );
         fake.script(
             ["docker", "inspect"],
-            Response::stdout(format!(
-                "{UID}\t<no value>\t<no value>\t{WS}-pixi\t{UID}_bazel-output\t\n{UID}\t<no value>\t<no value>\tteam-cache\t\n"
-            )),
+            Response::stdout(docker::inspect_output(&[
+                inspected(
+                    UID,
+                    ComposeFiles::default(),
+                    &[&format!("{WS}-pixi"), &format!("{UID}_bazel-output")],
+                ),
+                inspected(UID, ComposeFiles::default(), &["team-cache"]),
+            ])),
         );
         fake.script(
             ["docker", "volume", "ls"],
@@ -472,9 +491,11 @@ mod tests {
         );
         fake.script(
             ["docker", "inspect"],
-            Response::stdout(format!(
-                "{UID}\t<no value>\t<no value>\tkinisi-bazel-cache\t{UID}_bazel-output\t\n"
-            )),
+            Response::stdout(docker::inspect_output(&[inspected(
+                UID,
+                ComposeFiles::default(),
+                &["kinisi-bazel-cache", &format!("{UID}_bazel-output")],
+            )])),
         );
         fake.script(["docker", "volume", "ls"], Response::stdout(volume_ls));
         let Recording::Read(m) = record(&fake, Some(&home), "kinisi") else {
@@ -540,11 +561,14 @@ mod tests {
         );
         fake.script(
             ["docker", "inspect"],
-            Response::stdout(format!(
-                "{UID}\t{}\t{}\tapp-cache\tapp-pixi\t\n",
-                path.display(),
-                dir.path().display()
-            )),
+            Response::stdout(docker::inspect_output(&[inspected(
+                UID,
+                ComposeFiles {
+                    working_dir: Some(dir.path().to_owned()),
+                    files: vec![path],
+                },
+                &["app-cache", "app-pixi"],
+            )])),
         );
         fake.script(["docker", "volume", "ls"], Response::stdout(""));
         record(&fake, Some(&home), "app")
@@ -684,11 +708,24 @@ mod tests {
         );
         fake.script(
             ["docker", "inspect"],
-            Response::stdout(format!(
-                "project-a\t{}\t<no value>\tapp-cache\t\n{UID}\t{}\t<no value>\tapp-pixi\t\n",
-                a.display(),
-                b.display()
-            )),
+            Response::stdout(docker::inspect_output(&[
+                inspected(
+                    "project-a",
+                    ComposeFiles {
+                        working_dir: None,
+                        files: vec![a],
+                    },
+                    &["app-cache"],
+                ),
+                inspected(
+                    UID,
+                    ComposeFiles {
+                        working_dir: None,
+                        files: vec![b],
+                    },
+                    &["app-pixi"],
+                ),
+            ])),
         );
         fake.script(["docker", "volume", "ls"], Response::stdout(""));
 

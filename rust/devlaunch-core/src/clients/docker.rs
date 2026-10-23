@@ -378,6 +378,49 @@ pub(crate) fn container_mounts(
         .collect())
 }
 
+/// What docker prints for these containers under [`MOUNTS_FORMAT`], one line
+/// each, so a test can script `docker inspect` from the values it means.
+#[cfg(test)]
+pub(crate) fn inspect_output(containers: &[ContainerMounts]) -> String {
+    const NONE: &str = "<no value>";
+    containers
+        .iter()
+        .map(|container| {
+            let files = container
+                .compose
+                .files
+                .iter()
+                .map(|file| file.display().to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            let working_dir = container
+                .compose
+                .working_dir
+                .as_ref()
+                .map(|dir| dir.display().to_string());
+            let volumes: Vec<&str> = container.volumes.iter().map(String::as_str).collect();
+            tests::render_inspect(
+                MOUNTS_FORMAT,
+                &[
+                    (
+                        "com.docker.compose.project",
+                        container.project.as_deref().unwrap_or(NONE),
+                    ),
+                    (
+                        "com.docker.compose.project.config_files",
+                        if files.is_empty() { NONE } else { &files },
+                    ),
+                    (
+                        "com.docker.compose.project.working_dir",
+                        working_dir.as_deref().unwrap_or(NONE),
+                    ),
+                ],
+                &volumes,
+            )
+        })
+        .collect()
+}
+
 /// One volume compose made: its name, the project that made it, and compose's
 /// own name for it — `com.docker.compose.volume`, the key under the file's
 /// `volumes:`.
@@ -776,7 +819,11 @@ mod tests {
     /// What docker would print for `format` and one container with these labels
     /// and named volumes: each `{{index .Config.Labels "KEY"}}` becomes that
     /// label, and the `{{range .Mounts}}` body repeats once per volume.
-    fn render_inspect(format: &str, labels: &[(&str, &str)], volumes: &[&str]) -> String {
+    pub(super) fn render_inspect(
+        format: &str,
+        labels: &[(&str, &str)],
+        volumes: &[&str],
+    ) -> String {
         let mut out = format.to_owned();
         for (key, value) in labels {
             out = out.replace(&format!("{{{{index .Config.Labels \"{key}\"}}}}"), value);
