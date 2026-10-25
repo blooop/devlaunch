@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`dl rm` no longer counts the files devpod writes into a clone as work.** A
+  repository with no devcontainer config gets devpod's fallback saved as an untracked
+  `.devcontainer.json`, and a config with features gets devpod's build files under
+  `.devcontainer/.devpod-internal/`. Either one made `rm` refuse every such workspace
+  without `--force`, and `--ls --json` reported it as `wouldLose`. Both are now left out
+  of the check, the `.devcontainer.json` only while it holds devpod's one `image` key
+  ([#707](https://github.com/blooop/devlaunch/issues/707)).
+
 - **The devcontainer image no longer trusts the compromised emSign ECC Root CA - G3.**
   The base image ships `ca-certificates` 20240203, which still trusts the root whose
   intermediates had their private keys cracked in October 2026 (CVE-2026-111943). The

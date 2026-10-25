@@ -1105,6 +1105,12 @@ answers it is:
 | `{"wouldLose": "<what>"}` | Uncommitted changes (untracked files included), commits no remote has, or both. |
 | `{"couldNotTell": "<why>"}` | `git` could not read the clone as a repository: a half-removed `.git`, an interrupted delete. The files are still there and nothing has established that they exist anywhere else. |
 
+Two untracked paths do not count, because devpod writes them and nobody else does
+([#707](https://github.com/blooop/devlaunch/issues/707)): the `.devcontainer.json`
+devpod saves for its fallback image in a repository with no devcontainer config,
+while it holds only `{"image": "..."}`, and the build files under
+`.devcontainer/.devpod-internal/` for a config with features.
+
 The commits half of that answer is asked of **every ref in the clone**, not of the
 branch it happens to have checked out. Commit on `wip`, switch back to `main`, and
 the work on `wip` is still the only copy of itself; a question scoped to the

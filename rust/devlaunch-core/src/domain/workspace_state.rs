@@ -586,6 +586,61 @@ fn path_in(line: &str) -> Option<&str> {
     Some(line[offset..].trim())
 }
 
+/// Where devpod writes the build files for a devcontainer that has `features`.
+const DEVPOD_INTERNAL: &str = ".devcontainer/.devpod-internal/";
+
+/// Whether one `git status --porcelain` line is a file devpod wrote into the
+/// clone, which is not anybody's work (devlaunch#707).
+///
+/// Two things, both untracked:
+///
+/// - `.devcontainer/.devpod-internal/`, where devpod writes
+///   `Dockerfile-with-features` and the features' env files when it builds a
+///   config with `features`. Also `.devcontainer/` whole, when that directory is
+///   untracked and holds nothing else.
+/// - `.devcontainer.json` at the root, which devpod saves for its fallback image
+///   in a repository with no devcontainer config. Only while it holds devpod's
+///   one key, `{"image": "..."}`: a file that says anything more is an edit, and
+///   kept. A person who wrote exactly that line loses one line anybody can retype.
+fn written_by_devpod(clone: &Path, line: &str) -> bool {
+    let Some(path) = line.strip_prefix("?? ") else {
+        return false;
+    };
+    if path.starts_with(DEVPOD_INTERNAL) {
+        return true;
+    }
+    if path == ".devcontainer/" {
+        return holds_only_devpod_internal(&clone.join(".devcontainer"));
+    }
+    path == ".devcontainer.json" && is_a_bare_fallback(&clone.join(".devcontainer.json"))
+}
+
+/// Whether *dir* holds `.devpod-internal` and nothing else.
+fn holds_only_devpod_internal(dir: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    let names: Vec<_> = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name())
+        .collect();
+    names == [".devpod-internal"]
+}
+
+/// Whether *file* is the config devpod saves for a fallback image: a JSON object
+/// whose one key is `image`, a string.
+fn is_a_bare_fallback(file: &Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(file) else {
+        return false;
+    };
+    match serde_json::from_str::<serde_json::Value>(&text) {
+        Ok(serde_json::Value::Object(map)) => {
+            map.len() == 1 && map.get("image").is_some_and(serde_json::Value::is_string)
+        }
+        _ => false,
+    }
+}
+
 /// What deleting *clone* would destroy, in words — or that git could not say.
 ///
 /// `git status` is asked first and doubles as the repository probe: with the
@@ -619,7 +674,12 @@ fn unsaved(git: &Git<'_>, clone: &Path, bare: BareCache<'_>) -> (Unsaved, Vec<St
 
     let mut losses = Vec::new();
     let mut cleared = Vec::new();
-    if let Some(changed) = NonEmpty::of(status.lines().map(str::to_owned)) {
+    if let Some(changed) = NonEmpty::of(
+        status
+            .lines()
+            .filter(|line| !written_by_devpod(clone, line))
+            .map(str::to_owned),
+    ) {
         losses.push(Loss::Uncommitted(changed));
     }
     let local_tags = match local_tags(git, clone, bare) {
