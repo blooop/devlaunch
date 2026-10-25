@@ -4246,8 +4246,8 @@ pub(crate) fn startup_reason(refused: &StartupError) -> String {
 /// setup stages, each at the level the stage itself declares
 /// ([`FailureLevel`]). Both levels print, because `basicConfig(level=INFO)` prints
 /// an info as well as a warning, but they do not read alike: a warning names a
-/// stage that failed, and an info failure is the stage's usual outcome, said in
-/// words that do not read as a fault (#704).
+/// stage that failed, and an info failure is said in words that do not read as a
+/// fault (#704).
 pub(crate) fn provision_event(event: &ProvisionEvent) -> Option<String> {
     Some(match event {
         // tools.py:926/934. `loudness` is info for the hostname, session-name and
