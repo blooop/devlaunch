@@ -66,8 +66,12 @@ in October 2026. Each tip names the repository that taught it.
   the container. Create both directories in CI first (deps_rocker's `ci.yml`).
 - **A host-dependent `initializeCommand` stops the workspace.** stata's `init-host.sh`
   exits 1 when `~/.config/stata` is absent. Make the script create or skip what it needs.
+- **One empty devpod workspace record repeats devpod's warning on every dl call**, and
+  `dl --ls` does not show that workspace (open: [#705](https://github.com/blooop/devlaunch/issues/705)).
+  The warning names the workspace. Delete that record's folder under
+  `~/.devpod/contexts/default/workspaces/`.
 
-Fixed in dl (from the release after these PRs merge), so a conversion no longer needs to work around them:
+Fixed on dl's `main` after v0.63.2, so a conversion on a later dl no longer needs to work around them:
 
 - A repository with no devcontainer got devpod's own `base:ubuntu`, because dl never passed
   `[worktree] fallback_image` on
@@ -78,8 +82,6 @@ Fixed in dl (from the release after these PRs merge), so a conversion no longer 
   ([#707](https://github.com/blooop/devlaunch/issues/707), fixed in [#711](https://github.com/blooop/devlaunch/pull/711)). The build files devpod writes under `.devcontainer/.devpod-internal/` for a config with features no longer count either.
 - "the hostname setup stage exited 1" printed on every cold launch
   ([#704](https://github.com/blooop/devlaunch/issues/704), fixed in [#709](https://github.com/blooop/devlaunch/pull/709)). It was always harmless.
-- One damaged devpod workspace record repeated devpod's warning on every dl call
-  ([#705](https://github.com/blooop/devlaunch/issues/705)).
 
 ## Testing a conversion
 
