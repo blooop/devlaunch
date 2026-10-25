@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`[worktree] fallback_image` reaches devpod, and defaults to the shared image.** The
+  key in `config.toml` was parsed and read by nothing, so a repository with no
+  devcontainer config always opened on devpod's own `mcr.microsoft.com/devcontainers/base:ubuntu`.
+  A create now passes `devpod up --fallback-image`, with
+  `ghcr.io/blooop/python_template/devcontainer:latest` when the file sets nothing
+  ([#706](https://github.com/blooop/devlaunch/issues/706)).
+
 - **The devcontainer image no longer trusts the compromised emSign ECC Root CA - G3.**
   The base image ships `ca-certificates` 20240203, which still trusts the root whose
   intermediates had their private keys cracked in October 2026 (CVE-2026-111943). The

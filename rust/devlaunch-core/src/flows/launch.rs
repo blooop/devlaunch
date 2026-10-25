@@ -272,6 +272,24 @@ pub struct Host {
     pub(crate) cache_dir: PathBuf,
     /// devpod's own home, whose `config.yaml` mtime expires the options cache.
     pub(crate) devpod_home: Option<DevpodHome>,
+    /// `[worktree] fallback_image` from `config.toml`: the image a create hands
+    /// `devpod up --fallback-image`, for a repository with no devcontainer config
+    /// (devlaunch#706).
+    pub(crate) fallback_image: Option<String>,
+}
+
+/// The configured fallback image, or the default one when `config.toml` cannot
+/// be read.
+///
+/// A config dl cannot read is refused, with its reason, by every command that
+/// opens the records, and a create on the clone path is one of them. So falling
+/// back to the default here says nothing new and hides nothing: it only keeps a
+/// create devpod clones itself on the image it would have had anyway.
+fn fallback_image_from_config() -> Option<String> {
+    crate::domain::config::worktree_config()
+        .map(|(config, _)| config)
+        .unwrap_or_else(|_| crate::domain::config::WorktreeConfig::defaults())
+        .fallback_image
 }
 
 impl Host {
@@ -314,6 +332,7 @@ impl Host {
             claude_profiles_root: crate::domain::xdg::claude_profiles_root().ok(),
             cache_dir: cache_dir.into(),
             devpod_home: DevpodHome::locate(),
+            fallback_image: fallback_image_from_config(),
         }
     }
 
@@ -1506,6 +1525,9 @@ pub(crate) struct UpRequest<'a> {
     pub(crate) rebuild: Rebuild,
     /// A `devcontainer.json` path from [`spec::resolve_devcontainer_ref`].
     pub(crate) devcontainer: Option<&'a DevcontainerPath>,
+    /// The image devpod uses when the repository has no devcontainer config:
+    /// `[worktree] fallback_image`, read into [`Host::fallback_image`].
+    pub(crate) fallback_image: Option<&'a str>,
 }
 
 impl<'a> UpRequest<'a> {
@@ -1518,7 +1540,14 @@ impl<'a> UpRequest<'a> {
             ide: Ide::NoIde,
             rebuild: Rebuild::Reuse,
             devcontainer: None,
+            fallback_image: None,
         }
+    }
+
+    #[must_use]
+    pub(crate) fn with_fallback_image(mut self, image: Option<&'a str>) -> Self {
+        self.fallback_image = image;
+        self
     }
 
     #[must_use]
@@ -1567,6 +1596,12 @@ pub(crate) fn up_args(
     if let Some(id) = request.naming.create_as() {
         args.push("--id".to_owned());
         args.push(id.to_owned());
+        // Only on a create: devpod reads it only when it finds no devcontainer
+        // config, and it decides that once, when it creates the workspace.
+        if let Some(image) = request.fallback_image {
+            args.push("--fallback-image".to_owned());
+            args.push(image.to_owned());
+        }
     }
     args.push("--ide".to_owned());
     args.push(request.ide.word().to_owned());
@@ -5830,7 +5865,8 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
                 Placement::Creating { workspace_id, .. } => Naming::Create { workspace_id },
                 Placement::Known { .. } | Placement::Listed { .. } => Naming::Anonymous,
             };
-            let request = UpRequest::new(placement.source(), naming);
+            let request = UpRequest::new(placement.source(), naming)
+                .with_fallback_image(self.host.fallback_image.as_deref());
             let title = self.container_title(placement.title());
             let outcome = workspace_up(
                 self.context,
@@ -5871,6 +5907,7 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
         placement: &Placement,
     ) -> Result<Option<LaunchRefusal>, LaunchAborted> {
         let request = UpRequest::new(placement.source(), placement.naming())
+            .with_fallback_image(self.host.fallback_image.as_deref())
             .with_ide(verb.ide())
             .with_rebuild(verb.rebuild())
             .with_devcontainer(devcontainer);
@@ -8549,7 +8586,8 @@ mod tests {
             Naming::Create {
                 workspace_id: "brand-new",
             },
-        );
+        )
+        .with_fallback_image(Some("example.com/fallback:1"));
 
         let args = up_args(&request, &ContextOptions::default(), &pixi, &[]);
 
@@ -8560,6 +8598,8 @@ mod tests {
                 "brand-new".to_owned(),
                 "--id".to_owned(),
                 "brand-new".to_owned(),
+                "--fallback-image".to_owned(),
+                "example.com/fallback:1".to_owned(),
                 "--ide".to_owned(),
                 "none".to_owned(),
                 "--init-env".to_owned(),
@@ -8574,6 +8614,34 @@ mod tests {
                 "--dotfiles-script-env".to_owned(),
                 "PIXI_CACHE_DIR=/var/tmp/devlaunch-pixi".to_owned(),
             ]
+        );
+    }
+
+    #[test]
+    fn a_workspace_devpod_already_knows_gets_no_fallback_image() {
+        // devpod reads the fallback only when it finds no devcontainer config, and
+        // that is decided once, at the create. On a later `up` the flag would say
+        // nothing, so the argv does not carry it (devlaunch#706).
+        let request = UpRequest::new(
+            "myws",
+            Naming::Known {
+                workspace_id: "myws",
+            },
+        )
+        .with_fallback_image(Some("example.com/fallback:1"));
+
+        let args = up_args(
+            &request,
+            &ContextOptions::default(),
+            &PixiCache::NotADirectory {
+                source: PathBuf::from("/nope"),
+            },
+            &[],
+        );
+
+        assert!(
+            !args.iter().any(|arg| arg == "--fallback-image"),
+            "{args:?}"
         );
     }
 
