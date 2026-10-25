@@ -180,7 +180,6 @@ pub fn devlaunch_runner::SpawnSpec::args(&self) -> &[alloc::string::String]
 pub fn devlaunch_runner::SpawnSpec::leading_its_own_group(self) -> Self
 pub fn devlaunch_runner::SpawnSpec::new(devlaunch_runner::Invocation) -> Self
 pub fn devlaunch_runner::SpawnSpec::program(&self) -> &str
-pub fn devlaunch_runner::SpawnSpec::with_quiet_lines(self, impl core::iter::traits::collect::IntoIterator<Item = alloc::string::String>) -> Self
 pub fn devlaunch_runner::SpawnSpec::with_stdin_file(self, impl core::convert::Into<std::path::PathBuf>) -> Self
 pub fn devlaunch_runner::SpawnSpec::with_stdin_null(self) -> Self
 pub fn devlaunch_runner::SpawnSpec::with_stdout_as_log(self) -> Self

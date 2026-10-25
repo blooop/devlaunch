@@ -28,6 +28,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `delete` and the session it forwards. The line shows on `--ls`, the picker and every
   workspace verb (#705).
 
+  `devlaunch_runner::SpawnSpec` gains a public field, `quiet_lines`: lines a
+  `Runner::watched` run hands to its callback but does not echo. An out-of-tree
+  `Runner` that builds a `SpawnSpec` by struct literal must now name it, or end the
+  literal with `..Default::default()`; one built with `SpawnSpec::new` or `From`
+  needs nothing. One row of `devlaunch-runner/public-api.txt` moves.
+
 - **`[worktree] fallback_image` reaches devpod, and defaults to the shared image.** The
   key in `config.toml` was parsed and read by nothing, so a repository with no
   devcontainer config always opened on devpod's own `mcr.microsoft.com/devcontainers/base:ubuntu`.

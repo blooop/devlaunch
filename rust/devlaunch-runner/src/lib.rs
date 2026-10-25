@@ -320,14 +320,6 @@ impl SpawnSpec {
         self
     }
 
-    /// A [`Runner::watched`] run does not echo a line that holds any of these.
-    /// See [`SpawnSpec::quiet_lines`].
-    #[must_use]
-    pub fn with_quiet_lines(mut self, lines: impl IntoIterator<Item = String>) -> Self {
-        self.quiet_lines = lines.into_iter().collect();
-        self
-    }
-
     pub fn program(&self) -> &str {
         &self.invocation.program
     }
