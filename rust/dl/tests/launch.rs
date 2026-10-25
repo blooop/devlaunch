@@ -764,6 +764,10 @@ const PIXI: &str = "--mount type=bind,source={ROOT}/cache/devlaunch/pixi,target=
                     devlaunch-pixi --workspace-env PIXI_CACHE_DIR=/var/tmp/devlaunch-pixi \
                     --dotfiles-script-env PIXI_CACHE_DIR=/var/tmp/devlaunch-pixi";
 
+/// The fallback image every create hands devpod when `config.toml` sets none
+/// (devlaunch#706): the image a repository with no devcontainer config opens on.
+const FALLBACK: &str = "--fallback-image ghcr.io/blooop/python_template/devcontainer:latest";
+
 /// The one `devpod up` line out of a call log, byte for byte.
 ///
 /// Byte-exact where the sequences around it are summarised, because this argv *is*
@@ -775,6 +779,41 @@ fn up_argv(world: &World) -> String {
         .find(|call| call.starts_with("devpod up "))
         .unwrap_or_else(|| panic!("no `devpod up` in {calls:?}"));
     up.clone()
+}
+
+/// The `--fallback-image` a create hands devpod, if any.
+fn fallback_image_of(world: &World) -> Option<String> {
+    let up = up_argv(world);
+    let mut words = up.split(' ');
+    words.find(|word| *word == "--fallback-image")?;
+    words.next().map(str::to_owned)
+}
+
+#[test]
+fn a_create_hands_devpod_the_shared_image_for_a_repo_with_no_devcontainer() {
+    // devlaunch#706. With nothing configured, a repo with no devcontainer config
+    // opens on the owner's shared image rather than devpod's own `base:ubuntu`.
+    let world = World::with(&[]);
+
+    world.dl(&["blooop/devlaunch@cold"]).exited(0);
+
+    assert_eq!(
+        fallback_image_of(&world).as_deref(),
+        Some("ghcr.io/blooop/python_template/devcontainer:latest")
+    );
+}
+
+#[test]
+fn a_create_hands_devpod_the_configured_fallback_image() {
+    // `[worktree] fallback_image` in config.toml was parsed and read by nothing.
+    let world = World::with(&[]);
+    let config = world.path("config/devlaunch/config.toml");
+    std::fs::create_dir_all(config.parent().expect("a parent")).expect("the config dir");
+    std::fs::write(&config, "[worktree]\nfallback_image = \"ubuntu:22.04\"\n").expect("the config");
+
+    world.dl(&["blooop/devlaunch@cold"]).exited(0);
+
+    assert_eq!(fallback_image_of(&world).as_deref(), Some("ubuntu:22.04"));
 }
 
 #[test]
@@ -834,7 +873,7 @@ fn a_cold_triple_prepares_a_clone_creates_the_workspace_and_attaches() {
             "devpod context options --output json".to_owned(),
             // The provider guard, which every `up` asks ahead of itself.
             "devpod provider list --output json".to_owned(),
-            "devpod up {ROOT}/cache/devlaunch/r… --id devlaunch-cold-8iyb --ide none \
+            "devpod up {ROOT}/cache/devlaunch/r… --id devlaunch-cold-8iyb --fallback-image ghcr.io/blooop/python_te… --ide none \
              --init-env DEVLAUNCH_WORKSPACE_ID=d… --mount type=bind,source={ROOT}/… \
              --workspace-env PIXI_CACHE_DIR=/var/tmp/… --dotfiles-script-env \
              PIXI_CACHE_DIR=/var/tmp/…"
@@ -853,7 +892,7 @@ fn a_cold_triple_prepares_a_clone_creates_the_workspace_and_attaches() {
         up_argv(&world),
         format!(
             "devpod up {{ROOT}}/cache/devlaunch/repos/blooop/devlaunch/{COLD} --id {COLD} \
-             --ide none --init-env DEVLAUNCH_WORKSPACE_ID={COLD} {PIXI}"
+             {FALLBACK} --ide none --init-env DEVLAUNCH_WORKSPACE_ID={COLD} {PIXI}"
         )
     );
     // The clone and the record the preparation made are the cold path's own trace.
@@ -983,7 +1022,7 @@ fn a_path_spec_is_named_lexically_symlinks_and_all() {
     assert_eq!(
         up_argv(&world),
         format!(
-            "devpod up {{ROOT}}/foreign/link --id link --ide none --init-env \
+            "devpod up {{ROOT}}/foreign/link --id link {FALLBACK} --ide none --init-env \
              DEVLAUNCH_WORKSPACE_ID=link {PIXI}"
         )
     );
@@ -1400,7 +1439,7 @@ fn a_path_spec_attach_asks_nothing_and_ups() {
             "devpod context options --output json".to_owned(),
             // The provider guard, which every `up` asks ahead of itself.
             "devpod provider list --output json".to_owned(),
-            "devpod up {ROOT}/cache/devlaunch/r… --id devlaunch-main-3j1t --ide none \
+            "devpod up {ROOT}/cache/devlaunch/r… --id devlaunch-main-3j1t --fallback-image ghcr.io/blooop/python_te… --ide none \
              --init-env DEVLAUNCH_WORKSPACE_ID=d… --mount type=bind,source={ROOT}/… \
              --workspace-env PIXI_CACHE_DIR=/var/tmp/… --dotfiles-script-env \
              PIXI_CACHE_DIR=/var/tmp/…"
@@ -1414,7 +1453,7 @@ fn a_path_spec_attach_asks_nothing_and_ups() {
         up_argv(&world),
         format!(
             "devpod up {{ROOT}}/cache/devlaunch/repos/blooop/devlaunch/{MAIN} --id {MAIN} \
-             --ide none --init-env DEVLAUNCH_WORKSPACE_ID={MAIN} {PIXI}"
+             {FALLBACK} --ide none --init-env DEVLAUNCH_WORKSPACE_ID={MAIN} {PIXI}"
         ),
         "the attach's up carries the launch's identity"
     );
@@ -1438,7 +1477,7 @@ fn a_cold_triple_dotfiles_denies_the_same_id_twice() {
             "devpod context options --output json".to_owned(),
             // The provider guard, which every `up` asks ahead of itself.
             "devpod provider list --output json".to_owned(),
-            "devpod up {ROOT}/cache/devlaunch/r… --id devlaunch-cold-8iyb --ide none \
+            "devpod up {ROOT}/cache/devlaunch/r… --id devlaunch-cold-8iyb --fallback-image ghcr.io/blooop/python_te… --ide none \
              --init-env DEVLAUNCH_WORKSPACE_ID=d… --mount type=bind,source={ROOT}/… \
              --workspace-env PIXI_CACHE_DIR=/var/tmp/… --dotfiles-script-env \
              PIXI_CACHE_DIR=/var/tmp/…"
@@ -1480,7 +1519,7 @@ fn a_path_spec_dotfiles_on_a_stopped_workspace_ups_it_by_id() {
             "devpod context options --output json".to_owned(),
             // The provider guard, which every `up` asks ahead of itself.
             "devpod provider list --output json".to_owned(),
-            "devpod up {ROOT}/cache/devlaunch/r… --id devlaunch-main-3j1t --ide none \
+            "devpod up {ROOT}/cache/devlaunch/r… --id devlaunch-main-3j1t --fallback-image ghcr.io/blooop/python_te… --ide none \
              --init-env DEVLAUNCH_WORKSPACE_ID=d… --mount type=bind,source={ROOT}/… \
              --workspace-env PIXI_CACHE_DIR=/var/tmp/… --dotfiles-script-env \
              PIXI_CACHE_DIR=/var/tmp/…"
@@ -1495,7 +1534,7 @@ fn a_path_spec_dotfiles_on_a_stopped_workspace_ups_it_by_id() {
         up_argv(&world),
         format!(
             "devpod up {{ROOT}}/cache/devlaunch/repos/blooop/devlaunch/{MAIN} --id {MAIN} \
-             --ide none --init-env DEVLAUNCH_WORKSPACE_ID={MAIN} {PIXI}"
+             {FALLBACK} --ide none --init-env DEVLAUNCH_WORKSPACE_ID={MAIN} {PIXI}"
         ),
         "the dotfiles up of a path-spec workspace carries the launch's identity"
     );
