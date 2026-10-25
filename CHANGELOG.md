@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The dev container image is Ubuntu 26.04 with pixi 0.83.0.** It builds `FROM
+  mcr.microsoft.com/devcontainers/base:3-ubuntu26.04` (was `ubuntu-24.04`, a tag Microsoft
+  stopped rebuilding in 2025) and pins pixi v0.83.0 (was v0.77.0), the pixi that now writes
+  `pixi.lock`. Five lifecycle tests that need a stale `origin/*` ref now set it themselves:
+  git 2.56, which the 26.04 image ships, moves the tracking ref on a push to the URL
+  `origin` names, and git 2.51 did not.
+
 ### Fixed
 
 - **dl names a devpod record that devpod cannot load, once, instead of letting devpod
@@ -19,8 +28,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `delete` and the session it forwards. The line shows on `--ls`, the picker and every
   workspace verb (#705).
 
+- **`[worktree] fallback_image` reaches devpod, and defaults to the shared image.** The
+  key in `config.toml` was parsed and read by nothing, so a repository with no
+  devcontainer config always opened on devpod's own `mcr.microsoft.com/devcontainers/base:ubuntu`.
+  A create now passes `devpod up --fallback-image`, with
+  `ghcr.io/blooop/python_template/devcontainer:latest` when the file sets nothing
+  ([#706](https://github.com/blooop/devlaunch/issues/706)).
+
+- **The dev container builds again on Ubuntu 26.04.** The docker-in-docker feature now sets
+  `"moby": false` and installs Docker CE from Docker's apt repo. Its default, Microsoft's
+  moby packages, has no `resolute` builds, and the feature stopped every build with
+  "The 'moby' option is not supported on ubuntu 'resolute'".
+
+- **A hostname that cannot be set no longer reads as a failed launch step.** `sudo
+  hostname` needs CAP_SYS_ADMIN, which Docker drops by default, so on most cold launches
+  dl printed `<id>: the hostname setup stage exited 1.`, as loud as a real stage failure.
+  dl now says `<id>: did not set the hostname (exit 1; setting it usually needs
+  CAP_SYS_ADMIN, which Docker drops by default), so the prompt keeps the container's own
+  hostname. Nothing else is affected.` A failure of the session-name or title stage, the
+  other two info-level stages, now also says that nothing else is affected (#704).
+
 - **The devcontainer image no longer trusts the compromised emSign ECC Root CA - G3.**
-  The base image ships `ca-certificates` 20240203, which still trusts the root whose
+  The base image's `ca-certificates` (20260601 on 26.04) still trusts the root whose
   intermediates had their private keys cracked in October 2026 (CVE-2026-111943). The
   image now upgrades `ca-certificates`, and the build fails if G3 is still there.
 

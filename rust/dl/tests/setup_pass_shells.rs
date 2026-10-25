@@ -119,6 +119,17 @@ impl World {
         }
     }
 
+    /// A `sudo` that fails as `sudo hostname` does in a container Docker started
+    /// without CAP_SYS_ADMIN, which is most of them.
+    fn without_cap_sys_admin(self) -> Self {
+        std::fs::write(
+            self.path("bin/sudo"),
+            "#!/bin/sh\necho 'hostname: you must be root to change the host name' >&2\nexit 1\n",
+        )
+        .expect("a refusing sudo");
+        self
+    }
+
     fn path(&self, relative: &str) -> PathBuf {
         self.root.join(relative)
     }
@@ -190,5 +201,28 @@ fn a_cold_launch_reads_the_images_bash_env_once_for_the_whole_setup_pass() {
         1,
         "the setup pass read BASH_ENV {} times: {said}",
         world.bash_env_reads()
+    );
+}
+
+#[test]
+fn a_hostname_that_cannot_be_set_is_not_reported_as_a_fault() {
+    // #704: `sudo hostname` fails on most cold launches, because Docker drops
+    // CAP_SYS_ADMIN. The stage is marked quieter for that reason (#167), so what
+    // the user reads must say what happened and that nothing is wrong, not the
+    // bare "stage exited 1" a real stage failure prints.
+    let world = World::cold().without_cap_sys_admin();
+    let said = world.launched();
+
+    assert!(
+        !said.contains("the hostname setup stage exited"),
+        "the expected hostname failure reads as a stage fault: {said}"
+    );
+    assert!(
+        said.contains(
+            "did not set the hostname (exit 1; setting it usually needs CAP_SYS_ADMIN, which \
+             Docker drops by default), so the prompt keeps the container's own hostname. \
+             Nothing else is affected."
+        ),
+        "the hostname failure is not said in plain words: {said}"
     );
 }

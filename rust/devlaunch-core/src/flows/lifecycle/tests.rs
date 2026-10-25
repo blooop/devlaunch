@@ -3548,10 +3548,38 @@ fn commit_locally(clone: &Path, count: usize) {
 /// the HTTPS URL. The commits land on the remote and `refs/remotes/origin/*` in
 /// the clone does not move, which is the whole of devlaunch#638.
 fn push_by_url(world: &World, clone: &Path) {
-    run_git(
-        clone,
-        &["push", &world.origin.display().to_string(), "HEAD:main"],
-    );
+    push_by_url_leaving_tracking_refs_stale(clone, &world.origin, "HEAD:main");
+}
+
+/// `git push <url> <refspec>` in *repo*, with `refs/remotes/origin/*` put back
+/// the way they were before it.
+///
+/// The stale tracking refs are the trap these tests set, so the fixture sets
+/// them itself. git 2.51 left them alone on a push by URL; git 2.56 moves them
+/// when the URL is the one `origin` names, as if the push had gone through
+/// `origin`. An agent's HTTPS push from inside a container names a URL that
+/// differs from the clone's `origin`, so the refs stay stale there on every git.
+fn push_by_url_leaving_tracking_refs_stale(repo: &Path, url: &Path, refspec: &str) {
+    let tracking = |repo: &Path| {
+        run_git(
+            repo,
+            &[
+                "for-each-ref",
+                "--format=%(refname) %(objectname)",
+                "refs/remotes/origin/",
+            ],
+        )
+    };
+    let before = tracking(repo);
+    run_git(repo, &["push", &url.display().to_string(), refspec]);
+    for line in tracking(repo).lines() {
+        let (name, _) = line.split_once(' ').expect("a ref and its object");
+        run_git(repo, &["update-ref", "-d", name]);
+    }
+    for line in before.lines() {
+        let (name, object) = line.split_once(' ').expect("a ref and its object");
+        run_git(repo, &["update-ref", name, object]);
+    }
 }
 
 /// `dl r-main-aa <removal>`, through the one call the binary makes.
@@ -3656,10 +3684,7 @@ fn a_host_that_prunes_on_fetch_does_not_turn_a_merged_branch_into_unpushed_work(
     commit(&clone, "side");
     run_git(&clone, &["push", "-u", "origin", "side"]);
     run_git(&clone, &["checkout", "main"]);
-    run_git(
-        &clone,
-        &["push", &world.origin.display().to_string(), ":side"],
-    );
+    push_by_url_leaving_tracking_refs_stale(&clone, &world.origin, ":side");
     run_git(&clone, &["config", "fetch.prune", "true"]);
     commit_locally(&clone, 2);
     push_by_url(&world, &clone);
@@ -3842,14 +3867,7 @@ fn a_site_pushed_by_url_does_not_stop_a_plain_rm() {
     let (mut world, clone) = a_world_ready_to_remove();
     let site = a_site_in(&clone);
     commit_locally(&site, 2);
-    run_git(
-        &site,
-        &[
-            "push",
-            &world.origin.display().to_string(),
-            "HEAD:agent-one",
-        ],
-    );
+    push_by_url_leaving_tracking_refs_stale(&site, &world.origin, "HEAD:agent-one");
     as_a_host_sees_them(&clone);
     assert!(
         run_git(&world.bare, &["branch", "--list", "agent-one"])

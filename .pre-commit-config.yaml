@@ -50,11 +50,13 @@ repos:
       # - id: trailing-whitespace
       - id: fix-byte-order-marker
 
-  # Formatter for python
+  # Linter and formatter for python
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.14.14
     hooks:
-
+      # Run the linter.
+      - id: ruff-check
+        types_or: [ python, pyi ]
       # Run the formatter.
       - id: ruff-format
         types_or: [ python, pyi ]

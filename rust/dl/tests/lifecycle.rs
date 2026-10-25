@@ -282,7 +282,7 @@ impl World {
 
     /// Run one git command in a clone the fixture built, as [`World::commit_in`]
     /// does: the fixture's identity, and none of this machine's config.
-    fn git_in(&self, clone: &str, args: &[&str]) {
+    fn git_in(&self, clone: &str, args: &[&str]) -> String {
         let done = Command::new("git")
             .args(args)
             .current_dir(self.path(clone))
@@ -301,6 +301,36 @@ impl World {
             "git {args:?} in {clone}: {}",
             String::from_utf8_lossy(&done.stderr)
         );
+        String::from_utf8_lossy(&done.stdout).trim().to_owned()
+    }
+
+    /// `git push <url> <refspec>` in *clone*, with `refs/remotes/origin/*` put
+    /// back the way they were before it.
+    ///
+    /// The stale tracking refs are the trap a push-by-URL test sets, so the
+    /// fixture sets them itself. git 2.51 left them alone on a push by URL; git
+    /// 2.56 moves them when the URL is the one `origin` names.
+    fn push_by_url_leaving_tracking_refs_stale(&self, clone: &str, url: &str, refspec: &str) {
+        let tracking = || {
+            self.git_in(
+                clone,
+                &[
+                    "for-each-ref",
+                    "--format=%(refname) %(objectname)",
+                    "refs/remotes/origin/",
+                ],
+            )
+        };
+        let before = tracking();
+        self.git_in(clone, &["push", "-q", url, refspec]);
+        for line in tracking().lines() {
+            let (name, _) = line.split_once(' ').expect("a ref and its object");
+            self.git_in(clone, &["update-ref", "-d", name]);
+        }
+        for line in before.lines() {
+            let (name, object) = line.split_once(' ').expect("a ref and its object");
+            self.git_in(clone, &["update-ref", name, object]);
+        }
     }
 
     /// Put a `git` first on the run's PATH that refuses `pack-refs` and is the
@@ -1674,7 +1704,7 @@ fn a_commit_pushed_by_url_does_not_stop_rm() {
     let world = World::with(&["--unpushed"]);
     let clone = "cache/devlaunch/repos/blooop/devlaunch/devlaunch-unpushed-committed";
     let origin = world.path("origin.git").display().to_string();
-    world.git_in(clone, &["push", "-q", &origin, "HEAD:refs/heads/unpushed"]);
+    world.push_by_url_leaving_tracking_refs_stale(clone, &origin, "HEAD:refs/heads/unpushed");
 
     let run = world.dl(&["devlaunch-unpushed-committed", "rm"]);
 

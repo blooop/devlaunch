@@ -38,6 +38,13 @@ const DEFAULT_FETCH_INTERVAL: u64 = 3600;
 /// Days a workspace clone may go unused before a prune considers it.
 const DEFAULT_PRUNE_AFTER_DAYS: u64 = 30;
 
+/// The image devpod uses for a repository with no devcontainer config, when the
+/// file does not say: the owner's shared image, which every dl-ready repository
+/// already opens on (Ubuntu 26.04, pixi). devpod's own fallback,
+/// `mcr.microsoft.com/devcontainers/base:ubuntu`, has none of those tools
+/// (devlaunch#706).
+const DEFAULT_FALLBACK_IMAGE: &str = "ghcr.io/blooop/python_template/devcontainer:latest";
+
 /// Configuration for the worktree backend.
 ///
 /// **No paths.** Where the clones go is derived from the cache directory
@@ -49,7 +56,10 @@ pub struct WorktreeConfig {
     pub fetch_interval: u64,
     pub auto_prune: bool,
     pub prune_after_days: u64,
-    /// Docker image for repositories with no `devcontainer.json`.
+    /// Docker image for repositories with no `devcontainer.json`, handed to
+    /// `devpod up --fallback-image` on a create. Always `Some` from a load: the
+    /// default is [`DEFAULT_FALLBACK_IMAGE`]. Still an `Option` because the field
+    /// is part of the frozen public API.
     pub fallback_image: Option<String>,
 }
 
@@ -117,7 +127,7 @@ impl WorktreeConfig {
             fetch_interval: DEFAULT_FETCH_INTERVAL,
             auto_prune: true,
             prune_after_days: DEFAULT_PRUNE_AFTER_DAYS,
-            fallback_image: None,
+            fallback_image: Some(DEFAULT_FALLBACK_IMAGE.to_owned()),
         }
     }
 }
@@ -273,6 +283,18 @@ mod tests {
             .0
     }
 
+    /// `docs/devcontainer-projects.md` names the default fallback image for users,
+    /// a second copy of [`DEFAULT_FALLBACK_IMAGE`]; this keeps the two equal.
+    #[test]
+    fn the_docs_name_the_default_fallback_image() {
+        let page = include_str!("../../../../docs/devcontainer-projects.md");
+        let named = format!("`{DEFAULT_FALLBACK_IMAGE}`");
+        assert!(
+            page.contains(&named),
+            "docs/devcontainer-projects.md must name {DEFAULT_FALLBACK_IMAGE} as the default"
+        );
+    }
+
     /// The retired keys a text still names.
     fn retired(text: &str) -> Vec<RetiredKey> {
         parse_worktree_config(text, &defaults())
@@ -291,7 +313,12 @@ mod tests {
         assert_eq!(config.fetch_interval, 3600);
         assert!(config.auto_prune);
         assert_eq!(config.prune_after_days, 30);
-        assert_eq!(config.fallback_image, None);
+        // The owner's shared image, not devpod's own `base:ubuntu`: a repo with
+        // no devcontainer gets the tools every other repo has (devlaunch#706).
+        assert_eq!(
+            config.fallback_image.as_deref(),
+            Some("ghcr.io/blooop/python_template/devcontainer:latest")
+        );
     }
 
     #[test]

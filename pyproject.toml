@@ -111,7 +111,6 @@ llvm-tools = ">=22.1,<23"
 # nothing here is a dependency *of* anything, it is the toolbox the checkout is
 # worked in.
 [tool.pixi.feature.test.pypi-dependencies]
-pylint = ">=3.2.5,<=4.0.5"
 pytest-cov = ">=4.1,<=7.1.0"
 pytest = ">=7.4,<=9.0.3"
 ruff = ">=0.5.0,<=0.15.15"
@@ -191,9 +190,8 @@ prek-update = "prek autoupdate"
 format = "ruff format ."
 check-clean-workspace = "git diff --exit-code"
 ruff-lint = "ruff check . --fix"
-pylint = "pylint --version && echo 'running pylint...' && pylint $(git ls-files '*.py')"
 ty = "ty check --respect-ignore-files ."
-lint = { depends-on = ["ruff-lint", "ty", "pylint"] }
+lint = { depends-on = ["ruff-lint", "ty"] }
 style = { depends-on = ["format", "lint"] }
 commit-format = "git commit -a -m'autoformat code' || true"
 # The binaries the acceptance harness judges. A task rather than a step in CI,
@@ -260,7 +258,6 @@ ci-no-cover = { depends-on = ["style", "test"] }
 ci = { depends-on = [
   "format",
   "ruff-lint",
-  "pylint",
   "ty",
   "coverage",
   "coverage-report",
@@ -269,14 +266,6 @@ ci-push = { depends-on = ["format", "ruff-lint", "update-lock", "ci", "push"] }
 clear-pixi = "rm -rf .pixi pixi.lock"
 setup-git-merge-driver = "git config merge.ourslock.driver true"
 update-from-template-repo = "./scripts/update_from_template.sh"
-
-[tool.pylint]
-extension-pkg-whitelist = ["numpy"]
-jobs = 16                           #detect number of cores
-
-[tool.pylint.'MESSAGES CONTROL']
-disable = "C,logging-fstring-interpolation,line-too-long,fixme,broad-exception-caught,missing-module-docstring,too-many-instance-attributes,too-few-public-methods,too-many-arguments,too-many-positional-arguments,too-many-locals,too-many-branches,too-many-statements,too-many-return-statements,use-dict-literal,cyclic-import,duplicate-code,too-many-public-methods"
-enable = "no-else-return,consider-using-in"
 
 [tool.pytest.ini_options]
 markers = [

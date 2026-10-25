@@ -314,6 +314,15 @@ def test_devcontainer_enables_docker_in_docker(devcontainer):
     assert DIND_FEATURE in devcontainer["features"]
 
 
+def test_docker_in_docker_installs_docker_ce_rather_than_moby(devcontainer):
+    """The feature's moby default has no packages for Ubuntu 26.04 (resolute).
+
+    With it, the feature refuses the whole build: "The 'moby' option is not
+    supported on ubuntu 'resolute'". Docker CE publishes resolute packages.
+    """
+    assert devcontainer["features"][DIND_FEATURE].get("moby") is False
+
+
 def test_devcontainer_does_not_share_the_host_network_namespace():
     """No run argument puts this container on the host's netns.
 
