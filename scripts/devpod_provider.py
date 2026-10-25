@@ -145,7 +145,7 @@ def main(
     under test. `main` never calls the runner itself: it hands `run` -- None
     included -- to `ensure_provider`, which resolves it where the call happens.
     """
-    import argparse  # pylint: disable=import-outside-toplevel
+    import argparse
 
     parser = argparse.ArgumentParser(
         prog="python scripts/devpod_provider.py",

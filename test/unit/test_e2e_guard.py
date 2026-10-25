@@ -58,7 +58,7 @@ class TestDeclaredOptOut:
     def test_an_opt_out_reports_against_the_test_that_made_it(self):
         """Otherwise `-ra` names this helper as the thing that opted out, and a
         reader chasing a skip reason is sent to the wrong file."""
-        assert DeclaredOptOut("because")._use_item_location  # pylint: disable=protected-access
+        assert DeclaredOptOut("because")._use_item_location
 
     def test_a_module_can_decline_at_collection_time(self):
         """An undeclared module-level skip is a collection error, so the
