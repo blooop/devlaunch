@@ -79,8 +79,8 @@ October 2026. Where a public repository shows a tip, the tip links it.
   exits 1 when its `~/.config/<tool>` directory is absent stops every launch on a host
   without it. Make the script create or skip what it needs.
 
-dl releases newer than v0.63.2 fix these, so a conversion on such a dl does not need to
-work around them. `CHANGELOG.md` has the details.
+dl releases newer than v0.63.2 fix the blockers below, so a conversion on such a dl does not
+need to work around them. `CHANGELOG.md` has the details.
 
 - A repository with no devcontainer got devpod's own `base:ubuntu`
   ([#706](https://github.com/blooop/devlaunch/issues/706), fixed in
