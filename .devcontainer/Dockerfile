@@ -29,8 +29,8 @@ LABEL org.opencontainers.image.source="https://github.com/blooop/devlaunch"
 # cannot; the boundary was probed one version at a time against this very
 # lockfile). The minimum would work today and re-open the same gap immediately,
 # because the gap is the container's pixi lagging the pixi that writes the lock.
-# Matching the writer closes it: 0.77.0 when this pin was written, 0.83.0 (the
-# latest release) since the host moved to it.
+# Matching the writer closes it: 0.77.0 when this pin was written, 0.83.0 since
+# the host moved to it.
 ARG PIXI_VERSION=v0.83.0
 
 RUN curl -L -o /usr/local/bin/pixi -fsSL --compressed "https://github.com/prefix-dev/pixi/releases/download/${PIXI_VERSION}/pixi-$(uname -m)-unknown-linux-musl" \
