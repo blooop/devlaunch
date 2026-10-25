@@ -56,7 +56,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::clients::devpod_home::{DevpodHome, damaged_records};
 use crate::json::JsonKind;
 use crate::runner::{
     CapturedText, EnvSpec, Exit, Invocation, OsFailure, Outcome, Runner, SpawnSpec, StdinPlan,
@@ -538,6 +537,11 @@ pub(crate) struct LoadWarnings {
 }
 
 impl LoadWarnings {
+    /// No warnings: what a caller that named no damaged record keeps quiet.
+    pub(crate) const NONE: Self = Self {
+        markers: Vec::new(),
+    };
+
     /// The warnings about these workspace ids.
     ///
     /// Matched on the stable half of devpod's sentence, up to the comma after
@@ -551,13 +555,6 @@ impl LoadWarnings {
                 .map(|id| format!("could not load workspace: workspace={id},"))
                 .collect(),
         }
-    }
-
-    /// The warnings about every record in this devpod home that devpod cannot
-    /// load, or none when there is no home to look in.
-    pub(crate) fn of_damaged_records(home: Option<&DevpodHome>) -> Self {
-        let damaged = home.map(damaged_records).unwrap_or_default();
-        Self::about(damaged.iter().map(|record| record.workspace_id.as_str()))
     }
 
     /// Whether `line` is one of these warnings, in any of devpod's shapes.

@@ -2766,6 +2766,7 @@ pub fn devlaunch_core::flows::listing::head_branch_of(&devlaunch_core::clients::
 pub fn devlaunch_core::flows::listing::mark_stale_images(&mut [devlaunch_core::flows::listing::ListedWorkspace], &devlaunch_core::flows::stale_images::StaleImages)
 pub fn devlaunch_core::flows::listing::outstanding_sweep_notes(&devlaunch_core::domain::metadata::MetadataStorage) -> alloc::vec::Vec<devlaunch_core::flows::listing::SweptRepoNote>
 pub fn devlaunch_core::flows::listing::owner_of(&devlaunch_core::clients::devpod::Workspace, &std::path::Path) -> core::option::Option<alloc::string::String>
+pub fn devlaunch_core::flows::listing::quiet_damaged_records(&mut devlaunch_core::flows::listing::CommandContext<'_>, &[devlaunch_core::clients::devpod_home::DamagedRecord])
 pub fn devlaunch_core::flows::listing::repo_of(&devlaunch_core::clients::devpod::Workspace, &std::path::Path) -> core::option::Option<alloc::string::String>
 pub fn devlaunch_core::flows::listing::workspace_table(&mut devlaunch_core::flows::listing::CommandContext<'_>, &std::path::Path, devlaunch_core::flows::listing::Sizes) -> core::result::Result<devlaunch_core::flows::listing::WorkspaceTable, devlaunch_core::clients::devpod::ListingUnreadable>
 pub mod devlaunch_core::flows::migration

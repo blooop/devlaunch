@@ -51,7 +51,8 @@ use crate::clients::devpod::{
     ContainerState, ListingUnreadable, NotRun, Patience, Workspace, WorkspaceSource,
 };
 use crate::clients::devpod_home::{
-    DevpodHome, RepointFailure, ScratchHome, agent_compose_file, devpod_home_with,
+    Damage, DamagedRecord, DevpodHome, RepointFailure, ScratchHome, agent_compose_file,
+    devpod_home_with,
 };
 use crate::clients::git::Git;
 use crate::clients::{devpod, docker};
@@ -1756,6 +1757,64 @@ fn a_plain_delete_names_the_workspace_and_no_flags() {
         }
     );
     assert_eq!(world.devpod.devpod_argvs(), [vec!["delete", "myws"]]);
+}
+
+/// The delete drops devpod's warnings about exactly the records its command
+/// named (devlaunch#705), not about whatever the devpod home holds by the time
+/// the delete runs: dl scans once, names what it found, and quiets that. A
+/// record damaged after the scan was not named, so its warning is devpod's to
+/// show.
+#[test]
+fn a_delete_quiets_the_records_its_command_named_and_no_others() {
+    let world = a_stopping_world();
+    let mut world_cache = World::empty();
+    let clones = clones_for(&world_cache.repos_dir, &world_cache.devpod);
+    let home = devpod_home_with(&[]);
+    let late = home.record("default", "damaged-after-the-scan");
+    std::fs::create_dir_all(late.parent().expect("a record directory"))
+        .expect("a record directory");
+    std::fs::write(&late, "").expect("an empty record");
+    let named = DamagedRecord {
+        workspace_id: "named-at-the-scan".to_owned(),
+        path: home.record("default", "named-at-the-scan"),
+        damage: Damage::Empty,
+    };
+    let mut context = CommandContext::new(&world.devpod);
+    crate::flows::listing::quiet_damaged_records(&mut context, &[named]);
+    let mut refresh = Refresh::new(&world.updater, &world.cache_path);
+
+    let copies = world_cache.copies();
+    workspace_delete(
+        &mut context,
+        &mut refresh,
+        &clones,
+        &mut world_cache.storage,
+        Some(&home),
+        &copies,
+        "myws",
+        Insistence::NotInsisted,
+        Persistence::Ordinary,
+        &mut unblocked(),
+        &mut ignoring(),
+    )
+    .expect("devpod ran");
+
+    let quiet: Vec<Vec<String>> = world
+        .devpod
+        .fake
+        .calls()
+        .into_iter()
+        .filter_map(|call| match call {
+            devlaunch_test_support::Call::Watched(spec) => Some(spec.quiet_lines),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        quiet,
+        [vec![
+            "could not load workspace: workspace=named-at-the-scan,".to_owned()
+        ]]
+    );
 }
 
 #[test]

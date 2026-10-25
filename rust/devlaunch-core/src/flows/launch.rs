@@ -2254,9 +2254,7 @@ fn up_under_stage(
             .leading_its_own_group()
             .whose_output_is_progress()
             .with_env(env)
-            .quieting(devpod::LoadWarnings::of_damaged_records(
-                host.devpod_home.as_ref(),
-            )),
+            .quieting(context.load_warnings().clone()),
         &mut |line| {
             // Before the lock arm, and not behind `said`: these are the failure
             // being watched for, where the lock line is a wait that may resolve.
@@ -3020,7 +3018,13 @@ pub(crate) struct SessionContext<'a> {
     pub(crate) host: &'a Host,
     pub(crate) token: &'a HostToken,
     pub(crate) claude_seen: &'a ClaudeSeen,
+    /// devpod's warnings the session keeps off the terminal: the command's, from
+    /// [`CommandContext::load_warnings`]. See [`Self::quieting`].
+    pub(crate) quiet: &'a devpod::LoadWarnings,
 }
+
+/// What a session that was not told otherwise keeps quiet: nothing.
+static NO_LOAD_WARNINGS: devpod::LoadWarnings = devpod::LoadWarnings::NONE;
 
 impl<'a> SessionContext<'a> {
     pub fn new(
@@ -3034,7 +3038,16 @@ impl<'a> SessionContext<'a> {
             host,
             token,
             claude_seen,
+            quiet: &NO_LOAD_WARNINGS,
         }
+    }
+
+    /// Drop devpod's warnings about the damaged records the command named from
+    /// the session's stderr (devlaunch#705).
+    #[must_use]
+    pub(crate) fn quieting(mut self, warnings: &'a devpod::LoadWarnings) -> Self {
+        self.quiet = warnings;
+        self
     }
 
     /// The host's token, asked for at most once across the whole launch.
@@ -3576,9 +3589,7 @@ fn devpod_session(
     // that is not the one running it.
     let call = Call::new(args)
         .with_env(herdr::inherited_with(forwarding.env, visibility.agent))
-        .quieting(devpod::LoadWarnings::of_damaged_records(
-            session.host.devpod_home.as_ref(),
-        ));
+        .quieting(session.quiet.clone());
     notices.say(LaunchNotice::SshCommand { argv: call.argv() });
 
     // Only stderr is read, which under a pty carries devpod's own warnings and
@@ -5915,7 +5926,8 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
             self.host,
             &self.token,
             &self.claude_seen,
-        );
+        )
+        .quieting(self.context.load_warnings());
         let refreshed = dotfiles_update(
             &session,
             placement.workspace_id(),
@@ -6047,7 +6059,8 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
             self.host,
             &self.token,
             &self.claude_seen,
-        );
+        )
+        .quieting(self.context.load_warnings());
         let session = attach_workspace(
             &context,
             placement.workspace_id(),
