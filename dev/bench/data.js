@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792963369522,
+  "lastUpdate": 1792964054888,
   "repoUrl": "https://github.com/blooop/devlaunch",
   "entries": {
     "devlaunch launch stages": [
@@ -20435,6 +20435,93 @@ window.BENCHMARK_DATA = {
             "range": "± 0.773706",
             "unit": "s",
             "extra": "runs=5/5 wall=6.540827s v0.26.1, Linux-X64"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "blooop@gmail.com",
+            "name": "Austin Gregg-Smith",
+            "username": "blooop"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c8371f78431c42b7b9e325e587688cb373317cdd",
+          "message": "Merge pull request #715 from blooop/fix/devcontainer-dind-moby-false\n\nfix(devcontainer): install Docker CE, not moby, on Ubuntu 26.04",
+          "timestamp": "2026-10-25T21:31:49Z",
+          "tree_id": "8fc5bf910bc737861fff1131037f10607903caf6",
+          "url": "https://github.com/blooop/devlaunch/commit/c8371f78431c42b7b9e325e587688cb373317cdd"
+        },
+        "date": 1792964054103,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "warm / attach",
+            "value": 0.832605,
+            "range": "± 0.048208",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / devpod-up",
+            "value": 0.19332,
+            "range": "± 0.01",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / host-prep",
+            "value": 0.000043,
+            "range": "± 0.000003",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / total",
+            "value": 1.02266,
+            "range": "± 0.05331",
+            "unit": "s",
+            "extra": "runs=5/5 wall=1.024297s v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / attach",
+            "value": 0.810872,
+            "range": "± 0.051832",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / devpod-up",
+            "value": 3.03494,
+            "range": "± 0.466056",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / host-prep",
+            "value": 0.218732,
+            "range": "± 0.009646",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / tools",
+            "value": 1.768523,
+            "range": "± 0.046202",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / total",
+            "value": 5.923622,
+            "range": "± 0.422006",
+            "unit": "s",
+            "extra": "runs=5/5 wall=5.925301s v0.26.1, Linux-X64"
           }
         ]
       }
