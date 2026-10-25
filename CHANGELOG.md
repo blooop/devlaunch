@@ -18,6 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The dev container builds again on Ubuntu 26.04.** The docker-in-docker feature now sets
+  `"moby": false` and installs Docker CE from Docker's apt repo. Its default, Microsoft's
+  moby packages, has no `resolute` builds, and the feature stopped every build with
+  "The 'moby' option is not supported on ubuntu 'resolute'".
+
 - **A hostname that cannot be set no longer reads as a failed launch step.** `sudo
   hostname` needs CAP_SYS_ADMIN, which Docker drops by default, so on most cold launches
   dl printed `<id>: the hostname setup stage exited 1.`, as loud as a real stage failure.
