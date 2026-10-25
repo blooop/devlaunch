@@ -28,7 +28,7 @@ judges the shipped binaries from outside, spawning them against a real devpod or
 one in `test/fixtures/devpod_shim.py`, and imports nothing that ships:
 
 ```bash
-pixi run ci                                    # ruff, pylint, ty, and the harness under coverage
+pixi run ci                                    # ruff, ty, and the harness under coverage
 pixi run test-e2e                              # the real-devpod tier: builds real containers
 ```
 

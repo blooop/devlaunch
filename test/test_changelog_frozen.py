@@ -76,7 +76,7 @@ def git(*args: str, cwd: Path) -> None:
 
 
 # Named through the decorator so the fixture function and the parameter that
-# receives it are not one name in one module, which pylint reads as shadowing.
+# receives it are not one name in one module, which a linter reads as shadowing.
 @pytest.fixture(name="repo")
 def repo_before_the_release_cut(tmp_path: Path) -> Path:
     """A repository at the moment before the release cut.
