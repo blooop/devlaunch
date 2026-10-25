@@ -586,18 +586,20 @@ fn path_in(line: &str) -> Option<&str> {
     Some(line[offset..].trim())
 }
 
-/// Where devpod writes the build files for a devcontainer that has `features`.
-const DEVPOD_INTERNAL: &str = ".devcontainer/.devpod-internal/";
+/// The directory devpod writes the build files into, for a devcontainer that has
+/// `features`. It sits in the build context, which is the config's directory only
+/// by default: `"context": ".."` puts it at the clone root.
+const DEVPOD_INTERNAL: &str = ".devpod-internal";
 
 /// Whether one `git status --porcelain` line is a file devpod wrote into the
 /// clone, which is not anybody's work (devlaunch#707).
 ///
 /// Two things, both untracked:
 ///
-/// - `.devcontainer/.devpod-internal/`, where devpod writes
+/// - `.devpod-internal/`, wherever the build context put it, where devpod writes
 ///   `Dockerfile-with-features` and the features' env files when it builds a
-///   config with `features`. Also `.devcontainer/` whole, when that directory is
-///   untracked and holds nothing else.
+///   config with `features`. Also a directory git reports whole, when all it
+///   holds is `.devpod-internal`.
 /// - `.devcontainer.json` at the root, which devpod saves for its fallback image
 ///   in a repository with no devcontainer config. Only while it holds devpod's
 ///   one key, `{"image": "..."}`: a file that says anything more is an edit, and
@@ -606,25 +608,36 @@ fn written_by_devpod(clone: &Path, line: &str) -> bool {
     let Some(path) = line.strip_prefix("?? ") else {
         return false;
     };
-    if path.starts_with(DEVPOD_INTERNAL) {
+    if path.split('/').any(|part| part == DEVPOD_INTERNAL) {
         return true;
     }
-    if path == ".devcontainer/" {
-        return holds_only_devpod_internal(&clone.join(".devcontainer"));
+    if let Some(dir) = path.strip_suffix('/') {
+        return holds_only_devpod_internal(&clone.join(dir));
     }
     path == ".devcontainer.json" && is_a_bare_fallback(&clone.join(".devcontainer.json"))
 }
 
-/// Whether *dir* holds `.devpod-internal` and nothing else.
+/// Whether *dir* holds something, and everything in it is a `.devpod-internal`
+/// or a directory that in turn holds only those. Symlinks are not followed.
 fn holds_only_devpod_internal(dir: &Path) -> bool {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return false;
     };
-    let names: Vec<_> = entries
-        .filter_map(Result::ok)
-        .map(|entry| entry.file_name())
-        .collect();
-    names == [".devpod-internal"]
+    let mut any = false;
+    for entry in entries {
+        let Ok(entry) = entry else {
+            return false;
+        };
+        let is_dir = entry.file_type().is_ok_and(|kind| kind.is_dir());
+        if !is_dir {
+            return false;
+        }
+        if entry.file_name() != DEVPOD_INTERNAL && !holds_only_devpod_internal(&entry.path()) {
+            return false;
+        }
+        any = true;
+    }
+    any
 }
 
 /// Whether *file* is the config devpod saves for a fallback image: a JSON object

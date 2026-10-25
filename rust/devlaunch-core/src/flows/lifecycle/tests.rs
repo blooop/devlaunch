@@ -3731,8 +3731,8 @@ fn a_remote_that_cannot_be_reached_leaves_the_refusal_standing() {
 
 /// devlaunch#707: devpod writes into the clone. A repository with no devcontainer
 /// config gets the `.devcontainer.json` devpod saves for its fallback image, and a
-/// config with features gets devpod's build files under
-/// `.devcontainer/.devpod-internal/`. Neither is work, so a plain `rm` deletes.
+/// config with features gets devpod's build files under `.devpod-internal/` in its
+/// build context. Neither is work, so a plain `rm` deletes.
 #[test]
 fn what_devpod_wrote_into_the_clone_does_not_stop_a_plain_rm() {
     let (mut world, clone) = a_world_ready_to_remove();

@@ -338,15 +338,51 @@ fn the_build_files_devpod_writes_for_features_are_not_work() {
 }
 
 #[test]
+fn devpods_build_files_are_not_work_wherever_the_build_context_is() {
+    // devpod writes `.devpod-internal/` into the build context, which is the
+    // config's directory only by default. `"context": ".."` puts it at the clone
+    // root, and a config in a subfolder of `.devcontainer/` puts it in that
+    // subfolder.
+    for (config, text, internal) in [
+        (
+            ".devcontainer/devcontainer.json",
+            r#"{"build":{"dockerfile":"Dockerfile","context":".."},"features":{"x":{}}}"#,
+            ".devpod-internal",
+        ),
+        (
+            ".devcontainer.json",
+            r#"{"image":"a:1","features":{"x":{}}}"#,
+            ".devpod-internal",
+        ),
+        (
+            ".devcontainer/python/devcontainer.json",
+            r#"{"image":"a:1","features":{"x":{}}}"#,
+            ".devcontainer/python/.devpod-internal",
+        ),
+    ] {
+        let fixture = Fixture::new();
+        let clone = fixture.clone();
+        write(&clone.join(config), text);
+        commit(&clone, "a devcontainer");
+        git(&clone, &["push", "-q", "origin", "HEAD"]);
+        let internal = clone.join(internal);
+        write(&internal.join("Dockerfile-with-features"), "FROM a:1\n");
+        write(&internal.join("devcontainer-features.builtin.env"), "X=1\n");
+
+        assert_eq!(held(&clone), Unsaved::NothingToLose, "{config}");
+    }
+}
+
+#[test]
 fn devpods_build_files_in_an_untracked_devcontainer_directory_are_not_work() {
-    // A repository whose config is a tracked root `.devcontainer.json` with
-    // features: devpod's build directory is then the only thing in an untracked
-    // `.devcontainer/`, which git reports as that one directory.
+    // A tracked root `.devcontainer.json` whose build context is a directory
+    // git tracks nothing in: devpod's build directory is then the only thing in
+    // an untracked `.devcontainer/`, which git reports as that one directory.
     let fixture = Fixture::new();
     let clone = fixture.clone();
     write(
         &clone.join(".devcontainer.json"),
-        r#"{"image":"a:1","features":{"x":{}}}"#,
+        r#"{"build":{"dockerfile":"Dockerfile","context":".devcontainer"},"features":{"x":{}}}"#,
     );
     commit(&clone, "a devcontainer");
     git(&clone, &["push", "-q", "origin", "HEAD"]);

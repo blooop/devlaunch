@@ -1108,8 +1108,9 @@ answers it is:
 Two untracked paths do not count, because devpod writes them and nobody else does
 ([#707](https://github.com/blooop/devlaunch/issues/707)): the `.devcontainer.json`
 devpod saves for its fallback image in a repository with no devcontainer config,
-while it holds only `{"image": "..."}`, and the build files under
-`.devcontainer/.devpod-internal/` for a config with features.
+while it holds only `{"image": "..."}`, and the build files devpod writes for a
+config with features under `.devpod-internal/` in the build context
+(`.devcontainer/` by default, the clone root for `"context": ".."`).
 
 The commits half of that answer is asked of **every ref in the clone**, not of the
 branch it happens to have checked out. Commit on `wip`, switch back to `main`, and
