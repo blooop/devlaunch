@@ -35,6 +35,7 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
+use crate::json::JsonKind;
 use crate::osext::system_words;
 
 /// The directory devpod keeps its own records in.
@@ -406,6 +407,10 @@ pub enum Damage {
     Empty,
     /// The file has bytes that are not JSON. `reason` is the parser's words.
     NotJson { reason: String },
+    /// The file is JSON, but of this kind rather than an object, which devpod's
+    /// decoder refuses. Never `Object`, and never `Null`: devpod loads `null` as
+    /// an empty record without a warning, so dl does not name it.
+    NotAnObject { kind: JsonKind },
 }
 
 /// Every workspace record under `home` that devpod cannot load, in every context.
@@ -414,7 +419,8 @@ pub enum Damage {
 /// part of the promised API and this answer is the binary's business.
 ///
 /// "Cannot load" is read the way devpod reads it: the file is there and is not a
-/// JSON object. A file dl may not read is left out rather than guessed at, and so
+/// JSON object, or `null`, which Go decodes into a record as nothing. A file dl
+/// may not read is left out rather than guessed at, and so
 /// is a workspace id that is not UTF-8, which no devpod line could name. Sorted
 /// by path, so the answer is the same on every call.
 pub fn damaged_records(home: &DevpodHome) -> Vec<DamagedRecord> {
@@ -437,8 +443,11 @@ pub fn damaged_records(home: &DevpodHome) -> Vec<DamagedRecord> {
             let damage = if text.trim().is_empty() {
                 Damage::Empty
             } else {
-                match serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&text) {
-                    Ok(_) => continue,
+                match serde_json::from_str::<serde_json::Value>(&text) {
+                    Ok(serde_json::Value::Object(_) | serde_json::Value::Null) => continue,
+                    Ok(other) => Damage::NotAnObject {
+                        kind: JsonKind::of(&other),
+                    },
                     Err(error) => Damage::NotJson {
                         reason: error.to_string(),
                     },
@@ -914,6 +923,43 @@ mod tests {
             matches!(&damaged[1].damage, Damage::NotJson { reason } if !reason.is_empty()),
             "{:?}",
             damaged[1].damage
+        );
+    }
+
+    /// JSON that is not an object is damage of its own kind: devpod's Go decoder
+    /// refuses an array, a string, a number or a bool with `cannot unmarshal`.
+    /// `null` is not damage: Go decodes it into a record as nothing at all, so
+    /// devpod loads it without a warning, and dl has no warning to name.
+    #[test]
+    fn json_that_is_not_an_object_is_named_and_null_is_not() {
+        let home = devpod_home_with(&[]);
+        for (workspace_id, text) in [
+            ("an-array", "[]"),
+            ("a-string", "\"x\""),
+            ("a-number", "1"),
+            ("a-bool", "true"),
+            ("a-null", " null\n"),
+        ] {
+            let record = home.record("default", workspace_id);
+            std::fs::create_dir_all(record.parent().expect("a record directory"))
+                .expect("a record directory");
+            std::fs::write(&record, text).expect("a record");
+        }
+
+        let named: Vec<(String, Damage)> = damaged_records(&home)
+            .into_iter()
+            .map(|record| (record.workspace_id, record.damage))
+            .collect();
+
+        assert_eq!(
+            named,
+            [
+                ("a-bool", JsonKind::Bool),
+                ("a-number", JsonKind::Number),
+                ("a-string", JsonKind::String),
+                ("an-array", JsonKind::Array),
+            ]
+            .map(|(id, kind)| (id.to_owned(), Damage::NotAnObject { kind }))
         );
     }
 

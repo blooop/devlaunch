@@ -1257,7 +1257,8 @@ workspace-name completion and nothing more.
 
 devpod keeps one `workspace.json` per workspace under
 `~/.devpod/contexts/<context>/workspaces/<id>/`. When that file is empty or is not
-JSON, which is what a devpod write cut short by a full disk leaves, devpod skips the
+JSON, which is what a devpod write cut short by a full disk leaves, or is JSON but not
+an object (`null` aside, which devpod reads as an empty record), devpod skips the
 workspace and logs `could not load workspace: workspace=<id>, error=...` every time
 it loads its workspaces. Every `up`, `ssh` and `list` does that, so the line used to
 come back several times on every `dl` call.

@@ -3227,6 +3227,9 @@ pub(crate) fn damaged_devpod_record(record: &DamagedRecord) -> String {
     let what = match &record.damage {
         Damage::Empty => "is empty".to_owned(),
         Damage::NotJson { reason } => format!("is not JSON ({reason})"),
+        Damage::NotAnObject { kind } => {
+            format!("holds a JSON {}, not an object", json_kind_word(*kind))
+        }
     };
     let dir = record
         .path
@@ -3240,6 +3243,18 @@ pub(crate) fn damaged_devpod_record(record: &DamagedRecord) -> String {
         record.workspace_id,
         shell::quote(&dir)
     )
+}
+
+/// A JSON kind as a sentence names it, with its article's noun.
+fn json_kind_word(kind: JsonKind) -> &'static str {
+    match kind {
+        JsonKind::Null => "null",
+        JsonKind::Bool => "boolean",
+        JsonKind::Number => "number",
+        JsonKind::String => "string",
+        JsonKind::Array => "array",
+        JsonKind::Object => "object",
+    }
 }
 
 /// Why one devpod record could not be re-pointed.
@@ -4489,6 +4504,26 @@ mod tests {
         assert!(
             line.ends_with(
                 "clear it with: rm -r '/home/a user/.devpod/contexts/default/workspaces/broken-ws'"
+            ),
+            "{line}"
+        );
+    }
+
+    /// A record that parses but holds no object is JSON, so "not JSON" would send
+    /// someone looking for a syntax error that is not there.
+    #[test]
+    fn a_damaged_record_that_is_json_but_no_object_says_so() {
+        let line = damaged_devpod_record(&DamagedRecord {
+            workspace_id: "broken-ws".to_owned(),
+            path: PathBuf::from("/h/.devpod/contexts/default/workspaces/broken-ws/workspace.json"),
+            damage: Damage::NotAnObject {
+                kind: JsonKind::Array,
+            },
+        });
+        assert!(
+            line.starts_with(
+                "dl: devpod's record of workspace broken-ws holds a JSON array, not an object, \
+                 so devpod cannot load it"
             ),
             "{line}"
         );

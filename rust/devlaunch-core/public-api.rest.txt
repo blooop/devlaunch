@@ -185,6 +185,8 @@ impl core::marker::StructuralPartialEq for devlaunch_core::clients::devpod::Work
 pub mod devlaunch_core::clients::devpod_home
 pub enum devlaunch_core::clients::devpod_home::Damage
 pub devlaunch_core::clients::devpod_home::Damage::Empty
+pub devlaunch_core::clients::devpod_home::Damage::NotAnObject
+pub devlaunch_core::clients::devpod_home::Damage::NotAnObject::kind: devlaunch_core::json::JsonKind
 pub devlaunch_core::clients::devpod_home::Damage::NotJson
 pub devlaunch_core::clients::devpod_home::Damage::NotJson::reason: alloc::string::String
 impl core::clone::Clone for devlaunch_core::clients::devpod_home::Damage
