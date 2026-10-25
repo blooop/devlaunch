@@ -351,6 +351,31 @@ fn the_json_document_is_the_one_python_printed() {
     assert_eq!(run.out, LS_JSON);
 }
 
+/// devlaunch#705: devpod leaves a record it cannot load out of its listing, so
+/// `dl --ls` left it out silently and the user could not see it in dl at all. dl
+/// now names it on stderr, and the document on stdout is the same one.
+#[test]
+fn a_record_devpod_cannot_load_is_named_on_stderr_and_the_listing_is_untouched() {
+    let world = World::full();
+    let record = world
+        .root
+        .join("devpod/contexts/default/workspaces/devlaunch-resume-6omv/workspace.json");
+    std::fs::create_dir_all(record.parent().expect("a record directory"))
+        .expect("a record directory");
+    std::fs::write(&record, "{\"id\": ").expect("a cut-short record");
+
+    let run = world.dl(&["--ls", "--json"]);
+    run.succeeded();
+    assert_eq!(run.out, LS_JSON);
+    assert_eq!(
+        run.err,
+        "dl: devpod's record of workspace devlaunch-resume-6omv is not JSON (EOF while \
+         parsing a value at line 1 column 7), so devpod cannot load it and warns about it on \
+         every call. 'devpod delete' cannot remove it; clear it with: rm -r \
+         {ROOT}/devpod/contexts/default/workspaces/devlaunch-resume-6omv\n"
+    );
+}
+
 #[test]
 fn an_empty_listing_is_an_empty_json_array() {
     let world = World::empty();

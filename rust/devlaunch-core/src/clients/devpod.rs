@@ -56,6 +56,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::clients::devpod_home::{DevpodHome, damaged_records};
 use crate::json::JsonKind;
 use crate::runner::{
     CapturedText, EnvSpec, Exit, Invocation, OsFailure, Outcome, Runner, SpawnSpec, StdinPlan,
@@ -113,6 +114,9 @@ pub(crate) struct Call {
     /// that a [`run_watching`] of it leaves on stderr. Only the launch's
     /// `devpod up` sets it; see [`SpawnSpec::stdout_is_log`].
     stdout_is_log: bool,
+    /// devpod's warnings about records dl has already named as damaged, which
+    /// [`run_watching`] does not echo and [`session`] does not forward.
+    quiet: LoadWarnings,
 }
 
 impl Call {
@@ -174,6 +178,15 @@ impl Call {
         self
     }
 
+    /// Keep devpod's warnings about these damaged records off the terminal: dl
+    /// has said once, in its own words, which records they are. See
+    /// [`LoadWarnings`].
+    #[must_use]
+    pub(crate) fn quieting(mut self, warnings: LoadWarnings) -> Self {
+        self.quiet = warnings;
+        self
+    }
+
     /// The whole argv, `devpod` included — what a recorded call compares against.
     pub(crate) fn argv(&self) -> Vec<String> {
         self.spec().invocation.argv()
@@ -202,6 +215,7 @@ impl Call {
             timeout: self.timeout,
             own_group: self.own_group,
             stdout_is_log: self.stdout_is_log,
+            quiet_lines: self.quiet.markers.clone(),
         }
     }
 }
@@ -510,6 +524,50 @@ impl LogRecord {
     }
 }
 
+/// devpod's warnings about workspace records dl has already named as damaged.
+///
+/// devpod logs `could not load workspace: workspace=<id>, error=<reason>` from its
+/// own `list.go` each time it loads all workspaces, which `up`, `ssh` and `list`
+/// all do, so one damaged record repeats it several times per dl call. dl says
+/// once, in its own words, which record that is and how to clear it, and these
+/// are the lines it then keeps off the terminal. Only for the ids dl named: a
+/// load failure dl did not find for itself is still devpod's to report.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct LoadWarnings {
+    markers: Vec<String>,
+}
+
+impl LoadWarnings {
+    /// The warnings about these workspace ids.
+    ///
+    /// Matched on the stable half of devpod's sentence, up to the comma after
+    /// the id: the comma is what keeps `broken-ws` from also matching
+    /// `broken-ws-2`, and the tail after it is devpod's error text and a Go
+    /// source location, both of which move between releases.
+    pub(crate) fn about<'a>(workspace_ids: impl IntoIterator<Item = &'a str>) -> Self {
+        Self {
+            markers: workspace_ids
+                .into_iter()
+                .map(|id| format!("could not load workspace: workspace={id},"))
+                .collect(),
+        }
+    }
+
+    /// The warnings about every record in this devpod home that devpod cannot
+    /// load, or none when there is no home to look in.
+    pub(crate) fn of_damaged_records(home: Option<&DevpodHome>) -> Self {
+        let damaged = home.map(damaged_records).unwrap_or_default();
+        Self::about(damaged.iter().map(|record| record.workspace_id.as_str()))
+    }
+
+    /// Whether `line` is one of these warnings, in any of devpod's shapes.
+    pub(crate) fn covers(&self, line: &str) -> bool {
+        self.markers
+            .iter()
+            .any(|marker| line.contains(marker.as_str()))
+    }
+}
+
 /// Forward devpod's stderr, holding back its report of a remote exit status.
 ///
 /// Stateful because it is fed one line at a time as the session runs: the
@@ -519,11 +577,16 @@ impl LogRecord {
 pub(crate) struct StderrFilter {
     held_hint: Option<String>,
     remote_status: Option<i32>,
+    quiet: LoadWarnings,
 }
 
 impl StderrFilter {
-    pub(crate) fn new() -> Self {
-        Self::default()
+    /// A filter that also drops devpod's warnings about these damaged records.
+    pub(crate) fn quieting(warnings: LoadWarnings) -> Self {
+        Self {
+            quiet: warnings,
+            ..Self::default()
+        }
     }
 
     /// Feed one line, forwarding whatever the user should see.
@@ -558,6 +621,10 @@ impl StderrFilter {
             self.remote_status = Some(status);
             // The hint introduced this fatal, so it goes with it.
             self.held_hint = None;
+            return;
+        }
+        // dl has already said which record this is and how to clear it.
+        if self.quiet.covers(text) {
             return;
         }
         // Matched against `text` rather than the raw line so the hold-back keeps
@@ -682,7 +749,7 @@ pub(crate) fn session(
     // The span covers the whole session, as Python's does: what the summary names
     // is the round trip the user waited on, not just the process spawn.
     let _span = timing::span(call.round_trip());
-    let mut filter = StderrFilter::new();
+    let mut filter = StderrFilter::quieting(call.quiet.clone());
     let outcome = runner.session(&call.spec(), &mut |line| filter.push(line, forward));
     let remote_status = filter.finish(forward);
     let (exit, ()) = ran(outcome)?;
@@ -1623,7 +1690,7 @@ mod tests {
     /// status, and what reached the user.
     fn filter(lines: &[&str]) -> (Option<i32>, Vec<String>) {
         let mut shown = Vec::new();
-        let mut filter = StderrFilter::new();
+        let mut filter = StderrFilter::default();
         {
             let mut forward = |line: &str| shown.push(line.to_owned());
             for line in lines {
@@ -1632,6 +1699,36 @@ mod tests {
             let status = filter.finish(&mut forward);
             (status, shown)
         }
+    }
+
+    /// devpod's load warning about a record dl has named is dropped in all three
+    /// shapes it reaches a session's stderr in: a json record, devpod's coloured
+    /// plain line, and the bare message. The same warning about a record dl did
+    /// not name is devpod's to report, and still reaches the user.
+    #[test]
+    fn a_load_warning_about_a_named_record_is_dropped_and_others_are_kept() {
+        let json = concat!(
+            r#"{"time":"2026-10-25T20:13:25.948765652Z","message":"could not load "#,
+            r#"workspace: workspace=broken-ws, error=unexpected end of JSON input","#,
+            r#""level":"warning"}"#,
+        );
+        let plain = concat!(
+            "\x1b[0;1;37m20:13:25\x1b[0m \x1b[0;1;33mwarn\x1b[0m could not load workspace: ",
+            "workspace=broken-ws, error=unexpected end of JSON input \x1b[0;90mlist.go:137\x1b[0m",
+        );
+        let bare =
+            "could not load workspace: workspace=broken-ws, error=unexpected end of JSON input";
+        let other =
+            "could not load workspace: workspace=broken-ws-2, error=unexpected end of JSON input";
+        let mut shown = Vec::new();
+        let mut filter = StderrFilter::quieting(LoadWarnings::about(["broken-ws"]));
+        let mut forward = |line: &str| shown.push(line.to_owned());
+        for line in [json, plain, bare, other, "ERR"] {
+            filter.push(line, &mut forward);
+        }
+        filter.finish(&mut forward);
+
+        assert_eq!(shown, [other, "ERR"]);
     }
 
     #[test]

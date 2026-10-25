@@ -183,6 +183,18 @@ impl core::fmt::Debug for devlaunch_core::clients::devpod::Workspace
 pub fn devlaunch_core::clients::devpod::Workspace::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::clients::devpod::Workspace
 pub mod devlaunch_core::clients::devpod_home
+pub enum devlaunch_core::clients::devpod_home::Damage
+pub devlaunch_core::clients::devpod_home::Damage::Empty
+pub devlaunch_core::clients::devpod_home::Damage::NotJson
+pub devlaunch_core::clients::devpod_home::Damage::NotJson::reason: alloc::string::String
+impl core::clone::Clone for devlaunch_core::clients::devpod_home::Damage
+pub fn devlaunch_core::clients::devpod_home::Damage::clone(&self) -> devlaunch_core::clients::devpod_home::Damage
+impl core::cmp::Eq for devlaunch_core::clients::devpod_home::Damage
+impl core::cmp::PartialEq for devlaunch_core::clients::devpod_home::Damage
+pub fn devlaunch_core::clients::devpod_home::Damage::eq(&self, &devlaunch_core::clients::devpod_home::Damage) -> bool
+impl core::fmt::Debug for devlaunch_core::clients::devpod_home::Damage
+pub fn devlaunch_core::clients::devpod_home::Damage::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::clients::devpod_home::Damage
 pub enum devlaunch_core::clients::devpod_home::RepointFailure
 pub devlaunch_core::clients::devpod_home::RepointFailure::NotADevpodRecord
 pub devlaunch_core::clients::devpod_home::RepointFailure::NotADevpodRecord::path: std::path::PathBuf
@@ -203,6 +215,19 @@ pub fn devlaunch_core::clients::devpod_home::RepointFailure::eq(&self, &devlaunc
 impl core::fmt::Debug for devlaunch_core::clients::devpod_home::RepointFailure
 pub fn devlaunch_core::clients::devpod_home::RepointFailure::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::clients::devpod_home::RepointFailure
+pub struct devlaunch_core::clients::devpod_home::DamagedRecord
+pub devlaunch_core::clients::devpod_home::DamagedRecord::damage: devlaunch_core::clients::devpod_home::Damage
+pub devlaunch_core::clients::devpod_home::DamagedRecord::path: std::path::PathBuf
+pub devlaunch_core::clients::devpod_home::DamagedRecord::workspace_id: alloc::string::String
+impl core::clone::Clone for devlaunch_core::clients::devpod_home::DamagedRecord
+pub fn devlaunch_core::clients::devpod_home::DamagedRecord::clone(&self) -> devlaunch_core::clients::devpod_home::DamagedRecord
+impl core::cmp::Eq for devlaunch_core::clients::devpod_home::DamagedRecord
+impl core::cmp::PartialEq for devlaunch_core::clients::devpod_home::DamagedRecord
+pub fn devlaunch_core::clients::devpod_home::DamagedRecord::eq(&self, &devlaunch_core::clients::devpod_home::DamagedRecord) -> bool
+impl core::fmt::Debug for devlaunch_core::clients::devpod_home::DamagedRecord
+pub fn devlaunch_core::clients::devpod_home::DamagedRecord::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::clients::devpod_home::DamagedRecord
+pub fn devlaunch_core::clients::devpod_home::damaged_records(&devlaunch_core::clients::devpod_home::DevpodHome) -> alloc::vec::Vec<devlaunch_core::clients::devpod_home::DamagedRecord>
 pub mod devlaunch_core::clients::gh
 pub enum devlaunch_core::clients::gh::GhEvent
 pub devlaunch_core::clients::gh::GhEvent::CouldNotRun(devlaunch_core::clients::gh::GhUnavailable)

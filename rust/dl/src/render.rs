@@ -14,7 +14,7 @@ use devlaunch_core::clients::devpod::{
     AddFailed, EnsureProviderFailed, ListingUnreadable, NotAListing, NotAProviderListing, NotRun,
     ProviderListUnreadable, Workspace,
 };
-use devlaunch_core::clients::devpod_home::RepointFailure;
+use devlaunch_core::clients::devpod_home::{Damage, DamagedRecord, RepointFailure};
 use devlaunch_core::clients::gh::{
     GhEvent, GhUnavailable, PullRequestHead, PullRequestState, PullRequestUnavailable,
 };
@@ -3216,6 +3216,33 @@ fn not_adopted(because: &NotAdopted) -> String {
 }
 
 /// Why one devpod record could not be re-pointed.
+/// dl's one line about a devpod record devpod cannot load (devlaunch#705).
+///
+/// It names the workspace, what is wrong with its record, and the way out.
+/// devpod's own warning says none of the last, and repeats on every call, which
+/// is why dl drops it and says this once. The way out is removing the directory,
+/// because devpod 0.26.1 cannot: `devpod delete --force <id>` answers that the
+/// workspace is not found and leaves the record where it is (measured). The path
+/// is quoted with the crate's one quoter, so a pasted line removes one directory.
+pub(crate) fn damaged_devpod_record(record: &DamagedRecord) -> String {
+    let what = match &record.damage {
+        Damage::Empty => "is empty".to_owned(),
+        Damage::NotJson { reason } => format!("is not JSON ({reason})"),
+    };
+    let dir = record
+        .path
+        .parent()
+        .unwrap_or(&record.path)
+        .display()
+        .to_string();
+    format!(
+        "dl: devpod's record of workspace {} {what}, so devpod cannot load it and warns \
+         about it on every call. 'devpod delete' cannot remove it; clear it with: rm -r {}",
+        record.workspace_id,
+        shell::quote(&dir)
+    )
+}
+
 pub(crate) fn repoint_failure(failure: &RepointFailure) -> String {
     match failure {
         // One sentence for both, as Python's one `except (OSError,

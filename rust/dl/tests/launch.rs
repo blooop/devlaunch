@@ -2597,3 +2597,145 @@ fn an_agent_launch_asks_herdr_nothing_until_the_split_is_switched_on() {
     );
     assert!(!split_done(&world).exists());
 }
+
+// ===========================================================================
+// A devpod record devpod cannot load (devlaunch#705)
+// ===========================================================================
+
+/// The workspace whose record is damaged. Not one this world launches: devpod
+/// warns about every record it cannot load, whichever workspace it was asked about.
+const BROKEN: &str = "devlaunch-resume-6omv";
+
+/// devpod's warning about it, the way devpod 0.26.1 prints it in plain mode.
+const LOAD_WARNING: &str = "20:13:25 warn could not load workspace: \
+                            workspace=devlaunch-resume-6omv, error=unexpected end of JSON input \
+                            list.go:137";
+
+/// The same warning under `--log-output json`, measured against devpod 0.26.1.
+const LOAD_WARNING_JSON: &str = r#"{"time":"2026-10-25T20:13:25.948765652Z","message":"could not load workspace: workspace=devlaunch-resume-6omv, error=unexpected end of JSON input","level":"warning"}"#;
+
+/// What dl says instead, once per call.
+const DAMAGED_NOTICE: &str = "dl: devpod's record of workspace devlaunch-resume-6omv is empty, so \
+                              devpod cannot load it and warns about it on every call. 'devpod \
+                              delete' cannot remove it; clear it with: rm -r \
+                              {ROOT}/devpod/contexts/default/workspaces/devlaunch-resume-6omv";
+
+impl World {
+    /// The world `fixtures` builds, plus one empty `workspace.json` under the
+    /// devpod home, and a devpod that warns about it the way devpod does: on
+    /// stderr on every call, in json when asked for json, and on stdout as well
+    /// during an `up`, where devpod's `info` lines go.
+    fn with_a_damaged_record(fixtures: &[&str]) -> Self {
+        let world = Self::with(fixtures);
+        let record = world.path(&format!(
+            "devpod/contexts/default/workspaces/{BROKEN}/workspace.json"
+        ));
+        std::fs::create_dir_all(record.parent().expect("a record directory"))
+            .expect("a record directory");
+        std::fs::write(&record, "").expect("an empty record");
+
+        let devpod = world.path("bin/devpod");
+        let original = std::fs::read_to_string(&devpod).expect("the scenario's devpod");
+        let delegate = original
+            .lines()
+            .find(|line| line.starts_with("exec "))
+            .expect("the delegate exec line")
+            .to_owned();
+        let script = format!(
+            "#!/bin/sh\n\
+             case \" $* \" in\n\
+             \x20 *' --log-output json '*) echo '{LOAD_WARNING_JSON}' >&2 ;;\n\
+             \x20 *) echo '{LOAD_WARNING}' >&2 ;;\n\
+             esac\n\
+             if [ \"$1\" = \"up\" ]; then echo '{LOAD_WARNING}'; fi\n\
+             {delegate}\n"
+        );
+        std::fs::write(&devpod, script).expect("rewrite devpod");
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&devpod, std::fs::Permissions::from_mode(0o755))
+            .expect("keep devpod executable");
+        world
+    }
+}
+
+/// How many of `run`'s stderr lines are dl's notice, and how many are devpod's
+/// warning in any of its shapes.
+fn notices_and_warnings(run: &Run) -> (usize, Vec<&str>) {
+    let notices = run
+        .stderr_lines()
+        .iter()
+        .filter(|line| **line == DAMAGED_NOTICE)
+        .count();
+    let warnings = run
+        .stderr_lines()
+        .into_iter()
+        .filter(|line| line.contains("could not load workspace"))
+        .collect();
+    (notices, warnings)
+}
+
+#[test]
+fn a_warm_command_names_a_damaged_record_once_and_drops_devpods_warning() {
+    // devlaunch#705: a warm `dl <ws> -- cmd` printed devpod's warning on every
+    // call and never said which record it was or how to clear it.
+    let world = World::with_a_damaged_record(&["--warm"]);
+    let run = world.dl(&[MAIN, "--", "true"]);
+    run.exited(0);
+    assert_eq!(
+        notices_and_warnings(&run),
+        (1, vec![]),
+        "stderr: {}",
+        run.err
+    );
+}
+
+#[test]
+fn a_cold_launch_names_a_damaged_record_once_and_drops_devpods_warning_from_the_up() {
+    // The `up` is the call that repeated it most: devpod prints the warning on
+    // both of its streams while it builds, and dl echoes both to stderr.
+    let world = World::with_a_damaged_record(&[]);
+    let run = world.dl(&["blooop/devlaunch@cold", "--", "true"]);
+    run.exited(0);
+    assert!(
+        world
+            .calls()
+            .exact(&world.root)
+            .iter()
+            .any(|call| call.starts_with("devpod up ")),
+        "a cold launch runs an up"
+    );
+    assert_eq!(run.out, "");
+    // One of devpod's lines is left, and it is not the `up`'s: this world's
+    // container has no tools, so the launch installs them over a `devpod ssh`
+    // that inherits dl's stderr (`devpod::run`), a stream dl does not read and so
+    // cannot filter. Pinned so that closing that gap changes this line on purpose.
+    // A container that already has its tools makes no such trip.
+    assert_eq!(
+        notices_and_warnings(&run),
+        (1, vec![LOAD_WARNING]),
+        "stderr: {}",
+        run.err
+    );
+}
+
+#[test]
+fn a_removal_names_a_damaged_record_once_and_drops_devpods_warning_from_the_delete() {
+    // `dl <ws> rm` printed it too: its `devpod delete` is watched, like the `up`.
+    let world = World::with_a_damaged_record(&["--warm"]);
+    let run = world.dl(&[MAIN, "rm", "--force"]);
+    run.exited(0);
+    assert!(
+        world
+            .calls()
+            .exact(&world.root)
+            .iter()
+            .any(|call| call.starts_with("devpod delete ")),
+        "a removal runs a delete"
+    );
+    assert_eq!(
+        notices_and_warnings(&run),
+        (1, vec![]),
+        "stderr: {}",
+        run.err
+    );
+}

@@ -2199,7 +2199,10 @@ fn up_under_stage(
         &Call::new(args)
             .leading_its_own_group()
             .whose_output_is_progress()
-            .with_env(env),
+            .with_env(env)
+            .quieting(devpod::LoadWarnings::of_damaged_records(
+                host.devpod_home.as_ref(),
+            )),
         &mut |line| {
             // Before the lock arm, and not behind `said`: these are the failure
             // being watched for, where the lock line is a wait that may resolve.
@@ -3517,7 +3520,11 @@ fn devpod_session(
     // their `/proc/<pid>/environ`, and this `devpod` is the descendant it finds.
     // Sending it into the container as well would name the agent to a container
     // that is not the one running it.
-    let call = Call::new(args).with_env(herdr::inherited_with(forwarding.env, visibility.agent));
+    let call = Call::new(args)
+        .with_env(herdr::inherited_with(forwarding.env, visibility.agent))
+        .quieting(devpod::LoadWarnings::of_damaged_records(
+            session.host.devpod_home.as_ref(),
+        ));
     notices.say(LaunchNotice::SshCommand { argv: call.argv() });
 
     // Only stderr is read, which under a pty carries devpod's own warnings and

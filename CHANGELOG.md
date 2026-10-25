@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **dl names a devpod record that devpod cannot load, once, instead of letting devpod
+  repeat its warning on every call.** An empty or garbled `workspace.json` under
+  devpod's home made devpod print `could not load workspace: workspace=<id>, ...` up to
+  four times on each `dl` call, and dl never said which record it was or how to clear
+  it. dl now prints one line on stderr that names the workspace and gives the
+  `rm -r <dir>` that clears it (`devpod delete --force` cannot: devpod answers that the
+  workspace is not found). It then drops devpod's matching lines from the `up`, the
+  `delete` and the session it forwards. The line shows on `--ls`, the picker and every
+  workspace verb (#705).
+
 - **The devcontainer image no longer trusts the compromised emSign ECC Root CA - G3.**
   The base image ships `ca-certificates` 20240203, which still trusts the root whose
   intermediates had their private keys cracked in October 2026 (CVE-2026-111943). The
