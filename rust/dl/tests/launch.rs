@@ -809,8 +809,7 @@ fn a_create_hands_devpod_the_configured_fallback_image() {
     let world = World::with(&[]);
     let config = world.path("config/devlaunch/config.toml");
     std::fs::create_dir_all(config.parent().expect("a parent")).expect("the config dir");
-    std::fs::write(&config, "[worktree]\nfallback_image = \"ubuntu:22.04\"\n")
-        .expect("the config");
+    std::fs::write(&config, "[worktree]\nfallback_image = \"ubuntu:22.04\"\n").expect("the config");
 
     world.dl(&["blooop/devlaunch@cold"]).exited(0);
 
