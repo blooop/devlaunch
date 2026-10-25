@@ -12,9 +12,6 @@ tests pin the shim's side of that bargain — output shapes dl actually parses
 and honest non-zero exits for workspaces devpod would not know.
 """
 
-# Requesting a fixture shadows its name; that is how pytest is written.
-# pylint: disable=redefined-outer-name
-
 import json
 import os
 import subprocess

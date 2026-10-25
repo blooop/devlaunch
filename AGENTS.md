@@ -189,7 +189,8 @@ Four rules follow from that, and all of them are about the hash:
   leg passing it would race for a tag whose value decides whether a cache serves
   layers. arm64 publishes `latest-arm64`.
 - **The hash covers the recipe, not what the recipe pulls.** The base image tag,
-  the `docker-in-docker` major and the `claude-shim` the local feature installs
+  the `ca-certificates` the Dockerfile upgrades from the apt mirror, the
+  `docker-in-docker` major and the `claude-shim` the local feature installs
   all float, so one `.devcontainer/` tree can publish two different images. That
   is deliberate: **do not pin `claude-shim` here.** It carries no `claude` — the
   binary is downloaded on first run — a pin freezes it harder than no pin does,

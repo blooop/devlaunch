@@ -351,7 +351,7 @@ a workspace opted out still reaches its login screen, because there is no
 credential rather than because a flag was missing.
 
 Which repos this was actually visible in: the ones with no `.devcontainer/` of
-their own. They get devpod's fallback image and a virgin config directory, where a
+their own. They got devpod's fallback image and a virgin config directory, where a
 repo whose devcontainer mounts `~/.claude` was reading a `.claude.json` that had
 answered the question on the host months ago.
 
@@ -654,7 +654,11 @@ which is the hostname your shell prompt shows, always runs; installing zellij
 and naming the terminal each run only when its own switch asks for it. They cost
 nothing extra because the probe was paying for the trip anyway. Each stage reports `ok`, `failed` with its
 exit status, or *not reached*; one that fails stops neither the stages behind it
-nor the probe, and `dl` says which one it was.
+nor the probe, and `dl` says which one it was. The hostname stage is the
+exception in how it says it: `sudo hostname` needs CAP_SYS_ADMIN, which Docker
+drops by default, so it fails on most cold launches. `dl` reports that as
+`<id>: did not set the hostname (exit 1; ...), so the prompt keeps the container's
+own hostname. Nothing else is affected.` rather than as a stage that failed.
 
 The probe is the tail of that trip. The container reports
 what only it can know: whether both tools answer at all, where its `claude`

@@ -4,6 +4,24 @@ Most projects need nothing from this page: `dl owner/repo` clones, builds and
 attaches. It covers the two places where devlaunch has to hand a project more
 than the devcontainer spec provides, and what a project has to do to meet it.
 
+## Repositories with no devcontainer
+
+A repository with no devcontainer config opens on a fallback image, which `dl`
+hands to `devpod up --fallback-image` when it creates the workspace. The default
+is `ghcr.io/blooop/python_template/devcontainer:latest`, the shared image that
+dl-ready repositories open on, rather than devpod's own `base:ubuntu`. Set another
+one in `$XDG_CONFIG_HOME/devlaunch/config.toml` (`~/.config/devlaunch/config.toml`
+when `XDG_CONFIG_HOME` is unset):
+
+```toml
+[worktree]
+fallback_image = "mcr.microsoft.com/devcontainers/base:ubuntu"
+```
+
+The image is read at the create only, and devpod then saves it into the clone as
+`.devcontainer.json`. So a workspace that already exists keeps the image it was
+created on. To move it, `dl <ws> rm` and launch it again.
+
 ## Workspace identity for host-side hooks
 
 `devcontainer.json`'s `initializeCommand` runs **on the host**, before the
