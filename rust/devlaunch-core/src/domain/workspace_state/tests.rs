@@ -301,6 +301,212 @@ fn untracked_files_are_unsaved_too() {
 }
 
 #[test]
+fn the_devcontainer_json_devpod_writes_for_its_fallback_is_not_work() {
+    // devlaunch#707. A repository with no devcontainer config gets devpod's
+    // fallback, and devpod saves it into the clone as an untracked
+    // `.devcontainer.json`. dl's own backend wrote it, so it stops no `rm`.
+    for written in [
+        r#"{"image":"mcr.microsoft.com/devcontainers/base:ubuntu"}"#,
+        r#"{"image":"ghcr.io/blooop/python_template/devcontainer:latest"}"#,
+    ] {
+        let fixture = Fixture::new();
+        let clone = fixture.clone();
+        write(&clone.join(".devcontainer.json"), written);
+
+        assert_eq!(held(&clone), Unsaved::NothingToLose, "{written}");
+    }
+}
+
+#[test]
+fn the_build_files_devpod_writes_for_features_are_not_work() {
+    // A devcontainer with `features` is built by devpod from a Dockerfile it
+    // writes into the clone, under `.devcontainer/.devpod-internal/`. Also
+    // devpod's, also not work (devlaunch#707).
+    let fixture = Fixture::new();
+    let clone = fixture.clone();
+    write(
+        &clone.join(".devcontainer/devcontainer.json"),
+        r#"{"image":"a:1"}"#,
+    );
+    commit(&clone, "a devcontainer");
+    git(&clone, &["push", "-q", "origin", "HEAD"]);
+    let internal = clone.join(".devcontainer/.devpod-internal");
+    write(&internal.join("Dockerfile-with-features"), "FROM a:1\n");
+    write(&internal.join("devcontainer-features.builtin.env"), "X=1\n");
+
+    assert_eq!(held(&clone), Unsaved::NothingToLose);
+}
+
+#[test]
+fn devpods_build_files_are_not_work_wherever_the_build_context_is() {
+    // devpod writes `.devpod-internal/` into the build context, which is the
+    // config's directory only by default. `"context": ".."` puts it at the clone
+    // root, and a config in a subfolder of `.devcontainer/` puts it in that
+    // subfolder.
+    for (config, text, internal) in [
+        (
+            ".devcontainer/devcontainer.json",
+            r#"{"build":{"dockerfile":"Dockerfile","context":".."},"features":{"x":{}}}"#,
+            ".devpod-internal",
+        ),
+        (
+            ".devcontainer.json",
+            r#"{"image":"a:1","features":{"x":{}}}"#,
+            ".devpod-internal",
+        ),
+        (
+            ".devcontainer/python/devcontainer.json",
+            r#"{"image":"a:1","features":{"x":{}}}"#,
+            ".devcontainer/python/.devpod-internal",
+        ),
+    ] {
+        let fixture = Fixture::new();
+        let clone = fixture.clone();
+        write(&clone.join(config), text);
+        commit(&clone, "a devcontainer");
+        git(&clone, &["push", "-q", "origin", "HEAD"]);
+        let internal = clone.join(internal);
+        write(&internal.join("Dockerfile-with-features"), "FROM a:1\n");
+        write(&internal.join("devcontainer-features.builtin.env"), "X=1\n");
+
+        assert_eq!(held(&clone), Unsaved::NothingToLose, "{config}");
+    }
+}
+
+#[test]
+fn devpods_build_files_in_an_untracked_devcontainer_directory_are_not_work() {
+    // A tracked root `.devcontainer.json` whose build context is a directory
+    // git tracks nothing in: devpod's build directory is then the only thing in
+    // an untracked `.devcontainer/`, which git reports as that one directory.
+    let fixture = Fixture::new();
+    let clone = fixture.clone();
+    write(
+        &clone.join(".devcontainer.json"),
+        r#"{"build":{"dockerfile":"Dockerfile","context":".devcontainer"},"features":{"x":{}}}"#,
+    );
+    commit(&clone, "a devcontainer");
+    git(&clone, &["push", "-q", "origin", "HEAD"]);
+    write(
+        &clone.join(".devcontainer/.devpod-internal/Dockerfile-with-features"),
+        "FROM a:1\n",
+    );
+
+    assert_eq!(held(&clone), Unsaved::NothingToLose);
+
+    // Anything else in that directory is somebody's, and the directory is kept.
+    write(&clone.join(".devcontainer/notes.md"), "mine\n");
+    assert_eq!(
+        would_lose(&held(&clone)),
+        "1 uncommitted change(s) (.devcontainer/)"
+    );
+}
+
+#[test]
+fn a_devpod_internal_folder_of_the_users_own_is_work() {
+    // Review of #711: the name is devpod's, but a folder by that name outside
+    // the places devpod writes it holds the user's files. A match that is too
+    // wide deletes them on a plain `rm`; one that is too narrow only refuses.
+    let fixture = Fixture::new();
+    let clone = fixture.clone();
+    write(&clone.join("notes/todo.md"), "tracked\n");
+    commit(&clone, "notes");
+    git(&clone, &["push", "-q", "origin", "HEAD"]);
+    write(&clone.join("notes/.devpod-internal/plan.md"), "mine\n");
+
+    assert_eq!(
+        would_lose(&held(&clone)),
+        "1 uncommitted change(s) (notes/.devpod-internal/)"
+    );
+}
+
+#[test]
+fn an_untracked_folder_that_holds_a_devpod_internal_elsewhere_is_work() {
+    // `newdir/` is untracked, so git reports it whole. Its `.devpod-internal`
+    // is not where devpod writes one, so the folder is the user's.
+    let fixture = Fixture::new();
+    let clone = fixture.clone();
+    write(&clone.join("newdir/.devpod-internal/plan.md"), "mine\n");
+
+    assert_eq!(
+        would_lose(&held(&clone)),
+        "1 uncommitted change(s) (newdir/)"
+    );
+}
+
+#[test]
+fn a_plain_file_named_devpod_internal_is_work() {
+    // devpod writes a folder. A file by that name is the user's, also where
+    // git lists every untracked file (`status.showUntrackedFiles=all`).
+    for path in [".devpod-internal", ".devcontainer/.devpod-internal"] {
+        let fixture = Fixture::new();
+        let clone = fixture.clone();
+        write(
+            &clone.join(".devcontainer/devcontainer.json"),
+            r#"{"image":"a:1"}"#,
+        );
+        commit(&clone, "a devcontainer");
+        git(&clone, &["push", "-q", "origin", "HEAD"]);
+        git(&clone, &["config", "status.showUntrackedFiles", "all"]);
+        write(&clone.join(path), "mine\n");
+
+        assert_eq!(
+            would_lose(&held(&clone)),
+            format!("1 uncommitted change(s) ({path})"),
+            "{path}"
+        );
+    }
+}
+
+#[test]
+fn a_devcontainer_json_that_says_more_than_an_image_is_work() {
+    // Anything beyond devpod's one key is somebody's edit, and kept.
+    let fixture = Fixture::new();
+    let clone = fixture.clone();
+    write(
+        &clone.join(".devcontainer.json"),
+        r#"{"image":"ubuntu:24.04","postCreateCommand":"make"}"#,
+    );
+
+    assert_eq!(
+        would_lose(&held(&clone)),
+        "1 uncommitted change(s) (.devcontainer.json)"
+    );
+}
+
+#[test]
+fn a_tracked_devcontainer_json_that_was_edited_is_work() {
+    // Only the untracked file is devpod's: a repository that commits a one-key
+    // `.devcontainer.json` and then has it edited has a real change.
+    let fixture = Fixture::new();
+    let clone = fixture.clone();
+    write(&clone.join(".devcontainer.json"), r#"{"image":"a:1"}"#);
+    commit(&clone, "a devcontainer");
+    git(&clone, &["push", "-q", "origin", "HEAD"]);
+    write(&clone.join(".devcontainer.json"), r#"{"image":"b:2"}"#);
+
+    assert_eq!(
+        would_lose(&held(&clone)),
+        "1 uncommitted change(s) (.devcontainer.json)"
+    );
+}
+
+#[test]
+fn devpods_devcontainer_json_beside_real_work_leaves_only_the_work() {
+    let fixture = Fixture::new();
+    let clone = fixture.clone();
+    write(
+        &clone.join(".devcontainer.json"),
+        r#"{"image":"mcr.microsoft.com/devcontainers/base:ubuntu"}"#,
+    );
+    write(&clone.join("notes.md"), "half a plan\n");
+
+    assert_eq!(
+        would_lose(&held(&clone)),
+        "1 uncommitted change(s) (notes.md)"
+    );
+}
+
+#[test]
 fn both_kinds_of_loss_are_reported_together() {
     let fixture = Fixture::new();
     let clone = fixture.clone();

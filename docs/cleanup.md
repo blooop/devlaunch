@@ -1105,6 +1105,24 @@ answers it is:
 | `{"wouldLose": "<what>"}` | Uncommitted changes (untracked files included), commits no remote has, or both. |
 | `{"couldNotTell": "<why>"}` | `git` could not read the clone as a repository: a half-removed `.git`, an interrupted delete. The files are still there and nothing has established that they exist anywhere else. |
 
+Two kinds of untracked file do not count, because devpod writes them and nobody else
+does ([#707](https://github.com/blooop/devlaunch/issues/707)):
+
+- the `.devcontainer.json` devpod saves for its fallback image in a repository with no
+  devcontainer config, while it holds only `{"image": "..."}`;
+- the build files devpod writes for a config with features into `.devpod-internal/` in
+  the build context: `.devcontainer/` by default, the clone root for
+  `"context": ".."`, the config's own folder for a config in a subfolder. devpod removes
+  the folder when the build ends, so it stays only after an interrupted build. An
+  untracked `.devcontainer/` or `.devcontainer/<name>/` that git reports whole does not
+  count either when all it holds is that `.devpod-internal/`.
+
+The `.devpod-internal` rule is narrow on purpose. It covers only a folder (not a file)
+at the clone root, in `.devcontainer/`, or in `.devcontainer/<name>/`, which are the
+places devpod writes it. A `.devpod-internal` anywhere else is your work, and `rm`
+refuses. A rule that is too narrow makes `rm` refuse and `--force` gets past it; a rule
+that is too wide deletes your files.
+
 The commits half of that answer is asked of **every ref in the clone**, not of the
 branch it happens to have checked out. Commit on `wip`, switch back to `main`, and
 the work on `wip` is still the only copy of itself; a question scoped to the
