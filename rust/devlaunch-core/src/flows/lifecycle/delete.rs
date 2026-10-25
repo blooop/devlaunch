@@ -296,7 +296,8 @@ pub(crate) fn workspace_delete(
     let mut lock_wait = devpod::LockWait::default();
     let exit = match devpod::run_watching(
         runner,
-        &delete_call(workspace_id, insistence, persistence),
+        &delete_call(workspace_id, insistence, persistence)
+            .quieting(context.load_warnings().clone()),
         &mut |line| {
             let first = match lock_wait.read(line) {
                 devpod::LockLine::Nothing => return,

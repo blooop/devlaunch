@@ -1253,6 +1253,35 @@ Shell completion is the deliberate exception. `dl --install`, `dl --refresh` and
 they can still discover on local disk, so an unreachable devpod costs you
 workspace-name completion and nothing more.
 
+### A devpod record that devpod cannot load
+
+devpod keeps one `workspace.json` per workspace under
+`~/.devpod/contexts/<context>/workspaces/<id>/`. When that file is empty or is not
+JSON, which is what a devpod write cut short by a full disk leaves, or is JSON but not
+an object (`null` aside, which devpod reads as an empty record), devpod skips the
+workspace and logs `could not load workspace: workspace=<id>, error=...` every time
+it loads its workspaces. Every `up`, `ssh` and `list` does that, so the line used to
+come back several times on every `dl` call.
+
+`dl` now finds such a record itself. On `--ls`, the picker, every workspace verb and
+`rmt`, it prints one line on stderr that names the workspace, says what is wrong with
+the record, and gives the command that clears it:
+
+```
+dl: devpod's record of workspace devlaunch-resume-6omv is empty, so devpod cannot load it and warns about it on every call. 'devpod delete' cannot remove it; clear it with: rm -r /home/you/.devpod/contexts/default/workspaces/devlaunch-resume-6omv
+```
+
+It then drops devpod's own line about that workspace from the `up`, the `delete`
+and the session it forwards. The way out is `rm -r`, because devpod cannot clear
+the record: devpod 0.26.1 answers `devpod delete --force <id>` with `workspace
+<id> not found` and leaves the file in place. `dl <id> kill` ends in that same
+delete, so it cannot clear the record either. `dl --ls` still leaves the workspace
+out of its table and its JSON, as devpod does: the stderr line is where you see it.
+
+devpod's line can still come through on two calls that `dl` hands your terminal
+directly rather than reading: the tool install a container with no tools gets on its
+first launch, and `stop`.
+
 ### An `up` that dies with `inject agent … exit status 126`
 
 The message is devpod's and the cause is a substring match. devpod decides which

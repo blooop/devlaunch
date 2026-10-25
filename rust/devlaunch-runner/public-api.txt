@@ -171,6 +171,7 @@ pub fn devlaunch_runner::ProcessRunner::watched(&self, &devlaunch_runner::SpawnS
 pub struct devlaunch_runner::SpawnSpec
 pub devlaunch_runner::SpawnSpec::invocation: devlaunch_runner::Invocation
 pub devlaunch_runner::SpawnSpec::own_group: bool
+pub devlaunch_runner::SpawnSpec::quiet_lines: alloc::vec::Vec<alloc::string::String>
 pub devlaunch_runner::SpawnSpec::stdin: devlaunch_runner::StdinPlan
 pub devlaunch_runner::SpawnSpec::stdout_is_log: bool
 pub devlaunch_runner::SpawnSpec::timeout: core::option::Option<core::time::Duration>

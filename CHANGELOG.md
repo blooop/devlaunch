@@ -18,6 +18,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **dl names a devpod record that devpod cannot load, once, instead of letting devpod
+  repeat its warning on every call.** An empty or garbled `workspace.json` under
+  devpod's home made devpod print `could not load workspace: workspace=<id>, ...` up to
+  four times on each `dl` call, and dl never said which record it was or how to clear
+  it. dl now prints one line on stderr that names the workspace and gives the
+  `rm -r <dir>` that clears it (`devpod delete --force` cannot: devpod answers that the
+  workspace is not found). It then drops devpod's matching lines from the `up`, the
+  `delete` and the session it forwards. The line shows on `--ls`, the picker and every
+  workspace verb (#705).
+
+  `devlaunch_runner::SpawnSpec` gains a public field, `quiet_lines`: lines a
+  `Runner::watched` run hands to its callback but does not echo. An out-of-tree
+  `Runner` that builds a `SpawnSpec` by struct literal must now name it, or end the
+  literal with `..Default::default()`; one built with `SpawnSpec::new` or `From`
+  needs nothing. One row of `devlaunch-runner/public-api.txt` moves.
+
 - **`dl rm` no longer counts the files devpod writes into a clone as work.** A
   repository with no devcontainer config gets devpod's fallback saved as an untracked
   `.devcontainer.json`, and an interrupted build of a config with features leaves

@@ -62,6 +62,7 @@ use serde::Serialize;
 use crate::clients::devpod::{
     self, ContainerState, ListingUnreadable, Patience, Workspace, WorkspaceSource,
 };
+use crate::clients::devpod_home::DamagedRecord;
 use crate::clients::git::{Git, GitAnswer};
 use crate::domain::metadata::MetadataStorage;
 use crate::domain::model::{SweepNote, WorktreeInfo};
@@ -91,6 +92,22 @@ pub struct CommandContext<'r> {
     /// `None` until devpod has answered once. Never holds an answer devpod did
     /// not give.
     snapshot: Option<Vec<Workspace>>,
+    /// devpod's warnings about the damaged records this command named, which
+    /// its watched and forwarded devpod calls keep off the terminal.
+    quiet: devpod::LoadWarnings,
+}
+
+/// Keep devpod's warnings about these damaged records off the terminal on every
+/// `up`, `delete` and session `context`'s command runs (devlaunch#705).
+///
+/// The caller scans the devpod home once and names those records itself, so the
+/// records whose warnings are dropped are exactly the records it named: a second
+/// scan could see a record damaged, or mended, in between. A free function rather
+/// than a method, because [`CommandContext`] is part of the promised API and this
+/// is the binary's business, as [`crate::clients::devpod_home::damaged_records`] is.
+pub fn quiet_damaged_records(context: &mut CommandContext<'_>, records: &[DamagedRecord]) {
+    context.quiet =
+        devpod::LoadWarnings::about(records.iter().map(|record| record.workspace_id.as_str()));
 }
 
 impl<'r> CommandContext<'r> {
@@ -99,7 +116,13 @@ impl<'r> CommandContext<'r> {
         Self {
             runner,
             snapshot: None,
+            quiet: devpod::LoadWarnings::default(),
         }
+    }
+
+    /// devpod's warnings this command keeps off the terminal.
+    pub(crate) fn load_warnings(&self) -> &devpod::LoadWarnings {
+        &self.quiet
     }
 
     /// The runner every flow under this command spawns through.
