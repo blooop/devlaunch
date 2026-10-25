@@ -24,9 +24,6 @@ an opt-in that cannot be taken is worse than no opt-in, and it was buying a
 saved image pull at the price of thirteen invisible tests.
 """
 
-# Requesting a fixture shadows its name; that is how pytest is written.
-# pylint: disable=redefined-outer-name
-
 from __future__ import annotations
 
 import os
