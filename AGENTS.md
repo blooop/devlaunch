@@ -220,6 +220,9 @@ dl <ws> -- <cmd>                # run: stdout and exit status are the command's
 dl <ws> rm                      # teardown; refuses on unpushed work
 ```
 
+To convert a repository so `dl` opens it fast and clean, follow
+[docs/dl-ready-repos.md](docs/dl-ready-repos.md).
+
 [docs/agents-using-dl.md](docs/agents-using-dl.md) is the contract behind those:
 what each `--ls --json` field means, why `unsaved` is not a boolean, how a
 signalled command reports, which cleanup verb to reach for, and what a workspace
@@ -256,7 +259,7 @@ globbing or expansion.
 - **README orients, `docs/` explains.** The README is deliberately short: what
   `dl` is, the quickstart, the command tables, and one environment-variable
   table. Depth lives in `docs/` (`cli.md`, `workspaces.md`, `workspace-tools.md`,
-  `cleanup.md`, `performance.md`, `development.md`, `agents-using-dl.md`) and is linked from the README's
+  `cleanup.md`, `performance.md`, `development.md`, `agents-using-dl.md`, `dl-ready-repos.md`) and is linked from the README's
   Docs table. A new paragraph of design rationale belongs in the docs page for its
   topic, not in the README. Adding a flag still means naming it in the README,
   because `test/test_readme_cli_doc.py` requires every flag `dl --help` offers to
