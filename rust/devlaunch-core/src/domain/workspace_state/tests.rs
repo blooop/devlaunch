@@ -324,7 +324,10 @@ fn the_build_files_devpod_writes_for_features_are_not_work() {
     // devpod's, also not work (devlaunch#707).
     let fixture = Fixture::new();
     let clone = fixture.clone();
-    write(&clone.join(".devcontainer/devcontainer.json"), r#"{"image":"a:1"}"#);
+    write(
+        &clone.join(".devcontainer/devcontainer.json"),
+        r#"{"image":"a:1"}"#,
+    );
     commit(&clone, "a devcontainer");
     git(&clone, &["push", "-q", "origin", "HEAD"]);
     let internal = clone.join(".devcontainer/.devpod-internal");
