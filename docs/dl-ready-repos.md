@@ -8,7 +8,7 @@ in October 2026. Each tip names the repository that taught it.
 
 - `.devcontainer/devcontainer.json` with
   `"image": "ghcr.io/blooop/python_template/devcontainer:latest"`. That image is Ubuntu 26.04
-  with pixi, the claude-code feature and the emSign G3 CA fix baked in. Copy
+  with pixi, git-lfs, the claude-code feature and the emSign G3 CA fix baked in. Copy
   python_template's `.devcontainer/` (not its `ci/`), and keep `"name"` as the last key, so
   `update-from-template-repo` merges do not conflict on it.
 - Everything else comes from pixi. Python, uv, node and Rust tools go in the pixi manifest,
@@ -47,10 +47,10 @@ in October 2026. Each tip names the repository that taught it.
   image docker-in-docker needs major 4: `docker-in-docker:2` has no Moby packages for
   Ubuntu 26.04 and fails in seconds (devcontainers/features#1738).
   `docker-outside-of-docker:1` already works.
-- **Repositories with Git LFS files need git-lfs in the container.** The shared image has
-  none, so `git status` fails with "clean filter 'lfs' failed". Find them with
-  `git lfs ls-files`, and add one apt `git-lfs` layer on top of the shared image
-  (ArjanCodesSoftwareDesignerMindset).
+- **Repositories with Git LFS files need git-lfs in the container.** Without it, `git status`
+  fails with "clean filter 'lfs' failed" (ArjanCodesSoftwareDesignerMindset). The shared
+  image has carried git-lfs since python_template#177, so a repository on it needs nothing.
+  One on its own base adds an apt `git-lfs` layer. Find them with `git lfs ls-files`.
 - **Old flit repositories keep flit as the build backend.** pixi needs only `python`,
   `<pkg> = { path = ".", editable = true }` under pypi-dependencies and
   `default = { features = ["test"] }`. Old pins can cap Python: taichi 1.7.0 has no cp312
