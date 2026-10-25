@@ -28,6 +28,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of the check, the `.devcontainer.json` only while it holds devpod's one `image` key
   ([#707](https://github.com/blooop/devlaunch/issues/707)).
 
+- **`[worktree] fallback_image` reaches devpod, and defaults to the shared image.** The
+  key in `config.toml` was parsed and read by nothing, so a repository with no
+  devcontainer config always opened on devpod's own `mcr.microsoft.com/devcontainers/base:ubuntu`.
+  A create now passes `devpod up --fallback-image`, with
+  `ghcr.io/blooop/python_template/devcontainer:latest` when the file sets nothing
+  ([#706](https://github.com/blooop/devlaunch/issues/706)).
+
 - **The dev container builds again on Ubuntu 26.04.** The docker-in-docker feature now sets
   `"moby": false` and installs Docker CE from Docker's apt repo. Its default, Microsoft's
   moby packages, has no `resolute` builds, and the feature stopped every build with

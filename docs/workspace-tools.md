@@ -351,7 +351,7 @@ a workspace opted out still reaches its login screen, because there is no
 credential rather than because a flag was missing.
 
 Which repos this was actually visible in: the ones with no `.devcontainer/` of
-their own. They get devpod's fallback image and a virgin config directory, where a
+their own. They got devpod's fallback image and a virgin config directory, where a
 repo whose devcontainer mounts `~/.claude` was reading a `.claude.json` that had
 answered the question on the host months ago.
 
