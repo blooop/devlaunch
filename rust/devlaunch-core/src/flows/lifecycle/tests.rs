@@ -3754,6 +3754,33 @@ fn a_remote_that_cannot_be_reached_leaves_the_refusal_standing() {
     assert!(clone.exists());
 }
 
+/// devlaunch#707: devpod writes into the clone. A repository with no devcontainer
+/// config gets the `.devcontainer.json` devpod saves for its fallback image, and a
+/// config with features gets devpod's build files under `.devpod-internal/` in its
+/// build context. Neither is work, so a plain `rm` deletes.
+#[test]
+fn what_devpod_wrote_into_the_clone_does_not_stop_a_plain_rm() {
+    let (mut world, clone) = a_world_ready_to_remove();
+    std::fs::write(
+        clone.join(".devcontainer.json"),
+        r#"{"image":"mcr.microsoft.com/devcontainers/base:ubuntu"}"#,
+    )
+    .expect("devpod's file");
+    // And the build files devpod writes when the config has features.
+    let internal = clone.join(".devcontainer").join(".devpod-internal");
+    std::fs::create_dir_all(&internal).expect("devpod's build directory");
+    std::fs::write(internal.join("Dockerfile-with-features"), "FROM a:1\n")
+        .expect("devpod's Dockerfile");
+
+    let (outcome, _) = remove(&mut world, Removal::Guarded);
+
+    assert!(
+        matches!(outcome, RemoveOutcome::Deleted { .. }),
+        "devpod wrote the only change: {outcome:?}"
+    );
+    assert!(!clone.exists());
+}
+
 /// A clean clone is permission already, so `rm` stays offline.
 #[test]
 fn a_clean_clone_is_removed_without_a_fetch() {
