@@ -25,8 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   by default, the clone root for `"context": ".."`, the config's own folder for a
   config in a subfolder). Either one made `rm` refuse the workspace without `--force`,
   and `--ls --json` reported it as `wouldLose`. Both are now left out
-  of the check, the `.devcontainer.json` only while it holds devpod's one `image` key
-  ([#707](https://github.com/blooop/devlaunch/issues/707)).
+  of the check, the `.devcontainer.json` only while it holds devpod's one `image` key,
+  and `.devpod-internal` only as a folder at the clone root, in `.devcontainer/` or in
+  `.devcontainer/<name>/`, where devpod writes it. A `.devpod-internal` anywhere else
+  is still work ([#707](https://github.com/blooop/devlaunch/issues/707)).
 
 - **`[worktree] fallback_image` reaches devpod, and defaults to the shared image.** The
   key in `config.toml` was parsed and read by nothing, so a repository with no

@@ -402,6 +402,62 @@ fn devpods_build_files_in_an_untracked_devcontainer_directory_are_not_work() {
 }
 
 #[test]
+fn a_devpod_internal_folder_of_the_users_own_is_work() {
+    // Review of #711: the name is devpod's, but a folder by that name outside
+    // the places devpod writes it holds the user's files. A match that is too
+    // wide deletes them on a plain `rm`; one that is too narrow only refuses.
+    let fixture = Fixture::new();
+    let clone = fixture.clone();
+    write(&clone.join("notes/todo.md"), "tracked\n");
+    commit(&clone, "notes");
+    git(&clone, &["push", "-q", "origin", "HEAD"]);
+    write(&clone.join("notes/.devpod-internal/plan.md"), "mine\n");
+
+    assert_eq!(
+        would_lose(&held(&clone)),
+        "1 uncommitted change(s) (notes/.devpod-internal/)"
+    );
+}
+
+#[test]
+fn an_untracked_folder_that_holds_a_devpod_internal_elsewhere_is_work() {
+    // `newdir/` is untracked, so git reports it whole. Its `.devpod-internal`
+    // is not where devpod writes one, so the folder is the user's.
+    let fixture = Fixture::new();
+    let clone = fixture.clone();
+    write(&clone.join("newdir/.devpod-internal/plan.md"), "mine\n");
+
+    assert_eq!(
+        would_lose(&held(&clone)),
+        "1 uncommitted change(s) (newdir/)"
+    );
+}
+
+#[test]
+fn a_plain_file_named_devpod_internal_is_work() {
+    // devpod writes a folder. A file by that name is the user's, also where
+    // git lists every untracked file (`status.showUntrackedFiles=all`).
+    for path in [".devpod-internal", ".devcontainer/.devpod-internal"] {
+        let fixture = Fixture::new();
+        let clone = fixture.clone();
+        write(
+            &clone.join(".devcontainer/devcontainer.json"),
+            r#"{"image":"a:1"}"#,
+        );
+        commit(&clone, "a devcontainer");
+        git(&clone, &["push", "-q", "origin", "HEAD"]);
+        git(&clone, &["config", "status.showUntrackedFiles", "all"]);
+        write(&clone.join(path), "mine\n");
+
+        assert_eq!(
+            would_lose(&held(&clone)),
+            format!("1 uncommitted change(s) ({path})"),
+            "{path}"
+        );
+    }
+}
+
+#[test]
 fn a_devcontainer_json_that_says_more_than_an_image_is_work() {
     // Anything beyond devpod's one key is somebody's edit, and kept.
     let fixture = Fixture::new();

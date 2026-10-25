@@ -1114,8 +1114,14 @@ does ([#707](https://github.com/blooop/devlaunch/issues/707)):
   the build context: `.devcontainer/` by default, the clone root for
   `"context": ".."`, the config's own folder for a config in a subfolder. devpod removes
   the folder when the build ends, so it stays only after an interrupted build. An
-  untracked folder that git reports whole does not count either when all it holds is
-  `.devpod-internal/`.
+  untracked `.devcontainer/` or `.devcontainer/<name>/` that git reports whole does not
+  count either when all it holds is that `.devpod-internal/`.
+
+The `.devpod-internal` rule is narrow on purpose. It covers only a folder (not a file)
+at the clone root, in `.devcontainer/`, or in `.devcontainer/<name>/`, which are the
+places devpod writes it. A `.devpod-internal` anywhere else is your work, and `rm`
+refuses. A rule that is too narrow makes `rm` refuse and `--force` gets past it; a rule
+that is too wide deletes your files.
 
 The commits half of that answer is asked of **every ref in the clone**, not of the
 branch it happens to have checked out. Commit on `wip`, switch back to `main`, and

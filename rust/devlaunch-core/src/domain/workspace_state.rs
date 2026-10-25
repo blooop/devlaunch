@@ -597,14 +597,18 @@ const DEVPOD_INTERNAL: &str = ".devpod-internal";
 ///
 /// Two things, both untracked:
 ///
-/// - `.devpod-internal/`, wherever the build context put it, where devpod writes
-///   `Dockerfile-with-features` and the features' env files when it builds a
-///   config with `features`. Also a directory git reports whole, when all it
-///   holds is `.devpod-internal`.
+/// - a `.devpod-internal/` directory where devpod puts one (see
+///   [`is_devpods_build_dir`]), where devpod writes `Dockerfile-with-features`
+///   and the features' env files when it builds a config with `features`. Also
+///   `.devcontainer/` or `.devcontainer/<name>/` when git reports it whole and
+///   all it holds is such a directory.
 /// - `.devcontainer.json` at the root, which devpod saves for its fallback image
 ///   in a repository with no devcontainer config. Only while it holds devpod's
 ///   one key, `{"image": "..."}`: a file that says anything more is an edit, and
 ///   kept. A person who wrote exactly that line loses one line anybody can retype.
+///
+/// The match is kept narrow on purpose. One that is too narrow makes `rm` refuse,
+/// and `--force` gets past it; one that is too wide deletes somebody's files.
 fn written_by_devpod(clone: &Path, line: &str) -> bool {
     if !line.starts_with("?? ") {
         return false;
@@ -612,19 +616,47 @@ fn written_by_devpod(clone: &Path, line: &str) -> bool {
     let Some(path) = path_in(line) else {
         return false;
     };
-    if path.split('/').any(|part| part == DEVPOD_INTERNAL) {
-        return true;
+    let parts: Vec<&str> = path.trim_end_matches('/').split('/').collect();
+    if let Some(at) = parts.iter().position(|part| *part == DEVPOD_INTERNAL) {
+        let dir = parts[..=at].join("/");
+        return is_devpods_build_dir(&dir) && is_a_real_dir(&clone.join(&dir));
     }
     if let Some(dir) = path.strip_suffix('/') {
-        return holds_only_devpod_internal(&clone.join(dir));
+        return is_devcontainer_dir(dir) && holds_only_devpods_build_dir(clone, dir);
     }
     path == ".devcontainer.json" && is_devpods_fallback_config(&clone.join(".devcontainer.json"))
 }
 
-/// Whether *dir* holds something, and everything in it is a `.devpod-internal`
-/// or a directory that in turn holds only those. Symlinks are not followed.
-fn holds_only_devpod_internal(dir: &Path) -> bool {
-    let Ok(entries) = std::fs::read_dir(dir) else {
+/// Whether *dir*, relative to the clone, is a place devpod writes its build
+/// directory: the clone root, `.devcontainer/`, or `.devcontainer/<name>/` — the
+/// build contexts of the configs devpod finds. devpod 0.26.3 builds left it in
+/// exactly these. A custom context anywhere else is refused, which is safe.
+fn is_devpods_build_dir(dir: &str) -> bool {
+    match dir.split('/').collect::<Vec<_>>()[..] {
+        [DEVPOD_INTERNAL] | [".devcontainer", DEVPOD_INTERNAL] => true,
+        [".devcontainer", name, DEVPOD_INTERNAL] => !name.is_empty(),
+        _ => false,
+    }
+}
+
+/// Whether *dir*, relative to the clone, is `.devcontainer/` or one folder in it.
+fn is_devcontainer_dir(dir: &str) -> bool {
+    matches!(
+        dir.split('/').collect::<Vec<_>>()[..],
+        [".devcontainer"] | [".devcontainer", _]
+    )
+}
+
+/// Whether *path* is a directory itself, not a file or a symlink to one.
+fn is_a_real_dir(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_dir())
+}
+
+/// Whether *dir* (relative to *clone*) holds something, and everything in it is
+/// devpod's build directory or a directory that in turn holds only that. Symlinks
+/// are not followed.
+fn holds_only_devpods_build_dir(clone: &Path, dir: &str) -> bool {
+    let Ok(entries) = std::fs::read_dir(clone.join(dir)) else {
         return false;
     };
     let mut any = false;
@@ -632,11 +664,14 @@ fn holds_only_devpod_internal(dir: &Path) -> bool {
         let Ok(entry) = entry else {
             return false;
         };
-        let is_dir = entry.file_type().is_ok_and(|kind| kind.is_dir());
-        if !is_dir {
+        if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
             return false;
         }
-        if entry.file_name() != DEVPOD_INTERNAL && !holds_only_devpod_internal(&entry.path()) {
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            return false;
+        };
+        let inner = format!("{dir}/{name}");
+        if !is_devpods_build_dir(&inner) && !holds_only_devpods_build_dir(clone, &inner) {
             return false;
         }
         any = true;
