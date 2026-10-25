@@ -8,9 +8,10 @@ than the devcontainer spec provides, and what a project has to do to meet it.
 
 A repository with no devcontainer config opens on a fallback image, which `dl`
 hands to `devpod up --fallback-image` when it creates the workspace. The default
-is `ghcr.io/blooop/python_template/devcontainer:latest`, the shared image with
-pixi on Ubuntu 26.04, rather than devpod's own `base:ubuntu`. Set another one in
-`~/.config/devlaunch/config.toml`:
+is `ghcr.io/blooop/python_template/devcontainer:latest`, the shared image that
+dl-ready repositories open on, rather than devpod's own `base:ubuntu`. Set another
+one in `$XDG_CONFIG_HOME/devlaunch/config.toml` (`~/.config/devlaunch/config.toml`
+when `XDG_CONFIG_HOME` is unset):
 
 ```toml
 [worktree]

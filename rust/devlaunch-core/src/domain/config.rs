@@ -283,6 +283,18 @@ mod tests {
             .0
     }
 
+    /// `docs/devcontainer-projects.md` names the default fallback image for users,
+    /// a second copy of [`DEFAULT_FALLBACK_IMAGE`]; this keeps the two equal.
+    #[test]
+    fn the_docs_name_the_default_fallback_image() {
+        let page = include_str!("../../../../docs/devcontainer-projects.md");
+        let named = format!("`{DEFAULT_FALLBACK_IMAGE}`");
+        assert!(
+            page.contains(&named),
+            "docs/devcontainer-projects.md must name {DEFAULT_FALLBACK_IMAGE} as the default"
+        );
+    }
+
     /// The retired keys a text still names.
     fn retired(text: &str) -> Vec<RetiredKey> {
         parse_worktree_config(text, &defaults())
