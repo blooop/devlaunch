@@ -4456,6 +4456,24 @@ mod tests {
 
     use super::*;
 
+    /// The notice's `rm -r` is meant to be pasted, so a devpod home with a space
+    /// in its path must come out as one shell word that names one directory.
+    #[test]
+    fn a_damaged_record_under_a_path_with_a_space_is_cleared_with_one_quoted_word() {
+        let line = damaged_devpod_record(&DamagedRecord {
+            workspace_id: "broken-ws".to_owned(),
+            path: PathBuf::from("/home/a user/.devpod/contexts/default/workspaces/broken-ws")
+                .join("workspace.json"),
+            damage: Damage::Empty,
+        });
+        assert!(
+            line.ends_with(
+                "clear it with: rm -r '/home/a user/.devpod/contexts/default/workspaces/broken-ws'"
+            ),
+            "{line}"
+        );
+    }
+
     /// A profile row, with only the fields the columns read.
     fn profile(
         name: &str,
