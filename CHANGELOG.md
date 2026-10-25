@@ -18,6 +18,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A hostname that cannot be set no longer reads as a failed launch step.** `sudo
+  hostname` needs CAP_SYS_ADMIN, which Docker drops by default, so on most cold launches
+  dl printed `<id>: the hostname setup stage exited 1.`, as loud as a real stage failure.
+  dl now says `<id>: did not set the hostname (exit 1; setting it usually needs
+  CAP_SYS_ADMIN, which Docker drops by default), so the prompt keeps the container's own
+  hostname. Nothing else is affected.` A failure of the session-name or title stage, the
+  other two info-level stages, now also says that nothing else is affected (#704).
+
 - **The devcontainer image no longer trusts the compromised emSign ECC Root CA - G3.**
   The base image's `ca-certificates` (20260601 on 26.04) still trusts the root whose
   intermediates had their private keys cracked in October 2026 (CVE-2026-111943). The
