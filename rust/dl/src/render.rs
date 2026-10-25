@@ -14,7 +14,7 @@ use devlaunch_core::clients::devpod::{
     AddFailed, EnsureProviderFailed, ListingUnreadable, NotAListing, NotAProviderListing, NotRun,
     ProviderListUnreadable, Workspace,
 };
-use devlaunch_core::clients::devpod_home::RepointFailure;
+use devlaunch_core::clients::devpod_home::{Damage, DamagedRecord, RepointFailure};
 use devlaunch_core::clients::gh::{
     GhEvent, GhUnavailable, PullRequestHead, PullRequestState, PullRequestUnavailable,
 };
@@ -3215,6 +3215,48 @@ fn not_adopted(because: &NotAdopted) -> String {
     }
 }
 
+/// dl's one line about a devpod record devpod cannot load (devlaunch#705).
+///
+/// It names the workspace, what is wrong with its record, and the way out.
+/// devpod's own warning says none of the last, and repeats on every call, which
+/// is why dl drops it and says this once. The way out is removing the directory,
+/// because devpod 0.26.1 cannot: `devpod delete --force <id>` answers that the
+/// workspace is not found and leaves the record where it is (measured). The path
+/// is quoted with the crate's one quoter, so a pasted line removes one directory.
+pub(crate) fn damaged_devpod_record(record: &DamagedRecord) -> String {
+    let what = match &record.damage {
+        Damage::Empty => "is empty".to_owned(),
+        Damage::NotJson { reason } => format!("is not JSON ({reason})"),
+        Damage::NotAnObject { kind } => {
+            format!("holds a JSON {}, not an object", json_kind_word(*kind))
+        }
+    };
+    let dir = record
+        .path
+        .parent()
+        .unwrap_or(&record.path)
+        .display()
+        .to_string();
+    format!(
+        "dl: devpod's record of workspace {} {what}, so devpod cannot load it and warns \
+         about it on every call. 'devpod delete' cannot remove it; clear it with: rm -r {}",
+        record.workspace_id,
+        shell::quote(&dir)
+    )
+}
+
+/// A JSON kind as a sentence names it, with its article's noun.
+fn json_kind_word(kind: JsonKind) -> &'static str {
+    match kind {
+        JsonKind::Null => "null",
+        JsonKind::Bool => "boolean",
+        JsonKind::Number => "number",
+        JsonKind::String => "string",
+        JsonKind::Array => "array",
+        JsonKind::Object => "object",
+    }
+}
+
 /// Why one devpod record could not be re-pointed.
 pub(crate) fn repoint_failure(failure: &RepointFailure) -> String {
     match failure {
@@ -4448,6 +4490,44 @@ mod tests {
     use devlaunch_core::flows::listing::{SourceDescription, SourceKind};
 
     use super::*;
+
+    /// The notice's `rm -r` is meant to be pasted, so a devpod home with a space
+    /// in its path must come out as one shell word that names one directory.
+    #[test]
+    fn a_damaged_record_under_a_path_with_a_space_is_cleared_with_one_quoted_word() {
+        let line = damaged_devpod_record(&DamagedRecord {
+            workspace_id: "broken-ws".to_owned(),
+            path: PathBuf::from("/home/a user/.devpod/contexts/default/workspaces/broken-ws")
+                .join("workspace.json"),
+            damage: Damage::Empty,
+        });
+        assert!(
+            line.ends_with(
+                "clear it with: rm -r '/home/a user/.devpod/contexts/default/workspaces/broken-ws'"
+            ),
+            "{line}"
+        );
+    }
+
+    /// A record that parses but holds no object is JSON, so "not JSON" would send
+    /// someone looking for a syntax error that is not there.
+    #[test]
+    fn a_damaged_record_that_is_json_but_no_object_says_so() {
+        let line = damaged_devpod_record(&DamagedRecord {
+            workspace_id: "broken-ws".to_owned(),
+            path: PathBuf::from("/h/.devpod/contexts/default/workspaces/broken-ws/workspace.json"),
+            damage: Damage::NotAnObject {
+                kind: JsonKind::Array,
+            },
+        });
+        assert!(
+            line.starts_with(
+                "dl: devpod's record of workspace broken-ws holds a JSON array, not an object, \
+                 so devpod cannot load it"
+            ),
+            "{line}"
+        );
+    }
 
     /// A profile row, with only the fields the columns read.
     fn profile(

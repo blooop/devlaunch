@@ -11,7 +11,7 @@ use std::path::Path;
 
 use devlaunch_core::clients::AgentResume;
 use devlaunch_core::clients::devpod::{ListingUnreadable, NotRun};
-use devlaunch_core::clients::devpod_home::DevpodHome;
+use devlaunch_core::clients::devpod_home::{DamagedRecord, DevpodHome, damaged_records};
 use devlaunch_core::domain::config;
 use devlaunch_core::domain::spec::DevcontainerPath;
 use devlaunch_core::domain::workspace_id::WorkspaceId;
@@ -112,7 +112,15 @@ pub(crate) fn dispatch(
     command: Command,
     resume: Option<AgentResume>,
 ) -> Ending {
+    let damaged = if speaks_to_devpod(&command) {
+        say_damaged_devpod_records()
+    } else {
+        Vec::new()
+    };
+    // One scan for the whole command: the records dl names are the records whose
+    // warnings its devpod calls drop.
     let mut context = CommandContext::new(runner);
+    listing::quiet_damaged_records(&mut context, &damaged);
     match command {
         Command::Version => render_version(),
         Command::List { output, sizes } => render_list(runner, &mut context, cache, output, sizes),
@@ -249,6 +257,38 @@ pub(crate) fn dispatch(
             hangup::after_the_command(after, word, ending)
         }
     }
+}
+
+/// Whether this command lists, opens or removes workspaces, and so has devpod
+/// load every record it holds: the commands on which devpod repeats its warning
+/// about a record it cannot load, and on which dl says once which record it is.
+///
+/// Not the version, completion, cache or herdr commands: they print for a script
+/// or a shell to read, or touch no workspace. `HerdrShellReady` re-enters
+/// [`dispatch`] as a `Workspace` when it opens one, so it is said there.
+fn speaks_to_devpod(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::List { .. }
+            | Command::Select { .. }
+            | Command::Workspace { .. }
+            | Command::RemoveThisTab { .. }
+    )
+}
+
+/// Say, on stderr, which of devpod's records devpod cannot load and how to clear
+/// each (devlaunch#705), and hand them back. The devpod calls this command makes
+/// then drop devpod's own warning about those records, which otherwise repeats
+/// several times a call.
+fn say_damaged_devpod_records() -> Vec<DamagedRecord> {
+    let Some(home) = DevpodHome::locate() else {
+        return Vec::new();
+    };
+    let damaged = damaged_records(&home);
+    for record in &damaged {
+        eprintln!("{}", render::damaged_devpod_record(record));
+    }
+    damaged
 }
 
 fn started_agent(verb: &Verb) -> Option<crate::herdr_editor::AgentKind> {

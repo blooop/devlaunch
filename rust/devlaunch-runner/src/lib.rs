@@ -260,6 +260,14 @@ pub struct SpawnSpec {
     /// see [`Runner::watched`] for the measurement that made this a field rather
     /// than the whole method's behaviour.
     pub stdout_is_log: bool,
+    /// Lines a [`Runner::watched`] run reads but does not echo: any line holding
+    /// one of these substrings still reaches `on_line`, and goes no further.
+    ///
+    /// Read by `watched` alone, and empty by default. devlaunch sets it for
+    /// devpod's warning about a workspace record devpod cannot load, which
+    /// devpod repeats on every `up` and which dl has already named once in its
+    /// own words (devlaunch#705).
+    pub quiet_lines: Vec<String>,
 }
 
 impl From<Invocation> for SpawnSpec {
@@ -678,6 +686,14 @@ impl Runner for ProcessRunner {
         let stdout_is_log = spec.stdout_is_log;
         streamed(spec, Stdio::piped(), &mut |stream, line| {
             use std::io::Write as _;
+            if spec
+                .quiet_lines
+                .iter()
+                .any(|quiet| line.contains(quiet.as_str()))
+            {
+                on_line(line);
+                return;
+            }
             match stream {
                 Stream::Stdout if !stdout_is_log => {
                     let mut out = std::io::stdout().lock();

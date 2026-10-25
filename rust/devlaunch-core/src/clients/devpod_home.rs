@@ -35,6 +35,7 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
+use crate::json::JsonKind;
 use crate::osext::system_words;
 
 /// The directory devpod keeps its own records in.
@@ -379,6 +380,88 @@ fn read_dir_if_any(dir: &Path) -> Option<Option<std::fs::ReadDir>> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(None),
         Err(_) => None,
     }
+}
+
+/// One devpod workspace record that devpod itself cannot load.
+///
+/// devpod skips such a record when it loads all workspaces, and says so on
+/// every `up`, `ssh` and `list` it runs (`could not load workspace: workspace=<id>,
+/// error=...`), so one damaged file repeats a warning on every dl call until
+/// someone removes it. Measured against devpod 0.26.1: `devpod delete --force
+/// <id>` cannot remove it either, it answers that the workspace is not found.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DamagedRecord {
+    /// The workspace id: the record's directory name, and the id devpod names.
+    pub workspace_id: String,
+    /// The `workspace.json` that would not load.
+    pub path: PathBuf,
+    /// What is wrong with it.
+    pub damage: Damage,
+}
+
+/// What is wrong with a [`DamagedRecord`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Damage {
+    /// The file has no bytes: most likely a devpod write that was cut short, since
+    /// devpod does not write it atomically.
+    Empty,
+    /// The file has bytes that are not JSON. `reason` is the parser's words.
+    NotJson { reason: String },
+    /// The file is JSON, but of this kind rather than an object, which devpod's
+    /// decoder refuses. Never `Object`, and never `Null`: devpod loads `null` as
+    /// an empty record without a warning, so dl does not name it.
+    NotAnObject { kind: JsonKind },
+}
+
+/// Every workspace record under `home` that devpod cannot load, in every context.
+///
+/// A free function rather than a method on [`DevpodHome`], because that type is
+/// part of the promised API and this answer is the binary's business.
+///
+/// "Cannot load" is read the way devpod reads it: the file is there and is not a
+/// JSON object, or `null`, which Go decodes into a record as nothing. A file dl
+/// may not read is left out rather than guessed at, and so
+/// is a workspace id that is not UTF-8, which no devpod line could name. Sorted
+/// by path, so the answer is the same on every call.
+pub fn damaged_records(home: &DevpodHome) -> Vec<DamagedRecord> {
+    let mut damaged = Vec::new();
+    let Ok(contexts) = std::fs::read_dir(home.contexts()) else {
+        return damaged;
+    };
+    for context in contexts.flatten() {
+        let Ok(workspaces) = std::fs::read_dir(context.path().join("workspaces")) else {
+            continue;
+        };
+        for workspace in workspaces.flatten() {
+            let Some(workspace_id) = workspace.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            let path = workspace.path().join("workspace.json");
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let damage = if text.trim().is_empty() {
+                Damage::Empty
+            } else {
+                match serde_json::from_str::<serde_json::Value>(&text) {
+                    Ok(serde_json::Value::Object(_) | serde_json::Value::Null) => continue,
+                    Ok(other) => Damage::NotAnObject {
+                        kind: JsonKind::of(&other),
+                    },
+                    Err(error) => Damage::NotJson {
+                        reason: error.to_string(),
+                    },
+                }
+            };
+            damaged.push(DamagedRecord {
+                workspace_id,
+                path,
+                damage,
+            });
+        }
+    }
+    damaged.sort_by(|left, right| left.path.cmp(&right.path));
+    damaged
 }
 
 /// Whether devpod finished creating a workspace, as far as its own records say.
@@ -803,6 +886,90 @@ mod tests {
             std::fs::read_to_string(&path).expect("still there"),
             r#"{"id": "ws", "source": "a string"}"#,
             "a source key dl cannot read is one it cannot safely replace"
+        );
+    }
+
+    /// A record with no bytes, and a record with bytes that are not JSON, are the
+    /// two damages devpod reports with `could not load workspace`. A good record
+    /// and a workspace directory with no record at all are not damage.
+    #[test]
+    fn an_empty_or_unparsable_record_is_named_and_a_good_one_is_not() {
+        let home = devpod_home_with(&[("default", "fine", Some(()))]);
+        let empty = home.record("default", "devlaunch-resume-6omv");
+        std::fs::create_dir_all(empty.parent().expect("a record directory"))
+            .expect("a record directory");
+        std::fs::write(&empty, "").expect("an empty record");
+        let garbled = home.record("work", "garbled");
+        std::fs::create_dir_all(garbled.parent().expect("a record directory"))
+            .expect("a record directory");
+        std::fs::write(&garbled, "{not json").expect("a garbled record");
+        std::fs::create_dir_all(home.workspace_dir("default", "no-record"))
+            .expect("a workspace directory with no record");
+
+        let damaged = damaged_records(&home);
+
+        assert_eq!(damaged.len(), 2, "{damaged:?}");
+        assert_eq!(
+            damaged[0],
+            DamagedRecord {
+                workspace_id: "devlaunch-resume-6omv".to_owned(),
+                path: empty,
+                damage: Damage::Empty,
+            }
+        );
+        assert_eq!(damaged[1].workspace_id, "garbled");
+        assert_eq!(damaged[1].path, garbled);
+        assert!(
+            matches!(&damaged[1].damage, Damage::NotJson { reason } if !reason.is_empty()),
+            "{:?}",
+            damaged[1].damage
+        );
+    }
+
+    /// JSON that is not an object is damage of its own kind: devpod's Go decoder
+    /// refuses an array, a string, a number or a bool with `cannot unmarshal`.
+    /// `null` is not damage: Go decodes it into a record as nothing at all, so
+    /// devpod loads it without a warning, and dl has no warning to name.
+    #[test]
+    fn json_that_is_not_an_object_is_named_and_null_is_not() {
+        let home = devpod_home_with(&[]);
+        for (workspace_id, text) in [
+            ("an-array", "[]"),
+            ("a-string", "\"x\""),
+            ("a-number", "1"),
+            ("a-bool", "true"),
+            ("a-null", " null\n"),
+        ] {
+            let record = home.record("default", workspace_id);
+            std::fs::create_dir_all(record.parent().expect("a record directory"))
+                .expect("a record directory");
+            std::fs::write(&record, text).expect("a record");
+        }
+
+        let named: Vec<(String, Damage)> = damaged_records(&home)
+            .into_iter()
+            .map(|record| (record.workspace_id, record.damage))
+            .collect();
+
+        assert_eq!(
+            named,
+            [
+                ("a-bool", JsonKind::Bool),
+                ("a-number", JsonKind::Number),
+                ("a-string", JsonKind::String),
+                ("an-array", JsonKind::Array),
+            ]
+            .map(|(id, kind)| (id.to_owned(), Damage::NotAnObject { kind }))
+        );
+    }
+
+    /// No devpod home at all is no damage, not a failure.
+    #[test]
+    fn a_devpod_home_with_nothing_in_it_has_no_damaged_records() {
+        let empty = tempfile::tempdir().expect("an empty home");
+        assert_eq!(
+            damaged_records(&DevpodHome::at(empty.path().join("absent"))),
+            []
         );
     }
 
