@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The devcontainer image no longer trusts the compromised emSign ECC Root CA - G3.**
+  The base image ships `ca-certificates` 20240203, which still trusts the root whose
+  intermediates had their private keys cracked in October 2026 (CVE-2026-111943). The
+  image now upgrades `ca-certificates`, and the build fails if G3 is still there.
+
 ## [0.63.2] - 2026-10-23
 
 ### Fixed
