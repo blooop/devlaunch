@@ -4244,24 +4244,44 @@ pub(crate) fn startup_reason(refused: &StartupError) -> String {
 /// failures cost the workspace its tools and not its session, and Python says
 /// nothing about most of them at the default level. The two that speak are the
 /// setup stages, each at the level the stage itself declares
-/// ([`FailureLevel`]) — and both of those levels print, because
-/// `basicConfig(level=INFO)` prints an info as well as a warning.
+/// ([`FailureLevel`]). Both levels print, because `basicConfig(level=INFO)` prints
+/// an info as well as a warning, but they do not read alike: a warning names a
+/// stage that failed, and an info failure is said in words that do not read as a
+/// fault (#704).
 pub(crate) fn provision_event(event: &ProvisionEvent) -> Option<String> {
     Some(match event {
-        // tools.py:926/934. `loudness` is info for the hostname stage and warning
-        // for the rest — `sudo hostname` cannot succeed without CAP_SYS_ADMIN,
-        // which Docker drops by default, so failure is the majority case there and
-        // a warning on most cold launches would erode what a warning means. Both
-        // reach stderr as the bare message, so the field is read and not rendered.
+        // tools.py:926/934. `loudness` is info for the hostname, session-name and
+        // title stages and warning for the rest. `sudo hostname` cannot succeed
+        // without CAP_SYS_ADMIN, which Docker drops by default, so failure is the
+        // majority case there (#167), and the bare "stage exited 1" read as a fault
+        // to everyone who saw it on a cold launch (#704). The other two are info
+        // because their failure costs a duller name, not because it is common, so
+        // their line says only that nothing else is affected. A warning keeps the
+        // bare sentence.
         ProvisionEvent::StageFailed {
             workspace,
             stage,
             status,
-            loudness,
-        } => {
-            let _: &FailureLevel = loudness;
-            format!("{workspace}: the {stage} setup stage exited {status}.")
-        }
+            loudness: FailureLevel::Info,
+        } if *stage == "hostname" => format!(
+            "{workspace}: did not set the hostname (exit {status}; setting it usually needs \
+             CAP_SYS_ADMIN, which Docker drops by default), so the prompt keeps the \
+             container's own hostname. Nothing else is affected."
+        ),
+        ProvisionEvent::StageFailed {
+            workspace,
+            stage,
+            status,
+            loudness: FailureLevel::Info,
+        } => format!(
+            "{workspace}: the {stage} setup stage exited {status}; nothing else is affected."
+        ),
+        ProvisionEvent::StageFailed {
+            workspace,
+            stage,
+            status,
+            loudness: FailureLevel::Warning,
+        } => format!("{workspace}: the {stage} setup stage exited {status}."),
         ProvisionEvent::StageNotReported {
             workspace,
             stage,
@@ -6389,6 +6409,44 @@ mod tests {
                 workspace: "ws".to_owned(),
             }),
             None
+        );
+    }
+
+    #[test]
+    fn a_stage_whose_failure_is_its_usual_outcome_does_not_read_as_a_fault() {
+        // #704: the hostname stage fails on most cold launches, and is marked info
+        // for that reason (#167). A warning-level stage keeps the bare sentence.
+        assert_eq!(
+            provision_event(&ProvisionEvent::StageFailed {
+                workspace: "ws".to_owned(),
+                stage: "hostname",
+                status: 1,
+                loudness: FailureLevel::Info,
+            }),
+            Some(
+                "ws: did not set the hostname (exit 1; setting it usually needs CAP_SYS_ADMIN, \
+                 which Docker drops by default), so the prompt keeps the container's own \
+                 hostname. Nothing else is affected."
+                    .to_owned()
+            )
+        );
+        assert_eq!(
+            provision_event(&ProvisionEvent::StageFailed {
+                workspace: "ws".to_owned(),
+                stage: "session-name",
+                status: 2,
+                loudness: FailureLevel::Info,
+            }),
+            Some("ws: the session-name setup stage exited 2; nothing else is affected.".to_owned())
+        );
+        assert_eq!(
+            provision_event(&ProvisionEvent::StageFailed {
+                workspace: "ws".to_owned(),
+                stage: "zellij",
+                status: 1,
+                loudness: FailureLevel::Warning,
+            }),
+            Some("ws: the zellij setup stage exited 1.".to_owned())
         );
     }
 
