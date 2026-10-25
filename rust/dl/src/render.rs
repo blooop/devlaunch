@@ -3215,7 +3215,6 @@ fn not_adopted(because: &NotAdopted) -> String {
     }
 }
 
-/// Why one devpod record could not be re-pointed.
 /// dl's one line about a devpod record devpod cannot load (devlaunch#705).
 ///
 /// It names the workspace, what is wrong with its record, and the way out.
@@ -3243,6 +3242,7 @@ pub(crate) fn damaged_devpod_record(record: &DamagedRecord) -> String {
     )
 }
 
+/// Why one devpod record could not be re-pointed.
 pub(crate) fn repoint_failure(failure: &RepointFailure) -> String {
     match failure {
         // One sentence for both, as Python's one `except (OSError,
