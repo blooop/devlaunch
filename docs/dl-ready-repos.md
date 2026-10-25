@@ -44,8 +44,9 @@ in October 2026. Each tip names the repository that taught it.
   or a Dockerfile `ENV` (deps_rocker, rockerc).
 - **Docker-driving repositories keep docker-in-docker or docker-outside-of-docker** as a
   feature and accept the derived build (rockerc, worktree_docker, deps_rocker). On the 26.04
-  image docker-in-docker needs major 4: `docker-in-docker:2` has no Moby packages for
-  Ubuntu 26.04 and fails in seconds (devcontainers/features#1738).
+  image, `docker-in-docker:2` with its default `"moby": true` fails in seconds, because
+  Moby has no Ubuntu 26.04 packages for it (devcontainers/features#1738). Use major 4, or
+  keep major 2 with `"moby": false`, as this repository's own `.devcontainer/` does.
   `docker-outside-of-docker:1` already works.
 - **Repositories with Git LFS files need git-lfs in the container.** Without it, `git status`
   fails with "clean filter 'lfs' failed" (ArjanCodesSoftwareDesignerMindset). The shared
