@@ -18,6 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The dev container builds again on Ubuntu 26.04.** The docker-in-docker feature now sets
+  `"moby": false` and installs Docker CE from Docker's apt repo. Its default, Microsoft's
+  moby packages, has no `resolute` builds, and the feature stopped every build with
+  "The 'moby' option is not supported on ubuntu 'resolute'".
+
 - **The devcontainer image no longer trusts the compromised emSign ECC Root CA - G3.**
   The base image's `ca-certificates` (20260601 on 26.04) still trusts the root whose
   intermediates had their private keys cracked in October 2026 (CVE-2026-111943). The

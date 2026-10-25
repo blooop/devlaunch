@@ -95,7 +95,15 @@
         // nesting under it -- and every port a process here listens on would be
         // a port on the host. Nothing this repo reaches for needs host
         // networking; a bridge network serves all of it.
-        "ghcr.io/devcontainers/features/docker-in-docker:2": {}
+        //
+        // "moby": false, because the default refuses to build on 26.04. The
+        // feature's default installs Microsoft's moby packages, which have no
+        // `resolute` builds, and it stops the build rather than fall back. False
+        // installs Docker CE from Docker's own apt repo, which does publish
+        // resolute packages for amd64 and arm64.
+        "ghcr.io/devcontainers/features/docker-in-docker:2": {
+            "moby": false
+        }
 
 		// "ghcr.io/devcontainers/features/common-utils:2": {},
 		// "ghcr.io/anthropics/devcontainer-features/claude-code:1.0": {},
