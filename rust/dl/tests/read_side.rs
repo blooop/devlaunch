@@ -569,6 +569,24 @@ fn the_completion_data_is_one_json_line_python_would_have_written() {
     assert_eq!(run.err, UNREADABLE_SOURCE);
 }
 
+/// The shell's tab completion runs `--completion-data` under the prompt, where a
+/// stderr line would land in the middle of what the user is typing. So the
+/// devlaunch#705 notice that `--ls` prints is not printed here.
+#[test]
+fn the_completion_data_does_not_name_a_record_devpod_cannot_load() {
+    let world = World::full();
+    let record = world
+        .root
+        .join("devpod/contexts/default/workspaces/devlaunch-resume-6omv/workspace.json");
+    std::fs::create_dir_all(record.parent().expect("a record directory"))
+        .expect("a record directory");
+    std::fs::write(&record, "").expect("an empty record");
+
+    let run = world.dl(&["--completion-data"]);
+    run.succeeded();
+    assert_eq!(run.err, UNREADABLE_SOURCE);
+}
+
 #[test]
 fn refresh_says_what_it_found() {
     let world = World::full();
