@@ -14,8 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dl printed `<id>: the hostname setup stage exited 1.`, as loud as a real stage failure.
   dl now says `<id>: did not set the hostname (exit 1; setting it usually needs
   CAP_SYS_ADMIN, which Docker drops by default), so the prompt keeps the container's own
-  hostname. Nothing else is affected.` A failure of the session-name stage, the other
-  stage whose failure is expected, now also says that nothing else is affected (#704).
+  hostname. Nothing else is affected.` A failure of the session-name or title stage, the
+  other two info-level stages, now also says that nothing else is affected (#704).
 
 - **The devcontainer image no longer trusts the compromised emSign ECC Root CA - G3.**
   The base image ships `ca-certificates` 20240203, which still trusts the root whose

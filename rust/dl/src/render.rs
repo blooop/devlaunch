@@ -4250,13 +4250,14 @@ pub(crate) fn startup_reason(refused: &StartupError) -> String {
 /// words that do not read as a fault (#704).
 pub(crate) fn provision_event(event: &ProvisionEvent) -> Option<String> {
     Some(match event {
-        // tools.py:926/934. `loudness` is info for the hostname and session-name
-        // stages and warning for the rest. `sudo hostname` cannot succeed without
-        // CAP_SYS_ADMIN, which Docker drops by default, so failure is the majority
-        // case there (#167), and the bare "stage exited 1" read as a fault to
-        // everyone who saw it on a cold launch (#704). An info failure therefore
-        // says what did not happen and that nothing else is affected; a warning
-        // keeps the bare sentence.
+        // tools.py:926/934. `loudness` is info for the hostname, session-name and
+        // title stages and warning for the rest. `sudo hostname` cannot succeed
+        // without CAP_SYS_ADMIN, which Docker drops by default, so failure is the
+        // majority case there (#167), and the bare "stage exited 1" read as a fault
+        // to everyone who saw it on a cold launch (#704). The other two are info
+        // because their failure costs a duller name, not because it is common, so
+        // their line says only that nothing else is affected. A warning keeps the
+        // bare sentence.
         ProvisionEvent::StageFailed {
             workspace,
             stage,
@@ -4273,8 +4274,7 @@ pub(crate) fn provision_event(event: &ProvisionEvent) -> Option<String> {
             status,
             loudness: FailureLevel::Info,
         } => format!(
-            "{workspace}: the {stage} setup stage exited {status}, which it often does; \
-             nothing else is affected."
+            "{workspace}: the {stage} setup stage exited {status}; nothing else is affected."
         ),
         ProvisionEvent::StageFailed {
             workspace,
@@ -6437,11 +6437,7 @@ mod tests {
                 status: 2,
                 loudness: FailureLevel::Info,
             }),
-            Some(
-                "ws: the session-name setup stage exited 2, which it often does; nothing else \
-                 is affected."
-                    .to_owned()
-            )
+            Some("ws: the session-name setup stage exited 2; nothing else is affected.".to_owned())
         );
         assert_eq!(
             provision_event(&ProvisionEvent::StageFailed {
