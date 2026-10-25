@@ -20,10 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`dl rm` no longer counts the files devpod writes into a clone as work.** A
   repository with no devcontainer config gets devpod's fallback saved as an untracked
-  `.devcontainer.json`, and a config with features gets devpod's build files under
-  `.devpod-internal/` in its build context (`.devcontainer/` by default, the clone
-  root for `"context": ".."`). Either one made `rm` refuse every such workspace
-  without `--force`, and `--ls --json` reported it as `wouldLose`. Both are now left out
+  `.devcontainer.json`, and an interrupted build of a config with features leaves
+  devpod's build files under `.devpod-internal/` in its build context (`.devcontainer/`
+  by default, the clone root for `"context": ".."`, the config's own folder for a
+  config in a subfolder). Either one made `rm` refuse the workspace without `--force`,
+  and `--ls --json` reported it as `wouldLose`. Both are now left out
   of the check, the `.devcontainer.json` only while it holds devpod's one `image` key
   ([#707](https://github.com/blooop/devlaunch/issues/707)).
 
