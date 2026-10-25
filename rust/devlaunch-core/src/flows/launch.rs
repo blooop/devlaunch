@@ -272,24 +272,43 @@ pub struct Host {
     pub(crate) cache_dir: PathBuf,
     /// devpod's own home, whose `config.yaml` mtime expires the options cache.
     pub(crate) devpod_home: Option<DevpodHome>,
-    /// `[worktree] fallback_image` from `config.toml`: the image a create hands
-    /// `devpod up --fallback-image`, for a repository with no devcontainer config
-    /// (devlaunch#706).
-    pub(crate) fallback_image: Option<String>,
+    /// Where a create's `devpod up --fallback-image` comes from (devlaunch#706).
+    pub(crate) fallback_image: FallbackImage,
 }
 
-/// The configured fallback image, or the default one when `config.toml` cannot
-/// be read.
-///
-/// A config dl cannot read is refused, with its reason, by every command that
-/// opens the records, and a create on the clone path is one of them. So falling
-/// back to the default here says nothing new and hides nothing: it only keeps a
-/// create devpod clones itself on the image it would have had anyway.
-fn fallback_image_from_config() -> Option<String> {
-    crate::domain::config::worktree_config()
-        .map(|(config, _)| config)
-        .unwrap_or_else(|_| crate::domain::config::WorktreeConfig::defaults())
-        .fallback_image
+/// Where a create's `devpod up --fallback-image` comes from.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum FallbackImage {
+    /// No flag: devpod's own fallback.
+    #[default]
+    DevpodOwn,
+    /// `[worktree] fallback_image`, read from `config.toml` at the create and not
+    /// before, so a launch that creates nothing reads no config (devlaunch#145).
+    FromConfig,
+}
+
+impl FallbackImage {
+    /// The image to hand devpod.
+    ///
+    /// A `config.toml` that cannot be read gives the default image. The clone path
+    /// has already refused on such a file by the time it creates, but a path-spec
+    /// create opens no records and goes ahead on the default without a word.
+    fn resolve(self) -> Option<String> {
+        match self {
+            Self::DevpodOwn => None,
+            Self::FromConfig => {
+                crate::domain::config::worktree_config()
+                    .map(|(config, _)| config)
+                    .unwrap_or_else(|_| crate::domain::config::WorktreeConfig::defaults())
+                    .fallback_image
+            }
+        }
+    }
+
+    /// The image for an `up` named `naming`: a create's only.
+    fn for_up(self, naming: Naming<'_>) -> Option<String> {
+        naming.create_as().and_then(|_| self.resolve())
+    }
 }
 
 impl Host {
@@ -332,7 +351,7 @@ impl Host {
             claude_profiles_root: crate::domain::xdg::claude_profiles_root().ok(),
             cache_dir: cache_dir.into(),
             devpod_home: DevpodHome::locate(),
-            fallback_image: fallback_image_from_config(),
+            fallback_image: FallbackImage::FromConfig,
         }
     }
 
@@ -1526,7 +1545,7 @@ pub(crate) struct UpRequest<'a> {
     /// A `devcontainer.json` path from [`spec::resolve_devcontainer_ref`].
     pub(crate) devcontainer: Option<&'a DevcontainerPath>,
     /// The image devpod uses when the repository has no devcontainer config:
-    /// `[worktree] fallback_image`, read into [`Host::fallback_image`].
+    /// `[worktree] fallback_image`, read through [`Host::fallback_image`].
     pub(crate) fallback_image: Option<&'a str>,
 }
 
@@ -5865,8 +5884,9 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
                 Placement::Creating { workspace_id, .. } => Naming::Create { workspace_id },
                 Placement::Known { .. } | Placement::Listed { .. } => Naming::Anonymous,
             };
+            let fallback_image = self.host.fallback_image.for_up(naming);
             let request = UpRequest::new(placement.source(), naming)
-                .with_fallback_image(self.host.fallback_image.as_deref());
+                .with_fallback_image(fallback_image.as_deref());
             let title = self.container_title(placement.title());
             let outcome = workspace_up(
                 self.context,
@@ -5906,8 +5926,9 @@ impl<'a, 'r, 'l> Launch<'a, 'r, 'l> {
         devcontainer: Option<&DevcontainerPath>,
         placement: &Placement,
     ) -> Result<Option<LaunchRefusal>, LaunchAborted> {
+        let fallback_image = self.host.fallback_image.for_up(placement.naming());
         let request = UpRequest::new(placement.source(), placement.naming())
-            .with_fallback_image(self.host.fallback_image.as_deref())
+            .with_fallback_image(fallback_image.as_deref())
             .with_ide(verb.ide())
             .with_rebuild(verb.rebuild())
             .with_devcontainer(devcontainer);
