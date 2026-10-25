@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.64.0] - 2026-10-25
+
 ### Added
 
 - **`docs/dl-ready-repos.md` says how to convert a repository so `dl` opens it fast and
