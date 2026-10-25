@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`docs/dl-ready-repos.md` says how to convert a repository so `dl` opens it fast and
+  clean.** The target devcontainer shape, the tips and the blockers from the October 2026
+  sweep across blooop's repositories, with links to the dl fixes for the blockers dl had.
+
 ### Changed
 
 - **The dev container image is Ubuntu 26.04 with pixi 0.83.0.** It builds `FROM

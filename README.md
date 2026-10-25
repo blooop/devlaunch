@@ -578,6 +578,7 @@ re-decides a mount.
 | [docs/cleanup.md](docs/cleanup.md) | `--prune`, `--purge`, `--reconcile`, and what a workspace costs on disk |
 | [docs/performance.md](docs/performance.md) | Where a launch's seconds go, and the trend on `main` |
 | [docs/devcontainer-projects.md](docs/devcontainer-projects.md) | Projects with demanding devcontainers |
+| [docs/dl-ready-repos.md](docs/dl-ready-repos.md) | Converting a repository so `dl` opens it fast and clean: the target devcontainer shape, tips, known blockers |
 | [docs/agents-using-dl.md](docs/agents-using-dl.md) | Running `dl` from a script or an agent: the subprocess contract, `--ls --json`, and what one branch per agent buys |
 | [docs/development.md](docs/development.md) | Building, testing, CI guards, the prebuilt image |
 
