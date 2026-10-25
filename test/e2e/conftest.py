@@ -107,7 +107,7 @@ def pytest_runtest_makereport(item, call):
 
 
 @pytest.hookimpl(wrapper=True)
-def pytest_make_collect_report(collector):  # noqa: ARG001  # pylint: disable=unused-argument
+def pytest_make_collect_report(collector):  # noqa: ARG001
     """The same judgement, for skips raised before any test exists to skip.
 
     `pytest.skip(..., allow_module_level=True)` runs at import time, produces a
@@ -126,7 +126,7 @@ def pytest_make_collect_report(collector):  # noqa: ARG001  # pylint: disable=un
     return report
 
 
-def pytest_sessionfinish(session, exitstatus):  # noqa: ARG001  # pylint: disable=unused-argument
+def pytest_sessionfinish(session, exitstatus):  # noqa: ARG001
     """Refuse to hand back success for a session that did nothing.
 
     Every other check in pytest answers "did anything fail". This one answers
@@ -138,7 +138,7 @@ def pytest_sessionfinish(session, exitstatus):  # noqa: ARG001  # pylint: disabl
         session.exitstatus = pytest.ExitCode.TESTS_FAILED
 
 
-def pytest_terminal_summary(terminalreporter, exitstatus, config):  # noqa: ARG001  # pylint: disable=unused-argument
+def pytest_terminal_summary(terminalreporter, exitstatus, config):  # noqa: ARG001
     """Print what the run built, so two different runs read differently.
 
     Without this a healthy run and one that created nothing print the same

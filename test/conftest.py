@@ -150,7 +150,7 @@ def pytest_configure():
     scope_devpod_to_this_run()
 
 
-def pytest_collection_modifyitems(config, items):  # noqa: ARG001  # pylint: disable=unused-argument
+def pytest_collection_modifyitems(config, items):  # noqa: ARG001
     """Automatically mark tests based on their location."""
     for item in items:
         # Get the test file path relative to the test directory
