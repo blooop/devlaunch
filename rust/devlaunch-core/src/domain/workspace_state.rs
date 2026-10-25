@@ -588,7 +588,8 @@ fn path_in(line: &str) -> Option<&str> {
 
 /// The directory devpod writes the build files into, for a devcontainer that has
 /// `features`. It sits in the build context, which is the config's directory only
-/// by default: `"context": ".."` puts it at the clone root.
+/// by default: `"context": ".."` puts it at the clone root. devpod removes it when
+/// the build ends, so a clone keeps it only after a build that was interrupted.
 const DEVPOD_INTERNAL: &str = ".devpod-internal";
 
 /// Whether one `git status --porcelain` line is a file devpod wrote into the
@@ -605,7 +606,10 @@ const DEVPOD_INTERNAL: &str = ".devpod-internal";
 ///   one key, `{"image": "..."}`: a file that says anything more is an edit, and
 ///   kept. A person who wrote exactly that line loses one line anybody can retype.
 fn written_by_devpod(clone: &Path, line: &str) -> bool {
-    let Some(path) = line.strip_prefix("?? ") else {
+    if !line.starts_with("?? ") {
+        return false;
+    }
+    let Some(path) = path_in(line) else {
         return false;
     };
     if path.split('/').any(|part| part == DEVPOD_INTERNAL) {
@@ -614,7 +618,7 @@ fn written_by_devpod(clone: &Path, line: &str) -> bool {
     if let Some(dir) = path.strip_suffix('/') {
         return holds_only_devpod_internal(&clone.join(dir));
     }
-    path == ".devcontainer.json" && is_a_bare_fallback(&clone.join(".devcontainer.json"))
+    path == ".devcontainer.json" && is_devpods_fallback_config(&clone.join(".devcontainer.json"))
 }
 
 /// Whether *dir* holds something, and everything in it is a `.devpod-internal`
@@ -642,7 +646,7 @@ fn holds_only_devpod_internal(dir: &Path) -> bool {
 
 /// Whether *file* is the config devpod saves for a fallback image: a JSON object
 /// whose one key is `image`, a string.
-fn is_a_bare_fallback(file: &Path) -> bool {
+fn is_devpods_fallback_config(file: &Path) -> bool {
     let Ok(text) = std::fs::read_to_string(file) else {
         return false;
     };
