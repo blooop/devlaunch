@@ -25,9 +25,6 @@ output *shapes* that are parsed -- `list --output json` carrying no state field
 and the rest -- are pinned in `test_devpod_shim.py` against real recordings.
 """
 
-# Requesting a fixture shadows its name; that is how pytest is written.
-# pylint: disable=redefined-outer-name
-
 import importlib.util
 import json
 import os

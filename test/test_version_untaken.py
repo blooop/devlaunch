@@ -42,7 +42,7 @@ def manifest(version: str) -> str:
 
 
 # Named through the decorator so the fixture function and the parameter that
-# receives it are not one name in one module, which pylint reads as shadowing.
+# receives it are not one name in one module, which a linter reads as shadowing.
 @pytest.fixture(name="released")
 def a_repository_with_a_release_already_out(tmp_path: Path) -> Path:
     """A repository where v0.36.0 has been cut and tagged, as #593 left main."""

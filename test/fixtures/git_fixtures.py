@@ -210,7 +210,7 @@ def local_git_repo(tmp_path: Path) -> Dict[str, Any]:
 
 
 @pytest.fixture
-def local_git_repo_with_devcontainer(local_git_repo: Dict[str, Any]) -> Dict[str, Any]:  # pylint: disable=redefined-outer-name
+def local_git_repo_with_devcontainer(local_git_repo: Dict[str, Any]) -> Dict[str, Any]:
     """Extend local_git_repo with a devcontainer.json file.
 
     This creates a repository that has devcontainer configuration,
