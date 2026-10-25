@@ -543,15 +543,17 @@ would need, instead of succeeding into the wrong environment.
 #### What the prebuild tag does not promise
 
 The tag is a hash of the build *recipe*, the config and the context, and not of
-the image the recipe produces. Three of the recipe's inputs float, so the same
+the image the recipe produces. Four of the recipe's inputs float, so the same
 `.devcontainer/` tree published on two different days is two different images:
-the base `mcr.microsoft.com/devcontainers/base:ubuntu-24.04` is a moving tag,
+the base `mcr.microsoft.com/devcontainers/base:3-ubuntu26.04` is a moving tag,
+the Dockerfile's `apt-get install --only-upgrade ca-certificates` takes whatever
+the Ubuntu mirror holds that day,
 `ghcr.io/devcontainers/features/docker-in-docker:2` is a moving major, and the
 local feature's `pixi global install … claude-shim` names no version. (The
 Dockerfile's `ARG PIXI_VERSION` is the one that is pinned.) A prebuild pulled
 today and a local build of the identical tree tomorrow can therefore differ, and
 the direction they differ in is forwards: a republish picks up whatever those
-three point at now.
+four point at now.
 
 That is written down rather than fixed, and the shim is the case that shows why.
 **`claude-shim` is deliberately unversioned**, and pinning it was considered and
@@ -586,7 +588,7 @@ trampoline exists and returns non-zero if it does not, which fails
 
 If image contents ever do need pinning, the base image tag is the input that
 carries the packages; pinning the shim alone would be precision about the
-smallest of the three.
+smallest of the four.
 
 ### Disk cost of the dev container
 

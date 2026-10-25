@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The dev container image is Ubuntu 26.04 with pixi 0.83.0.** It builds `FROM
+  mcr.microsoft.com/devcontainers/base:3-ubuntu26.04` (was `ubuntu-24.04`, a tag Microsoft
+  stopped rebuilding in 2025) and pins pixi v0.83.0 (was v0.77.0), the pixi that now writes
+  `pixi.lock`. Five lifecycle tests that need a stale `origin/*` ref now set it themselves:
+  git 2.56, which the 26.04 image ships, moves the tracking ref on a push to the URL
+  `origin` names, and git 2.51 did not.
+
 ### Fixed
 
 - **The devcontainer image no longer trusts the compromised emSign ECC Root CA - G3.**

@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/devcontainers/base:ubuntu-24.04
+FROM mcr.microsoft.com/devcontainers/base:3-ubuntu26.04
 
 # Links the published image to this repository on GHCR. It is what puts a source
 # link on the package page and lets this repository's Actions push to the
@@ -10,7 +10,7 @@ LABEL org.opencontainers.image.source="https://github.com/blooop/devlaunch"
 # rather than "latest at the time somebody bumped it".
 #
 # `pixi.lock` has been `version: 7` since 4dd28c8 (2026-08-15), written by the
-# pixi a developer runs on the host (0.77.0 here). v0.63.1 reads a maximum of
+# pixi a developer runs on the host (0.77.0 then). v0.63.1 reads a maximum of
 # lock version 6, so every container create since then has hit:
 #
 #   warn ⚠ Lock-file version 7 is newer than supported
@@ -25,13 +25,13 @@ LABEL org.opencontainers.image.source="https://github.com/blooop/devlaunch"
 # tree dirty. Commit that by accident and the break inverts: the host's pixi is
 # then the one that cannot read the lock.
 #
-# 0.77.0 rather than 0.68.0, which measurement says is the *minimum* that reads
-# v7 (0.67.0 cannot; the boundary was probed one version at a time against this
-# very lockfile). The minimum would work today and re-open the same gap
-# immediately, because the gap is the container's pixi lagging the pixi that
-# writes the lock. Matching the writer closes it, and 0.77.0 is also the
-# better-tested choice: it is what already runs against this project on the host.
-ARG PIXI_VERSION=v0.77.0
+# Not 0.68.0, which measurement says is the *minimum* that reads v7 (0.67.0
+# cannot; the boundary was probed one version at a time against this very
+# lockfile). The minimum would work today and re-open the same gap immediately,
+# because the gap is the container's pixi lagging the pixi that writes the lock.
+# Matching the writer closes it: 0.77.0 when this pin was written, 0.83.0 (the
+# latest release) since the host moved to it.
+ARG PIXI_VERSION=v0.83.0
 
 RUN curl -L -o /usr/local/bin/pixi -fsSL --compressed "https://github.com/prefix-dev/pixi/releases/download/${PIXI_VERSION}/pixi-$(uname -m)-unknown-linux-musl" \
     && chmod +x /usr/local/bin/pixi \
@@ -39,8 +39,8 @@ RUN curl -L -o /usr/local/bin/pixi -fsSL --compressed "https://github.com/prefix
 
 # The base image ships a CA bundle that still trusts emSign ECC Root CA - G3,
 # whose intermediates had their keys cracked in October 2026
-# (CVE-2026-111943). Ubuntu removed it in ca-certificates 20260816ubuntu0.24.04.1;
-# the test fails the build if the apt mirror has not caught up.
+# (CVE-2026-111943). Ubuntu removed it in ca-certificates 20260816ubuntu0.26.04.1;
+# the `test ! -e` below fails the build if the apt mirror has not caught up.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends --only-upgrade ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
