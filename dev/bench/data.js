@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792765633925,
+  "lastUpdate": 1792956759906,
   "repoUrl": "https://github.com/blooop/devlaunch",
   "entries": {
     "devlaunch launch stages": [
@@ -20174,6 +20174,93 @@ window.BENCHMARK_DATA = {
             "range": "± 1.048536",
             "unit": "s",
             "extra": "runs=5/5 wall=9.256281s v0.26.1, Linux-X64"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "blooop@gmail.com",
+            "name": "Austin Gregg-Smith",
+            "username": "blooop"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "cd17bd565d1568444c736c1f42a7afa9cc0eee63",
+          "message": "Merge pull request #703 from blooop/fix/ca-certificates-emsign-g3\n\nfix: the devcontainer image trusted the compromised emSign G3 root",
+          "timestamp": "2026-10-25T19:29:37Z",
+          "tree_id": "a7db39a5d8e1f81fa196cbb6a601b84a447004bd",
+          "url": "https://github.com/blooop/devlaunch/commit/cd17bd565d1568444c736c1f42a7afa9cc0eee63"
+        },
+        "date": 1792956759331,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "warm / attach",
+            "value": 1.092872,
+            "range": "± 0.092372",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / devpod-up",
+            "value": 0.268347,
+            "range": "± 0.004537",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / host-prep",
+            "value": 0.000051,
+            "range": "± 0.000009",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / total",
+            "value": 1.371596,
+            "range": "± 0.094832",
+            "unit": "s",
+            "extra": "runs=5/5 wall=1.373679s v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / attach",
+            "value": 1.079087,
+            "range": "± 0.097091",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / devpod-up",
+            "value": 4.017171,
+            "range": "± 0.449921",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / host-prep",
+            "value": 0.137774,
+            "range": "± 0.005561",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / tools",
+            "value": 3.388496,
+            "range": "± 0.043443",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / total",
+            "value": 8.604253,
+            "range": "± 0.372549",
+            "unit": "s",
+            "extra": "runs=5/5 wall=8.606359s v0.26.1, Linux-X64"
           }
         ]
       }
