@@ -470,31 +470,16 @@ its own conversation. See
 
 ## herdr
 
-`dl` and `dla` work in any terminal. In a [herdr](https://herdr.dev) pane they also tell herdr
-what they are doing:
-
-- The tab is renamed after the workspace, `repo@branch`, and keeps that name after the session
-  ends.
-- herdr sees which agent runs in the pane, and a herdr restart or a reboot brings each `dla`
-  session back into its own conversation (herdr 0.9.2 or later).
-- `dl <ws> recreate` starts again the agents it ends.
-- With the pane shell installed, a split in a devlaunch tab opens in that tab's container, and
-  `NVIM_SPLIT=1` opens an editor beside the agent.
-
-Install the pane shell once:
-
-```bash
-dl --herdr-setup
-herdr server reload-config
-```
-
-When you are finished with a workspace, type `dl rmt` in the tab it ran in. The `rmt`
-paragraph under [Workspace commands](#workspace-commands) has what it does.
+In a [herdr](https://herdr.dev) pane, `dl` and `dla` name the tab after the workspace, tell
+herdr which agent runs, and let a herdr restart bring a `dla` session back. Install the pane
+shell once with `dl --herdr-setup`, so a split in a devlaunch tab opens in its container. When
+you are finished, `dl rmt` in the tab deletes its workspace (see the `rmt` paragraph under
+[Workspace commands](#workspace-commands)).
 
 ```bash
 dla blooop/devlaunch@fix/42   # the tab becomes devlaunch@fix/42
 # ... the agent finishes, you exit it ...
-dl rmt                        # deletes that workspace, closes the tab
+dl rmt                        # deletes that workspace, hangs up the shell
 ```
 
 [docs/herdr.md](docs/herdr.md) lists every herdr feature, what each one needs, and links to the
