@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.64.1] - 2026-10-30
+
+### Added
+
+- **`docs/herdr.md` lists what `dl` and `dla` do in a herdr pane.** One page names each
+  herdr feature (the tab name, the pane shell, the editor split, restores, the in-container
+  report, `dl rmt`), what each one needs, and links to the detail in `docs/cli.md` and
+  `docs/workspace-tools.md`. The README gains a short herdr section that points at it
+  ([#717](https://github.com/blooop/devlaunch/pull/717)).
+
+### Fixed
+
+- **`dl --help` names `dl rmt`.** The help showed `rme` and never `rmt`. It now has a
+  `dl rmt` line in its examples and a paragraph that says what `rmt` does and when it
+  refuses ([#717](https://github.com/blooop/devlaunch/pull/717)).
+
 ## [0.64.0] - 2026-10-25
 
 ### Added
