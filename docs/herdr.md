@@ -5,9 +5,10 @@ a server that knows which agent each pane is running. `dl` and `dla` work in any
 nothing on this page is needed to use them. In a herdr pane they do more, and this page lists
 what, with a link to the section that has the detail.
 
-Most of it needs nothing turned on. Two parts need a step from you: the pane shell, which
-`dl --herdr-setup` installs once, and the in-container agent report, which `DEVLAUNCH_HERDR=1`
-asks for.
+Most of it needs nothing turned on. Four parts need a step from you: the pane shell, which
+`dl --herdr-setup` installs once; the editor split, which also needs `NVIM_SPLIT=1`; the
+per-workspace environments, which also need `dl --herdr-env`; and the in-container agent
+report, which `DEVLAUNCH_HERDR=1` asks for.
 
 ## Setup
 
