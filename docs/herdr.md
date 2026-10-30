@@ -48,8 +48,7 @@ not there costs the feature and never the launch.
 
 A launch in a herdr pane renames its tab with `herdr tab rename`, using `HERDR_TAB_ID` from the
 pane's environment. herdr keeps the name after the session ends, so the tab still says which
-workspace it was for once the agent has exited. Two things read that name back: the pane shell,
-which opens a new split in the same container, and `dl rmt`.
+workspace it was for once the agent has exited. One thing reads that name back: `dl rmt`.
 
 ## `dl rmt`: delete the workspace this tab was for
 
