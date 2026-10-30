@@ -27,7 +27,7 @@ one argument instead of a clone, a config file and a build command.
 ## Contents
 
 [Quickstart](#quickstart) · [Install](#install) · [Usage](#usage) · [Commands](#commands) ·
-[dla](#dla-an-agent-instead-of-a-shell) · [What every workspace gets](#what-every-workspace-gets) ·
+[dla](#dla-an-agent-instead-of-a-shell) · [herdr](#herdr) · [What every workspace gets](#what-every-workspace-gets) ·
 [Cleaning up](#cleaning-up) · [Environment variables](#environment-variables) ·
 [Docs](#docs) · [Development](#development)
 
@@ -468,6 +468,38 @@ herdr how to reopen the session, and a herdr restart or a reboot brings the pane
 its own conversation. See
 [docs/workspace-tools.md](docs/workspace-tools.md#coming-back-after-herdr-restarts).
 
+## herdr
+
+`dl` and `dla` work in any terminal. In a [herdr](https://herdr.dev) pane they also tell herdr
+what they are doing:
+
+- The tab is renamed after the workspace, `repo@branch`, and keeps that name after the session
+  ends.
+- herdr sees which agent runs in the pane, and a herdr restart or a reboot brings each `dla`
+  session back into its own conversation.
+- `dl <ws> recreate` starts again the agents it ends.
+- With the pane shell installed, a split in a devlaunch tab opens in that tab's container, and
+  `NVIM_SPLIT=1` opens an editor beside the agent.
+
+Install the pane shell once:
+
+```bash
+dl --herdr-setup
+herdr server reload-config
+```
+
+When you are finished with a workspace, type `dl rmt` in the tab it ran in. It deletes the
+workspace the tab is named after and closes the tab, with `rm`'s guard and `--force`.
+
+```bash
+dla blooop/devlaunch@fix/42   # the tab becomes devlaunch@fix/42
+# ... the agent finishes, you exit it ...
+dl rmt                        # deletes that workspace, closes the tab
+```
+
+[docs/herdr.md](docs/herdr.md) lists every herdr feature, what each one needs, and links to the
+detail.
+
 ## What every workspace gets
 
 `dl` launches arbitrary repos, so none of this can depend on the image, and no repo has to add
@@ -574,6 +606,7 @@ re-decides a mount.
 |---|---|
 | [docs/cli.md](docs/cli.md) | The selector, which commands get a terminal, the `--rm` contract, `dla`'s Remote Control default, retired spellings, devpod exit codes |
 | [docs/workspaces.md](docs/workspaces.md) | How workspace ids are derived, and how fresh a launch is |
+| [docs/herdr.md](docs/herdr.md) | What `dl` and `dla` do in a herdr pane: the tab name, the pane shell, restores, `dl rmt` |
 | [docs/workspace-tools.md](docs/workspace-tools.md) | GitHub auth, `gh` and `claude`, zellij, terminal titles, the pixi cache |
 | [docs/cleanup.md](docs/cleanup.md) | `--prune`, `--purge`, `--reconcile`, and what a workspace costs on disk |
 | [docs/performance.md](docs/performance.md) | Where a launch's seconds go, and the trend on `main` |
