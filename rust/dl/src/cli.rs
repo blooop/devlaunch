@@ -748,6 +748,7 @@ const GRAMMAR: &str = "Examples:
   dl blooop/devlaunch --rm           Open it, and delete it when the shell exits
   dl --ls --json                     Every workspace, machine-readable
   dl --refresh-stale                 Recreate the stale workspaces left idle
+  dl rmt                             Delete the workspace this herdr tab names
 
 Workspace commands (dl <workspace> <verb>, or dl <verb> <workspace>):
   up                                 Start it without attaching
@@ -833,6 +834,13 @@ usually replaced by it, so $(dl <ws> rme) closes your terminal too, while the sa
 line with a redirection leaves a subshell to take the signal. dl prints the pid it
 signalled rather than guessing. A nohup is refused outright, since disarming SIGHUP
 is how a run outlives its terminal in the first place.
+
+rmt is rme with the herdr tab as its workspace, and it takes no workspace name. A
+launch in a herdr pane renames the tab after the workspace, repo@branch, and the name
+stays after the session ends. dl rmt asks herdr for that name, prints the workspace it
+resolves to, and then deletes it and closes the tab as rme does, with the same guard
+and the same --force. Outside a herdr tab, or for a tab name that matches no workspace
+or two, it refuses and deletes nothing.
 
 --stop is retired, and --autorm is what --rm is now called. Both are still recognised
 and say so.";

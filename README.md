@@ -19,7 +19,7 @@ one argument instead of a clone, a config file and a build command.
 [![GitHub pull-requests merged](https://badgen.net/github/merged-prs/blooop/devlaunch)](https://github.com/blooop/devlaunch/pulls?q=is%3Amerged)
 [![GitHub release](https://img.shields.io/github/release/blooop/devlaunch.svg)](https://GitHub.com/blooop/devlaunch/releases/)
 [![PyPI](https://img.shields.io/pypi/v/devlaunch)](https://pypi.org/project/devlaunch/)
-[![Conda](https://img.shields.io/badge/conda-v0.64.0-brightgreen?logo=anaconda)](https://prefix.dev/channels/blooop/packages/devlaunch)
+[![Conda](https://img.shields.io/badge/conda-v0.64.1-brightgreen?logo=anaconda)](https://prefix.dev/channels/blooop/packages/devlaunch)
 [![License](https://img.shields.io/github/license/blooop/devlaunch)](https://opensource.org/license/mit/)
 [![Platform](https://img.shields.io/badge/platform-linux--64-blue)](https://github.com/blooop/devlaunch/releases)
 [![Pixi Badge](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/prefix-dev/pixi/main/assets/badge/v0.json)](https://pixi.sh)
@@ -27,7 +27,7 @@ one argument instead of a clone, a config file and a build command.
 ## Contents
 
 [Quickstart](#quickstart) · [Install](#install) · [Usage](#usage) · [Commands](#commands) ·
-[dla](#dla-an-agent-instead-of-a-shell) · [What every workspace gets](#what-every-workspace-gets) ·
+[dla](#dla-an-agent-instead-of-a-shell) · [herdr](#herdr) · [What every workspace gets](#what-every-workspace-gets) ·
 [Cleaning up](#cleaning-up) · [Environment variables](#environment-variables) ·
 [Docs](#docs) · [Development](#development)
 
@@ -350,7 +350,7 @@ clone, and [docs/cleanup.md](docs/cleanup.md) says what it carries one past and 
 
 ```bash
 $ dl --version
-dl 0.64.0
+dl 0.64.1
 ```
 
 `--devcontainer <variant|path>` picks a non-default `devcontainer.json`. A bare name means
@@ -468,6 +468,23 @@ herdr how to reopen the session, and a herdr restart or a reboot brings the pane
 its own conversation. See
 [docs/workspace-tools.md](docs/workspace-tools.md#coming-back-after-herdr-restarts).
 
+## herdr
+
+In a [herdr](https://herdr.dev) pane, `dl` and `dla` name the tab after the workspace, tell
+herdr which agent runs, and let a herdr restart bring a `dla` session back. Install the pane
+shell once with `dl --herdr-setup`, so a split in a devlaunch tab opens in its container. When
+you are finished, `dl rmt` in the tab deletes its workspace (see the `rmt` paragraph under
+[Workspace commands](#workspace-commands)).
+
+```bash
+dla blooop/devlaunch@fix/42   # the tab becomes devlaunch@fix/42
+# ... the agent finishes, you exit it ...
+dl rmt                        # deletes that workspace, hangs up the shell
+```
+
+[docs/herdr.md](docs/herdr.md) lists every herdr feature, what each one needs, and links to the
+detail.
+
 ## What every workspace gets
 
 `dl` launches arbitrary repos, so none of this can depend on the image, and no repo has to add
@@ -574,6 +591,7 @@ re-decides a mount.
 |---|---|
 | [docs/cli.md](docs/cli.md) | The selector, which commands get a terminal, the `--rm` contract, `dla`'s Remote Control default, retired spellings, devpod exit codes |
 | [docs/workspaces.md](docs/workspaces.md) | How workspace ids are derived, and how fresh a launch is |
+| [docs/herdr.md](docs/herdr.md) | What `dl` and `dla` do in a herdr pane: the tab name, the pane shell, restores, `dl rmt` |
 | [docs/workspace-tools.md](docs/workspace-tools.md) | GitHub auth, `gh` and `claude`, zellij, terminal titles, the pixi cache |
 | [docs/cleanup.md](docs/cleanup.md) | `--prune`, `--purge`, `--reconcile`, and what a workspace costs on disk |
 | [docs/performance.md](docs/performance.md) | Where a launch's seconds go, and the trend on `main` |
