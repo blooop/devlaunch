@@ -476,7 +476,7 @@ what they are doing:
 - The tab is renamed after the workspace, `repo@branch`, and keeps that name after the session
   ends.
 - herdr sees which agent runs in the pane, and a herdr restart or a reboot brings each `dla`
-  session back into its own conversation.
+  session back into its own conversation (herdr 0.9.2 or later).
 - `dl <ws> recreate` starts again the agents it ends.
 - With the pane shell installed, a split in a devlaunch tab opens in that tab's container, and
   `NVIM_SPLIT=1` opens an editor beside the agent.
@@ -488,8 +488,8 @@ dl --herdr-setup
 herdr server reload-config
 ```
 
-When you are finished with a workspace, type `dl rmt` in the tab it ran in. It deletes the
-workspace the tab is named after and closes the tab, with `rm`'s guard and `--force`.
+When you are finished with a workspace, type `dl rmt` in the tab it ran in. The `rmt`
+paragraph under [Workspace commands](#workspace-commands) has what it does.
 
 ```bash
 dla blooop/devlaunch@fix/42   # the tab becomes devlaunch@fix/42
