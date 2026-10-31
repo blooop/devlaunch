@@ -3,8 +3,8 @@
 //! A child that inherits this process's stdout inherits the *terminal*, and a
 //! terminal is not only a stream: it holds modes an application switches on for
 //! its own use and is expected to switch off again on the way out. The kitty
-//! keyboard protocol, bracketed paste, mouse reporting and the alternate screen
-//! all live in the emulator, not in the connection and not in the tty driver, so
+//! keyboard protocol, xterm `modifyOtherKeys`, focus reports, bracketed paste,
+//! mouse reporting and the alternate screen all live in the emulator, not in the connection and not in the tty driver, so
 //! nothing between the application and the glass undoes them.
 //!
 //! An application that exits normally undoes its own. One that is *killed* never
@@ -28,7 +28,12 @@
 //! badly, because "did the remote die without cleaning up" is not a question
 //! ssh's exit status answers. That is only safe if a restore costs nothing when
 //! there was nothing to restore, so each sequence below was chosen for being
-//! idempotent, and the one obvious candidate that is *not* was left out:
+//! idempotent, and the one obvious candidate that is *not* was left out. One
+//! sequence is a reset rather than an off: `ESC [ > 4 m` puts `modifyOtherKeys`
+//! back to the terminal's configured value, so it also undoes a value the user's
+//! own shell set before `dl` ran.
+//!
+//! The candidate left out:
 //!
 //! `ESC [ ? 1049 l` is the usual way to leave the alternate screen, and it is
 //! also a DECRC — xterm's ctlseqs defines it as "Use Normal Screen Buffer and
@@ -71,6 +76,15 @@
 ///   child of `dl`'s is reaped is that child's, and nobody else's to lose. A
 ///   caller that violates the contract is damaged by the first pop and no further
 ///   by the rest, which is why counting them buys nothing.
+/// - `ESC [ > 4 m` — xterm `modifyOtherKeys` back to its initial value, which is
+///   off unless the user's resources say otherwise. Claude Code switches it on,
+///   and while it is on Ctrl-C arrives as `ESC [ 27;5;99 ~`, not as the byte that
+///   raises SIGINT. Readline takes the `ESC [ 27` and types `;5;99~` into the
+///   line, so Ctrl-C at the prompt no longer cancels it, and the next Enter runs
+///   it: reported on 2026-10-31 as `dla <url>;5;99~;5;99~;5;99~;5;99~exit`. `ESC [ > 4 ; 0 m`
+///   would force it to 0 and lose a user's `modifyOtherKeys: 1`.
+/// - `ESC [ ? 1004 l` — focus reports off, or each focus change prints `^[[I` or
+///   `^[[O` at the prompt. Claude Code switches this on as well.
 /// - `ESC [ ? 2004 l` — bracketed paste off, or a paste arrives wrapped in
 ///   `ESC [ 200 ~` markers that the shell prints instead of obeying.
 /// - `ESC [ ? 1000 l` … `ESC [ ? 1015 l` — the mouse tracking modes and the three
@@ -81,6 +95,8 @@
 pub(crate) const RESTORE: &str = concat!(
     "\x1b[?1047l", // alternate screen off
     "\x1b[<u",     // kitty keyboard protocol: pop one stack entry
+    "\x1b[>4m",    // xterm modifyOtherKeys reset
+    "\x1b[?1004l", // focus reports off
     "\x1b[?2004l", // bracketed paste off
     "\x1b[?1000l", // mouse: normal tracking off
     "\x1b[?1002l", // mouse: button-event tracking off
@@ -179,6 +195,18 @@ mod tests {
             "one unmatched push is what a killed child leaves, so one pop is what \
              undoes it. This pins the string, not the run: the run writes one of \
              these per reaped child. {RESTORE:?}"
+        );
+    }
+
+    /// The 2026-10-31 report: Claude Code died holding `modifyOtherKeys` and focus
+    /// reports, and Ctrl-C at the shell typed `;5;99~` into the line instead of
+    /// cancelling it.
+    #[test]
+    fn the_restore_turns_off_the_modes_claude_code_switches_on() {
+        assert!(RESTORE.contains("\x1b[>4m"), "modifyOtherKeys: {RESTORE:?}");
+        assert!(
+            RESTORE.contains("\x1b[?1004l"),
+            "focus reports: {RESTORE:?}"
         );
     }
 

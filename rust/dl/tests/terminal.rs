@@ -38,6 +38,14 @@ const MAIN: &str = "devlaunch-main-3j1t";
 const KEYBOARD_PUSH: &str = "\x1b[>1u";
 const KEYBOARD_POP: &str = "\x1b[<u";
 
+/// The two modes Claude Code switches on in the container, and what undoes them.
+/// The 2026-10-31 report: with `modifyOtherKeys` stranded, Ctrl-C reached bash
+/// as `ESC [ 27;5;99 ~` and typed `;5;99~` into the line.
+const OTHER_KEYS_ON: &str = "\x1b[>4;2m";
+const OTHER_KEYS_OFF: &str = "\x1b[>4m";
+const FOCUS_ON: &str = "\x1b[?1004h";
+const FOCUS_OFF: &str = "\x1b[?1004l";
+
 /// What the session says before it dies, so "the repair came after the session"
 /// can be told from "the repair came instead of one".
 const SESSION_SAID: &str = "REMOTE-PUSHED";
@@ -55,7 +63,7 @@ fn a_session_that_dies_holding_the_terminal_gives_it_back() {
     // session that cleaned up after itself, which is the whole reason the repair
     // is unconditional.
     world.devpod_answers_ssh_with(
-        &format!("{KEYBOARD_PUSH}{SESSION_SAID}\n"),
+        &format!("{KEYBOARD_PUSH}{OTHER_KEYS_ON}{FOCUS_ON}{SESSION_SAID}\n"),
         // 255 is what OpenSSH exits with when the connection breaks under it, and
         // what devpod's own `exit status 137` tunnel failure surfaces as.
         255,
@@ -80,6 +88,16 @@ fn a_session_that_dies_holding_the_terminal_gives_it_back() {
          {pushed}, session output at {said}, repair at {popped}.\nThe terminal \
          saw:\n{seen:?}"
     );
+    for (off, mode) in [
+        (OTHER_KEYS_OFF, "modifyOtherKeys"),
+        (FOCUS_OFF, "focus reports"),
+    ] {
+        assert!(
+            seen[said..].contains(off),
+            "dl exited leaving {mode} on: nothing wrote {off:?} after the session.\n\
+             The terminal saw:\n{seen:?}"
+        );
+    }
 }
 
 // ===========================================================================

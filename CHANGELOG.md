@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.64.2] - 2026-10-31
+
+### Fixed
+
+- **Ctrl-C works at the shell again after a session that ends without cleaning up.**
+  Claude Code switches on xterm `modifyOtherKeys` and focus reports in the container.
+  When the session ended without its own reset reaching the terminal, both stayed on:
+  Ctrl-C reached bash as `ESC[27;5;99~`, so it typed `;5;99~` into the line instead of
+  cancelling it, and focus changes printed `^[[I` and `^[[O`. The restore `dl` writes
+  after every session now also turns off both modes
+  ([#718](https://github.com/blooop/devlaunch/pull/718)).
+
 ## [0.64.1] - 2026-10-30
 
 ### Added
