@@ -396,21 +396,24 @@ def points_module():
 
 
 class TestTheVocabularyItAssertsIsTheOneDlEmits:
-    def test_every_stage_but_the_handoff_is_required_by_default(self):
+    def test_every_launch_stage_but_the_handoff_is_required_by_default(self):
         """Written out in the script rather than imported, like its sibling,
         so it stays runnable from a checkout that was never installed — which
         makes this the test that catches the two drifting apart.
 
-        The vocabulary comes from `rust/devlaunch-core/src/timing.rs`, which owns
-        it now: the script's copy is checked against the source that decides what
-        a timing document actually says, so renaming a stage in Rust without
-        renaming it here fails. See `fixtures/rust_source.py` for why that is read
+        The vocabulary comes from `Stage::LAUNCH` in
+        `rust/devlaunch-core/src/timing.rs`, which owns it now. Only the launch's
+        stages: `devpod-down`, `host-cleanup` and `dotfiles` belong to `stop`,
+        `rm` and `dotfiles`, which no measured launch reaches. The script's copy
+        is checked against the source that decides what a timing document
+        actually says, so renaming a stage in Rust without renaming it here
+        fails. See `fixtures/rust_source.py` for why that is read
         rather than duplicated.
         """
         module = points_module()
         handoff = rust_source.handoff_stage()
         assert module.REQUIRED_STAGES == tuple(
-            stage for stage in rust_source.timing_stages() if stage != handoff
+            stage for stage in rust_source.launch_stages() if stage != handoff
         )
 
 

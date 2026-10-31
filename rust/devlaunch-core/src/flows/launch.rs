@@ -3347,6 +3347,10 @@ pub(crate) fn dotfiles_command(dotfiles_url: Option<&str>, bound: Option<Duratio
 }
 
 /// Refresh dotfiles inside a running workspace.
+///
+/// Charged to the `dotfiles` stage, the context read that finds the URL
+/// included. From an attach that asked for the refresh this stage opens inside
+/// `attach`, which pauses for it, so the refresh is not counted as the attach.
 pub(crate) fn dotfiles_update(
     session: &SessionContext<'_>,
     workspace_id: &str,
@@ -3354,24 +3358,26 @@ pub(crate) fn dotfiles_update(
     forward: &mut dyn FnMut(&str),
     notices: &mut dyn Notices<LaunchNotice>,
 ) -> Result<Session, SessionRefused> {
-    let options = context_options(
-        session.runner,
-        &session.host.context_options_cache(),
-        session.host.devpod_config().as_deref(),
-        SystemTime::now(),
-    );
-    // A script, and named as one: it is composed here with `&&` and `$(...)` in
-    // it, so quoting it as argv would run a program whose name is the whole
-    // pipeline.
-    let command = RemoteCommand::Script(dotfiles_command(options.dotfiles_url(), bound));
-    workspace_ssh(
-        session,
-        workspace_id,
-        Some(&command),
-        None,
-        forward,
-        notices,
-    )
+    timing::stage_result(timing::Stage::Dotfiles, || {
+        let options = context_options(
+            session.runner,
+            &session.host.context_options_cache(),
+            session.host.devpod_config().as_deref(),
+            SystemTime::now(),
+        );
+        // A script, and named as one: it is composed here with `&&` and `$(...)`
+        // in it, so quoting it as argv would run a program whose name is the
+        // whole pipeline.
+        let command = RemoteCommand::Script(dotfiles_command(options.dotfiles_url(), bound));
+        workspace_ssh(
+            session,
+            workspace_id,
+            Some(&command),
+            None,
+            forward,
+            notices,
+        )
+    })
 }
 
 // ===========================================================================
@@ -13879,6 +13885,71 @@ mod tests {
         assert_eq!(stage_names(&document), ["devpod-up", "attach"]);
         assert_eq!(span_labels(&document, "devpod-up"), ["devpod status"]);
         assert_eq!(span_labels(&document, "attach"), ["devpod ssh"]);
+    }
+
+    #[test]
+    fn a_dotfiles_refresh_charges_its_trip_to_the_dotfiles_stage() {
+        // `dl <ws> dotfiles` on a running workspace is the probe and then the
+        // chezmoi trip. Before the stage the trip was spanned but owned by no
+        // stage, so the document showed most of the command as nobody's.
+        let scene = Scene::new().with_running("myws");
+        let updater = SelfInvocation::new("dl");
+        let completion = scene.cache_dir().join("completion.json");
+        let mut parts = launching(&scene.runner, &updater, &completion);
+        let mut cold = NeverCold;
+
+        let (launched, document) = measured(timing::Seam::default(), || {
+            let mut launch = Launch::new(
+                &mut parts.context,
+                &mut parts.refresh,
+                &mut cold,
+                &parts.provision,
+                &scene.host,
+                &mut parts.chatter,
+                &mut parts.said,
+            );
+            launch.run("myws", &LaunchVerb::Dotfiles, None)
+        });
+
+        assert!(launched.is_ok(), "{launched:?}");
+        assert_eq!(stage_names(&document), ["devpod-up", "dotfiles"]);
+        assert!(
+            span_labels(&document, "dotfiles").contains(&"devpod ssh"),
+            "{document:?}"
+        );
+    }
+
+    #[test]
+    fn a_refresh_in_front_of_an_attach_is_not_counted_as_the_attach() {
+        // The refresh runs inside the attach arm, and `dotfiles` opening there
+        // pauses `attach`: the attach keeps only its own trip into the shell.
+        let mut scene = Scene::new().with_running("myws");
+        scene.host.dotfiles_on_attach = Some("1".to_owned());
+        let updater = SelfInvocation::new("dl");
+        let completion = scene.cache_dir().join("completion.json");
+        let mut parts = launching(&scene.runner, &updater, &completion);
+        let mut cold = NeverCold;
+
+        let (launched, document) = measured(timing::Seam::default(), || {
+            let mut launch = Launch::new(
+                &mut parts.context,
+                &mut parts.refresh,
+                &mut cold,
+                &parts.provision,
+                &scene.host,
+                &mut parts.chatter,
+                &mut parts.said,
+            );
+            launch.run("myws", &LaunchVerb::Attach { command: None }, None)
+        });
+
+        assert!(launched.is_ok(), "{launched:?}");
+        assert_eq!(stage_names(&document), ["devpod-up", "attach", "dotfiles"]);
+        assert_eq!(span_labels(&document, "attach"), ["devpod ssh"]);
+        assert!(
+            span_labels(&document, "dotfiles").contains(&"devpod ssh"),
+            "{document:?}"
+        );
     }
 
     #[test]

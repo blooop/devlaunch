@@ -60,7 +60,8 @@ TOTAL = "total"
 
 # What a shape under `--require-stages-on` must have reported, from every run.
 #
-# This is `Stage::name()` in `rust/devlaunch-core/src/timing.rs` minus `handoff`,
+# This is `Stage::LAUNCH` in `rust/devlaunch-core/src/timing.rs` minus `handoff`
+# (the stages `stop`, `rm` and `dotfiles` reach are not a launch's),
 # written out rather than imported for the same reason its sibling writes out the
 # timing variables: a script cannot import a Rust constant, and this one stays
 # stdlib-only and runnable from a bare checkout. `test_bench_points.py` pins the

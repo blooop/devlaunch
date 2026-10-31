@@ -103,6 +103,13 @@ pub(crate) const TOTAL_EPOCH: &str = "in-process, excluding interpreter startup"
 /// [`HANDOFF_VAR`]. The rest bracket real arms of the launch — the host's git
 /// work, the devpod round trips that get a container running, lending the tools
 /// in, and the last trip into the running command.
+///
+/// The last three are the arms of the commands that are not a launch: `stop`
+/// and `rm` take a container down, `rm` then clears the host's side of it, and
+/// `dotfiles` (or an attach that asks for the refresh) runs chezmoi inside the
+/// container. Before they had stages those commands reported their seconds as
+/// a total with nothing under it, so a change that made one faster could not
+/// show where.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Stage {
     Handoff,
@@ -110,15 +117,42 @@ pub(crate) enum Stage {
     DevpodUp,
     Tools,
     Attach,
+    /// `devpod stop` or `devpod delete`, with the lock sweep a delete runs
+    /// while devpod waits.
+    DevpodDown,
+    /// The host's side of a removal: the unsaved-work check in front of the
+    /// delete, and the clone and volume sweep behind it.
+    HostCleanup,
+    /// The trip that runs the dotfiles update inside a running container.
+    Dotfiles,
 }
 
 impl Stage {
-    /// The vocabulary, in the order a launch meets it — Python's `STAGES`.
+    /// The vocabulary, in the order a launch meets it — Python's `STAGES` — and
+    /// then the three added for `stop`, `rm` and `dotfiles`.
     ///
     /// Held for the #251 §7 public-API freeze: these are the handoff stage names,
     /// which cross the process boundary. Only this module's tests read them today.
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) const ALL: [Stage; 5] = [
+    pub(crate) const ALL: [Stage; 8] = [
+        Stage::Handoff,
+        Stage::HostPrep,
+        Stage::DevpodUp,
+        Stage::Tools,
+        Stage::Attach,
+        Stage::DevpodDown,
+        Stage::HostCleanup,
+        Stage::Dotfiles,
+    ];
+
+    /// The stages a launch is decomposed into: the head of [`Stage::ALL`].
+    ///
+    /// Named apart because `scripts/bench_points.py` requires these of a cold
+    /// launch (bar `handoff`) and must not require the other three, which no
+    /// launch it measures reaches. `test/test_bench_points.py` reads this list
+    /// to pin the script's copy.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) const LAUNCH: [Stage; 5] = [
         Stage::Handoff,
         Stage::HostPrep,
         Stage::DevpodUp,
@@ -134,6 +168,9 @@ impl Stage {
             Stage::DevpodUp => "devpod-up",
             Stage::Tools => "tools",
             Stage::Attach => "attach",
+            Stage::DevpodDown => "devpod-down",
+            Stage::HostCleanup => "host-cleanup",
+            Stage::Dotfiles => "dotfiles",
         }
     }
 }
@@ -1153,8 +1190,22 @@ mod tests {
     fn the_vocabulary_is_the_ownership_boundary_stages() {
         assert_eq!(
             Stage::ALL.map(Stage::name),
-            ["handoff", "host-prep", "devpod-up", "tools", "attach"]
+            [
+                "handoff",
+                "host-prep",
+                "devpod-up",
+                "tools",
+                "attach",
+                "devpod-down",
+                "host-cleanup",
+                "dotfiles"
+            ]
         );
+    }
+
+    #[test]
+    fn the_launch_stages_are_the_head_of_the_vocabulary() {
+        assert_eq!(Stage::ALL[..Stage::LAUNCH.len()], Stage::LAUNCH);
     }
 
     // --- stages -------------------------------------------------------------

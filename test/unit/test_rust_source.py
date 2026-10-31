@@ -23,7 +23,17 @@ import pytest
 from fixtures import rust_source
 
 # What `rust/devlaunch-core/src/timing.rs` declares today.
-STAGES = ("handoff", "host-prep", "devpod-up", "tools", "attach")
+STAGES = (
+    "handoff",
+    "host-prep",
+    "devpod-up",
+    "tools",
+    "attach",
+    "devpod-down",
+    "host-cleanup",
+    "dotfiles",
+)
+LAUNCH_STAGES = ("handoff", "host-prep", "devpod-up", "tools", "attach")
 HANDOFF = "handoff"
 TIMING_ENV_VAR = "DEVLAUNCH_TIMING"
 TIMING_JSON_VALUE = "json"
@@ -34,6 +44,9 @@ TOTAL_EPOCH = "in-process, excluding interpreter startup"
 class TestTheTimingVocabulary:
     def test_the_stages_are_the_ones_timing_rs_names(self):
         assert rust_source.timing_stages() == STAGES
+
+    def test_the_launch_stages_are_the_ones_timing_rs_names(self):
+        assert rust_source.launch_stages() == LAUNCH_STAGES
 
     def test_the_handoff_is_the_stage_no_launch_runs(self):
         assert rust_source.handoff_stage() == HANDOFF
@@ -98,6 +111,7 @@ class TestItFailsLoudlyRatherThanEmptily:
         for reader in (
             rust_source.timing_stages,
             rust_source.timing_stage_variants,
+            rust_source.launch_stages,
             rust_source.handoff_stage,
             rust_source.timing_env_var,
             rust_source.timing_json_value,

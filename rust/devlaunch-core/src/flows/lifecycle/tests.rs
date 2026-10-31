@@ -1704,6 +1704,72 @@ fn a_stop_forces_exactly_one_refresh_and_forgets_the_listing() {
     );
 }
 
+/// `work`, measured into a document, under the exclusion the caller's fixture
+/// already holds.
+fn measured<T>(work: impl FnOnce() -> T) -> (T, timing::Document) {
+    timing::install(Some(timing::Registry::start(
+        timing::Mode::Document,
+        timing::Seam::default(),
+        0.0,
+    )));
+    let outcome = work();
+    let report = timing::emit().expect("a report from an installed registry");
+    let document = report.document().expect("document mode").clone();
+    (outcome, document)
+}
+
+/// Each stage the document reports, with the labels of the spans inside it.
+fn stages_and_spans(document: &timing::Document) -> Vec<(&str, Vec<&str>)> {
+    document
+        .stages
+        .iter()
+        .map(|stage| {
+            (
+                stage.stage,
+                stage.spans.iter().map(|span| span.label.as_str()).collect(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn a_stop_charges_its_devpod_stop_to_the_devpod_down_stage() {
+    // Before this stage a timed `dl <ws> stop` reported a total with nothing
+    // under it: the one trip it pays for was spanned but owned by no stage.
+    let world = a_stopping_world();
+    let mut context = CommandContext::new(&world.devpod);
+    let mut refresh = Refresh::new(&world.updater, &world.cache_path);
+
+    let (outcome, document) = measured(|| workspace_stop(&mut context, &mut refresh, "myws"));
+
+    assert_eq!(outcome, Ok(StopOutcome::Stopped));
+    assert_eq!(
+        stages_and_spans(&document),
+        [("devpod-down", vec!["devpod stop"])]
+    );
+    assert_eq!(document.stages[0].outcome, "ok");
+}
+
+#[test]
+fn a_stop_devpod_refused_leaves_the_stage_ok_and_one_it_cannot_run_fails_it() {
+    // The line `devpod-up` draws: a refusal is devpod's answer, a devpod that
+    // never ran is an arm that never finished.
+    for (response, outcome) in [
+        (Response::exited(1), "ok"),
+        (Response::ProgramNotFound, "failed"),
+    ] {
+        let world = a_stopping_world();
+        world.devpod.fake.script(["devpod", "stop"], response);
+        let mut context = CommandContext::new(&world.devpod);
+        let mut refresh = Refresh::new(&world.updater, &world.cache_path);
+
+        let (_, document) = measured(|| workspace_stop(&mut context, &mut refresh, "myws"));
+
+        assert_eq!(document.stages[0].stage, "devpod-down");
+        assert_eq!(document.stages[0].outcome, outcome);
+    }
+}
+
 #[test]
 fn a_stop_devpod_refused_says_so() {
     let world = a_stopping_world();
@@ -3201,6 +3267,31 @@ fn remove(world: &mut World, removal: Removal) -> (RemoveOutcome, Vec<LifecycleN
     )
     .expect("devpod ran");
     (outcome, notices)
+}
+
+#[test]
+fn a_removal_charges_the_delete_to_devpod_down_and_the_rest_to_host_cleanup() {
+    // `host-cleanup` is opened at both doors of the removal and `devpod-down`
+    // nests inside it, so the delete's seconds are counted once, under devpod.
+    let (mut world, _clone) = a_world_ready_to_remove();
+
+    let ((outcome, _), document) = measured(|| remove(&mut world, Removal::Insisted));
+
+    assert!(
+        matches!(outcome, RemoveOutcome::Deleted { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        stages_and_spans(&document),
+        [
+            ("host-cleanup", vec![]),
+            ("devpod-down", vec!["devpod delete"])
+        ]
+    );
+    assert!(
+        document.stages.iter().all(|stage| stage.outcome == "ok"),
+        "{document:?}"
+    );
 }
 
 fn checked_the_remote(notices: &[LifecycleNotice]) -> bool {

@@ -20,6 +20,7 @@ use crate::flows::listing::CommandContext;
 use crate::flows::workspace_clone::{RemoveWorkspaceError, Removed, WorkspaceCloneManager};
 use crate::notices::Notices;
 use crate::runner::{Exit, OsFailure, Runner};
+use crate::timing;
 
 /// What became of the docker volumes a deleted workspace's devcontainer created.
 ///
@@ -179,6 +180,9 @@ pub fn workspace_remove(
     stalled: &mut dyn FnMut(DeleteStalled),
     notices: &mut dyn Notices<LifecycleNotice>,
 ) -> Result<RemoveOutcome, NotRun> {
+    // The whole removal is the host's, bar the `devpod delete` inside it, which
+    // opens `devpod-down` and so pauses this stage for as long as devpod has it.
+    let _cleanup = timing::stage(timing::Stage::HostCleanup);
     if let Probe::Look(finding) = removal.probe() {
         let unsaved = unsaved_work_in(
             clones,
@@ -268,6 +272,10 @@ pub(crate) fn workspace_delete(
     stalled: &mut dyn FnMut(DeleteStalled),
     notices: &mut dyn Notices<LifecycleNotice>,
 ) -> Result<RemoveOutcome, NotRun> {
+    // Opened here as well as in [`workspace_remove`], because `kill` and
+    // `--purge` come in at this door; from `rm` it is already open and this
+    // entry is the same owner's same work.
+    let _cleanup = timing::stage(timing::Stage::HostCleanup);
     // Named *before* the delete, and that ordering is the whole of why this is two
     // steps: `devpod delete` takes devpod's own record of the workspace away with
     // the workspace, and that record is the only place the substituted volume
@@ -284,7 +292,12 @@ pub(crate) fn workspace_delete(
     // for the launch's reason: a holder spared once can lose its parent later.
     let runner = context.runner();
     let mut lock_wait = devpod::LockWait::default();
-    let exit = match devpod::run_watching(
+    // `devpod-down` covers the lock sweep too: it runs while devpod waits, so
+    // its seconds are seconds of this one trip. A refusal is an answer and
+    // leaves the stage `ok`; a devpod that never ran, or was killed at the
+    // deadline, did not finish the arm.
+    let mut down = timing::stage(timing::Stage::DevpodDown);
+    let deleted = devpod::run_watching(
         runner,
         &delete_call(workspace_id, insistence, persistence),
         &mut |line| {
@@ -301,7 +314,12 @@ pub(crate) fn workspace_delete(
                 stalled(DeleteStalled::Swept(released));
             }
         },
-    ) {
+    );
+    if deleted.is_err() {
+        down.fail();
+    }
+    drop(down);
+    let exit = match deleted {
         Ok(exit) => exit,
         // A devpod killed at [`WEDGED_DELETE`] is a devpod that *ran*, for a whole
         // minute, and may have unlinked the workspace record before the signal

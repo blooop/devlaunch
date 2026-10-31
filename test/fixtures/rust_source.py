@@ -84,6 +84,25 @@ def timing_stage_variants() -> Tuple[str, ...]:
     return tuple(re.findall(r"Stage::(\w+)", body.group(1)))
 
 
+def launch_stages() -> Tuple[str, ...]:
+    """`Stage::LAUNCH`'s names: the stages a launch is decomposed into.
+
+    The variants are read from the constant and named through `Stage::name()`'s
+    arms, so the strings are the ones the timing document carries.
+    """
+    source = _read(TIMING_RS)
+    body = re.search(r"const LAUNCH: \[Stage; \d+\] = \[(.+?)\];", source, re.S)
+    assert body, "timing.rs no longer declares `Stage::LAUNCH`"
+    arms = re.search(r"fn name\(self\) -> &'static str \{(.+?)\n    \}", _impl_block("Stage"), re.S)
+    assert arms, "timing.rs no longer has a `Stage::name()` whose arms this can read"
+    names = dict(re.findall(r'Stage::(\w+) => "([^"]+)",', arms.group(1)))
+    variants = re.findall(r"Stage::(\w+)", body.group(1))
+    assert variants, "timing.rs's `Stage::LAUNCH` names no stage"
+    missing = [variant for variant in variants if variant not in names]
+    assert not missing, f"`Stage::name()` has no arm for {missing}"
+    return tuple(names[variant] for variant in variants)
+
+
 def handoff_stage() -> str:
     """The one stage no launch runs: the gap before dl started.
 

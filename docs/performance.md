@@ -161,9 +161,10 @@ dl-timing: total 2.444s (in-process, excluding interpreter startup)
 
 `DEVLAUNCH_TIMING=json` swaps that prose for one document on a single
 `dl-timing-json:` line, so a trend job can read a launch without scraping
-prose. It decomposes the launch into five **ownership-boundary stages**, one
-per party that could actually make it faster, with the round trips nested
-inside the stage that paid for them:
+prose. It decomposes the command into **ownership-boundary stages**, one per
+party that could actually make it faster, with the round trips nested inside
+the stage that paid for them. A launch meets the first five; `stop`, `rm` and
+`dotfiles` meet the last three:
 
 | stage | what it owns |
 |---|---|
@@ -172,6 +173,9 @@ inside the stage that paid for them:
 | `devpod-up` | the arm that gets a container running: the existence probe and, when it is not running, the `up` itself. On a warm launch that arm is the probe alone |
 | `tools` | the probe trip and the conditional lend, including staging the payload tar |
 | `attach` | the last trip, into the running command |
+| `devpod-down` | the trip that takes a container down: `devpod stop`, or `devpod delete` with the lock sweep a delete runs while devpod waits. `restart` reaches it for its stop |
+| `host-cleanup` | the host's side of a removal: the unsaved-work check in front of the delete, and the clone and volume sweep behind it |
+| `dotfiles` | the trip that runs the dotfiles update in the container, for `dotfiles` or for an attach that asks for the refresh. Inside an attach it pauses `attach`, so the attach keeps only its own trip |
 
 Two rules are worth knowing before reading one:
 
@@ -183,7 +187,9 @@ Two rules are worth knowing before reading one:
   never double-count each other: `tools` runs inside the launch `devpod-up`
   brackets, and those seconds are charged to `tools` alone. The in-process
   stages therefore add up to the total. Measured on a real cold launch below,
-  they came to 20.834s against a 20.834s total.
+  they came to 20.834s against a 20.834s total. Before the last three stages
+  existed, `stop`, `rm` and `dotfiles` left 0.8s to 5.8s of their total in no
+  stage; with them the gap is under 0.05s.
 
 `handoff` is the exception to that sum, and the only one: it ends where
 `total` begins, so it is time the process could not have measured from inside

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`DEVLAUNCH_TIMING=json` gives `stop`, `rm` and `dotfiles` stages of their own.** Those
+  commands reported 0.8s to 5.8s of their total in no stage, because the trip each one pays
+  for was spanned but owned by nobody. Three stages now hold it: `devpod-down` (`devpod stop`,
+  or `devpod delete` with its lock sweep), `host-cleanup` (the unsaved-work check and the
+  clone and volume sweep of a removal) and `dotfiles` (the chezmoi trip, also when an attach
+  asks for the refresh, where it no longer counts as `attach`). The time in no stage drops
+  to under 0.05s. Timing only: nothing a command does changed.
+
 ## [0.59.4] - 2026-10-05
 
 ### Fixed
