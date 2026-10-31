@@ -198,10 +198,7 @@ mod tests {
     /// cancelling it.
     #[test]
     fn the_restore_turns_off_the_modes_claude_code_switches_on() {
-        assert!(
-            RESTORE.contains("\x1b[>4m"),
-            "modifyOtherKeys: {RESTORE:?}"
-        );
+        assert!(RESTORE.contains("\x1b[>4m"), "modifyOtherKeys: {RESTORE:?}");
         assert!(
             RESTORE.contains("\x1b[?1004l"),
             "focus reports: {RESTORE:?}"
