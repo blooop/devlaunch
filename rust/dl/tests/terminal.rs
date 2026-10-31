@@ -42,7 +42,7 @@ const KEYBOARD_POP: &str = "\x1b[<u";
 /// The 2026-10-31 report: with `modifyOtherKeys` stranded, Ctrl-C reached bash
 /// as `ESC [ 27;5;99 ~` and typed `;5;99~` into the line.
 const OTHER_KEYS_ON: &str = "\x1b[>4;2m";
-const OTHER_KEYS_OFF: &str = "\x1b[>4;0m";
+const OTHER_KEYS_OFF: &str = "\x1b[>4m";
 const FOCUS_ON: &str = "\x1b[?1004h";
 const FOCUS_OFF: &str = "\x1b[?1004l";
 

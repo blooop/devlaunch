@@ -71,12 +71,13 @@
 ///   child of `dl`'s is reaped is that child's, and nobody else's to lose. A
 ///   caller that violates the contract is damaged by the first pop and no further
 ///   by the rest, which is why counting them buys nothing.
-/// - `ESC [ > 4 ; 0 m` — xterm `modifyOtherKeys` off. Claude Code switches it on,
+/// - `ESC [ > 4 m` — xterm `modifyOtherKeys` back to its initial value, which is
+///   off unless the user's resources say otherwise. Claude Code switches it on,
 ///   and while it is on Ctrl-C arrives as `ESC [ 27;5;99 ~`, not as the byte that
 ///   raises SIGINT. Readline takes the `ESC [ 27` and types `;5;99~` into the
 ///   line, so Ctrl-C at the prompt no longer cancels it, and the next Enter runs
-///   it: reported on 2026-10-31 as `dla <url>;5;99~;5;99~exit`. It is a set, not a
-///   push, so writing it on a terminal already at 0 changes nothing.
+///   it: reported on 2026-10-31 as `dla <url>;5;99~;5;99~exit`. `ESC [ > 4 ; 0 m`
+///   would force it to 0 and lose a user's `modifyOtherKeys: 1`.
 /// - `ESC [ ? 1004 l` — focus reports off, or each focus change prints `^[[I` or
 ///   `^[[O` at the prompt. Claude Code switches this on as well.
 /// - `ESC [ ? 2004 l` — bracketed paste off, or a paste arrives wrapped in
@@ -89,7 +90,7 @@
 pub(crate) const RESTORE: &str = concat!(
     "\x1b[?1047l", // alternate screen off
     "\x1b[<u",     // kitty keyboard protocol: pop one stack entry
-    "\x1b[>4;0m",  // xterm modifyOtherKeys off
+    "\x1b[>4m",    // xterm modifyOtherKeys reset
     "\x1b[?1004l", // focus reports off
     "\x1b[?2004l", // bracketed paste off
     "\x1b[?1000l", // mouse: normal tracking off
@@ -198,7 +199,7 @@ mod tests {
     #[test]
     fn the_restore_turns_off_the_modes_claude_code_switches_on() {
         assert!(
-            RESTORE.contains("\x1b[>4;0m"),
+            RESTORE.contains("\x1b[>4m"),
             "modifyOtherKeys: {RESTORE:?}"
         );
         assert!(
