@@ -71,6 +71,14 @@
 ///   child of `dl`'s is reaped is that child's, and nobody else's to lose. A
 ///   caller that violates the contract is damaged by the first pop and no further
 ///   by the rest, which is why counting them buys nothing.
+/// - `ESC [ > 4 ; 0 m` — xterm `modifyOtherKeys` off. Claude Code switches it on,
+///   and while it is on Ctrl-C arrives as `ESC [ 27;5;99 ~`, not as the byte that
+///   raises SIGINT. Readline takes the `ESC [ 27` and types `;5;99~` into the
+///   line, so Ctrl-C at the prompt no longer cancels it, and the next Enter runs
+///   it: reported on 2026-10-31 as `dla <url>;5;99~;5;99~exit`. It is a set, not a
+///   push, so writing it on a terminal already at 0 changes nothing.
+/// - `ESC [ ? 1004 l` — focus reports off, or each focus change prints `^[[I` or
+///   `^[[O` at the prompt. Claude Code switches this on as well.
 /// - `ESC [ ? 2004 l` — bracketed paste off, or a paste arrives wrapped in
 ///   `ESC [ 200 ~` markers that the shell prints instead of obeying.
 /// - `ESC [ ? 1000 l` … `ESC [ ? 1015 l` — the mouse tracking modes and the three
@@ -81,6 +89,8 @@
 pub(crate) const RESTORE: &str = concat!(
     "\x1b[?1047l", // alternate screen off
     "\x1b[<u",     // kitty keyboard protocol: pop one stack entry
+    "\x1b[>4;0m",  // xterm modifyOtherKeys off
+    "\x1b[?1004l", // focus reports off
     "\x1b[?2004l", // bracketed paste off
     "\x1b[?1000l", // mouse: normal tracking off
     "\x1b[?1002l", // mouse: button-event tracking off
@@ -179,6 +189,21 @@ mod tests {
             "one unmatched push is what a killed child leaves, so one pop is what \
              undoes it. This pins the string, not the run: the run writes one of \
              these per reaped child. {RESTORE:?}"
+        );
+    }
+
+    /// The 2026-10-31 report: Claude Code died holding `modifyOtherKeys` and focus
+    /// reports, and Ctrl-C at the shell typed `;5;99~` into the line instead of
+    /// cancelling it.
+    #[test]
+    fn the_restore_turns_off_the_modes_claude_code_switches_on() {
+        assert!(
+            RESTORE.contains("\x1b[>4;0m"),
+            "modifyOtherKeys: {RESTORE:?}"
+        );
+        assert!(
+            RESTORE.contains("\x1b[?1004l"),
+            "focus reports: {RESTORE:?}"
         );
     }
 
