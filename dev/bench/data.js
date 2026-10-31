@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793371953314,
+  "lastUpdate": 1793447353993,
   "repoUrl": "https://github.com/blooop/devlaunch",
   "entries": {
     "devlaunch launch stages": [
@@ -21131,6 +21131,93 @@ window.BENCHMARK_DATA = {
             "range": "± 0.165357",
             "unit": "s",
             "extra": "runs=5/5 wall=6.636698s v0.26.1, Linux-X64"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "blooop@gmail.com",
+            "name": "Austin Gregg-Smith",
+            "username": "blooop"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "86081facb8866a368f41371ffcf0a16baf615359",
+          "message": "Merge pull request #718 from blooop/fix/reset-keyboard-modes\n\nfix(terminal): reset modifyOtherKeys and focus after each session",
+          "timestamp": "2026-10-31T11:45:56Z",
+          "tree_id": "ba5f2f175e8c31d777f8a8bc2a4d27a6cdde7d62",
+          "url": "https://github.com/blooop/devlaunch/commit/86081facb8866a368f41371ffcf0a16baf615359"
+        },
+        "date": 1793447353124,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "warm / attach",
+            "value": 1.369446,
+            "range": "± 0.086308",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / devpod-up",
+            "value": 0.355306,
+            "range": "± 0.004401",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / host-prep",
+            "value": 0.000041,
+            "range": "± 0.000007",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "warm / total",
+            "value": 1.733665,
+            "range": "± 0.087074",
+            "unit": "s",
+            "extra": "runs=5/5 wall=1.735812s v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / attach",
+            "value": 1.379866,
+            "range": "± 0.045589",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / devpod-up",
+            "value": 3.726316,
+            "range": "± 0.546224",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / host-prep",
+            "value": 0.251788,
+            "range": "± 0.035119",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / tools",
+            "value": 2.921343,
+            "range": "± 0.080028",
+            "unit": "s",
+            "extra": "runs=5/5 v0.26.1, Linux-X64"
+          },
+          {
+            "name": "cold-recreate / total",
+            "value": 8.380614,
+            "range": "± 0.521203",
+            "unit": "s",
+            "extra": "runs=5/5 wall=8.383033s v0.26.1, Linux-X64"
           }
         ]
       }
