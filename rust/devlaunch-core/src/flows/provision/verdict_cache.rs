@@ -96,6 +96,11 @@ impl VerdictCache {
         }
     }
 
+    /// devpod's home, which the pass also reads the container's records from.
+    pub(crate) fn devpod_home(&self) -> Option<&DevpodHome> {
+        self.devpod_home.as_ref()
+    }
+
     /// This workspace's marker file.
     ///
     /// The id goes into the name unescaped, as

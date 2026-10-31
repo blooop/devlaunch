@@ -78,6 +78,9 @@ use crate::timing;
 
 pub mod verdict_cache;
 
+/// `docker exec` for the pass and the lend on devpod's local docker provider.
+mod direct;
+
 use verdict_cache::{Observed, VerdictCache};
 
 // ===========================================================================
@@ -2938,7 +2941,17 @@ fn run_the_pass(
 ) -> Result<Pass, DevpodMissing> {
     let host_home = host.and_then(|layout| layout.home.to_str());
 
-    let found = match setup_pass(runner, workspace, switches, title, host_home, events) {
+    // Resolved once, before the pass, because the pass and the lend reach the same
+    // container the same way: one trip that cannot be made directly is enough
+    // doubt to send every later one through devpod too. No verdict cache is no
+    // devpod home to read the records from, which is a launch that keeps devpod's
+    // route rather than one that guesses.
+    let mut route =
+        verdicts.and_then(|verdicts| direct::resolve(runner, verdicts.devpod_home(), workspace));
+
+    let found = match setup_pass(
+        runner, &mut route, workspace, switches, title, host_home, events,
+    ) {
         Ok(found) => found,
         Err(refusal) => {
             // On this route out too, and that was the defect: a trip devpod refused
@@ -2975,7 +2988,7 @@ fn run_the_pass(
     }
 
     if let Some(payload) = host.and_then(host_payload) {
-        match transfer(runner, workspace, &payload) {
+        match transfer(runner, &mut route, workspace, &payload) {
             Ok(()) => return Ok(found.into_pass(Provisioning::Lent)),
             Err(TransferFailed::Bundle(failure)) => {
                 events.say(ProvisionEvent::PayloadNotBundled { failure });
@@ -3061,8 +3074,14 @@ fn refused(
 /// costs a redundant trip is preferred to the one that skips the work. Whatever the
 /// trip did print is still read for stage outcomes, because a report cut off partway
 /// is exactly what "not reached" is for.
+///
+/// `route` is how the trip gets in: `docker exec` when [`direct::resolve`] found
+/// the container, `devpod ssh` otherwise and whenever the direct trip did not get
+/// in, which also sends every later trip of the pass through devpod.
+#[allow(clippy::too_many_arguments)]
 fn setup_pass(
     runner: &dyn Runner,
+    route: &mut Option<direct::Direct>,
     workspace: &str,
     switches: Switches,
     title: Option<&str>,
@@ -3078,13 +3097,18 @@ fn setup_pass(
         switches.codex,
         title,
     );
-    let call = Call::new([
-        "ssh",
-        workspace,
-        "--command",
-        &format!("bash -lc {}", quote(&setup_script(&stages))),
-    ]);
-    let answer = devpod::capture(runner, &call)?;
+    let command = format!("bash -lc {}", quote(&setup_script(&stages)));
+    let directly = route
+        .as_ref()
+        .and_then(|direct| direct::capture(runner, direct, &command));
+    let answer = match directly {
+        Some((exit, text)) => devpod::Answer { exit, text },
+        None => {
+            *route = None;
+            let call = Call::new(["ssh", workspace, "--command", &command]);
+            devpod::capture(runner, &call)?
+        }
+    };
     let report = answer.stdout();
     for outcome in stage_outcomes(report, &stages) {
         report_outcome(workspace, &stages, outcome, events);
@@ -3168,8 +3192,12 @@ enum TransferFailed {
 }
 
 /// Stream the host's binaries into the workspace. One round trip.
+///
+/// Over `docker exec` when `route` holds one, and through `devpod ssh` when it does
+/// not or when the direct trip did not get in.
 fn transfer(
     runner: &dyn Runner,
+    route: &mut Option<direct::Direct>,
     workspace: &str,
     payload: &HostPayload,
 ) -> Result<(), TransferFailed> {
@@ -3194,14 +3222,20 @@ fn transfer(
     // A real file rather than a pipe, so the stream stays on the one devpod spawn
     // point — and a failed trip can be retried by the fallback without a
     // half-consumed generator in hand.
-    let call = Call::new([
-        "ssh",
-        workspace,
-        "--command",
-        &format!("bash -c {}", quote(&transfer_script(payload))),
-    ])
-    .with_stdin_file(&bundle);
-    match devpod::run(runner, &call) {
+    let command = format!("bash -c {}", quote(&transfer_script(payload)));
+    let directly = route
+        .as_ref()
+        .and_then(|direct| direct::run_with_stdin(runner, direct, &command, &bundle));
+    let sent = match directly {
+        Some(exit) => Ok(exit),
+        None => {
+            *route = None;
+            let call =
+                Call::new(["ssh", workspace, "--command", &command]).with_stdin_file(&bundle);
+            devpod::run(runner, &call)
+        }
+    };
+    match sent {
         Ok(exit) if exit.is_success() => Ok(()),
         Ok(exit) => Err(TransferFailed::Rejected { exit }),
         Err(refusal) => Err(TransferFailed::Trip(refusal)),
@@ -9196,6 +9230,234 @@ fi
             launch::ZellijWrap::Beside,
             "the wrap now reads the tools switch; docs/workspace-tools.md's switch subsection \
              says the residue is still reachable"
+        );
+    }
+
+    // =======================================================================
+    // the docker exec route, and every way back to devpod ssh
+    // =======================================================================
+
+    const CONTAINER: &str = "716bcb8e2085d5c3512e78c12320fdacfdb0e58db69a429880faea18d48bb686";
+
+    /// A devpod home holding one workspace on the local docker provider, in the
+    /// shape devpod 0.26 writes it, and the verdict cache that reads it.
+    fn a_docker_workspace(
+        scratch: &Path,
+    ) -> (crate::clients::devpod_home::DevpodHome, VerdictCache) {
+        let home = crate::clients::devpod_home::DevpodHome::at(scratch.join("devpod"));
+        let record = home.record("default", "myws");
+        fs::create_dir_all(record.parent().expect("a record directory")).expect("a record dir");
+        fs::write(
+            &record,
+            r#"{"id":"myws","provider":{"name":"docker","options":{"DOCKER_PATH":{"value":"docker"}}}}"#,
+        )
+        .expect("a record");
+        fs::write(
+            home.result("default", "myws"),
+            format!(r#"{{"MergedConfig":{{"remoteUser":"vscode"}},"ContainerDetails":{{"ID":"{CONTAINER}"}}}}"#),
+        )
+        .expect("a result");
+        let verdicts = VerdictCache::under(&scratch.join("cache"), Some(home.clone()));
+        (home, verdicts)
+    }
+
+    /// The envfile read, answered as a container holding devpod's envfile.
+    fn answers_the_envfile(runner: &devlaunch_test_support::FakeRunner) {
+        runner.script(
+            ["docker", "exec", "-u", "0", CONTAINER],
+            devlaunch_test_support::Response::stdout(
+                "devlaunch-envfile\n{\"env\":{\"PATH\":\"/usr/bin:/bin\"}}",
+            ),
+        );
+    }
+
+    fn programs_and_verbs(runner: &devlaunch_test_support::FakeRunner) -> Vec<String> {
+        runner
+            .argvs()
+            .iter()
+            .map(|argv| argv.iter().take(3).cloned().collect::<Vec<_>>().join(" "))
+            .collect()
+    }
+
+    fn pass_with(
+        runner: &devlaunch_test_support::FakeRunner,
+        host: &HostLayout,
+        verdicts: &VerdictCache,
+    ) -> Pass {
+        let mut events = Vec::new();
+        provision_tools(
+            runner,
+            "myws",
+            PassOccasion::AfterUp,
+            Switches::INSTALLING,
+            None,
+            Some(host),
+            Some(verdicts),
+            &mut events,
+        )
+        .expect("not a devpod that went missing")
+    }
+
+    #[test]
+    fn a_local_docker_workspace_is_probed_and_lent_without_devpod() {
+        let scratch = tempfile::tempdir().expect("a scratch dir");
+        let (_home, verdicts) = a_docker_workspace(scratch.path());
+        let runner = devlaunch_test_support::FakeRunner::new();
+        answers_the_envfile(&runner);
+        // Tools missing, so the lend follows; both trips say they got in.
+        runner.script(
+            ["docker", "exec", "-i"],
+            devlaunch_test_support::Response::stdout("devlaunch-probe tools missing\n")
+                .and_stderr(format!("{}\n", direct::ARRIVED_MARK)),
+        );
+
+        let pass = pass_with(&runner, &a_host_that_can_lend(scratch.path()), &verdicts);
+
+        assert_eq!(pass.provisioning, Provisioning::Lent);
+        assert_eq!(
+            programs_and_verbs(&runner),
+            [
+                "docker exec -u".to_owned(),
+                "docker exec -i".to_owned(),
+                "docker exec -i".to_owned()
+            ],
+            "the envfile read, the pass and the lend, and no devpod ssh"
+        );
+        let calls = runner.calls();
+        let lend = calls.last().and_then(|call| call.spec()).expect("a lend");
+        assert!(
+            matches!(lend.stdin, StdinPlan::File(_)),
+            "the lend streams its tar as stdin"
+        );
+    }
+
+    /// A `docker exec` or `su` that failed never printed the mark, so devpod
+    /// makes the trip, and the lend after it goes through devpod as well.
+    #[test]
+    fn a_direct_trip_that_did_not_get_in_is_made_by_devpod_ssh() {
+        let scratch = tempfile::tempdir().expect("a scratch dir");
+        let (_home, verdicts) = a_docker_workspace(scratch.path());
+        let runner = devlaunch_test_support::FakeRunner::new();
+        answers_the_envfile(&runner);
+        runner.script(
+            ["docker", "exec", "-i"],
+            devlaunch_test_support::Response::failed(1, "su: user vscode does not exist\n"),
+        );
+        runner.script(
+            ["devpod", "ssh"],
+            devlaunch_test_support::Response::stdout("devlaunch-probe tools missing\n"),
+        );
+
+        let pass = pass_with(&runner, &a_host_that_can_lend(scratch.path()), &verdicts);
+
+        assert_eq!(pass.provisioning, Provisioning::Lent);
+        assert_eq!(
+            programs_and_verbs(&runner),
+            [
+                "docker exec -u",
+                "docker exec -i",
+                "devpod ssh myws",
+                "devpod ssh myws"
+            ],
+        );
+    }
+
+    /// The lend's own refusal is the script's exit, and it is not a reason to send
+    /// the tar again through devpod: the arch/libc gate keeps meaning "rejected".
+    #[test]
+    fn a_lend_the_container_rejected_over_docker_exec_is_not_retried_through_devpod() {
+        let scratch = tempfile::tempdir().expect("a scratch dir");
+        let (_home, verdicts) = a_docker_workspace(scratch.path());
+        let runner = devlaunch_test_support::FakeRunner::new();
+        answers_the_envfile(&runner);
+        runner.script(
+            ["docker", "exec", "-i"],
+            devlaunch_test_support::Response::exited(126)
+                .and_stdout("devlaunch-probe tools missing\n")
+                .and_stderr(format!("{}\nexec format error\n", direct::ARRIVED_MARK)),
+        );
+        runner.script(["devpod", "ssh"], devlaunch_test_support::Response::ok());
+
+        let _ = pass_with(&runner, &a_host_that_can_lend(scratch.path()), &verdicts);
+
+        let verbs = programs_and_verbs(&runner);
+        assert_eq!(
+            verbs[..3],
+            ["docker exec -u", "docker exec -i", "docker exec -i"]
+        );
+        assert_eq!(
+            verbs[3..],
+            ["devpod ssh myws"],
+            "only the network install follows, as it does after a rejection over devpod"
+        );
+    }
+
+    #[test]
+    fn a_container_the_envfile_read_cannot_reach_is_left_to_devpod_ssh() {
+        let scratch = tempfile::tempdir().expect("a scratch dir");
+        let (_home, verdicts) = a_docker_workspace(scratch.path());
+        let runner = devlaunch_test_support::FakeRunner::new();
+        runner.script(
+            ["docker"],
+            devlaunch_test_support::Response::failed(1, "Error: No such container\n"),
+        );
+        runner.script(
+            ["devpod", "ssh"],
+            devlaunch_test_support::Response::stdout("devlaunch-probe tools missing\n"),
+        );
+
+        let pass = pass_with(&runner, &a_host_that_can_lend(scratch.path()), &verdicts);
+
+        assert_eq!(pass.provisioning, Provisioning::Lent);
+        assert_eq!(
+            programs_and_verbs(&runner),
+            ["docker exec -u", "devpod ssh myws", "devpod ssh myws"],
+        );
+    }
+
+    #[test]
+    fn a_host_without_docker_is_left_to_devpod_ssh() {
+        let scratch = tempfile::tempdir().expect("a scratch dir");
+        let (_home, verdicts) = a_docker_workspace(scratch.path());
+        let runner = devlaunch_test_support::FakeRunner::new().with_missing("docker");
+        runner.script(
+            ["devpod", "ssh"],
+            devlaunch_test_support::Response::stdout("devlaunch-probe tools missing\n"),
+        );
+
+        let pass = pass_with(&runner, &a_host_that_can_lend(scratch.path()), &verdicts);
+
+        assert_eq!(pass.provisioning, Provisioning::Lent);
+        assert_eq!(
+            programs_and_verbs(&runner)[1..],
+            ["devpod ssh myws", "devpod ssh myws"]
+        );
+    }
+
+    /// Another provider's workspace never costs a `docker` call at all.
+    #[test]
+    fn another_providers_workspace_asks_docker_nothing() {
+        let scratch = tempfile::tempdir().expect("a scratch dir");
+        let (home, verdicts) = a_docker_workspace(scratch.path());
+        fs::write(
+            home.record("default", "myws"),
+            r#"{"id":"myws","provider":{"name":"kubernetes"}}"#,
+        )
+        .expect("a record");
+        let runner = devlaunch_test_support::FakeRunner::new();
+        runner.script(
+            ["devpod", "ssh"],
+            devlaunch_test_support::Response::stdout("devlaunch-probe tools missing\n"),
+        );
+
+        let _ = pass_with(&runner, &a_host_that_can_lend(scratch.path()), &verdicts);
+
+        assert!(
+            programs_and_verbs(&runner)
+                .iter()
+                .all(|call| call.starts_with("devpod")),
+            "{:?}",
+            runner.argvs()
         );
     }
 }

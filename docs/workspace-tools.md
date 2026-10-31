@@ -643,8 +643,8 @@ to. It reports those and names no verdict; the host reads them, so "a real
 - **absent**, when a tool is genuinely missing.
 
 **2. A lend, for *lendable* and *absent*.** `dl` streams its own `gh` and `claude`
-into the container as a tar over the `devpod ssh` channel it already holds: a
-local pipe, no network and no download. Nothing lands outside a staging directory
+into the container as a tar over the same way in the setup pass took (see
+below): a local pipe, no network and no download. Nothing lands outside a staging directory
 until both binaries have been run there once, so a container that cannot execute
 them (a different libc, a different architecture) is left exactly as it was.
 
@@ -663,6 +663,47 @@ those that exists, so an image shipping a `~/.bash_profile` never reads
 
 An install that fails costs the workspace its tools, not its launch: `dl` logs a
 warning and hands you the session anyway.
+
+### The way in: `docker exec`, or `devpod ssh`
+
+On devpod's local `docker` provider, the setup pass and the lend reach the
+container with `docker exec`. Everywhere else they go through `devpod ssh
+--command`. `devpod ssh` costs 2.1s to 2.6s for a trip that does nothing, where
+`docker exec` into the same container costs about 0.14s, and the lend's tar goes
+through `docker exec` several times faster. On a cold create that takes the
+`tools` stage from about 6s to under 2s.
+
+The pass decides what to lend from what a login shell finds on `PATH`, so the
+`docker exec` reproduces the session `devpod ssh` would open. It runs as root,
+then uses `su` to become the workspace's remote user, as devpod does. That gives
+the same `HOME`, `USER`, PAM environment and umask. It then applies devpod's
+`/etc/envfile.json` (the `remoteEnv` and the variables `dl` gave `devpod up`),
+changes to the workspace folder and runs the command under the user's login
+shell. The one difference is the ssh-agent: devpod forwards the host's agent into
+its session, and this route leaves the container's own `SSH_AUTH_SOCK`. Nothing
+the pass or the lend runs uses an agent.
+
+Every doubt goes to `devpod ssh`, never to a guess:
+
+- a provider other than `docker`, or one with its own `DOCKER_HOST` or
+  `DOCKER_PATH`;
+- a workspace on a git subpath;
+- devpod records that name no container id, or a remote user that is not a plain
+  lowercase name;
+- an envfile read that does not reach the container: no `docker` on the host, a
+  container on another daemon (a rootless or remote docker context that devpod
+  does not share), a container that is gone or stopped, or an envfile that is not
+  in devpod's format;
+- a trip that did not get in, which `devpod ssh` then makes instead. The later
+  trips of the same pass also go through devpod.
+
+A lend that reached the container and was refused by the arch and libc gate is
+not a trip that failed to get in. It is not sent again through devpod.
+
+#424 weighed dl's own OpenSSH connection for these two trips. On a cold pass there
+is no connection to join, and the first OpenSSH trip through devpod's
+`ProxyCommand` measured 3.6s, more than a `devpod ssh --command`. So OpenSSH saves
+one trip of two at best, and `docker exec` saves both.
 
 ### The trip a launch can skip
 

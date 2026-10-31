@@ -170,7 +170,7 @@ inside the stage that paid for them:
 | `handoff` | the gap between the keystroke that resolved to this exec and dl starting (see the stamps below) |
 | `host-prep` | the host's own git work: the bare clone and its fetches, the lock waits, the LFS probe and, for an LFS repo, the cache's LFS fetch and the workspace's materialization out of it. Plus the `gh auth token` trip, wherever on the launch it falls |
 | `devpod-up` | the arm that gets a container running: the existence probe and, when it is not running, the `up` itself. On a warm launch that arm is the probe alone |
-| `tools` | the probe trip and the conditional lend, including staging the payload tar |
+| `tools` | the probe trip and the conditional lend, including staging the payload tar. On the local docker provider both trips are `docker exec` spans, plus one short `docker exec` that reads devpod's envfile first; see [workspace-tools.md](workspace-tools.md#the-way-in-docker-exec-or-devpod-ssh) |
 | `attach` | the last trip, into the running command |
 
 Two rules are worth knowing before reading one:

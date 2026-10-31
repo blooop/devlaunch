@@ -316,6 +316,25 @@ pub(crate) fn sole_workspace_result(
     result.is_file().then_some(result)
 }
 
+/// Both of devpod's records for one workspace, as `(record, result)`, if it has
+/// exactly one context holding it and both files are there.
+///
+/// Nothing for every ambiguity [`sole_workspace_result`] answers nothing to, for a
+/// stricter reason: the caller reads the container id and the remote user out of
+/// these to reach the container *without* devpod, and the wrong context's record
+/// names somebody else's container.
+pub(crate) fn sole_workspace_records(
+    devpod_home: Option<&DevpodHome>,
+    workspace_id: &str,
+) -> Option<(PathBuf, PathBuf)> {
+    let home = devpod_home?;
+    let context = home.sole_context_holding(workspace_id)?;
+    let result = home.result(&context, workspace_id);
+    result
+        .is_file()
+        .then(|| (home.record(&context, workspace_id), result))
+}
+
 /// Where this workspace's busy marker would be, if the context is unambiguous.
 ///
 /// Nothing for every ambiguity [`sole_workspace_result`] answers nothing to, and

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The setup pass and the lend reach a local docker container with `docker exec`.** On
+  devpod's local `docker` provider the two trips no longer go through `devpod ssh
+  --command`, which costs 2.1s to 2.6s per trip. The `docker exec` runs the same session
+  devpod would: `su` to the remote user, devpod's `/etc/envfile.json`, the workspace
+  folder and the login shell, so the probe sees the same `PATH`. Any other provider, a
+  provider with its own daemon, an unreadable record or envfile, and any trip that does
+  not get in fall back to `devpod ssh`. The `tools` stage of a cold create drops from
+  about 6s to under 2s.
+
 ## [0.59.4] - 2026-10-05
 
 ### Fixed
