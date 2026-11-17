@@ -1724,3 +1724,175 @@ fn clean_merge_trees_are_read_from_merge_tree_stdin_output() {
     assert_eq!(clean_merge_trees_in("1\0aaa\0", 1), None);
     assert_eq!(clean_merge_trees_in("", 1), None);
 }
+
+const POINT: &str = "1111111111111111111111111111111111111111";
+const REF_AT: &str = "2222222222222222222222222222222222222222";
+const BASE: &str = "3333333333333333333333333333333333333333";
+const OTHER_BASE: &str = "4444444444444444444444444444444444444444";
+
+#[test]
+fn the_squash_rule_asks_every_pair_s_bases_in_one_rev_parse() {
+    // `<ref>...<point>`, the ref on the left, so `rev-parse` prints the point
+    // first: that is the order `pair_bases_in` reads.
+    let (dir, _root) = a_clone();
+    let fake = ScriptedRunner::new();
+    let feature = RemoteRef::of("origin", "feature");
+    let main = RemoteRef::of("origin", "main");
+
+    Git::new(&fake).merge_bases_of(dir.path(), &[(POINT, &feature), (BASE, &main)]);
+
+    assert_eq!(
+        strs(&argv(&fake))[3..],
+        [
+            "rev-parse",
+            &format!("refs/remotes/origin/feature...{POINT}"),
+            &format!("refs/remotes/origin/main...{BASE}"),
+        ]
+    );
+}
+
+#[test]
+fn the_squash_rule_asks_every_change_in_one_diff_tree() {
+    // `--no-renames`: a rename is the path it left and the path it took, both
+    // of which the path check has to see. `--always`: an empty diff still
+    // prints its commit, so every diff is accounted for.
+    let (dir, _root) = a_clone();
+    let fake = ScriptedRunner::new();
+
+    Git::new(&fake).paths_changed(dir.path(), &[(POINT, BASE), (REF_AT, BASE)]);
+
+    let call = fake.only_call();
+    assert_eq!(
+        strs(&call.argv())[3..],
+        [
+            "diff-tree",
+            "--stdin",
+            "-r",
+            "--no-renames",
+            "--name-status",
+            "-z",
+            "--always",
+        ]
+    );
+    assert!(
+        matches!(
+            call.spec().map(|spec| &spec.stdin),
+            Some(crate::runner::StdinPlan::File(_))
+        ),
+        "the `<commit> <base>` lines go in on stdin"
+    );
+}
+
+#[test]
+fn nothing_to_ask_spawns_nothing() {
+    let (dir, _root) = a_clone();
+    let fake = ScriptedRunner::new();
+    let git = Git::new(&fake);
+
+    assert_eq!(
+        git.merge_bases_of(dir.path(), &[]).said(),
+        Some(Some(vec![]))
+    );
+    assert_eq!(
+        git.paths_changed(dir.path(), &[]).said(),
+        Some(Some(vec![]))
+    );
+    assert!(fake.calls().is_empty());
+}
+
+#[test]
+fn merge_bases_are_read_from_rev_parse_symmetric_range_output() {
+    let feature = RemoteRef::of("origin", "feature");
+    let pairs = [(POINT, &feature), (POINT, &feature), (POINT, &feature)];
+    // One base, two bases, and none (histories with no common commit).
+    let output = format!(
+        "{POINT}\n{REF_AT}\n^{BASE}\n\
+         {POINT}\n{REF_AT}\n^{BASE}\n^{OTHER_BASE}\n\
+         {POINT}\n{REF_AT}\n"
+    );
+    let bases = |found: &[&str]| PairBases {
+        other: REF_AT.to_owned(),
+        bases: found.iter().map(|base| (*base).to_owned()).collect(),
+    };
+    assert_eq!(
+        pair_bases_in(&output, &pairs),
+        Some(vec![bases(&[BASE]), bases(&[BASE, OTHER_BASE]), bases(&[])])
+    );
+
+    // A SHA-256 clone names its objects in 64 digits.
+    let long = "a".repeat(64);
+    let base = "b".repeat(64);
+    assert_eq!(
+        pair_bases_in(
+            &format!("{long}\n{long}\n^{base}\n"),
+            &[(long.as_str(), &feature)]
+        ),
+        Some(vec![PairBases {
+            other: long.clone(),
+            bases: vec![base]
+        }])
+    );
+
+    // Fewer answers than pairs, more, a point that is not the one asked for, a
+    // ref or a base that is not a full hash: no answer at all.
+    let one = [(POINT, &feature)];
+    for (output, why) in [
+        (String::new(), "nothing"),
+        (format!("{POINT}\n"), "no ref"),
+        (
+            format!("{POINT}\n{REF_AT}\n{POINT}\n{REF_AT}\n"),
+            "a pair too many",
+        ),
+        (format!("{BASE}\n{REF_AT}\n"), "another point"),
+        (
+            format!("{POINT}\nrefs/remotes/origin/feature\n"),
+            "a ref by name",
+        ),
+        (format!("{POINT}\n{REF_AT}\n^abc\n"), "a short base"),
+    ] {
+        assert_eq!(pair_bases_in(&output, &one), None, "{why}");
+    }
+}
+
+#[test]
+fn changed_paths_are_read_from_diff_tree_stdin_output() {
+    let diffs = [(POINT, BASE), (REF_AT, BASE), (BASE, BASE)];
+    // Each kind of change, a path with a space and a newline (`-z` quotes
+    // none), and an empty diff that `--always` still names.
+    let output = format!(
+        "{POINT}\0A\0new dir/a.txt\0D\0gone.txt\0{REF_AT}\0M\0line\nbreak.txt\0T\0link\0{BASE}\0"
+    );
+    let change = |change: Change, path: &str| PathChange {
+        change,
+        path: path.to_owned(),
+    };
+    assert_eq!(
+        paths_changed_in(&output, &diffs),
+        Some(vec![
+            vec![
+                change(Change::Added, "new dir/a.txt"),
+                change(Change::Deleted, "gone.txt")
+            ],
+            vec![
+                change(Change::Altered, "line\nbreak.txt"),
+                change(Change::Altered, "link")
+            ],
+            vec![],
+        ])
+    );
+
+    // A diff missing, a diff too many, another commit, a status this does not
+    // know (a rename `--no-renames` should have split) and a path cut short:
+    // no answer at all.
+    let one = [(POINT, BASE)];
+    for (output, why) in [
+        (String::new(), "nothing"),
+        (format!("{POINT}\0{REF_AT}\0"), "a diff too many"),
+        (format!("{REF_AT}\0"), "another commit"),
+        (format!("{POINT}\0R100\0a\0b\0"), "a rename"),
+        (format!("{POINT}\0A\0"), "no path"),
+        (format!("{POINT}\0A\0a"), "no NUL at the end"),
+    ] {
+        assert_eq!(paths_changed_in(&output, &one), None, "{why}");
+    }
+}
