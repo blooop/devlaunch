@@ -860,8 +860,13 @@ pub(crate) fn cleared_unpushed(git: &Git<'_>, clone: &Path, bare: BareCache<'_>)
 /// of every workspace, so a copy on a remote branch nothing local tracks is not
 /// found, and its commit stays counted, which is the safe side.
 ///
-/// A branch stops being compared once every one of its unpushed commits is
-/// accounted for, so the usual clone pays one comparison per unpushed branch.
+/// **A branch is compared with all of its remote refs in one question**, not
+/// one per ref, so a clone pays one comparison per branch that still holds a
+/// commit nothing has accounted for, however many refs it is compared with. A
+/// branch whose unpushed commits are all accounted for is not compared at all.
+/// One question per ref made this quadratic, branches times every local
+/// branch's upstream: on a kinisi_ros clone of 36 branches it was 146 `git`
+/// spawns and 20 s of that clone's `dl --ls` row.
 ///
 /// **Every failure here counts less as copied, never more.** A question git
 /// refuses adds nothing to the answer, so the commits it was about stay
@@ -885,13 +890,12 @@ fn already_on_a_remote(git: &Git<'_>, clone: &Path, local_tags: &[String]) -> Ve
         let Some(unpushed) = git.unpushed_commits_from(clone, &branch.name).said() else {
             continue;
         };
-        for other in remote_refs_to_compare(branch, &upstreams) {
-            if unpushed.lines().all(|line| is_among(line, &copied)) {
-                break;
-            }
-            if let Some(hashes) = git.patches_already_on(clone, &branch.name, &other).said() {
-                copied.extend(hashes);
-            }
+        if unpushed.lines().all(|line| is_among(line, &copied)) {
+            continue;
+        }
+        let others = remote_refs_to_compare(branch, &upstreams);
+        if let Some(hashes) = git.patches_already_on(clone, &branch.name, &others).said() {
+            copied.extend(hashes);
         }
     }
     copied

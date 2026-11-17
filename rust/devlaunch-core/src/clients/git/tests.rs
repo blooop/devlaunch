@@ -1366,11 +1366,21 @@ fn a_patch_match(root: &Path, replayed: Response, copy_tree: Response) -> Script
     let patch = "\ndiff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1 +1 @@\n-a\n+b\n";
     ScriptedRunner::new()
         .with_script(
-            pinned(&["rev-list", "--cherry-mark", "--left-only"]),
+            pinned(&[
+                "rev-list",
+                "--ignore-missing",
+                "--cherry-mark",
+                "--left-only",
+            ]),
             Response::stdout(format!("={LOCAL}\n")),
         )
         .with_script(
-            pinned(&["rev-list", "--cherry-mark", "--right-only"]),
+            pinned(&[
+                "rev-list",
+                "--ignore-missing",
+                "--cherry-mark",
+                "--right-only",
+            ]),
             Response::stdout(format!("={COPY}\n")),
         )
         .with_script(
@@ -1399,7 +1409,7 @@ fn a_patch_match_is_a_copy_only_when_git_replays_it_as_the_copy() {
             .patches_already_on(
                 dir.path(),
                 "refs/heads/feature",
-                &RemoteRef::of("origin", "feature")
+                &[RemoteRef::of("origin", "feature")]
             )
             .said(),
         Some(vec![LOCAL.to_owned()])
@@ -1472,7 +1482,7 @@ fn a_patch_match_is_a_copy_only_when_git_replays_it_as_the_copy() {
                 .patches_already_on(
                     dir.path(),
                     "refs/heads/feature",
-                    &RemoteRef::of("origin", "feature")
+                    &[RemoteRef::of("origin", "feature")]
                 )
                 .said(),
             Some(vec![]),

@@ -791,8 +791,8 @@ impl<'r> Git<'r> {
         .map(|stdout| local_branches_in(&stdout))
     }
 
-    /// The commits on *tip* that the remote ref *other* does not contain but
-    /// holds a copy of, as full hashes.
+    /// The commits on *tip* that a remote ref of *others* holds a copy of, as
+    /// full hashes.
     ///
     /// A copy is a commit that makes the same change in the same place: put the
     /// local commit on the copy's parent and git gets the copy's tree. A rebase,
@@ -815,6 +815,25 @@ impl<'r> Git<'r> {
     /// `--left-right` marks a match `=` on either side, and a match between two
     /// left commits is two local copies, not one on the remote.
     ///
+    /// **All of *others* are asked about in one question**, one symmetric range
+    /// `tip...other` per ref. A walk over all of them leaves out what *tip*
+    /// shares with any of them, so its left side is the commits on *tip* that
+    /// none of them reach, and its right side is the commits that one of them
+    /// reaches and *tip* does not. For a commit no remote ref reaches, which is
+    /// the only kind this is asked to clear, that is the same answer as one
+    /// question per ref: a copy on any one ref is on the right side here, and a
+    /// copy on no ref is on neither. A commit that one of *others* already
+    /// reaches drops off the left side, and nothing asks about it, because no
+    /// count holds it. It used to be one question per ref, and a kinisi_ros
+    /// clone with 36 branches and 18 refs to compare each with spent 20 s of
+    /// its `dl --ls` row in 146 `rev-list` spawns.
+    ///
+    /// `--ignore-missing` because a ref here need not exist: `origin/<branch>`
+    /// for a branch never pushed, or an upstream deleted on the remote. git then
+    /// drops that range alone and answers about the rest, where one question per
+    /// ref refused that one ref. Each name is a full `refs/remotes/…` ref, so
+    /// none can be read as an option.
+    ///
     /// `--no-merges` because a merge's patch id is not defined. Merges are
     /// [`Git::merges_with_nothing_of_their_own`]'s question. `--binary` so a
     /// binary change is compared by its content and not by "Binary files
@@ -827,15 +846,26 @@ impl<'r> Git<'r> {
         &self,
         clone: &Path,
         tip: &str,
-        other: &RemoteRef,
+        others: &[RemoteRef],
     ) -> GitAnswer<Vec<String>> {
-        let range = format!("{tip}...{}", other.as_str());
+        if others.is_empty() {
+            return GitAnswer::Said(Vec::new());
+        }
+        let ranges: Vec<String> = others
+            .iter()
+            .map(|other| format!("{tip}...{}", other.as_str()))
+            .collect();
         let copies_on = |side: &str| {
-            self.about(
-                clone,
-                &["rev-list", "--cherry-mark", side, "--no-merges", &range],
-            )
-            .map(|stdout| cherry_marked_in(&stdout))
+            let mut args = vec![
+                "rev-list",
+                "--ignore-missing",
+                "--cherry-mark",
+                side,
+                "--no-merges",
+            ];
+            args.extend(ranges.iter().map(String::as_str));
+            self.about(clone, &args)
+                .map(|stdout| cherry_marked_in(&stdout))
         };
         let left = match copies_on("--left-only") {
             GitAnswer::Said(left) if left.is_empty() => return GitAnswer::Said(left),
