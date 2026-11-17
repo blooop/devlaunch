@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`dl --ls` no longer spends most of a minute on a clone with many branches.**
+  The check for unpushed work compared each local branch with each remote ref in a
+  separate `git rev-list`, so its cost grew with the square of the branches. It now
+  asks once per branch, with the same answer. On a kinisi_ros clone with 36 branches
+  that check fell from 146 `git` spawns and 20 s to 8 spawns and 0.5 s
+  ([#720](https://github.com/blooop/devlaunch/pull/720)).
+
 ## [0.64.2] - 2026-10-31
 
 ### Fixed
