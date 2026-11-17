@@ -42,6 +42,7 @@
 //! Nothing is matched on a container *name*: names are the devcontainer's to
 //! choose, and a pattern over them would reach other people's containers.
 
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use crate::clients::devpod_home::{DevpodHome, RecordPresence};
@@ -60,8 +61,13 @@ pub(crate) enum OrphanSweep {
     Nothing,
     /// No docker on this machine, so nothing was made to be left.
     NoDocker,
-    /// These containers were removed, by name.
-    Removed(NonEmpty<String>),
+    /// These containers were removed, by name, with the compose projects they
+    /// were made for: a project names the compose volumes it made, which the
+    /// containers' removal leaves behind.
+    Removed {
+        names: NonEmpty<String>,
+        projects: BTreeSet<String>,
+    },
     /// docker would not list the containers, in its own words.
     NotListed { reason: String },
     /// docker would not remove these containers, in its own words.
@@ -107,7 +113,10 @@ pub(crate) fn sweep(
     let names = left.map(|c| c.name.clone());
     let ids = left.map(|c| c.id.clone());
     match docker::remove_containers(runner, &ids) {
-        docker::Answer::Ran { exit, .. } if exit.is_success() => OrphanSweep::Removed(names),
+        docker::Answer::Ran { exit, .. } if exit.is_success() => OrphanSweep::Removed {
+            names,
+            projects: projects_of(&left),
+        },
         docker::Answer::Ran { exit, stderr } => {
             let reason = format!("docker rm failed ({exit:?}): {}", stderr.trim());
             still_there(runner, &left, names, reason)
@@ -142,8 +151,16 @@ fn still_there(
             .map(|c| c.name.clone()),
     ) {
         Some(names) => OrphanSweep::NotRemoved { names, reason },
-        None => OrphanSweep::Removed(names),
+        None => OrphanSweep::Removed {
+            names,
+            projects: projects_of(left),
+        },
     }
+}
+
+/// The compose projects these containers were made for.
+fn projects_of(left: &NonEmpty<&ComposeContainer>) -> BTreeSet<String> {
+    left.iter().filter_map(|c| c.project.clone()).collect()
 }
 
 /// Whether one container's compose labels name this workspace, and nothing
@@ -233,6 +250,20 @@ mod tests {
         )
     }
 
+    /// [`row`], for a container compose made for `project`.
+    fn row_of(
+        project: &str,
+        id: &str,
+        name: &str,
+        working_dir: &Path,
+        config_files: &[&Path],
+    ) -> String {
+        format!(
+            "{}\t{project}\n",
+            row(id, name, working_dir, config_files).trim_end()
+        )
+    }
+
     fn clone_dir() -> PathBuf {
         PathBuf::from("/cache/devlaunch/repos/org/repo").join(WS)
     }
@@ -251,12 +282,14 @@ mod tests {
         fake.script(
             ["docker", "ps"],
             Response::stdout(
-                row(
+                row_of(
+                    "default-ki-0ld11",
                     "aaa",
                     &format!("kinisi_jazzy_{WS}"),
                     &devcontainer,
                     &[&compose, &override_file],
-                ) + &row(
+                ) + &row_of(
+                    "default-ki-0ld11",
                     "bbb",
                     &format!("kinisi_unreal_runtime_1.6.1_{WS}"),
                     &devcontainer,
@@ -274,10 +307,13 @@ mod tests {
 
         assert_eq!(
             swept,
-            OrphanSweep::Removed(names([
-                format!("kinisi_jazzy_{WS}"),
-                format!("kinisi_unreal_runtime_1.6.1_{WS}"),
-            ]))
+            OrphanSweep::Removed {
+                names: names([
+                    format!("kinisi_jazzy_{WS}"),
+                    format!("kinisi_unreal_runtime_1.6.1_{WS}"),
+                ]),
+                projects: ["default-ki-0ld11".to_owned()].into_iter().collect(),
+            }
         );
         assert_eq!(
             fake.args_to("docker").last().expect("a removal"),
@@ -400,7 +436,10 @@ mod tests {
 
         assert_eq!(
             sweep(&fake, Some(&home), "project", None),
-            OrphanSweep::Removed(names(["project_dev".to_owned()]))
+            OrphanSweep::Removed {
+                names: names(["project_dev".to_owned()]),
+                projects: BTreeSet::new(),
+            }
         );
     }
 
@@ -426,7 +465,10 @@ mod tests {
 
         assert_eq!(
             sweep(&fake, Some(&home), WS, None),
-            OrphanSweep::Removed(names(["dev".to_owned()]))
+            OrphanSweep::Removed {
+                names: names(["dev".to_owned()]),
+                projects: BTreeSet::new(),
+            }
         );
         assert_eq!(
             fake.args_to("docker").last().expect("a removal"),
@@ -541,7 +583,10 @@ mod tests {
 
         assert_eq!(
             sweep(&fake, Some(&home), WS, Some(&clone)),
-            OrphanSweep::Removed(names(["ours".to_owned()]))
+            OrphanSweep::Removed {
+                names: names(["ours".to_owned()]),
+                projects: BTreeSet::new(),
+            }
         );
     }
 
@@ -631,7 +676,10 @@ mod tests {
 
         assert_eq!(
             sweep(&fake, Some(&home), WS, None),
-            OrphanSweep::Removed(names(["dev".to_owned()]))
+            OrphanSweep::Removed {
+                names: names(["dev".to_owned()]),
+                projects: BTreeSet::new(),
+            }
         );
     }
 

@@ -21,6 +21,14 @@
 //! - and **no container that is left uses** — asked of docker after the
 //!   workspace's own containers are gone.
 //!
+//! A compose volume of one of the workspace's projects is found by compose's
+//! own label as well as by its mounts, so it goes even when no container is left
+//! to mount it. The projects are devpod's uids for the workspace: the current
+//! one, the ones devlaunch kept from earlier `up`s
+//! ([`super::kept_copies::KeptCopies::uids`]), and the projects of the leftover
+//! containers a delete removed ([`record_projects`]). Each uid is a value devpod
+//! wrote down, so this is not a pattern over `docker volume ls`.
+//!
 //! A name the devcontainer config spells literally, with no substitution in it
 //! (`team-tracker-pixi`), is shared by every checkout of that repository by
 //! design and is never one workspace's, whatever the id. A compose volume with an
@@ -138,36 +146,95 @@ fn has_part(name: &str, part: &str) -> bool {
 /// carries it as `dev.containers.id`, and devpod names the compose project after
 /// it, so every compose sidecar carries it as `com.docker.compose.project`.
 /// Stopped containers count: their volumes are as much the workspace's.
+///
+/// `former_uids` are the uids devlaunch kept from earlier `up`s of the same
+/// workspace ([`super::kept_copies::KeptCopies::uids`]). devpod makes a record
+/// again under a new uid, and the old project's containers and volumes still
+/// carry the old one, so each is read as the workspace's too.
+///
+/// A compose volume of one of these projects, under compose's default name, is
+/// the workspace's own **whether or not a container is left to mount it**: a
+/// workspace whose containers are gone (dl shows it `NotFound`) still has its
+/// `<uid>_bazel-output`, and before this the read found no container and stopped
+/// there.
 pub(crate) fn record(
     runner: &dyn Runner,
     devpod_home: Option<&DevpodHome>,
+    former_uids: &[String],
     workspace_id: &str,
 ) -> Recording {
     let result = sole_workspace_result(devpod_home, workspace_id).and_then(|path| read_json(&path));
-    let uid = sole_workspace_record(devpod_home, workspace_id)
-        .and_then(|path| read_json(&path))
-        .and_then(|record| non_empty(&record["uid"]))
-        .or_else(|| {
-            result
-                .as_ref()
-                .and_then(|r| non_empty(&r["SubstitutionContext"]["DevContainerID"]))
-        });
-    let Some(uid) = uid else {
+    let uid = uid_in(devpod_home, workspace_id, result.as_ref());
+    let uids: BTreeSet<String> = uid
+        .iter()
+        .chain(former_uids)
+        .filter(|uid| !uid.is_empty())
+        .cloned()
+        .collect();
+    if uids.is_empty() {
         return Recording::Nothing;
-    };
-    let mut mounted = Mounted {
+    }
+    let mounted = Mounted {
         workspace_id: workspace_id.to_owned(),
-        devcontainer_id: Some(uid.clone()),
+        devcontainer_id: uid,
         literal: result.as_ref().map(literal_volumes).unwrap_or_default(),
         ..Mounted::default()
     };
-    match read_mounts(runner, &uid, &mut mounted) {
+    read(runner, &uids, mounted)
+}
+
+/// The compose volumes of `projects`, the compose projects of containers a delete
+/// removed as this workspace's leftovers ([`super::orphan_containers`]).
+///
+/// Read after those containers are gone, so only compose's volume labels are left
+/// to read: a volume of one of these projects under compose's default name. A
+/// leftover's project is an older uid of the workspace that devlaunch may hold no
+/// copy of, so without this its volumes outlived the containers that were removed.
+pub(crate) fn record_projects(
+    runner: &dyn Runner,
+    workspace_id: &str,
+    projects: &BTreeSet<String>,
+) -> Recording {
+    if projects.is_empty() {
+        return Recording::Nothing;
+    }
+    let mounted = Mounted {
+        workspace_id: workspace_id.to_owned(),
+        ..Mounted::default()
+    };
+    read(runner, projects, mounted)
+}
+
+fn read(runner: &dyn Runner, uids: &BTreeSet<String>, mut mounted: Mounted) -> Recording {
+    match read_mounts(runner, uids, &mut mounted) {
         Ok(()) => Recording::Read(mounted),
         Err(NotRead::Docker(Unlisted::NotInstalled)) => Recording::Nothing,
         Err(NotRead::Docker(Unlisted::Failed(reason)) | NotRead::ComposeFile(reason)) => {
             Recording::Unread { reason }
         }
     }
+}
+
+/// devpod's uid for the workspace: the compose project devpod names after it, and
+/// the `dev.containers.id` its dev container carries. From devpod's record, or
+/// from its create result where the record has none.
+pub(crate) fn workspace_uid(
+    devpod_home: Option<&DevpodHome>,
+    workspace_id: &str,
+) -> Option<String> {
+    let result = sole_workspace_result(devpod_home, workspace_id).and_then(|path| read_json(&path));
+    uid_in(devpod_home, workspace_id, result.as_ref())
+}
+
+fn uid_in(
+    devpod_home: Option<&DevpodHome>,
+    workspace_id: &str,
+    result: Option<&serde_json::Value>,
+) -> Option<String> {
+    sole_workspace_record(devpod_home, workspace_id)
+        .and_then(|path| read_json(&path))
+        .and_then(|record| non_empty(&record["uid"]))
+        .or_else(|| result.and_then(|r| non_empty(&r["SubstitutionContext"]["DevContainerID"])))
 }
 
 /// Why [`read_mounts`] could not say which volumes are the workspace's.
@@ -186,22 +253,57 @@ impl From<Unlisted> for NotRead {
 }
 
 /// The docker half of [`record`].
-fn read_mounts(runner: &dyn Runner, uid: &str, mounted: &mut Mounted) -> Result<(), NotRead> {
+fn read_mounts(
+    runner: &dyn Runner,
+    uids: &BTreeSet<String>,
+    mounted: &mut Mounted,
+) -> Result<(), NotRead> {
     let mut ids: BTreeSet<String> = BTreeSet::new();
-    ids.extend(docker::containers_labelled(
-        runner,
-        &format!("dev.containers.id={uid}"),
-    )?);
-    ids.extend(docker::containers_labelled(
-        runner,
-        &format!("com.docker.compose.project={uid}"),
-    )?);
-    let Some(ids) = NonEmpty::of(ids) else {
-        return Ok(());
-    };
+    for uid in uids {
+        ids.extend(docker::containers_labelled(
+            runner,
+            &format!("dev.containers.id={uid}"),
+        )?);
+        ids.extend(docker::containers_labelled(
+            runner,
+            &format!("com.docker.compose.project={uid}"),
+        )?);
+    }
     let mut project_files: BTreeMap<String, ComposeFiles> = BTreeMap::new();
+    if let Some(ids) = NonEmpty::of(ids) {
+        read_containers(runner, &ids, mounted, &mut project_files)?;
+    }
+    for volume in docker::compose_volumes(runner)? {
+        let default_name = volume.name == format!("{}_{}", volume.project, volume.key);
+        if default_name && uids.contains(&volume.project) {
+            // Compose made it for one of the workspace's own projects. Its label
+            // says so whether or not a container is left to mount it.
+            mounted.volumes.insert(volume.name.clone());
+            mounted.compose_made.insert(volume.name);
+            continue;
+        }
+        if !mounted.volumes.contains(&volume.name) {
+            continue;
+        }
+        if !default_name {
+            mounted.literal.insert(volume.name);
+        } else if project_files.contains_key(&volume.project) {
+            mounted.compose_made.insert(volume.name);
+        }
+    }
+    Ok(())
+}
+
+/// The container half of [`read_mounts`]: what `ids` mount, and the external
+/// volumes the compose files they were started from declare.
+fn read_containers(
+    runner: &dyn Runner,
+    ids: &NonEmpty<String>,
+    mounted: &mut Mounted,
+    project_files: &mut BTreeMap<String, ComposeFiles>,
+) -> Result<(), NotRead> {
     let mut projectless_files: Vec<ComposeFiles> = Vec::new();
-    for container in docker::container_mounts(runner, &ids)? {
+    for container in docker::container_mounts(runner, ids)? {
         match container.project {
             Some(project) => project_files
                 .entry(project)
@@ -224,16 +326,6 @@ fn read_mounts(runner: &dyn Runner, uid: &str, mounted: &mut Mounted) -> Result<
         mounted
             .literal
             .extend(group.external_volumes().map_err(NotRead::ComposeFile)?);
-    }
-    for volume in docker::compose_volumes(runner)? {
-        if !mounted.volumes.contains(&volume.name) {
-            continue;
-        }
-        if volume.name != format!("{}_{}", volume.project, volume.key) {
-            mounted.literal.insert(volume.name);
-        } else if project_files.contains_key(&volume.project) {
-            mounted.compose_made.insert(volume.name);
-        }
     }
     Ok(())
 }
@@ -438,7 +530,7 @@ mod tests {
             )),
         );
 
-        let Recording::Read(m) = record(&fake, Some(&home), WS) else {
+        let Recording::Read(m) = record(&fake, Some(&home), &[], WS) else {
             panic!("read");
         };
 
@@ -470,6 +562,97 @@ mod tests {
         );
     }
 
+    /// The volume ls rows for the case from the field: the workspace's own
+    /// `bazel-output`, a volume compose named on purpose for the same project,
+    /// and another project's `bazel-output`.
+    fn bazel_output_rows(project: &str) -> String {
+        format!(
+            "{project}_bazel-output\t{project}\tbazel-output\n\
+             named-cache\t{project}\tcache\n\
+             default-ki-0ther_bazel-output\tdefault-ki-0ther\tbazel-output\n"
+        )
+    }
+
+    /// dl shows the workspace NotFound: its containers are gone, so nothing
+    /// mounts its compose volume. The volume still carries compose's project
+    /// label, and the project is the workspace's uid, so it is still the
+    /// workspace's own. Before this, the read found no container and stopped,
+    /// and every such delete left `<uid>_bazel-output` behind.
+    #[test]
+    fn a_compose_volume_is_the_workspaces_own_when_no_container_is_left() {
+        let home = home_with_uid();
+        let fake = FakeRunner::new();
+        fake.script(
+            ["docker", "volume", "ls"],
+            Response::stdout(bazel_output_rows(UID)),
+        );
+
+        let Recording::Read(m) = record(&fake, Some(&home), &[], WS) else {
+            panic!("read");
+        };
+
+        assert_eq!(owned(&m), [format!("{UID}_bazel-output")]);
+        assert!(
+            !fake.argvs().iter().any(|argv| argv[1] == "inspect"),
+            "no container, so nothing to inspect: {:?}",
+            fake.argvs()
+        );
+    }
+
+    /// devpod made the record again under a new uid, and the old project's
+    /// volume carries the old one. A uid devlaunch kept from an earlier `up`
+    /// still names it.
+    #[test]
+    fn a_compose_volume_of_a_former_uid_is_the_workspaces_own() {
+        let home = home_with_uid();
+        let fake = FakeRunner::new();
+        let former = "default-ki-0ld11";
+        fake.script(
+            ["docker", "volume", "ls"],
+            Response::stdout(bazel_output_rows(UID) + &bazel_output_rows(former)),
+        );
+
+        let Recording::Read(m) = record(&fake, Some(&home), &[former.to_owned()], WS) else {
+            panic!("read");
+        };
+
+        assert_eq!(
+            owned(&m),
+            [
+                format!("{former}_bazel-output"),
+                format!("{UID}_bazel-output")
+            ]
+        );
+        // The former uid's containers are looked for as well.
+        assert!(
+            fake.argvs().contains(&container_ps(&format!(
+                "label=com.docker.compose.project={former}"
+            ))),
+            "{:?}",
+            fake.argvs()
+        );
+    }
+
+    /// The containers a delete swept as leftovers were another project's. Their
+    /// compose volumes are read by that project alone, with no uid on record.
+    #[test]
+    fn the_compose_volumes_of_swept_projects_are_read_by_project() {
+        let fake = FakeRunner::new();
+        let swept = "default-ki-0ld11";
+        fake.script(
+            ["docker", "volume", "ls"],
+            Response::stdout(bazel_output_rows(swept)),
+        );
+
+        let Recording::Read(m) =
+            record_projects(&fake, WS, &[swept.to_owned()].into_iter().collect())
+        else {
+            panic!("read");
+        };
+
+        assert_eq!(owned(&m), [format!("{swept}_bazel-output")]);
+    }
+
     /// Read the mounts of a workspace opened as the bare id `kinisi`, whose
     /// dev container mounts `kinisi-bazel-cache` and `{UID}_bazel-output`, with
     /// docker's compose labels for its volumes as `volume_ls` gives them.
@@ -498,7 +681,7 @@ mod tests {
             )])),
         );
         fake.script(["docker", "volume", "ls"], Response::stdout(volume_ls));
-        let Recording::Read(m) = record(&fake, Some(&home), "kinisi") else {
+        let Recording::Read(m) = record(&fake, Some(&home), &[], "kinisi") else {
             panic!("read");
         };
         m
@@ -571,7 +754,7 @@ mod tests {
             )])),
         );
         fake.script(["docker", "volume", "ls"], Response::stdout(""));
-        record(&fake, Some(&home), "app")
+        record(&fake, Some(&home), &[], "app")
     }
 
     #[test]
@@ -729,7 +912,7 @@ mod tests {
         );
         fake.script(["docker", "volume", "ls"], Response::stdout(""));
 
-        let Recording::Read(m) = record(&fake, Some(&home), "app") else {
+        let Recording::Read(m) = record(&fake, Some(&home), &[], "app") else {
             panic!("read");
         };
 
@@ -779,7 +962,7 @@ mod tests {
         let home = devpod_home_with(&[]);
         let fake = FakeRunner::new();
 
-        assert_eq!(record(&fake, Some(&home), WS), Recording::Nothing);
+        assert_eq!(record(&fake, Some(&home), &[], WS), Recording::Nothing);
         assert!(fake.argvs().is_empty());
     }
 
@@ -789,7 +972,7 @@ mod tests {
         let fake = FakeRunner::new();
         fake.script_missing("docker");
 
-        assert_eq!(record(&fake, Some(&home), WS), Recording::Nothing);
+        assert_eq!(record(&fake, Some(&home), &[], WS), Recording::Nothing);
     }
 
     #[test]
@@ -799,7 +982,7 @@ mod tests {
         fake.script(["docker", "ps"], Response::failed(1, "daemon down\n"));
 
         assert!(matches!(
-            record(&fake, Some(&home), WS),
+            record(&fake, Some(&home), &[], WS),
             Recording::Unread { .. }
         ));
     }
@@ -823,7 +1006,7 @@ mod tests {
         .expect("a result");
         let fake = FakeRunner::new();
 
-        let Recording::Read(m) = record(&fake, Some(&home), WS) else {
+        let Recording::Read(m) = record(&fake, Some(&home), &[], WS) else {
             panic!("read");
         };
         assert_eq!(

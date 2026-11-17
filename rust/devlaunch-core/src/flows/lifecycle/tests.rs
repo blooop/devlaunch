@@ -2745,7 +2745,7 @@ fn a_delete_removes_both_volumes_the_workspaces_devcontainer_created() {
     let (outcome, notices) = deleting.delete();
 
     assert_eq!(
-        deleting.world.devpod.docker_argvs()[2..],
+        deleting.world.devpod.docker_argvs()[3..],
         [[
             "volume",
             "rm",
@@ -2796,9 +2796,22 @@ fn the_volumes_are_removed_after_devpod_has_let_go_of_the_workspace() {
         argvs,
         [
             // What the containers mount, read while they are there; nothing
-            // mounts anything in this world, so nothing more is asked.
+            // mounts anything in this world, so only the compose volume labels
+            // are asked, for a volume of the project no container is left to
+            // mount.
             ps_filtered("label=dev.containers.id=dc9a8b7c"),
             ps_filtered("label=com.docker.compose.project=dc9a8b7c"),
+            [
+                "docker",
+                "volume",
+                "ls",
+                "--filter",
+                "label=com.docker.compose.project",
+                "--format",
+                "{{.Name}}\t{{.Label \"com.docker.compose.project\"}}\t{{.Label \"com.docker.compose.volume\"}}",
+            ]
+            .map(str::to_owned)
+            .to_vec(),
             ["devpod", "delete", "r-main-aa"]
                 .map(str::to_owned)
                 .to_vec(),
@@ -3046,6 +3059,157 @@ fn a_volume_something_else_still_uses_is_kept() {
         !notices
             .iter()
             .any(|n| matches!(n, LifecycleNotice::WorkspaceVolumesRemoved { .. })),
+        "{notices:?}"
+    );
+}
+
+/// A volume of the workspace's own that something else still uses stays, and the
+/// delete says so. It used to stay in silence, which read as "nothing to remove".
+#[test]
+fn a_volume_something_else_still_uses_is_named() {
+    let mut deleting = a_world_ready_to_delete().with_containers_mounting_a_cache();
+    deleting.world.devpod.fake.script(
+        ps_filtered("volume=r-main-aa-cache"),
+        Response::stdout("other\n"),
+    );
+
+    let (_, notices) = deleting.delete();
+
+    assert!(
+        notices.contains(&LifecycleNotice::WorkspaceVolumeInUse {
+            workspace_id: "r-main-aa".to_owned(),
+            name: "r-main-aa-cache".to_owned(),
+        }),
+        "{notices:?}"
+    );
+}
+
+/// `volume ls` rows for project `project`: its own `bazel-output`, a volume
+/// compose named on purpose, and another project's `bazel-output`.
+fn bazel_output_rows(project: &str) -> String {
+    format!(
+        "{project}_bazel-output\t{project}\tbazel-output\n\
+         named-cache\t{project}\tcache\n\
+         someone-else_bazel-output\tsomeone-else\tbazel-output\n"
+    )
+}
+
+/// The leak from the field: the workspace's containers are gone (dl shows it
+/// `NotFound`), so nothing mounts its compose volume. The volume still carries
+/// compose's label for the workspace's project, and goes with the delete.
+#[test]
+fn a_delete_removes_the_compose_volume_of_a_workspace_with_no_container_left() {
+    let mut deleting = a_world_ready_to_delete();
+    deleting.world.devpod.fake.script(
+        ["docker", "volume", "ls"],
+        Response::stdout(bazel_output_rows("dc9a8b7c")),
+    );
+
+    let (_, notices) = deleting.delete();
+
+    assert!(
+        notices.contains(&LifecycleNotice::WorkspaceVolumesRemoved {
+            workspace_id: "r-main-aa".to_owned(),
+            names: NonEmpty::one("dc9a8b7c_bazel-output".to_owned()),
+        }),
+        "{notices:?}"
+    );
+    let docker = deleting.world.devpod.docker_argvs();
+    assert!(
+        docker.contains(&vec![
+            "volume".to_owned(),
+            "rm".to_owned(),
+            "dc9a8b7c_bazel-output".to_owned()
+        ]),
+        "{docker:?}"
+    );
+    assert!(
+        !docker.iter().any(|argv| argv
+            .iter()
+            .any(|a| a == "named-cache" || a.starts_with("someone-else"))),
+        "{docker:?}"
+    );
+}
+
+/// devpod made the record again under a new uid. The uid an earlier `up` kept
+/// still names the old project's volume, and the delete removes it too.
+#[test]
+fn a_delete_removes_the_compose_volume_of_a_uid_the_workspace_had_before() {
+    let mut deleting = a_world_ready_to_delete();
+    let before = devpod_home_recording("r-main-aa", "/host/clones/opened-as", "dc0ld000");
+    deleting.world.copies().keep("r-main-aa", Some(&before));
+    deleting.world.devpod.fake.script(
+        ["docker", "volume", "ls"],
+        Response::stdout(bazel_output_rows("dc0ld000")),
+    );
+
+    let (_, notices) = deleting.delete();
+
+    assert!(
+        notices.contains(&LifecycleNotice::WorkspaceVolumesRemoved {
+            workspace_id: "r-main-aa".to_owned(),
+            names: NonEmpty::one("dc0ld000_bazel-output".to_owned()),
+        }),
+        "{notices:?}"
+    );
+}
+
+/// The delete removed a leftover container of another compose project (a uid
+/// devlaunch kept no copy of). That project's compose volume goes with it.
+#[test]
+fn a_delete_removes_the_compose_volumes_of_the_leftovers_it_swept() {
+    let world = a_stopping_world();
+    let home = devpod_home_with(&[]);
+    let override_file = agent_compose_file(&home, "default", "myws");
+    world.devpod.fake.script(
+        ps_filtered("volume=dc0ld000_bazel-output"),
+        Response::stdout(""),
+    );
+    world.devpod.fake.script(
+        ["docker", "ps"],
+        Response::stdout(format!(
+            "aaa\tmyws_dev\t/elsewhere\t{}\tdc0ld000\n",
+            override_file.display()
+        )),
+    );
+    world.devpod.fake.script(
+        ["docker", "volume", "ls"],
+        Response::stdout(bazel_output_rows("dc0ld000")),
+    );
+    let mut world_cache = World::empty();
+    let clones = clones_for(&world_cache.repos_dir, &world_cache.devpod);
+    let mut context = CommandContext::new(&world.devpod);
+    let mut refresh = Refresh::new(&world.updater, &world.cache_path);
+    let mut notices = Vec::new();
+
+    let copies = world_cache.copies();
+    workspace_delete(
+        &mut context,
+        &mut refresh,
+        &clones,
+        &mut world_cache.storage,
+        Some(&home),
+        &copies,
+        "myws",
+        Insistence::Insisted,
+        Persistence::Ordinary,
+        &mut unblocked(),
+        &mut notices,
+    )
+    .expect("devpod ran");
+
+    assert!(
+        notices.contains(&LifecycleNotice::LeftoverContainersRemoved {
+            workspace_id: "myws".to_owned(),
+            names: NonEmpty::one("myws_dev".to_owned()),
+        }),
+        "{notices:?}"
+    );
+    assert!(
+        notices.contains(&LifecycleNotice::WorkspaceVolumesRemoved {
+            workspace_id: "myws".to_owned(),
+            names: NonEmpty::one("dc0ld000_bazel-output".to_owned()),
+        }),
         "{notices:?}"
     );
 }

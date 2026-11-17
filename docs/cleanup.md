@@ -71,6 +71,15 @@ hold:
   compose's default name, `<project>_<volume>`, or its name holds the workspace id or
   devpod's uid as a whole part, as `<id>-pixi` does.
 
+A compose volume is also found by its label, not only by what mounts it. A volume compose
+made for one of the workspace's projects under the default name `<project>_<volume>` is
+the workspace's own even when no container is left to mount it, as when `dl --ls` shows
+the workspace `NotFound`. The workspace's projects are devpod's current uid for it, every
+older uid dl kept from an earlier `up` (devpod makes a record again under a new uid, and
+the old project's volumes keep the old one), and the project of each leftover container
+the delete removes. A volume of the workspace's own that stays because another container
+still uses it is named on stderr, with the command that finds that container.
+
 Two kinds of volume are shared on purpose and always stay: a name the devcontainer config
 spells literally, with no `${...}` in it (`team-tracker-pixi`), and a volume compose made
 under an explicit `name:`, which compose labels with a name other than `<project>_<volume>`.
