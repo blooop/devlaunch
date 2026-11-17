@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   workspace whose containers were already gone (`NotFound` in `dl --ls`) left its
   `<uid>_bazel-output` and every other compose volume behind, and so did a record devpod
   made again under a new uid. dl now also reads compose's volume labels for every uid the
-  workspace had, and for the project of each leftover container a delete removes. A
+  workspace had, and for the devpod project of each leftover container a delete removes. A
   volume kept because another container uses it is now named on stderr. `kill` now finds
   a compose workspace's running containers by devpod's uid, the project name, instead of
   by the workspace id, which matched none.

@@ -112,14 +112,14 @@ pub(crate) fn sweep(
     };
     let names = left.map(|c| c.name.clone());
     let ids = left.map(|c| c.id.clone());
+    let projects = devpod_projects(&left, home, workspace_id);
     match docker::remove_containers(runner, &ids) {
-        docker::Answer::Ran { exit, .. } if exit.is_success() => OrphanSweep::Removed {
-            names,
-            projects: projects_of(&left),
-        },
+        docker::Answer::Ran { exit, .. } if exit.is_success() => {
+            OrphanSweep::Removed { names, projects }
+        }
         docker::Answer::Ran { exit, stderr } => {
             let reason = format!("docker rm failed ({exit:?}): {}", stderr.trim());
-            still_there(runner, &left, names, reason)
+            still_there(runner, &left, names, projects, reason)
         }
         docker::Answer::NotInstalled => OrphanSweep::NoDocker,
         docker::Answer::NotStarted(failure) => OrphanSweep::NotRemoved {
@@ -139,6 +139,7 @@ fn still_there(
     runner: &dyn crate::runner::Runner,
     left: &NonEmpty<&ComposeContainer>,
     names: NonEmpty<String>,
+    projects: BTreeSet<String>,
     reason: String,
 ) -> OrphanSweep {
     let ids = left.map(|c| c.id.clone());
@@ -151,16 +152,33 @@ fn still_there(
             .map(|c| c.name.clone()),
     ) {
         Some(names) => OrphanSweep::NotRemoved { names, reason },
-        None => OrphanSweep::Removed {
-            names,
-            projects: projects_of(left),
-        },
+        None => OrphanSweep::Removed { names, projects },
     }
 }
 
-/// The compose projects these containers were made for.
-fn projects_of(left: &NonEmpty<&ComposeContainer>) -> BTreeSet<String> {
-    left.iter().filter_map(|c| c.project.clone()).collect()
+/// The compose projects devpod made for this workspace, among `left`.
+///
+/// Only a container whose labels name this id's devpod directory counts: devpod
+/// wrote its override there, so its project is a uid devpod chose for this
+/// workspace. A container matched by the clone alone may be a project somebody
+/// started by hand in the clone, and compose names that one after the folder
+/// (`docker`, `kinisi_ros`). Volumes go by `<project>_<key>`, so the same name
+/// belongs to every folder of that name on the machine, and removing them would
+/// reach a project that is not this workspace's.
+fn devpod_projects(
+    left: &NonEmpty<&ComposeContainer>,
+    home: &DevpodHome,
+    workspace_id: &str,
+) -> BTreeSet<String> {
+    left.iter()
+        .filter(|c| {
+            c.paths().any(|path| {
+                home.agent_dir_owner(path)
+                    .is_some_and(|owner| owner == workspace_id)
+            })
+        })
+        .filter_map(|c| c.project.clone())
+        .collect()
 }
 
 /// Whether one container's compose labels name this workspace, and nothing
@@ -439,6 +457,46 @@ mod tests {
             OrphanSweep::Removed {
                 names: names(["project_dev".to_owned()]),
                 projects: BTreeSet::new(),
+            }
+        );
+    }
+
+    /// A project somebody started by hand in the clone is a leftover too, but
+    /// compose named it after its folder, and `<folder>_<key>` volumes belong to
+    /// every folder of that name. Only the project devpod made for this id is
+    /// handed on for its volumes.
+    #[test]
+    fn only_the_project_devpod_made_names_volumes_to_remove() {
+        let home = devpod_home_with(&[]);
+        let override_file = agent_compose_file(&home, "default", WS);
+        let clone = clone_dir();
+        let devcontainer = clone.join(".devcontainer");
+        let tools = clone.join("tools");
+        let fake = FakeRunner::new();
+        fake.script(
+            ["docker", "ps"],
+            Response::stdout(
+                row_of(
+                    "default-ki-0ld11",
+                    "aaa",
+                    "dev",
+                    &devcontainer,
+                    &[&devcontainer.join("compose.yml"), &override_file],
+                ) + &row_of(
+                    "tools",
+                    "bbb",
+                    "tools_db_1",
+                    &tools,
+                    &[&tools.join("compose.yml")],
+                ),
+            ),
+        );
+
+        assert_eq!(
+            sweep(&fake, Some(&home), WS, Some(&clone)),
+            OrphanSweep::Removed {
+                names: names(["dev".to_owned(), "tools_db_1".to_owned()]),
+                projects: ["default-ki-0ld11".to_owned()].into_iter().collect(),
             }
         );
     }

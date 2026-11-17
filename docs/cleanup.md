@@ -77,7 +77,9 @@ the workspace's own even when no container is left to mount it, as when `dl --ls
 the workspace `NotFound`. The workspace's projects are devpod's current uid for it, every
 older uid dl kept from an earlier `up` (devpod makes a record again under a new uid, and
 the old project's volumes keep the old one), and the project of each leftover container
-the delete removes. A volume of the workspace's own that stays because another container
+the delete removes that devpod made for this workspace. A leftover project somebody
+started by hand in the clone is named after its folder, and `<folder>_<volume>` is shared
+by every folder of that name, so its volumes stay. A volume of the workspace's own that stays because another container
 still uses it is named on stderr, with the command that finds that container.
 
 Two kinds of volume are shared on purpose and always stay: a name the devcontainer config
