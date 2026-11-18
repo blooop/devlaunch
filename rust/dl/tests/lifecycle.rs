@@ -427,6 +427,9 @@ impl World {
                         "ps --all --quiet --no-trunc --filter label=com.docker.compose.project=",
                     )
                     && !call.starts_with("inspect --type container --format ")
+                    // The compose volume labels, read with the mounts: a volume
+                    // of the workspace's project no container is left to mount.
+                    && !call.starts_with("volume ls --filter label=com.docker.compose.project ")
             })
             .collect()
     }
@@ -1473,7 +1476,8 @@ fn a_delete_with_nothing_recorded_to_name_removes_nothing() {
 /// The leftover-container listing, as the fake docker logs its argv.
 const LEFTOVER_LISTING: &str = "ps --all --no-trunc --filter label=com.docker.compose.project \
      --format {{.ID}}\t{{.Names}}\t{{.Label \"com.docker.compose.project.working_dir\"}}\t\
-     {{.Label \"com.docker.compose.project.config_files\"}}";
+     {{.Label \"com.docker.compose.project.config_files\"}}\t\
+     {{.Label \"com.docker.compose.project\"}}";
 
 /// devpod's delete finds a workspace's containers by the uid of the record it is
 /// deleting, so containers an older record left (or a forced delete gave up on)

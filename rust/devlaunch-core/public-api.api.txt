@@ -208,6 +208,9 @@ pub devlaunch_core::api::LifecycleNotice::VolumesNotRemoved
 pub devlaunch_core::api::LifecycleNotice::VolumesNotRemoved::occasion: devlaunch_core::flows::lifecycle::SweepOccasion
 pub devlaunch_core::api::LifecycleNotice::VolumesNotRemoved::refusal: devlaunch_core::flows::lifecycle::VolumeRefusal
 pub devlaunch_core::api::LifecycleNotice::VolumesNotRemoved::workspace_id: alloc::string::String
+pub devlaunch_core::api::LifecycleNotice::WorkspaceVolumeInUse
+pub devlaunch_core::api::LifecycleNotice::WorkspaceVolumeInUse::name: alloc::string::String
+pub devlaunch_core::api::LifecycleNotice::WorkspaceVolumeInUse::workspace_id: alloc::string::String
 pub devlaunch_core::api::LifecycleNotice::WorkspaceVolumeNotRemoved
 pub devlaunch_core::api::LifecycleNotice::WorkspaceVolumeNotRemoved::name: alloc::string::String
 pub devlaunch_core::api::LifecycleNotice::WorkspaceVolumeNotRemoved::reason: alloc::string::String
@@ -900,6 +903,9 @@ pub devlaunch_core::flows::lifecycle::LifecycleNotice::VolumesNotRemoved
 pub devlaunch_core::flows::lifecycle::LifecycleNotice::VolumesNotRemoved::occasion: devlaunch_core::flows::lifecycle::SweepOccasion
 pub devlaunch_core::flows::lifecycle::LifecycleNotice::VolumesNotRemoved::refusal: devlaunch_core::flows::lifecycle::VolumeRefusal
 pub devlaunch_core::flows::lifecycle::LifecycleNotice::VolumesNotRemoved::workspace_id: alloc::string::String
+pub devlaunch_core::flows::lifecycle::LifecycleNotice::WorkspaceVolumeInUse
+pub devlaunch_core::flows::lifecycle::LifecycleNotice::WorkspaceVolumeInUse::name: alloc::string::String
+pub devlaunch_core::flows::lifecycle::LifecycleNotice::WorkspaceVolumeInUse::workspace_id: alloc::string::String
 pub devlaunch_core::flows::lifecycle::LifecycleNotice::WorkspaceVolumeNotRemoved
 pub devlaunch_core::flows::lifecycle::LifecycleNotice::WorkspaceVolumeNotRemoved::name: alloc::string::String
 pub devlaunch_core::flows::lifecycle::LifecycleNotice::WorkspaceVolumeNotRemoved::reason: alloc::string::String

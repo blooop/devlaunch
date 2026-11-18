@@ -204,6 +204,9 @@ pub(crate) struct ComposeContainer {
     pub(crate) working_dir: Option<PathBuf>,
     /// `com.docker.compose.project.config_files`, split on its commas.
     pub(crate) config_files: Vec<PathBuf>,
+    /// `com.docker.compose.project`: the project compose made it for, which names
+    /// the compose volumes the project made (`<project>_<volume>`).
+    pub(crate) project: Option<String>,
 }
 
 impl ComposeContainer {
@@ -229,7 +232,8 @@ pub(crate) enum Unlisted {
 /// line per container.
 const COMPOSE_FORMAT: &str = "{{.ID}}\t{{.Names}}\t\
 {{.Label \"com.docker.compose.project.working_dir\"}}\t\
-{{.Label \"com.docker.compose.project.config_files\"}}";
+{{.Label \"com.docker.compose.project.config_files\"}}\t\
+{{.Label \"com.docker.compose.project\"}}";
 
 /// Every container on this machine that a compose project made, running or not.
 pub(crate) fn compose_containers(runner: &dyn Runner) -> Result<Vec<ComposeContainer>, Unlisted> {
@@ -547,11 +551,17 @@ fn compose_container(line: &str) -> Option<ComposeContainer> {
         .filter(|file| !file.is_empty())
         .map(PathBuf::from)
         .collect();
+    let project = fields
+        .next()
+        .map(str::trim)
+        .filter(|project| !project.is_empty())
+        .map(str::to_owned);
     Some(ComposeContainer {
         id: id.to_owned(),
         name: name.to_owned(),
         working_dir,
         config_files,
+        project,
     })
 }
 

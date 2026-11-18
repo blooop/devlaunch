@@ -1341,17 +1341,19 @@ fn sweep_leftovers(
         workspace_id,
         clone,
     ) {
-        OrphanSweep::Removed(names) => notices.say(LaunchNotice::LeftoverContainersRemoved {
-            workspace_id: workspace_id.to_owned(),
-            names,
-        }),
+        OrphanSweep::Removed { names, .. } => {
+            notices.say(LaunchNotice::LeftoverContainersRemoved {
+                workspace_id: workspace_id.to_owned(),
+                names,
+            })
+        }
         OrphanSweep::NotListed { reason } => {
             notices.say(LaunchNotice::LeftoverContainersNotListed {
                 workspace_id: workspace_id.to_owned(),
                 reason,
             })
         }
-        OrphanSweep::NotRemoved { names, reason } => {
+        OrphanSweep::NotRemoved { names, reason, .. } => {
             notices.say(LaunchNotice::LeftoverContainersNotRemoved {
                 workspace_id: workspace_id.to_owned(),
                 names,

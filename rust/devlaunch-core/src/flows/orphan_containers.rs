@@ -42,6 +42,7 @@
 //! Nothing is matched on a container *name*: names are the devcontainer's to
 //! choose, and a pattern over them would reach other people's containers.
 
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use crate::clients::devpod_home::{DevpodHome, RecordPresence};
@@ -60,14 +61,22 @@ pub(crate) enum OrphanSweep {
     Nothing,
     /// No docker on this machine, so nothing was made to be left.
     NoDocker,
-    /// These containers were removed, by name.
-    Removed(NonEmpty<String>),
+    /// These containers were removed, by name, with the compose projects they
+    /// were made for: a project names the compose volumes it made, which the
+    /// containers' removal leaves behind.
+    Removed {
+        names: NonEmpty<String>,
+        projects: BTreeSet<String>,
+    },
     /// docker would not list the containers, in its own words.
     NotListed { reason: String },
-    /// docker would not remove these containers, in its own words.
+    /// docker would not remove these containers, in its own words. `projects`
+    /// are the projects of the ones it did remove, none of whose containers is
+    /// left, as in [`Self::Removed`].
     NotRemoved {
         names: NonEmpty<String>,
         reason: String,
+        projects: BTreeSet<String>,
     },
 }
 
@@ -106,16 +115,20 @@ pub(crate) fn sweep(
     };
     let names = left.map(|c| c.name.clone());
     let ids = left.map(|c| c.id.clone());
+    let projects = devpod_projects(&left, home, workspace_id);
     match docker::remove_containers(runner, &ids) {
-        docker::Answer::Ran { exit, .. } if exit.is_success() => OrphanSweep::Removed(names),
+        docker::Answer::Ran { exit, .. } if exit.is_success() => {
+            OrphanSweep::Removed { names, projects }
+        }
         docker::Answer::Ran { exit, stderr } => {
             let reason = format!("docker rm failed ({exit:?}): {}", stderr.trim());
-            still_there(runner, &left, names, reason)
+            still_there(runner, &left, names, projects, home, workspace_id, reason)
         }
         docker::Answer::NotInstalled => OrphanSweep::NoDocker,
         docker::Answer::NotStarted(failure) => OrphanSweep::NotRemoved {
             names,
             reason: format!("docker rm did not finish ({:?})", failure.kind),
+            projects: BTreeSet::new(),
         },
     }
 }
@@ -126,24 +139,71 @@ pub(crate) fn sweep(
 /// gone, and still removes the rest. So the sweep lists them again and names only
 /// those still there; when none is, every one of them is gone. When the second
 /// listing fails too, all of them are named, as the first answer said.
+///
+/// The projects handed on are those none of whose containers is still there: a
+/// volume of a project with a container left is that container's to keep.
 fn still_there(
     runner: &dyn crate::runner::Runner,
     left: &NonEmpty<&ComposeContainer>,
     names: NonEmpty<String>,
+    projects: BTreeSet<String>,
+    home: &DevpodHome,
+    workspace_id: &str,
     reason: String,
 ) -> OrphanSweep {
     let ids = left.map(|c| c.id.clone());
     let Ok(present) = docker::present_containers(runner, &ids) else {
-        return OrphanSweep::NotRemoved { names, reason };
+        return OrphanSweep::NotRemoved {
+            names,
+            reason,
+            projects: BTreeSet::new(),
+        };
     };
-    match NonEmpty::of(
-        left.iter()
-            .filter(|c| present.contains(&c.id))
-            .map(|c| c.name.clone()),
-    ) {
-        Some(names) => OrphanSweep::NotRemoved { names, reason },
-        None => OrphanSweep::Removed(names),
+    let (stayed, went): (Vec<&ComposeContainer>, Vec<&ComposeContainer>) =
+        left.iter().copied().partition(|c| present.contains(&c.id));
+    match NonEmpty::of(stayed.iter().map(|c| c.name.clone())) {
+        Some(names) => {
+            let still_used: BTreeSet<&String> =
+                stayed.iter().filter_map(|c| c.project.as_ref()).collect();
+            let projects = NonEmpty::of(went)
+                .map(|went| devpod_projects(&went, home, workspace_id))
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|project| !still_used.contains(project))
+                .collect();
+            OrphanSweep::NotRemoved {
+                names,
+                reason,
+                projects,
+            }
+        }
+        None => OrphanSweep::Removed { names, projects },
     }
+}
+
+/// The compose projects devpod made for this workspace, among `left`.
+///
+/// Only a container whose labels name this id's devpod directory counts: devpod
+/// wrote its override there, so its project is a uid devpod chose for this
+/// workspace. A container matched by the clone alone may be a project somebody
+/// started by hand in the clone, and compose names that one after the folder
+/// (`docker`, `kinisi_ros`). Volumes go by `<project>_<key>`, so the same name
+/// belongs to every folder of that name on the machine, and removing them would
+/// reach a project that is not this workspace's.
+fn devpod_projects(
+    left: &NonEmpty<&ComposeContainer>,
+    home: &DevpodHome,
+    workspace_id: &str,
+) -> BTreeSet<String> {
+    left.iter()
+        .filter(|c| {
+            c.paths().any(|path| {
+                home.agent_dir_owner(path)
+                    .is_some_and(|owner| owner == workspace_id)
+            })
+        })
+        .filter_map(|c| c.project.clone())
+        .collect()
 }
 
 /// Whether one container's compose labels name this workspace, and nothing
@@ -233,6 +293,20 @@ mod tests {
         )
     }
 
+    /// [`row`], for a container compose made for `project`.
+    fn row_of(
+        project: &str,
+        id: &str,
+        name: &str,
+        working_dir: &Path,
+        config_files: &[&Path],
+    ) -> String {
+        format!(
+            "{}\t{project}\n",
+            row(id, name, working_dir, config_files).trim_end()
+        )
+    }
+
     fn clone_dir() -> PathBuf {
         PathBuf::from("/cache/devlaunch/repos/org/repo").join(WS)
     }
@@ -251,12 +325,14 @@ mod tests {
         fake.script(
             ["docker", "ps"],
             Response::stdout(
-                row(
+                row_of(
+                    "default-ki-0ld11",
                     "aaa",
                     &format!("kinisi_jazzy_{WS}"),
                     &devcontainer,
                     &[&compose, &override_file],
-                ) + &row(
+                ) + &row_of(
+                    "default-ki-0ld11",
                     "bbb",
                     &format!("kinisi_unreal_runtime_1.6.1_{WS}"),
                     &devcontainer,
@@ -274,10 +350,13 @@ mod tests {
 
         assert_eq!(
             swept,
-            OrphanSweep::Removed(names([
-                format!("kinisi_jazzy_{WS}"),
-                format!("kinisi_unreal_runtime_1.6.1_{WS}"),
-            ]))
+            OrphanSweep::Removed {
+                names: names([
+                    format!("kinisi_jazzy_{WS}"),
+                    format!("kinisi_unreal_runtime_1.6.1_{WS}"),
+                ]),
+                projects: ["default-ki-0ld11".to_owned()].into_iter().collect(),
+            }
         );
         assert_eq!(
             fake.args_to("docker").last().expect("a removal"),
@@ -400,7 +479,50 @@ mod tests {
 
         assert_eq!(
             sweep(&fake, Some(&home), "project", None),
-            OrphanSweep::Removed(names(["project_dev".to_owned()]))
+            OrphanSweep::Removed {
+                names: names(["project_dev".to_owned()]),
+                projects: BTreeSet::new(),
+            }
+        );
+    }
+
+    /// A project somebody started by hand in the clone is a leftover too, but
+    /// compose named it after its folder, and `<folder>_<key>` volumes belong to
+    /// every folder of that name. Only the project devpod made for this id is
+    /// handed on for its volumes.
+    #[test]
+    fn only_the_project_devpod_made_names_volumes_to_remove() {
+        let home = devpod_home_with(&[]);
+        let override_file = agent_compose_file(&home, "default", WS);
+        let clone = clone_dir();
+        let devcontainer = clone.join(".devcontainer");
+        let tools = clone.join("tools");
+        let fake = FakeRunner::new();
+        fake.script(
+            ["docker", "ps"],
+            Response::stdout(
+                row_of(
+                    "default-ki-0ld11",
+                    "aaa",
+                    "dev",
+                    &devcontainer,
+                    &[&devcontainer.join("compose.yml"), &override_file],
+                ) + &row_of(
+                    "tools",
+                    "bbb",
+                    "tools_db_1",
+                    &tools,
+                    &[&tools.join("compose.yml")],
+                ),
+            ),
+        );
+
+        assert_eq!(
+            sweep(&fake, Some(&home), WS, Some(&clone)),
+            OrphanSweep::Removed {
+                names: names(["dev".to_owned(), "tools_db_1".to_owned()]),
+                projects: ["default-ki-0ld11".to_owned()].into_iter().collect(),
+            }
         );
     }
 
@@ -426,7 +548,10 @@ mod tests {
 
         assert_eq!(
             sweep(&fake, Some(&home), WS, None),
-            OrphanSweep::Removed(names(["dev".to_owned()]))
+            OrphanSweep::Removed {
+                names: names(["dev".to_owned()]),
+                projects: BTreeSet::new(),
+            }
         );
         assert_eq!(
             fake.args_to("docker").last().expect("a removal"),
@@ -541,7 +666,10 @@ mod tests {
 
         assert_eq!(
             sweep(&fake, Some(&home), WS, Some(&clone)),
-            OrphanSweep::Removed(names(["ours".to_owned()]))
+            OrphanSweep::Removed {
+                names: names(["ours".to_owned()]),
+                projects: BTreeSet::new(),
+            }
         );
     }
 
@@ -608,6 +736,46 @@ mod tests {
                 reason: "docker rm failed (Code(1)): \
                          Error response from daemon: No such container: aaa"
                     .to_owned(),
+                projects: BTreeSet::new(),
+            }
+        );
+    }
+
+    /// The containers that did go take their projects with them: the delete
+    /// still reads those projects' volumes. A project with a container still
+    /// there is not handed on.
+    #[test]
+    fn a_partly_failed_removal_keeps_the_projects_of_what_went() {
+        let home = devpod_home_with(&[]);
+        let override_file = agent_compose_file(&home, "default", WS);
+        let fake = FakeRunner::new();
+        fake.script(["docker", "ps", "--quiet"], Response::stdout("bbb\n"));
+        fake.script(
+            ["docker", "ps"],
+            Response::stdout(
+                row_of(
+                    "default-ki-0ld11",
+                    "aaa",
+                    "dev",
+                    Path::new("/x"),
+                    &[&override_file],
+                ) + &row_of(
+                    "default-ki-0ld22",
+                    "bbb",
+                    "side",
+                    Path::new("/x"),
+                    &[&override_file],
+                ),
+            ),
+        );
+        fake.script(["docker", "rm"], Response::failed(1, "busy\n"));
+
+        assert_eq!(
+            sweep(&fake, Some(&home), WS, None),
+            OrphanSweep::NotRemoved {
+                names: names(["side".to_owned()]),
+                reason: "docker rm failed (Code(1)): busy".to_owned(),
+                projects: ["default-ki-0ld11".to_owned()].into_iter().collect(),
             }
         );
     }
@@ -631,7 +799,10 @@ mod tests {
 
         assert_eq!(
             sweep(&fake, Some(&home), WS, None),
-            OrphanSweep::Removed(names(["dev".to_owned()]))
+            OrphanSweep::Removed {
+                names: names(["dev".to_owned()]),
+                projects: BTreeSet::new(),
+            }
         );
     }
 
@@ -651,6 +822,7 @@ mod tests {
             OrphanSweep::NotRemoved {
                 names: names(["dev".to_owned()]),
                 reason: "docker rm failed (Code(1)): daemon said no".to_owned(),
+                projects: BTreeSet::new(),
             }
         );
     }

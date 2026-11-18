@@ -45,6 +45,7 @@ use crate::clients::devpod_home::{self as devpod_home, DevpodHome};
 use crate::clients::docker;
 use crate::clients::kill::{self as signals, Sent, Signal};
 use crate::clients::ps;
+use crate::flows::workspace_volumes;
 
 pub use crate::clients::ps::HostProcess;
 use crate::domain::workspace_state::NonEmpty;
@@ -759,7 +760,14 @@ pub fn workspace_kill(
     Killed::Swept(Sweep {
         signalled,
         marker: sweep_marker(devpod_home, workspace_id, &holding),
-        containers: kill_containers(runner, workspace_id, &holding),
+        containers: kill_containers(
+            runner,
+            // devpod names the compose project after its uid, not the id. With
+            // no uid on record, the id is the only name left to try.
+            &workspace_volumes::workspace_uid(devpod_home, workspace_id)
+                .unwrap_or_else(|| workspace_id.to_owned()),
+            &holding,
+        ),
         holding,
     })
 }
@@ -903,11 +911,11 @@ fn sweep_holders(
 ///
 /// The listing comes first because a project with nothing running is the common
 /// case and a `docker kill` with no arguments is an error rather than a no-op.
-fn kill_containers(runner: &dyn Runner, workspace_id: &str, holding: &Holding) -> Containers {
+fn kill_containers(runner: &dyn Runner, project: &str, holding: &Holding) -> Containers {
     if holding.any_attended() {
         return Containers::LeftForALiveBuild;
     }
-    let ids = match docker::running_for_project(runner, workspace_id) {
+    let ids = match docker::running_for_project(runner, project) {
         docker::Running::These(ids) => ids,
         docker::Running::NotInstalled => return Containers::NoDocker,
         docker::Running::Refused { exit, stderr } => {
@@ -1806,6 +1814,33 @@ mod tests {
         assert_eq!(
             fake.args_to("docker").last(),
             Some(&vec!["kill".to_owned(), "abc123".to_owned()])
+        );
+    }
+
+    /// devpod names the compose project after its uid for the workspace, not
+    /// after the workspace id. So the containers are found by the uid: a filter
+    /// on the id matched no compose container devpod ever made.
+    #[test]
+    fn the_containers_are_found_by_the_compose_project_devpod_named() {
+        let home = home_for("my-ws");
+        std::fs::write(
+            home.record("default", "my-ws"),
+            serde_json::json!({ "id": "my-ws", "uid": "default-my-65da1" }).to_string(),
+        )
+        .expect("a record");
+        let fake = host_showing(NOTHING);
+        fake.script(["docker", "ps"], Response::stdout("abc123\n"));
+
+        let sweep = swept(workspace_kill(&fake, Some(&home), "my-ws", &mut |_| {}));
+
+        assert_eq!(
+            sweep.containers,
+            Containers::Killed(vec!["abc123".to_owned()])
+        );
+        let ps = &fake.args_to("docker")[0];
+        assert!(
+            ps.contains(&"label=com.docker.compose.project=default-my-65da1".to_owned()),
+            "{ps:?}"
         );
     }
 
