@@ -719,6 +719,8 @@ fn a_branch_the_remote_rebased_holds_nothing_unsaved_in_colour_too() {
 fn a_backup_made_before_the_remote_rebase_holds_nothing_unsaved() {
     // The shape that kept most of the old commits on a real host: a backup branch
     // with no upstream, whose copies are on *another* local branch's upstream.
+    // `origin/backup/before-rebase` is not there, so one of the ranges the copy
+    // rule asks about names no ref, and git has to drop that range alone.
     let fixture = Fixture::new();
     let clone = fixture.clone();
     git(&clone, &["branch", "backup/before-rebase"]);
@@ -2420,6 +2422,65 @@ fn a_copy_that_git_will_not_look_for_leaves_every_commit_counted() {
     assert_eq!(
         already_on_a_remote(&Git::new(&refused), Path::new("/ws"), &[]),
         Vec::<String>::new()
+    );
+}
+
+#[test]
+fn each_branch_is_compared_with_all_its_remote_refs_in_one_question() {
+    // Every branch is compared with every branch's upstream, and one question
+    // per branch and per ref was quadratic in the branches: a kinisi_ros clone
+    // of 36 branches spent 20 s of `dl --ls` in 146 `rev-list --cherry-mark`
+    // spawns. One question per branch is linear in the branches.
+    let branches = 12;
+    let listing: String = (0..branches)
+        .map(|n| format!("refs/heads/b{n}\0refs/remotes/origin/b{n}\n"))
+        .collect();
+    let pinned = |verb: &[&str]| -> Vec<String> {
+        ["git", "--git-dir=/ws/.git", "--work-tree=/ws"]
+            .iter()
+            .chain(verb)
+            .map(|arg| (*arg).to_owned())
+            .collect()
+    };
+    let fake = ScriptedRunner::new()
+        .with_script(pinned(&["for-each-ref"]), Response::stdout(listing))
+        .with_script(
+            pinned(&["log", "--oneline"]),
+            Response::stdout("1111111 unpushed\n"),
+        )
+        .with_script(pinned(&["rev-list"]), Response::stdout("+1111111\n"));
+
+    assert_eq!(
+        already_on_a_remote(&Git::new(&fake), Path::new("/ws"), &[]),
+        Vec::<String>::new()
+    );
+    let questions: Vec<Vec<String>> = fake
+        .argvs()
+        .into_iter()
+        .filter(|argv| argv.get(3).map(String::as_str) == Some("rev-list"))
+        .collect();
+    assert_eq!(questions.len(), branches, "one question per branch");
+    let first = &questions[0];
+    assert_eq!(
+        first[3..8],
+        [
+            "rev-list",
+            "--ignore-missing",
+            "--cherry-mark",
+            "--left-only",
+            "--no-merges"
+        ],
+        "a ref that is not there drops its own range and not the question"
+    );
+    assert_eq!(
+        first.len() - 8,
+        branches + 1,
+        "every upstream and `origin/HEAD`, each one range"
+    );
+    assert!(
+        first[8..]
+            .iter()
+            .all(|range| range.starts_with("refs/heads/b0...refs/remotes/origin/"))
     );
 }
 
