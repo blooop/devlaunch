@@ -1353,7 +1353,7 @@ fn sweep_leftovers(
                 reason,
             })
         }
-        OrphanSweep::NotRemoved { names, reason } => {
+        OrphanSweep::NotRemoved { names, reason, .. } => {
             notices.say(LaunchNotice::LeftoverContainersNotRemoved {
                 workspace_id: workspace_id.to_owned(),
                 names,

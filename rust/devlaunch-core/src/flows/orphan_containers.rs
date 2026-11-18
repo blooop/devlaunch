@@ -70,10 +70,13 @@ pub(crate) enum OrphanSweep {
     },
     /// docker would not list the containers, in its own words.
     NotListed { reason: String },
-    /// docker would not remove these containers, in its own words.
+    /// docker would not remove these containers, in its own words. `projects`
+    /// are the projects of the ones it did remove, none of whose containers is
+    /// left, as in [`Self::Removed`].
     NotRemoved {
         names: NonEmpty<String>,
         reason: String,
+        projects: BTreeSet<String>,
     },
 }
 
@@ -119,12 +122,13 @@ pub(crate) fn sweep(
         }
         docker::Answer::Ran { exit, stderr } => {
             let reason = format!("docker rm failed ({exit:?}): {}", stderr.trim());
-            still_there(runner, &left, names, projects, reason)
+            still_there(runner, &left, names, projects, home, workspace_id, reason)
         }
         docker::Answer::NotInstalled => OrphanSweep::NoDocker,
         docker::Answer::NotStarted(failure) => OrphanSweep::NotRemoved {
             names,
             reason: format!("docker rm did not finish ({:?})", failure.kind),
+            projects: BTreeSet::new(),
         },
     }
 }
@@ -135,23 +139,44 @@ pub(crate) fn sweep(
 /// gone, and still removes the rest. So the sweep lists them again and names only
 /// those still there; when none is, every one of them is gone. When the second
 /// listing fails too, all of them are named, as the first answer said.
+///
+/// The projects handed on are those none of whose containers is still there: a
+/// volume of a project with a container left is that container's to keep.
 fn still_there(
     runner: &dyn crate::runner::Runner,
     left: &NonEmpty<&ComposeContainer>,
     names: NonEmpty<String>,
     projects: BTreeSet<String>,
+    home: &DevpodHome,
+    workspace_id: &str,
     reason: String,
 ) -> OrphanSweep {
     let ids = left.map(|c| c.id.clone());
     let Ok(present) = docker::present_containers(runner, &ids) else {
-        return OrphanSweep::NotRemoved { names, reason };
+        return OrphanSweep::NotRemoved {
+            names,
+            reason,
+            projects: BTreeSet::new(),
+        };
     };
-    match NonEmpty::of(
-        left.iter()
-            .filter(|c| present.contains(&c.id))
-            .map(|c| c.name.clone()),
-    ) {
-        Some(names) => OrphanSweep::NotRemoved { names, reason },
+    let (stayed, went): (Vec<&ComposeContainer>, Vec<&ComposeContainer>) =
+        left.iter().copied().partition(|c| present.contains(&c.id));
+    match NonEmpty::of(stayed.iter().map(|c| c.name.clone())) {
+        Some(names) => {
+            let still_used: BTreeSet<&String> =
+                stayed.iter().filter_map(|c| c.project.as_ref()).collect();
+            let projects = NonEmpty::of(went)
+                .map(|went| devpod_projects(&went, home, workspace_id))
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|project| !still_used.contains(project))
+                .collect();
+            OrphanSweep::NotRemoved {
+                names,
+                reason,
+                projects,
+            }
+        }
         None => OrphanSweep::Removed { names, projects },
     }
 }
@@ -711,6 +736,46 @@ mod tests {
                 reason: "docker rm failed (Code(1)): \
                          Error response from daemon: No such container: aaa"
                     .to_owned(),
+                projects: BTreeSet::new(),
+            }
+        );
+    }
+
+    /// The containers that did go take their projects with them: the delete
+    /// still reads those projects' volumes. A project with a container still
+    /// there is not handed on.
+    #[test]
+    fn a_partly_failed_removal_keeps_the_projects_of_what_went() {
+        let home = devpod_home_with(&[]);
+        let override_file = agent_compose_file(&home, "default", WS);
+        let fake = FakeRunner::new();
+        fake.script(["docker", "ps", "--quiet"], Response::stdout("bbb\n"));
+        fake.script(
+            ["docker", "ps"],
+            Response::stdout(
+                row_of(
+                    "default-ki-0ld11",
+                    "aaa",
+                    "dev",
+                    Path::new("/x"),
+                    &[&override_file],
+                ) + &row_of(
+                    "default-ki-0ld22",
+                    "bbb",
+                    "side",
+                    Path::new("/x"),
+                    &[&override_file],
+                ),
+            ),
+        );
+        fake.script(["docker", "rm"], Response::failed(1, "busy\n"));
+
+        assert_eq!(
+            sweep(&fake, Some(&home), WS, None),
+            OrphanSweep::NotRemoved {
+                names: names(["side".to_owned()]),
+                reason: "docker rm failed (Code(1)): busy".to_owned(),
+                projects: ["default-ki-0ld11".to_owned()].into_iter().collect(),
             }
         );
     }
@@ -757,6 +822,7 @@ mod tests {
             OrphanSweep::NotRemoved {
                 names: names(["dev".to_owned()]),
                 reason: "docker rm failed (Code(1)): daemon said no".to_owned(),
+                projects: BTreeSet::new(),
             }
         );
     }

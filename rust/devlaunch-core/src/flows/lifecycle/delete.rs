@@ -327,13 +327,16 @@ pub(crate) fn workspace_delete(
         // `NotRun` here used to mean devpod was missing or would not exec.
         Err(NotRun::TimedOut) => {
             context.forget_workspaces();
-            let _ = sweep_leftovers(
+            let leftover_projects = sweep_leftovers(
                 context.runner(),
                 devpod_home,
                 workspace_id,
                 clone_path.as_deref(),
                 notices,
             );
+            // The leftovers' containers are gone by this delete's hand whatever
+            // devpod did, so their volumes go with them here too.
+            sweep_leftover_volumes(context.runner(), workspace_id, &leftover_projects, notices);
             refresh.ask(context.runner(), RefreshReason::Forced);
             return Err(NotRun::TimedOut);
         }
@@ -355,6 +358,7 @@ pub(crate) fn workspace_delete(
         notices,
     );
     if !exit.is_success() {
+        sweep_leftover_volumes(context.runner(), workspace_id, &leftover_projects, notices);
         refresh.ask(context.runner(), RefreshReason::Forced);
         return Ok(RemoveOutcome::DevpodRefused { exit });
     }
@@ -395,10 +399,10 @@ pub(crate) fn workspace_delete(
     // The leftovers swept above were made for compose projects of their own, an
     // older uid of this workspace that may be in no copy. Their compose volumes
     // are read now that the containers are gone, and go the same way.
-    tried.extend(sweep_mounted(
+    tried.extend(sweep_leftover_volumes(
         context.runner(),
         workspace_id,
-        workspace_volumes::record_projects(context.runner(), workspace_id, &leftover_projects),
+        &leftover_projects,
         notices,
     ));
     let named = named.and_then(|names| {
@@ -468,16 +472,37 @@ fn sweep_leftovers(
                 reason,
             })
         }
-        OrphanSweep::NotRemoved { names, reason } => {
+        OrphanSweep::NotRemoved {
+            names,
+            reason,
+            projects,
+        } => {
             notices.say(LifecycleNotice::LeftoverContainersNotRemoved {
                 workspace_id: workspace_id.to_owned(),
                 names,
                 reason,
             });
+            return projects;
         }
         OrphanSweep::Nothing | OrphanSweep::NoDocker => {}
     }
     BTreeSet::new()
+}
+
+/// Remove the compose volumes of the leftover projects [`sweep_leftovers`]
+/// removed the containers of, read now that those containers are gone.
+fn sweep_leftover_volumes(
+    runner: &dyn Runner,
+    workspace_id: &str,
+    projects: &BTreeSet<String>,
+    notices: &mut dyn Notices<LifecycleNotice>,
+) -> BTreeSet<String> {
+    sweep_mounted(
+        runner,
+        workspace_id,
+        workspace_volumes::record_projects(runner, workspace_id, projects),
+        notices,
+    )
 }
 
 /// Remove the volumes only this workspace's containers used, and say what

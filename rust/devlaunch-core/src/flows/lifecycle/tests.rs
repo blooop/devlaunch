@@ -3158,9 +3158,57 @@ fn a_delete_removes_the_compose_volume_of_a_uid_the_workspace_had_before() {
 /// devlaunch kept no copy of). That project's compose volume goes with it.
 #[test]
 fn a_delete_removes_the_compose_volumes_of_the_leftovers_it_swept() {
+    let (outcome, notices) = delete_over_a_leftover(None);
+
+    assert!(
+        matches!(outcome, Ok(RemoveOutcome::Deleted { .. })),
+        "{outcome:?}"
+    );
+    assert_leftover_and_its_volume_removed(&notices);
+}
+
+/// `devpod delete` failed after the leftover sweep removed the containers. The
+/// containers are gone by dl's hand all the same, so their volumes go too.
+#[test]
+fn a_delete_devpod_refused_still_removes_the_volumes_of_the_leftovers_it_swept() {
+    let (outcome, notices) = delete_over_a_leftover(Some(Response::exited(1)));
+
+    assert!(
+        matches!(outcome, Ok(RemoveOutcome::DevpodRefused { .. })),
+        "{outcome:?}"
+    );
+    assert_leftover_and_its_volume_removed(&notices);
+}
+
+fn assert_leftover_and_its_volume_removed(notices: &[LifecycleNotice]) {
+    assert!(
+        notices.contains(&LifecycleNotice::LeftoverContainersRemoved {
+            workspace_id: "myws".to_owned(),
+            names: NonEmpty::one("myws_dev".to_owned()),
+        }),
+        "{notices:?}"
+    );
+    assert!(
+        notices.contains(&LifecycleNotice::WorkspaceVolumesRemoved {
+            workspace_id: "myws".to_owned(),
+            names: NonEmpty::one("dc0ld000_bazel-output".to_owned()),
+        }),
+        "{notices:?}"
+    );
+}
+
+/// Delete `myws`, which devpod holds no record of, over a leftover container of
+/// project `dc0ld000` whose compose volume nothing else uses. `devpod_delete`
+/// is how `devpod delete` answers, when not the fake's default.
+fn delete_over_a_leftover(
+    devpod_delete: Option<Response>,
+) -> (Result<RemoveOutcome, NotRun>, Vec<LifecycleNotice>) {
     let world = a_stopping_world();
     let home = devpod_home_with(&[]);
     let override_file = agent_compose_file(&home, "default", "myws");
+    if let Some(response) = devpod_delete {
+        world.devpod.fake.script(["devpod", "delete"], response);
+    }
     world.devpod.fake.script(
         ps_filtered("volume=dc0ld000_bazel-output"),
         Response::stdout(""),
@@ -3183,7 +3231,7 @@ fn a_delete_removes_the_compose_volumes_of_the_leftovers_it_swept() {
     let mut notices = Vec::new();
 
     let copies = world_cache.copies();
-    workspace_delete(
+    let outcome = workspace_delete(
         &mut context,
         &mut refresh,
         &clones,
@@ -3195,23 +3243,8 @@ fn a_delete_removes_the_compose_volumes_of_the_leftovers_it_swept() {
         Persistence::Ordinary,
         &mut unblocked(),
         &mut notices,
-    )
-    .expect("devpod ran");
-
-    assert!(
-        notices.contains(&LifecycleNotice::LeftoverContainersRemoved {
-            workspace_id: "myws".to_owned(),
-            names: NonEmpty::one("myws_dev".to_owned()),
-        }),
-        "{notices:?}"
     );
-    assert!(
-        notices.contains(&LifecycleNotice::WorkspaceVolumesRemoved {
-            workspace_id: "myws".to_owned(),
-            names: NonEmpty::one("dc0ld000_bazel-output".to_owned()),
-        }),
-        "{notices:?}"
-    );
+    (outcome, notices)
 }
 
 /// docker will not list the workspace's containers, so what they mount is
