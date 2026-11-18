@@ -63,6 +63,9 @@ use crate::domain::workspace_state::NonEmpty;
 /// conditions, and a reader of either can see at a glance which it is holding.
 const COPIES_DIR: &str = "workspace-copies";
 
+/// The docker-in-docker feature's volume name, before the uid devpod substitutes.
+const DIND_PREFIX: &str = "dind-var-lib-docker-";
+
 /// Where devlaunch keeps its copies of what devpod substituted.
 ///
 /// A path parameter rather than a read of the process environment, for
@@ -122,13 +125,24 @@ impl KeptCopies {
         let Ok(bytes) = std::fs::read(&result) else {
             return;
         };
-        let recorded = parse_result(&bytes);
+        let mut recorded = parse_result(&bytes);
         if recorded.is_empty() {
             // Nothing devpod substituted and no image it named: a document this
             // could not read is a document it copies nothing out of, which leaves
-            // the workspace exactly where it was before the copy existed.
+            // the workspace exactly where it was before the copy existed. Asked
+            // before the kept uids join it, so they cannot make it look worth
+            // writing over the copy that is there.
             return;
         }
+        // The uids of every earlier record go first: devpod forgets them when it
+        // makes a record again, and their compose volumes still carry them.
+        let mut uids = self.uids(workspace_id);
+        for uid in recorded.uids.drain(..) {
+            if !uids.contains(&uid) {
+                uids.push(uid);
+            }
+        }
+        recorded.uids = uids;
         let Ok(text) = serde_json::to_string(&recorded) else {
             return;
         };
@@ -145,6 +159,31 @@ impl KeptCopies {
     /// there, will not parse, or carries a shape this build does not know.
     pub(crate) fn volumes(&self, workspace_id: &str) -> Option<NonEmpty<String>> {
         NonEmpty::of(read_copy(&self.copy_path(workspace_id))?.volumes)
+    }
+
+    /// Every uid devpod gave this workspace, oldest first, or nothing where there
+    /// is no copy to read.
+    ///
+    /// devpod names the compose project after the uid, so each one names the
+    /// compose volumes a record of this workspace made. A copy written before uids
+    /// were kept still names its last one, inside the dind volume name devpod
+    /// substituted it into — a value devpod wrote down, not a guess.
+    pub(crate) fn uids(&self, workspace_id: &str) -> Vec<String> {
+        let Some(copy) = read_copy(&self.copy_path(workspace_id)) else {
+            return Vec::new();
+        };
+        let mut uids = copy.uids;
+        for uid in copy
+            .volumes
+            .iter()
+            .filter_map(|name| name.strip_prefix(DIND_PREFIX))
+            .filter(|uid| !uid.is_empty())
+        {
+            if !uids.iter().any(|known| known == uid) {
+                uids.push(uid.to_owned());
+            }
+        }
+        uids
     }
 
     /// Every workspace this cache holds a copy for, sorted.
@@ -213,12 +252,21 @@ struct Copy {
     /// stays distinguishable from one devpod derived; a devcontainer built from a
     /// Dockerfile declares none.
     declared_image: Option<String>,
+    /// Every `SubstitutionContext.DevContainerID` a completed `up` recorded, oldest
+    /// first. devpod names the compose project after it, so it is what names the
+    /// compose volumes of a record devpod has since made again or forgotten.
+    /// `default` so a copy written before this field still reads.
+    #[serde(default)]
+    uids: Vec<String>,
 }
 
 impl Copy {
     /// Whether this copy would say nothing at all, in which case none is written.
     fn is_empty(&self) -> bool {
-        self.volumes.is_empty() && self.image.is_none() && self.declared_image.is_none()
+        self.volumes.is_empty()
+            && self.image.is_none()
+            && self.declared_image.is_none()
+            && self.uids.is_empty()
     }
 }
 
@@ -237,8 +285,10 @@ fn parse_result(bytes: &[u8]) -> Copy {
     let Ok(document) = serde_json::from_slice::<serde_json::Value>(bytes) else {
         return Copy::default();
     };
+    let substitutions = substitutions_in(&document);
     Copy {
-        volumes: substitutions_in(&document).volume_names(),
+        volumes: substitutions.volume_names(),
+        uids: substitutions.devcontainer_id.clone().into_iter().collect(),
         image: non_empty_string(&document["ContainerDetails"]["Config"]["Image"]),
         declared_image: non_empty_string(&document["MergedConfig"]["image"]),
     }
@@ -449,6 +499,76 @@ mod tests {
 
         assert_eq!(copies.volumes("myws"), None);
         assert_eq!(copies.copied(), Vec::<String>::new());
+    }
+
+    /// devpod's uid for the workspace is kept too: it is the compose project
+    /// name, so it names every compose volume the workspace made.
+    #[test]
+    fn a_completed_up_keeps_the_workspaces_uid() {
+        let (_dir, copies) = a_cache();
+        let home = a_completed_up("myws", "/repos/o/r/repo-main-ab12", "default-my-aaaaa");
+
+        copies.keep("myws", Some(&home));
+
+        assert_eq!(copies.uids("myws"), ["default-my-aaaaa"]);
+    }
+
+    /// A record devpod made again gets a new uid, and the old project's volumes
+    /// still carry the old one. The copy keeps both, oldest first, so a later
+    /// delete can still name the old project's volumes.
+    #[test]
+    fn a_new_uid_does_not_drop_the_old_one() {
+        let (_dir, copies) = a_cache();
+        let old = a_completed_up("myws", "/repos/o/r/repo-main-ab12", "default-my-aaaaa");
+        copies.keep("myws", Some(&old));
+        let new = a_completed_up("myws", "/repos/o/r/repo-main-ab12", "default-my-bbbbb");
+        copies.keep("myws", Some(&new));
+        copies.keep("myws", Some(&new));
+
+        assert_eq!(
+            copies.uids("myws"),
+            ["default-my-aaaaa", "default-my-bbbbb"]
+        );
+        assert_eq!(
+            names(&copies, "myws"),
+            [
+                "repo-main-ab12-pixi",
+                "dind-var-lib-docker-default-my-bbbbb"
+            ]
+        );
+    }
+
+    /// A later result that names nothing devpod substituted leaves the copy as
+    /// it was. Before, the kept uids alone made it look like a copy worth
+    /// writing, and it replaced the volume names with nothing.
+    #[test]
+    fn a_result_that_names_nothing_leaves_the_copy_with_uids_alone() {
+        let (_dir, copies) = a_cache();
+        let up = a_completed_up("myws", "/repos/o/r/repo-main-ab12", "default-my-aaaaa");
+        copies.keep("myws", Some(&up));
+        let before = (copies.uids("myws"), names(&copies, "myws"));
+        let unreadable = a_result("myws", serde_json::json!({}));
+        copies.keep("myws", Some(&unreadable));
+
+        assert_eq!((copies.uids("myws"), names(&copies, "myws")), before);
+        assert!(!before.1.is_empty());
+    }
+
+    /// A copy written before uids were kept still names its uid, in the dind
+    /// volume name devpod substituted it into.
+    #[test]
+    fn a_copy_from_before_uids_were_kept_names_its_uid_through_the_dind_volume() {
+        let (dir, copies) = a_cache();
+        let store = dir.path().join(COPIES_DIR);
+        std::fs::create_dir_all(&store).expect("a store");
+        std::fs::write(
+            store.join("legacy.json"),
+            r#"{"volumes":["repo-pixi","dind-var-lib-docker-default-re-ccccc"],"image":null,"declared_image":null}"#,
+        )
+        .expect("a legacy copy");
+
+        assert_eq!(copies.uids("legacy"), ["default-re-ccccc"]);
+        assert_eq!(copies.uids("never-written"), Vec::<String>::new());
     }
 
     /// The image reference rides on the same copy, read from the same document at
