@@ -79,6 +79,10 @@ pub enum LifecycleNotice {
         name: String,
         reason: String,
     },
+    /// One of this workspace's own volumes stays because a container that is
+    /// not the workspace's still uses it. Said so the volume is not left in
+    /// silence: the user can find the container and remove both.
+    WorkspaceVolumeInUse { workspace_id: String, name: String },
     /// docker would not say what this workspace's containers mounted, or a
     /// compose file they were started from could not be read for its external
     /// volumes, so none of its own volumes beyond the two devlaunch names was

@@ -68,8 +68,24 @@ hold:
 - **No container that is left uses it.** dl asks Docker after the workspace's own
   containers are gone, so a volume another workspace still mounts stays.
 - **It is the workspace's own.** Compose made it for the workspace's project under
-  compose's default name, `<project>_<volume>`, or its name holds the workspace id or
-  devpod's uid as a whole part, as `<id>-pixi` does.
+  compose's default name, `<project>_<volume>`, or its name holds one of devpod's uids
+  for the workspace as a whole part, as `dind-var-lib-docker-<uid>` does. A name that
+  holds the workspace id as a whole part, as `<id>-pixi` does, counts only when a
+  container of devpod's current uid mounts it and dl read devpod's create result for
+  that uid: only that result says which names the config spells literally.
+
+A compose volume is also found by its label, not only by what mounts it. A volume compose
+made for one of the workspace's projects under the default name `<project>_<volume>` is
+the workspace's own even when no container is left to mount it, as when `dl --ls` shows
+the workspace `NotFound`. The workspace's projects are devpod's current uid for it, every
+older uid dl kept from an earlier `up` (devpod makes a record again under a new uid, and
+the old project's volumes keep the old one), and the project of each leftover container
+the delete removes that devpod made for this workspace. dl keeps the older uids by
+workspace id alone, so when two devpod contexts hold the same id, dl reads none of them:
+an older uid may be the other context's workspace. A leftover project somebody
+started by hand in the clone is named after its folder, and `<folder>_<volume>` is shared
+by every folder of that name, so its volumes stay. A volume of the workspace's own that stays because another container
+still uses it is named on stderr, with the command that finds that container.
 
 Two kinds of volume are shared on purpose and always stay: a name the devcontainer config
 spells literally, with no `${...}` in it (`team-tracker-pixi`), and a volume compose made
@@ -86,7 +102,8 @@ Keeping a volume can be undone; deleting a shared one cannot. A volume created b
 compose ran, and not marked external, has no compose label: it stays only when its name
 holds neither the workspace id nor devpod's uid. Each volume removed is named on stderr. A volume Docker will not
 remove is a line, never a failed delete. A delete that the guard refuses, that devpod
-refuses, or a `kill` whose `devpod delete` times out, removes no volume. `stop`, `up`, `recreate` and `--refresh-stale` never
+refuses, or a `kill` whose `devpod delete` times out, removes no volume, except the
+compose volumes of leftover containers the delete itself removed. `stop`, `up`, `recreate` and `--refresh-stale` never
 run this, so the caches a recreate keeps stay.
 
 ### The volumes of a workspace devpod has already forgotten

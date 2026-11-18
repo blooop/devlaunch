@@ -1276,6 +1276,10 @@ fn lifecycle_notice(notice: &LifecycleNotice) -> Option<String> {
             "Could not remove Docker volume {name} of {workspace_id} ({reason}). Remove it \
              with: docker volume rm {name}"
         ),
+        LifecycleNotice::WorkspaceVolumeInUse { workspace_id, name } => format!(
+            "Kept Docker volume {name} of {workspace_id}: another container still uses it. \
+             Find it with: docker ps -a --filter volume={name}"
+        ),
         LifecycleNotice::WorkspaceVolumesNotRead {
             workspace_id,
             reason,
@@ -6318,6 +6322,17 @@ mod tests {
             Some(
                 "Could not remove Docker volume ws-pixi of ws (docker volume rm failed). \
                  Remove it with: docker volume rm ws-pixi"
+            )
+        );
+        let volume_in_use = lifecycle_notice(&LifecycleNotice::WorkspaceVolumeInUse {
+            workspace_id: "ws".to_owned(),
+            name: "dc_bazel-output".to_owned(),
+        });
+        assert_eq!(
+            volume_in_use.as_deref(),
+            Some(
+                "Kept Docker volume dc_bazel-output of ws: another container still uses it. \
+                 Find it with: docker ps -a --filter volume=dc_bazel-output"
             )
         );
         let volumes_unread = lifecycle_notice(&LifecycleNotice::WorkspaceVolumesNotRead {
