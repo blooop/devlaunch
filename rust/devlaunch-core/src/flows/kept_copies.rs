@@ -126,6 +126,14 @@ impl KeptCopies {
             return;
         };
         let mut recorded = parse_result(&bytes);
+        if recorded.is_empty() {
+            // Nothing devpod substituted and no image it named: a document this
+            // could not read is a document it copies nothing out of, which leaves
+            // the workspace exactly where it was before the copy existed. Asked
+            // before the kept uids join it, so they cannot make it look worth
+            // writing over the copy that is there.
+            return;
+        }
         // The uids of every earlier record go first: devpod forgets them when it
         // makes a record again, and their compose volumes still carry them.
         let mut uids = self.uids(workspace_id);
@@ -135,12 +143,6 @@ impl KeptCopies {
             }
         }
         recorded.uids = uids;
-        if recorded.is_empty() {
-            // Nothing devpod substituted and no image it named: a document this
-            // could not read is a document it copies nothing out of, which leaves
-            // the workspace exactly where it was before the copy existed.
-            return;
-        }
         let Ok(text) = serde_json::to_string(&recorded) else {
             return;
         };
@@ -534,6 +536,22 @@ mod tests {
                 "dind-var-lib-docker-default-my-bbbbb"
             ]
         );
+    }
+
+    /// A later result that names nothing devpod substituted leaves the copy as
+    /// it was. Before, the kept uids alone made it look like a copy worth
+    /// writing, and it replaced the volume names with nothing.
+    #[test]
+    fn a_result_that_names_nothing_leaves_the_copy_with_uids_alone() {
+        let (_dir, copies) = a_cache();
+        let up = a_completed_up("myws", "/repos/o/r/repo-main-ab12", "default-my-aaaaa");
+        copies.keep("myws", Some(&up));
+        let before = (copies.uids("myws"), names(&copies, "myws"));
+        let unreadable = a_result("myws", serde_json::json!({}));
+        copies.keep("myws", Some(&unreadable));
+
+        assert_eq!((copies.uids("myws"), names(&copies, "myws")), before);
+        assert!(!before.1.is_empty());
     }
 
     /// A copy written before uids were kept still names its uid, in the dind
