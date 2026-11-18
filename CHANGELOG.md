@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.64.3] - 2026-11-18
+
 ### Fixed
 
 - **`rm` and `kill` remove a workspace's compose volumes when its containers are gone.**
@@ -14,7 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `<uid>_bazel-output` and every other compose volume behind. `kill` now finds a compose
   workspace's running containers by devpod's uid instead of by the workspace id. See
   [Every other volume only the workspace used](docs/cleanup.md#every-other-volume-only-the-workspace-used)
-  for which volumes go.
+  for which volumes go. A volume that only the workspace id names now stays unless a
+  container of the current uid mounts it
+  ([#719](https://github.com/blooop/devlaunch/pull/719)).
 
 ## [0.64.2] - 2026-10-31
 
