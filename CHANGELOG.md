@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **`dl --ls` no longer spends most of a minute on a clone with many branches.**
+- **The check for unpushed work no longer asks git once per branch and remote ref.**
   The check for unpushed work compared each local branch with each remote ref in a
   separate `git rev-list`, so its cost grew with the square of the branches. It now
   asks once per branch, with the same answer. On a kinisi_ros clone with 36 branches
