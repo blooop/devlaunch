@@ -72,7 +72,9 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use crate::clients::git::{Git, GitAnswer, LocalBranch, REFS_HEADS, RemoteRef, TagRef, TextMerge};
+use crate::clients::git::{
+    Change, Git, GitAnswer, LocalBranch, PathChange, REFS_HEADS, RemoteRef, TagRef, TextMerge,
+};
 
 /// The bare cache a clone was made from, when there is one to consult.
 ///
@@ -930,9 +932,11 @@ fn already_on_a_remote(git: &Git<'_>, clone: &Path, local_tags: &[String]) -> Ve
 /// It runs only when the copy rule left a commit counted, so a clone the copy
 /// rule accounted for pays nothing here. When it runs it pays three spawns for
 /// the clone and one `rev-list` per local branch, and only a branch that still
-/// reaches a counted commit is merged: one more `rev-list` and one
-/// `merge-tree --stdin` of up to [`LOOK_BACK`] points times its remote refs,
-/// and three spawns more for each pair whose merge gives its ref's tree. A
+/// reaches a counted commit is merged: one more `rev-list`, one `rev-parse`
+/// and one `diff-tree` that rule out the pairs that cannot pass
+/// ([`Asked::worth_merging`]), one `merge-tree --stdin` of the rest of up to
+/// [`LOOK_BACK`] points times its remote refs, and three spawns more for each
+/// pair whose merge gives its ref's tree. A
 /// pass costs one more read of the commits off every branch. The
 /// merges in one clone are bounded by [`MERGE_BUDGET`].
 ///
@@ -974,6 +978,7 @@ fn squashed_onto_a_remote(
         merge: &merge,
         ref_trees: &ref_trees,
         merges_left: MERGE_BUDGET,
+        could_pass: HashMap::new(),
     };
     let mut cleared: HashSet<String> = HashSet::new();
     let mut held_back: HashSet<String> = HashSet::new();
@@ -1155,13 +1160,19 @@ struct Asked<'g, 'a> {
     merge: &'a TextMerge,
     ref_trees: &'a HashMap<String, String>,
     merges_left: usize,
+    /// Whether a point and a remote ref's commit could pass, for every pair
+    /// [`Asked::worth_merging`] has answered for. Two branches on one commit,
+    /// or with commits in common, ask the same pairs.
+    could_pass: HashMap<(String, String), bool>,
 }
 
 impl Asked<'_, '_> {
     /// The commits *branch* passes at: every unpushed commit on the highest
     /// passing point's first-parent line, or none.
     ///
-    /// Every point is merged into every remote ref the clone has in one
+    /// Every point is paired with every remote ref the clone has, and the
+    /// budget counts all those pairs. [`Asked::worth_merging`] drops the pairs
+    /// that cannot pass, the rest are merged in one
     /// [`Git::trees_of_clean_merges`], and only a pair whose merge gives its
     /// ref's tree is asked [`Git::holds_the_change_of`], the question that
     /// decides.
@@ -1185,6 +1196,12 @@ impl Asked<'_, '_> {
             return HashSet::new();
         }
         self.merges_left -= pairs.len();
+        let worth = self.worth_merging(&pairs);
+        let pairs: Vec<(&str, &RemoteRef)> = pairs
+            .into_iter()
+            .zip(worth)
+            .filter_map(|(pair, worth)| worth.then_some(pair))
+            .collect();
         let Some(merged) = self
             .git
             .trees_of_clean_merges(self.clone, self.merge, &pairs)
@@ -1214,6 +1231,116 @@ impl Asked<'_, '_> {
             .map(|reached| reached.into_iter().collect())
             .unwrap_or_default()
     }
+
+    /// Which of *pairs* could pass, in their order: `false` only for a pair
+    /// that [`Git::holds_the_change_of`] is sure to refuse.
+    ///
+    /// Most pairs cannot pass, and their merges are what the squash rule paid
+    /// for: on a kinisi_ros clone a merge of a branch hundreds of commits ahead
+    /// takes 20 ms to 240 ms, nearly all of it in rename detection, and one
+    /// `--ls` row made 824 of them. Three things rule a pair out with no merge:
+    ///
+    /// - It has no merge base, or more than one.
+    /// - Its base is the ref's commit, so the ref changed nothing since.
+    /// - The point changes a path the ref does not ([`changes_a_path_the_ref_kept`]).
+    ///
+    /// It costs one `rev-parse` for the bases and one `diff-tree` for the
+    /// changes of the pairs it has not answered for before. **Every failure
+    /// rules nothing out**: a refusal or output it cannot read leaves those
+    /// pairs to be merged, as they were before.
+    fn worth_merging(&mut self, pairs: &[(&str, &RemoteRef)]) -> Vec<bool> {
+        let Some(Some(found)) = self.git.merge_bases_of(self.clone, pairs).said() else {
+            return vec![true; pairs.len()];
+        };
+        let mut asked: Vec<(&str, &str)> = Vec::new();
+        for ((point, _), bases) in pairs.iter().zip(&found) {
+            let key = ((*point).to_owned(), bases.other.clone());
+            if self.could_pass.contains_key(&key) {
+                continue;
+            }
+            match bases.bases.as_slice() {
+                [base] if *base != bases.other => {
+                    for diff in [
+                        (*point, base.as_str()),
+                        (bases.other.as_str(), base.as_str()),
+                    ] {
+                        if !asked.contains(&diff) {
+                            asked.push(diff);
+                        }
+                    }
+                }
+                _ => {
+                    self.could_pass.insert(key, false);
+                }
+            }
+        }
+        let changed = match self.git.paths_changed(self.clone, &asked) {
+            GitAnswer::Said(Some(changed)) => changed,
+            _ => Vec::new(),
+        };
+        let changes_of = |commit: &str, base: &str| {
+            asked
+                .iter()
+                .position(|diff| *diff == (commit, base))
+                .and_then(|at| changed.get(at))
+        };
+        pairs
+            .iter()
+            .zip(&found)
+            .map(|((point, _), bases)| {
+                let key = ((*point).to_owned(), bases.other.clone());
+                if let Some(could) = self.could_pass.get(&key) {
+                    return *could;
+                }
+                let [base] = bases.bases.as_slice() else {
+                    return true;
+                };
+                match (changes_of(point, base), changes_of(&bases.other, base)) {
+                    (Some(point_changes), Some(ref_changes)) => {
+                        let could = !changes_a_path_the_ref_kept(point_changes, ref_changes);
+                        self.could_pass.insert(key, could);
+                        could
+                    }
+                    _ => true,
+                }
+            })
+            .collect()
+    }
+}
+
+/// Whether *point* changes a path that *other* left as it was at their
+/// merge base, as [`Git::paths_changed`] lists each since that base. When it
+/// does, merging the point into the ref brings that change in, so the merge
+/// cannot give the ref's tree and [`Git::holds_the_change_of`] is `false`.
+///
+/// **Except for a path the point adds under a directory the ref may have
+/// renamed.** With `merge.directoryRenames` set to `true`, git moves a file
+/// added in a directory the other side renamed into the new directory, so the
+/// path the point added is not where the merge puts it. A directory can be
+/// renamed only when the ref removed every file under it, so an added path
+/// with a file the ref deleted somewhere above it proves nothing here and is
+/// left for the merge to decide.
+///
+/// Every other path in the point's change and not in the ref's comes through
+/// the merge as the point has it: no rename on the ref's side starts or ends at
+/// a path the ref left alone, and git takes a change made on one side only.
+fn changes_a_path_the_ref_kept(point: &[PathChange], other: &[PathChange]) -> bool {
+    let touched: HashSet<&str> = other.iter().map(|change| change.path.as_str()).collect();
+    let emptied: HashSet<&str> = other
+        .iter()
+        .filter(|change| change.change == Change::Deleted)
+        .flat_map(|change| directories_above(&change.path))
+        .collect();
+    point.iter().any(|change| {
+        !touched.contains(change.path.as_str())
+            && !(change.change == Change::Added
+                && directories_above(&change.path).any(|dir| emptied.contains(dir)))
+    })
+}
+
+/// Each directory *path* is under, the top one first, with no `/` at the end.
+fn directories_above(path: &str) -> impl Iterator<Item = &str> {
+    path.match_indices('/').map(|(at, _)| &path[..at])
 }
 
 /// The remote refs [`already_on_a_remote`] compares *branch* with, its own

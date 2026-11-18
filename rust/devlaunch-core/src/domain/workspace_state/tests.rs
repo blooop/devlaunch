@@ -1314,7 +1314,9 @@ fn the_squash_rule_makes_no_more_merges_than_its_budget() {
     // 32 branches, each on an upstream of its own with eight counted points:
     // each branch merges 8 points into 32 refs, 256 merges, so 16 branches fit
     // and the other 16 are not merged. The spawns grow with the branches, not
-    // with the merges.
+    // with the merges: a merged branch adds a `rev-parse` of its pairs' bases,
+    // which this fake answers with nothing, so no `diff-tree` follows and every
+    // pair is merged, as before the pairs were ruled out.
     let branches = 32;
     let at = |verb: &'static str| ["git", "--git-dir=/ws/.git", "--work-tree=/ws", verb];
     let listing: String = (0..branches)
@@ -1360,6 +1362,14 @@ fn the_squash_rule_makes_no_more_merges_than_its_budget() {
         .filter(|call| call.argv().iter().any(|arg| arg == "--stdin"))
         .count();
     assert_eq!(merged, MERGE_BUDGET / (LOOK_BACK * branches));
+    let bases = calls
+        .iter()
+        .filter(|call| call.argv().iter().any(|arg| arg.contains("...")))
+        .count();
+    assert_eq!(
+        bases, merged,
+        "one `rev-parse` of the bases per merged branch"
+    );
     assert!(
         calls.len() <= 3 * branches + 3,
         "{} spawns for {branches} branches",
@@ -1404,6 +1414,262 @@ fn a_change_measured_from_two_merge_bases_clears_nothing() {
         squashed_onto_a_remote(&Git::new(&two_bases), Path::new("/ws"), &counted, &[]),
         Vec::<String>::new()
     );
+}
+
+/// The one point [`scripted_squash`] counts, its remote ref's commit and their
+/// base, as `rev-parse` and `diff-tree` name them.
+const SQUASHED: &str = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678";
+const REF_AT: &str = "2222222222222222222222222222222222222222";
+const BASE_AT: &str = "3333333333333333333333333333333333333333";
+
+/// [`scripted_squash`] with a clean merge that gives the ref's tree, so a pair
+/// that is merged passes, and with `rev-parse` and `diff-tree` answering
+/// *bases* and *changed* for the pair before any merge.
+fn scripted_squash_ruled_by(bases: Response, changed: Response) -> ScriptedRunner {
+    let first = ScriptedRunner::new()
+        .with_script(
+            [
+                "git",
+                "--git-dir=/ws/.git",
+                "--work-tree=/ws",
+                "rev-parse",
+                &format!("refs/remotes/origin/feature...{SQUASHED}"),
+            ],
+            bases,
+        )
+        .with_script(
+            ["git", "--git-dir=/ws/.git", "--work-tree=/ws", "diff-tree"],
+            changed,
+        );
+    scripted_squash_after(
+        first,
+        Response::stdout("base\n"),
+        Response::stdout(""),
+        Response::stdout("remote-tree\n"),
+    )
+}
+
+/// How many merges *fake* was asked for, `--stdin` batches and single ones.
+fn merges(fake: &ScriptedRunner) -> usize {
+    fake.calls()
+        .iter()
+        .filter(|call| call.argv().iter().any(|arg| arg == "merge-tree"))
+        .count()
+}
+
+#[test]
+fn the_squash_rule_merges_no_pair_that_cannot_pass() {
+    // The cost this is about: on a kinisi_ros clone one `--ls` row made 824
+    // merges, none of which could pass. A pair ruled out before the merge is
+    // not merged at all.
+    let counted = ["a1b2c3d squashed".to_owned()];
+    let one_base = || Response::stdout(format!("{SQUASHED}\n{REF_AT}\n^{BASE_AT}\n"));
+    let ruled_out = [
+        (
+            Response::stdout(format!("{SQUASHED}\n{REF_AT}\n^{BASE_AT}\n^{SQUASHED}\n")),
+            Response::stdout(""),
+            "two merge bases",
+        ),
+        (
+            Response::stdout(format!("{SQUASHED}\n{REF_AT}\n")),
+            Response::stdout(""),
+            "no merge base",
+        ),
+        (
+            Response::stdout(format!("{SQUASHED}\n{REF_AT}\n^{REF_AT}\n")),
+            Response::stdout(""),
+            "a ref that changed nothing since the base",
+        ),
+        (
+            one_base(),
+            Response::stdout(format!(
+                "{SQUASHED}\0A\0later.txt\0{REF_AT}\0M\0notes.txt\0"
+            )),
+            "a point that changes a path the ref kept",
+        ),
+    ];
+    for (bases, changed, why) in ruled_out {
+        let fake = scripted_squash_ruled_by(bases, changed);
+        assert_eq!(
+            squashed_onto_a_remote(&Git::new(&fake), Path::new("/ws"), &counted, &[]),
+            Vec::<String>::new(),
+            "{why}"
+        );
+        assert_eq!(merges(&fake), 0, "{why}");
+    }
+
+    // The control: the ref changed the same path, so the pair is merged, and
+    // its pass clears the commit. The `diff-tree` answer above was read.
+    let same_path = scripted_squash_ruled_by(
+        one_base(),
+        Response::stdout(format!(
+            "{SQUASHED}\0A\0notes.txt\0{REF_AT}\0A\0notes.txt\0"
+        )),
+    );
+    assert_eq!(
+        squashed_onto_a_remote(&Git::new(&same_path), Path::new("/ws"), &counted, &[]),
+        vec![SQUASHED.to_owned()]
+    );
+    assert_eq!(merges(&same_path), 2, "the batch, then the question");
+
+    // **Every failure rules nothing out**: a refusal, or output in a shape this
+    // cannot read, from either git leaves the pair to be merged as before.
+    let failed = || Response::failed(128, "fatal: nope");
+    for (bases, changed, why) in [
+        (failed(), Response::stdout(""), "rev-parse refused"),
+        (
+            Response::stdout("tip-tree\n"),
+            Response::stdout(""),
+            "rev-parse unreadable",
+        ),
+        (one_base(), failed(), "diff-tree refused"),
+        (
+            one_base(),
+            Response::stdout("R100\0a\0b\0"),
+            "diff-tree unreadable",
+        ),
+    ] {
+        let fake = scripted_squash_ruled_by(bases, changed);
+        assert_eq!(
+            squashed_onto_a_remote(&Git::new(&fake), Path::new("/ws"), &counted, &[]),
+            vec![SQUASHED.to_owned()],
+            "{why}"
+        );
+        assert_eq!(merges(&fake), 2, "{why}");
+    }
+}
+
+#[test]
+fn a_point_that_changes_a_path_the_ref_kept_cannot_pass() {
+    let change = |change: Change, path: &str| PathChange {
+        change,
+        path: path.to_owned(),
+    };
+    let added = |path: &str| change(Change::Added, path);
+    let deleted = |path: &str| change(Change::Deleted, path);
+    let altered = |path: &str| change(Change::Altered, path);
+
+    // Paths the ref changed too are the merge's to decide.
+    assert!(!changes_a_path_the_ref_kept(
+        &[added("a.txt"), altered("src/b.rs"), deleted("c.txt")],
+        &[
+            added("a.txt"),
+            altered("src/b.rs"),
+            deleted("c.txt"),
+            added("d.txt")
+        ],
+    ));
+    // A path the ref left alone, whatever the point did to it, comes through
+    // the merge as the point has it.
+    for point in [added("later.txt"), altered("src/b.rs"), deleted("c.txt")] {
+        assert!(
+            changes_a_path_the_ref_kept(std::slice::from_ref(&point), &[added("a.txt")]),
+            "{point:?}"
+        );
+    }
+    // An empty change is no path at all; the merge rejects it elsewhere.
+    assert!(!changes_a_path_the_ref_kept(&[], &[added("a.txt")]));
+
+    // `merge.directoryRenames=true` moves a file added under a directory the
+    // ref renamed, so an added path under any directory the ref deleted a file
+    // from is left to the merge, however deep either one is.
+    let renamed_old = [deleted("old/sub/a.txt"), added("new/sub/a.txt")];
+    for point in ["old/new.txt", "old/sub/new.txt", "old/sub/deeper/new.txt"] {
+        assert!(
+            !changes_a_path_the_ref_kept(&[added(point)], &renamed_old),
+            "{point}"
+        );
+    }
+    // Only an added path: a file the point altered or deleted was there at the
+    // base, so a ref that renamed its directory deleted that very path.
+    assert!(changes_a_path_the_ref_kept(
+        &[altered("old/kept.txt")],
+        &renamed_old
+    ));
+    // And only under a directory the ref deleted from: not beside it, not in a
+    // directory whose name starts the same, and not at the top level, which
+    // cannot be renamed.
+    for point in ["older/new.txt", "new.txt", "olden.txt"] {
+        assert!(
+            changes_a_path_the_ref_kept(&[added(point)], &renamed_old),
+            "{point}"
+        );
+    }
+}
+
+#[test]
+fn real_git_answers_rule_out_pairs_before_any_merge() {
+    // The parsers against what git really prints, so a change of shape cannot
+    // quietly turn the rule off: an unreadable answer would merge every pair,
+    // and every one of these would come back `true`.
+    let fixture = Fixture::new();
+    let clone = fixture.clone();
+    three_commits(&clone);
+    squash_feature_into_main(&teammate(&fixture));
+    more_commits(&clone, 1);
+    git(&clone, &["fetch", "-q", "origin"]);
+    let tip = git(&clone, &["rev-parse", "feature"]);
+    let squashed = git(&clone, &["rev-parse", "feature~1"]);
+    let main = RemoteRef::of("origin", "main");
+    let feature = RemoteRef::of("origin", "feature");
+
+    let runner = ProcessRunner::new();
+    let git = Git::new(&runner);
+    let merge = git
+        .text_merge(&clone)
+        .said()
+        .flatten()
+        .expect("the clone merges as text");
+    let ref_trees = HashMap::new();
+    let mut asked = Asked {
+        git: &git,
+        clone: &clone,
+        merge: &merge,
+        ref_trees: &ref_trees,
+        merges_left: MERGE_BUDGET,
+        could_pass: HashMap::new(),
+    };
+    let pairs = [
+        (tip.as_str(), &main),
+        (squashed.as_str(), &main),
+        (tip.as_str(), &feature),
+        (squashed.as_str(), &feature),
+    ];
+
+    // The tip adds `later-0.txt`, which `main` never had; the squashed commit
+    // is `main`'s squash; and `origin/feature` is the base of both, so it
+    // changed nothing since.
+    assert_eq!(asked.worth_merging(&pairs), [false, true, false, false]);
+    assert_eq!(asked.could_pass.len(), 4);
+}
+
+#[test]
+fn a_squash_that_renamed_the_directory_the_branch_added_to_is_found() {
+    // With `merge.directoryRenames=true` git moves `old/new.txt` to
+    // `new/new.txt` because `main` renamed `old/` to `new/`, and `main` already
+    // holds it there. The path check must leave that pair to the merge.
+    let fixture = Fixture::new();
+    let clone = fixture.clone();
+    let mate = teammate(&fixture);
+    git(&mate, &["checkout", "-q", "main"]);
+    write(&mate.join("old/a.txt"), "a file\nwith lines\nthree\n");
+    commit(&mate, "old");
+    git(&mate, &["push", "-q", "origin", "main"]);
+    git(&clone, &["fetch", "-q", "origin"]);
+    git(&clone, &["checkout", "-q", "-b", "work", "origin/main"]);
+    write(&clone.join("old/new.txt"), "new\n");
+    commit(&clone, "new");
+    git(&mate, &["mv", "old", "new"]);
+    write(&mate.join("new/new.txt"), "new\n");
+    commit(&mate, "rename old, with new (#4)");
+    git(&mate, &["push", "-q", "origin", "main"]);
+    git(&clone, &["fetch", "-q", "origin"]);
+
+    // git's default, `conflict`, stops the merge, so the commit stays counted.
+    assert_eq!(would_lose(&held(&clone)), "1 unpushed commit(s)");
+
+    git(&clone, &["config", "merge.directoryRenames", "true"]);
+    assert_eq!(held(&clone), Unsaved::NothingToLose);
 }
 
 #[test]

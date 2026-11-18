@@ -15,6 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   asks once per branch, with the same answer. On a kinisi_ros clone with 36 branches
   that check fell from 146 `git` spawns and 20 s to 8 spawns and 0.5 s
   ([#720](https://github.com/blooop/devlaunch/pull/720)).
+- **The squash rule no longer merges pairs that cannot pass.** It merged every
+  point of a branch into every remote ref it compares with, and on a kinisi_ros clone
+  one `dl --ls` row made 824 merges, none of which could pass. One `git rev-parse` of
+  the merge bases and one `git diff-tree` of the changed paths now rule those pairs out
+  first, and any failure of either merges every pair as before. On that clone the rule
+  fell from 18–20 s to 4–6 s, with the same answer
+  ([#721](https://github.com/blooop/devlaunch/pull/721)).
 
 ## [0.64.3] - 2026-11-18
 

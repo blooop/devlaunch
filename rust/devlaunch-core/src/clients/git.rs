@@ -1133,6 +1133,78 @@ impl<'r> Git<'r> {
             })
     }
 
+    /// The merge bases of each of *pairs*, with the commit its remote ref
+    /// names, in the order of *pairs*; `None` when the output is not one
+    /// answer per pair.
+    ///
+    /// One `rev-parse <ref>...<point>` per pair, all in one spawn. For a
+    /// symmetric range `rev-parse` prints the right side, the left side and then
+    /// each merge base with a `^` before it. Those are the bases `merge-base
+    /// --all` gives, the ones [`Git::holds_the_change_of`] asks for, so the
+    /// squash rule can tell before any merge that a pair with two bases, or a
+    /// ref with no change of its own since its base, cannot pass.
+    pub(crate) fn merge_bases_of(
+        &self,
+        clone: &Path,
+        pairs: &[(&str, &RemoteRef)],
+    ) -> GitAnswer<Option<Vec<PairBases>>> {
+        if pairs.is_empty() {
+            return GitAnswer::Said(Some(Vec::new()));
+        }
+        let ranges: Vec<String> = pairs
+            .iter()
+            .map(|(point, other)| format!("{}...{point}", other.as_str()))
+            .collect();
+        let mut args = vec!["rev-parse"];
+        args.extend(ranges.iter().map(String::as_str));
+        self.about(clone, &args)
+            .map(|stdout| pair_bases_in(&stdout, pairs))
+    }
+
+    /// The paths each of *diffs* changes, `(commit, base)` read as the change
+    /// from *base* to *commit*, in the order of *diffs*; `None` when the output
+    /// is not one answer per diff.
+    ///
+    /// One `diff-tree --stdin` for all of them: a line `<commit> <base>` names
+    /// *base* as the commit's one parent, whatever its real parents are. `-r`
+    /// lists files, not directories, and `--no-renames` lists a rename as the
+    /// path it left and the path it took. `--always` prints the commit's line
+    /// even for an empty diff, so every diff is accounted for, and `-z` ends
+    /// each field with a NUL, so no path is quoted.
+    pub(crate) fn paths_changed(
+        &self,
+        clone: &Path,
+        diffs: &[(&str, &str)],
+    ) -> GitAnswer<Option<Vec<Vec<PathChange>>>> {
+        if diffs.is_empty() {
+            return GitAnswer::Said(Some(Vec::new()));
+        }
+        let lines: String = diffs
+            .iter()
+            .map(|(commit, base)| format!("{commit} {base}\n"))
+            .collect();
+        let Some(input) = tempfile::NamedTempFile::new()
+            .ok()
+            .filter(|file| std::fs::write(file.path(), &lines).is_ok())
+        else {
+            return GitAnswer::Said(None);
+        };
+        let args = [
+            "diff-tree",
+            "--stdin",
+            "-r",
+            "--no-renames",
+            "--name-status",
+            "-z",
+            "--always",
+        ];
+        let spec = SpawnSpec::new(pinned(clone, &args))
+            .with_timeout(ABOUT_ONE_REPO)
+            .with_stdin_file(input.path());
+        self.captured(&args.join(" "), &spec)
+            .map(|stdout| paths_changed_in(&stdout, diffs))
+    }
+
     /// How *clone* merges as text, or `None` when it cannot: an
     /// `info/attributes` that could name a merge driver, or objects named in a
     /// format [`empty_tree_of`] does not know.
@@ -2352,6 +2424,96 @@ fn commit_graph_in(output: &str) -> Option<CommitGraph> {
         }
     }
     Some(graph)
+}
+
+/// What [`Git::merge_bases_of`] found for one pair: the commit its remote ref
+/// names, and its merge bases, none, one or more.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PairBases {
+    pub(crate) other: String,
+    pub(crate) bases: Vec<String>,
+}
+
+/// What a diff did to one path, as far as the squash rule cares: whether the
+/// path is new, gone, or there on both sides.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Change {
+    Added,
+    Deleted,
+    /// Modified, or its type changed.
+    Altered,
+}
+
+/// One path a diff changed, and how.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PathChange {
+    pub(crate) change: Change,
+    pub(crate) path: String,
+}
+
+/// Whether *word* is a full object name, SHA-1 or SHA-256.
+fn is_full_hash(word: &str) -> bool {
+    matches!(word.len(), 40 | 64) && word.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+/// The bases of each of *pairs* in `rev-parse <ref>...<point>` output: the
+/// point, the ref's commit and a `^<base>` line per base, pair after pair.
+/// `None` for output of any other shape, a point that is not the one asked
+/// for included.
+fn pair_bases_in(output: &str, pairs: &[(&str, &RemoteRef)]) -> Option<Vec<PairBases>> {
+    let mut lines = output.lines().peekable();
+    let mut found = Vec::with_capacity(pairs.len());
+    for (point, _) in pairs {
+        if lines.next()? != *point {
+            return None;
+        }
+        let other = lines.next().filter(|other| is_full_hash(other))?;
+        let mut bases = Vec::new();
+        while let Some(base) = lines.peek().and_then(|line| line.strip_prefix('^')) {
+            if !is_full_hash(base) {
+                return None;
+            }
+            bases.push(base.to_owned());
+            lines.next();
+        }
+        found.push(PairBases {
+            other: other.to_owned(),
+            bases,
+        });
+    }
+    lines.next().is_none().then_some(found)
+}
+
+/// The paths each of *diffs* changes in `diff-tree --stdin -z --always
+/// --name-status` output: each diff's commit, then a status and a path per
+/// changed path, every field ended by a NUL. `None` for output of any other
+/// shape.
+fn paths_changed_in(output: &str, diffs: &[(&str, &str)]) -> Option<Vec<Vec<PathChange>>> {
+    let mut fields = output.split('\0');
+    let mut found: Vec<Vec<PathChange>> = Vec::with_capacity(diffs.len());
+    let mut field = fields.next()?;
+    for (commit, _) in diffs {
+        if field != *commit {
+            return None;
+        }
+        let mut changed = Vec::new();
+        loop {
+            field = fields.next()?;
+            let change = match field {
+                "A" => Change::Added,
+                "D" => Change::Deleted,
+                "M" | "T" => Change::Altered,
+                _ => break,
+            };
+            let path = fields.next().filter(|path| !path.is_empty())?;
+            changed.push(PathChange {
+                change,
+                path: path.to_owned(),
+            });
+        }
+        found.push(changed);
+    }
+    (field.is_empty() && fields.next().is_none()).then_some(found)
 }
 
 /// What [`Git::text_merge`] found a clone can merge with: the `--attr-source`
