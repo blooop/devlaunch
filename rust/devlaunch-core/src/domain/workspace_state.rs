@@ -1170,7 +1170,9 @@ impl Asked<'_, '_> {
     /// The commits *branch* passes at: every unpushed commit on the highest
     /// passing point's first-parent line, or none.
     ///
-    /// Every point is merged into every remote ref the clone has in one
+    /// Every point is paired with every remote ref the clone has, and the
+    /// budget counts all those pairs. [`Asked::worth_merging`] drops the pairs
+    /// that cannot pass, the rest are merged in one
     /// [`Git::trees_of_clean_merges`], and only a pair whose merge gives its
     /// ref's tree is asked [`Git::holds_the_change_of`], the question that
     /// decides.

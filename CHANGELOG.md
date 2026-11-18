@@ -20,7 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one `dl --ls` row made 824 merges, none of which could pass. One `git rev-parse` of
   the merge bases and one `git diff-tree` of the changed paths now rule those pairs out
   first, and any failure of either merges every pair as before. On that clone the rule
-  fell from 18 s to 20 s to 4 s to 6 s, with the same answer
+  fell from 18–20 s to 4–6 s, with the same answer
   ([#721](https://github.com/blooop/devlaunch/pull/721)).
 
 ## [0.64.2] - 2026-10-31
