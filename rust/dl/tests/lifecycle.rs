@@ -258,6 +258,15 @@ impl World {
         self.root.join(relative)
     }
 
+    /// Every line of the event log at the XDG default under this world's `HOME`.
+    fn events(&self) -> Vec<serde_json::Value> {
+        std::fs::read_to_string(self.path("home/.local/state/devlaunch/events.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("each line is one JSON object"))
+            .collect()
+    }
+
     fn read(&self, relative: &str) -> String {
         std::fs::read_to_string(self.path(relative)).unwrap_or_default()
     }
@@ -845,6 +854,34 @@ fn a_stop_addresses_the_workspace_and_says_nothing() {
     assert_eq!(lines[0]["ev"], "stop");
     assert_eq!(lines[0]["ws"], "someones-project");
     assert_eq!(lines[0]["exit"], 0);
+}
+
+#[test]
+fn a_kill_rm_or_rme_logs_one_line_named_for_what_it_did() {
+    for (verb, ev) in [("kill", "kill"), ("rm", "remove"), ("rme", "remove")] {
+        let world = World::base();
+
+        world.dl(&["devlaunch-main-legacy", verb]).exited(0);
+
+        let lines = world.events();
+        assert_eq!(lines.len(), 1, "dl <ws> {verb}: {lines:?}");
+        assert_eq!(lines[0]["ev"], ev, "dl <ws> {verb}: {lines:?}");
+        assert_eq!(lines[0]["ws"], "devlaunch-main-legacy", "{lines:?}");
+        assert_eq!(lines[0]["exit"], 0, "{lines:?}");
+    }
+}
+
+#[test]
+fn a_prune_logs_one_line_that_names_no_workspace() {
+    let world = World::base();
+
+    world.dl(&["--prune", "-y"]).exited(0);
+
+    let lines = world.events();
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!(lines[0]["ev"], "prune", "{lines:?}");
+    assert_eq!(lines[0]["ws"], serde_json::Value::Null, "{lines:?}");
+    assert_eq!(lines[0]["exit"], 0, "{lines:?}");
 }
 
 #[test]
