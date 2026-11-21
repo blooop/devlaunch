@@ -191,7 +191,7 @@ append, so two commands at once do not mix their lines.
 
 | `ev` | Written when | Fields beyond `ts`, `ev`, `ws`, `repo`, `branch` |
 |---|---|---|
-| `launch` | The workspace is ready and the session is about to start, or an `up` has finished | `cold`, `seconds`, `stages`, `verb` |
+| `launch` | The workspace is ready and the session is about to start, or an `up`, `code` or `dotfiles` has finished | `cold`, `seconds`, `stages`, `verb` |
 | `session_end` | The session a `launch` started has ended | `seconds` (of the session), `exit` |
 | `stop`, `kill`, `remove`, `prune` | The verb has finished | `seconds`, `exit` |
 | `aid_start` | `dla` has handed its start to `dl` and the workspace is ready | `cold`, `seconds`, `stages`, `agent`, `resume` |

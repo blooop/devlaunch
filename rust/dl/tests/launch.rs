@@ -2864,6 +2864,22 @@ fn an_up_logs_one_launch_and_no_session() {
 }
 
 #[test]
+fn a_code_or_dotfiles_logs_one_launch_and_no_session() {
+    for verb in ["code", "dotfiles"] {
+        let world = World::with(&["--stopped"]);
+        world.dl(&[MAIN, verb]).exited(0);
+
+        let lines = events(&world);
+        let names: Vec<&str> = lines
+            .iter()
+            .map(|line| line["ev"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["launch"], "dl <ws> {verb}: {lines:?}");
+        assert_eq!(lines[0]["verb"], verb);
+    }
+}
+
+#[test]
 fn the_event_log_follows_xdg_state_home() {
     let world = World::with(&["--warm"]);
     let state = world.path("state");

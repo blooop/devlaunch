@@ -135,7 +135,7 @@ pub(crate) fn dispatch(
             force,
             force_worktrees,
         } => {
-            crate::events::workspace(None, "prune");
+            crate::events::workspace(None, "prune", false);
             render_prune(
                 runner,
                 &mut context,
@@ -243,7 +243,8 @@ pub(crate) fn dispatch(
             }
             let after = verb.after_removal();
             let word = verb.word();
-            crate::events::workspace(Some(&target), word);
+            let sessionless = verb.ready_without_a_session();
+            crate::events::workspace(Some(&target), word, sessionless);
             let ending = render_workspace(
                 runner,
                 &mut context,
@@ -258,10 +259,11 @@ pub(crate) fn dispatch(
                 None,
                 resume,
             );
-            // An `up` starts no session, so its launch is ready when it has
-            // finished, and only if it worked. `timing::ready` fires once, so an
-            // `up` that reached a ready point of its own is not counted twice.
-            if word == "up" && ending.code() == 0 {
+            // `up`, `code` and `dotfiles` start no session, so their launch is
+            // ready when they have finished, and only if they worked.
+            // `timing::ready` fires once, so one that reached a ready point of its
+            // own is not counted twice.
+            if sessionless && ending.code() == 0 {
                 devlaunch_core::timing::ready(None);
             }
             hangup::after_the_command(after, word, ending)

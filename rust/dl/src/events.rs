@@ -6,9 +6,9 @@
 //! Always on. `DEVLAUNCH_EVENTS=0` turns it off. What is written:
 //!
 //! - `launch`: the workspace is ready, written the moment the session is about
-//!   to start (or the `up` has finished). `seconds` is the wall time from the
-//!   top of the command, `cold` says the `up` created the workspace, and
-//!   `stages` holds the named [`timing`] stages in seconds.
+//!   to start (or an `up`, `code` or `dotfiles` has finished). `seconds` is the
+//!   wall time from the top of the command, `cold` says the `up` created the
+//!   workspace, and `stages` holds the named [`timing`] stages in seconds.
 //! - `session_end`: the session a `launch` started has ended. `seconds` is how
 //!   long it lasted and `exit` is how it ended.
 //! - `stop`, `kill`, `remove`, `prune`: the verb ran; `seconds` is how long it took.
@@ -66,6 +66,7 @@ pub(crate) fn path() -> Option<PathBuf> {
 #[derive(Debug, Clone)]
 struct Verb {
     word: &'static str,
+    sessionless: bool,
     target: Option<String>,
     started: Instant,
 }
@@ -114,11 +115,12 @@ pub(crate) fn begin() {
     seen.readied = None;
 }
 
-/// The workspace verb this command runs, and the target it names (`prune`
-/// names none).
-pub(crate) fn workspace(target: Option<&str>, word: &'static str) {
+/// The workspace verb this command runs, the target it names (`prune` names
+/// none), and whether it is ready with no session after it.
+pub(crate) fn workspace(target: Option<&str>, word: &'static str, sessionless: bool) {
     seen().verb = Some(Verb {
         word,
+        sessionless,
         target: target.map(str::to_owned),
         started: Instant::now(),
     });
@@ -147,9 +149,10 @@ pub(crate) fn end(exit: i32) {
         append(&Value::Object(event));
         return;
     }
-    // An `up` is ready when it ends; there is no session after it.
-    let upped = verb.as_ref().is_some_and(|verb| verb.word == "up");
-    if let Some(readied) = readied.filter(|_| !upped) {
+    // An `up`, `code` or `dotfiles` is ready when it ends; there is no session
+    // after it.
+    let sessionless = verb.as_ref().is_some_and(|verb| verb.sessionless);
+    if let Some(readied) = readied.filter(|_| !sessionless) {
         let mut event = base(
             "session_end",
             SystemTime::now(),

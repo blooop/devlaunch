@@ -349,6 +349,23 @@ impl Verb {
         }
     }
 
+    /// Whether this verb brings the workspace up and ends there, with no session
+    /// after it: its launch is ready when it has finished, not when a session
+    /// starts. Exhaustive, so a new verb has to answer.
+    pub(crate) fn ready_without_a_session(&self) -> bool {
+        match self {
+            Verb::Up | Verb::Code | Verb::Dotfiles => true,
+            Verb::Attach { .. }
+            | Verb::Run(..)
+            | Verb::Recreate
+            | Verb::Restart
+            | Verb::Reset
+            | Verb::Stop
+            | Verb::Kill
+            | Verb::Remove { .. } => false,
+        }
+    }
+
     /// What this verb asks of the calling shell once it is done.
     ///
     /// Only `rme` asks for anything, and the question is asked of the *verb* rather
