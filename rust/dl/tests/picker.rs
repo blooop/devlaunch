@@ -503,6 +503,56 @@ fn a_batch_of_marked_rows_is_named_and_counted_before_the_first_one_goes() {
     );
 }
 
+#[test]
+fn a_picked_verb_is_in_the_event_log_as_a_named_one_is() {
+    let world = World::new();
+    let (screen, said) = Screen::run_in(
+        &world,
+        Some("xterm-256color"),
+        &["stop"],
+        "wayfinder",
+        |screen| screen.row_of("blooop-devlaunch").is_none(),
+        Dismiss::Take,
+    );
+
+    let events = world.events();
+    let stops: Vec<&serde_json::Value> = events
+        .iter()
+        .filter(|event| event["ev"] == "stop")
+        .collect();
+    assert_eq!(
+        stops.len(),
+        1,
+        "a picked stop wrote {events:?}; dl said {said:?} from this screen:\n{screen}"
+    );
+    assert_eq!(stops[0]["ws"], "blooop-wayfinder", "{events:?}");
+}
+
+#[test]
+fn a_picked_up_logs_a_launch_that_names_its_verb() {
+    let world = World::new();
+    let (screen, said) = Screen::run_in(
+        &world,
+        Some("xterm-256color"),
+        &["up"],
+        "wayfinder",
+        |screen| screen.row_of("blooop-devlaunch").is_none(),
+        Dismiss::Take,
+    );
+
+    let events = world.events();
+    let launches: Vec<&serde_json::Value> = events
+        .iter()
+        .filter(|event| event["ev"] == "launch")
+        .collect();
+    assert_eq!(
+        launches.len(),
+        1,
+        "a picked up wrote {events:?}; dl said {said:?} from this screen:\n{screen}"
+    );
+    assert_eq!(launches[0]["verb"], "up", "{events:?}");
+}
+
 /// How the picker is left once the screen has been taken.
 #[derive(Clone, Copy)]
 enum Dismiss {
@@ -579,6 +629,26 @@ impl Screen {
         dismiss: Dismiss,
     ) -> (Self, Vec<String>, String, Vec<String>) {
         let world = World::new();
+        let (screen, afterwards) = Self::run_in(&world, term, args, keys, settled, dismiss);
+        (
+            screen,
+            world.devpod_calls(),
+            afterwards,
+            world.devpod_terms(),
+        )
+    }
+
+    /// [`Self::run_under`] in a world the caller keeps, for a test that reads
+    /// more of it afterwards: the screen, and what `dl` wrote once the picker
+    /// had given the screen back.
+    fn run_in(
+        world: &World,
+        term: Option<&str>,
+        args: &[&str],
+        keys: &str,
+        settled: impl Fn(&Screen) -> bool,
+        dismiss: Dismiss,
+    ) -> (Self, String) {
         let pair = native_pty_system()
             .openpty(PtySize {
                 rows: ROWS,
@@ -661,12 +731,7 @@ impl Screen {
         let _ = collecting_bytes.join();
 
         let afterwards = Self::afterwards(&drawn.lock().expect("the collected bytes").clone());
-        (
-            screen,
-            world.devpod_calls(),
-            afterwards,
-            world.devpod_terms(),
-        )
+        (screen, afterwards)
     }
 
     /// The bytes a terminal received, as the grid it would be showing.
@@ -948,6 +1013,15 @@ exit 0
             .unwrap_or_default()
             .lines()
             .map(str::to_owned)
+            .collect()
+    }
+
+    /// Every line of the event log at the XDG default under this world's `HOME`.
+    fn events(&self) -> Vec<serde_json::Value> {
+        std::fs::read_to_string(self.root.join("home/.local/state/devlaunch/events.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("each line is one JSON object"))
             .collect()
     }
 

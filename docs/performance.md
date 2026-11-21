@@ -210,8 +210,10 @@ called before, and what readers of older logs already look for.
 {"ts":"2026-11-21T09:13:05.340Z","ev":"aid_start","ws":"devlaunch-main-3j1t","repo":"blooop/devlaunch","branch":"main","cold":false,"seconds":0.043923,"stages":{"pick":0.00007,"pr_lookup":0.00005,"prompt":1e-6,"dl":0.023009},"agent":"claude","resume":false}
 ```
 
-A picked batch (`dl` with no target, then a verb) logs its launch but not its
-`stop`, `kill` or `remove`.
+A picked workspace logs the same lines as a named one. A picked batch (several
+rows marked for one verb) writes one line, not one per workspace: the `launch` of
+the first workspace that came up, or the `stop`, `kill` or `remove` of the last
+one, timed from that workspace's start.
 
 ### The same launch, machine-readable
 
