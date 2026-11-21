@@ -1639,6 +1639,20 @@ fn a_refused_delete_that_keeps_the_record_leaves_the_containers() {
     );
 }
 
+#[test]
+fn a_refused_rm_logs_its_removal_with_the_status_it_ended_on() {
+    let world = World::with(&["--devcontainer-volumes"]);
+    leave_containers_behind(&world);
+    world.devpod_answers(&["delete"], 3, "devpod: cannot read devcontainer.json\n");
+
+    world.dl(&["devlaunch-main-legacy", "rm"]).exited(3);
+
+    let lines = world.events();
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!(lines[0]["ev"], "remove", "{lines:?}");
+    assert_eq!(lines[0]["exit"], 3, "{lines:?}");
+}
+
 /// A local folder opened as its own workspace can sit inside another
 /// workspace's clone. devpod still holds the inner one, `sub`, and its live
 /// container names `sub`'s devpod directory; removing the outer workspace must
