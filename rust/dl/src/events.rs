@@ -142,7 +142,7 @@ pub(crate) fn end(exit: i32) {
         _ => None,
     });
     if let (Some(ev), Some(verb)) = (lifecycle, &verb) {
-        let mut event = base(ev, verb.target.as_deref(), None);
+        let mut event = base(ev, SystemTime::now(), verb.target.as_deref(), None);
         event.insert("seconds".into(), seconds(verb.started.elapsed()));
         event.insert("exit".into(), exit.into());
         append(&Value::Object(event));
@@ -153,6 +153,7 @@ pub(crate) fn end(exit: i32) {
     if let Some(readied) = readied.filter(|_| !upped) {
         let mut event = base(
             "session_end",
+            SystemTime::now(),
             readied.target.as_deref(),
             readied.workspace_id.as_deref(),
         );
@@ -183,15 +184,43 @@ fn on_ready(ready: &timing::Ready) {
         let seen = seen();
         seen.verb.as_ref().map(|verb| verb.word)
     };
-    append(&launch_event(ready, target.as_deref(), verb));
-    if let Some(dla) = dla {
-        append(&aid_start_event(&dla, ready, target.as_deref(), now));
+    for event in ready_events(
+        ready,
+        target.as_deref(),
+        verb,
+        dla.as_ref(),
+        now,
+        SystemTime::now(),
+    ) {
+        append(&event);
     }
 }
 
+/// The lines one ready writes: `launch`, then `aid_start` when dla handed a
+/// start over. Both carry `at` as their `ts`.
+fn ready_events(
+    ready: &timing::Ready,
+    target: Option<&str>,
+    verb: Option<&str>,
+    dla: Option<&Dla>,
+    now: Instant,
+    at: SystemTime,
+) -> Vec<Value> {
+    let mut events = vec![launch_event(ready, target, verb, at)];
+    if let Some(dla) = dla {
+        events.push(aid_start_event(dla, ready, target, now, at));
+    }
+    events
+}
+
 /// The `launch` line for `ready`.
-fn launch_event(ready: &timing::Ready, target: Option<&str>, verb: Option<&str>) -> Value {
-    let mut event = base("launch", target, ready.workspace_id.as_deref());
+fn launch_event(
+    ready: &timing::Ready,
+    target: Option<&str>,
+    verb: Option<&str>,
+    at: SystemTime,
+) -> Value {
+    let mut event = base("launch", at, target, ready.workspace_id.as_deref());
     event.insert("cold".into(), ready.cold.into());
     event.insert("seconds".into(), ready.seconds.into());
     event.insert("stages".into(), stages(&ready.stages));
@@ -202,9 +231,16 @@ fn launch_event(ready: &timing::Ready, target: Option<&str>, verb: Option<&str>)
 }
 
 /// The `aid_start` line: dla's own steps, then dl's launch as one more stage.
-fn aid_start_event(dla: &Dla, ready: &timing::Ready, target: Option<&str>, now: Instant) -> Value {
+fn aid_start_event(
+    dla: &Dla,
+    ready: &timing::Ready,
+    target: Option<&str>,
+    now: Instant,
+    at: SystemTime,
+) -> Value {
     let mut event = base(
         "aid_start",
+        at,
         target.or(dla.target.as_deref()),
         ready.workspace_id.as_deref(),
     );
@@ -277,6 +313,7 @@ pub fn dla_end(exit: i32) {
     }
     let mut event = base(
         "aid_end",
+        SystemTime::now(),
         dla.target.as_deref(),
         dla.workspace_id.as_deref(),
     );
@@ -292,7 +329,12 @@ pub fn dla_end(exit: i32) {
 ///
 /// `ws` is the workspace id when the launch knew it, else the target as typed.
 /// `repo` and `branch` come from the target when it is `owner/repo[@branch]`.
-fn base(ev: &str, target: Option<&str>, workspace_id: Option<&str>) -> Map<String, Value> {
+fn base(
+    ev: &str,
+    at: SystemTime,
+    target: Option<&str>,
+    workspace_id: Option<&str>,
+) -> Map<String, Value> {
     let (repo, branch) = match target.map(spec::parse) {
         Some(WorkspaceSpec::OwnerRepo {
             owner,
@@ -302,7 +344,7 @@ fn base(ev: &str, target: Option<&str>, workspace_id: Option<&str>) -> Map<Strin
         _ => (None, None),
     };
     let mut event = Map::new();
-    event.insert("ts".into(), iso8601(SystemTime::now()).into());
+    event.insert("ts".into(), iso8601(at).into());
     event.insert("ev".into(), ev.into());
     event.insert("ws".into(), workspace_id.or(target).into());
     event.insert("repo".into(), repo.into());
@@ -411,7 +453,12 @@ mod tests {
             stages: vec![("host-prep", 1.25), ("devpod-up", 3.0)],
         };
 
-        let line = launch_event(&ready, Some("owner/repo@main"), Some("attach"));
+        let line = launch_event(
+            &ready,
+            Some("owner/repo@main"),
+            Some("attach"),
+            SystemTime::now(),
+        );
 
         assert_eq!(line["ev"], "launch");
         assert_eq!(line["ws"], "repo-main");
@@ -424,8 +471,37 @@ mod tests {
     }
 
     #[test]
+    fn the_launch_and_aid_start_lines_of_one_ready_share_a_timestamp() {
+        let ready = timing::Ready {
+            workspace_id: Some("repo-main".to_owned()),
+            seconds: 4.5,
+            cold: false,
+            stages: vec![],
+        };
+        let started = Instant::now();
+        let dla = Dla {
+            started,
+            stages: vec![],
+            agent: Some("claude".to_owned()),
+            resume: false,
+            workspace_id: None,
+            target: None,
+        };
+        let at = UNIX_EPOCH + Duration::from_millis(1_795_253_405_999);
+
+        let lines = ready_events(&ready, Some("repo-main"), None, Some(&dla), started, at);
+
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0]["ev"], "launch");
+        assert_eq!(lines[1]["ev"], "aid_start");
+        for line in &lines {
+            assert_eq!(line["ts"], "2026-11-21T09:30:05.999Z");
+        }
+    }
+
+    #[test]
     fn a_bare_workspace_name_is_the_ws_and_names_no_repo() {
-        let line = base("stop", Some("repo-main"), None);
+        let line = base("stop", SystemTime::now(), Some("repo-main"), None);
 
         assert_eq!(line["ws"], "repo-main");
         assert_eq!(line["repo"], Value::Null);
