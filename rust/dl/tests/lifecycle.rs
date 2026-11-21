@@ -258,6 +258,15 @@ impl World {
         self.root.join(relative)
     }
 
+    /// Every line of the event log at the XDG default under this world's `HOME`.
+    fn events(&self) -> Vec<serde_json::Value> {
+        std::fs::read_to_string(self.path("home/.local/state/devlaunch/events.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("each line is one JSON object"))
+            .collect()
+    }
+
     fn read(&self, relative: &str) -> String {
         std::fs::read_to_string(self.path(relative)).unwrap_or_default()
     }
@@ -834,6 +843,45 @@ fn a_stop_addresses_the_workspace_and_says_nothing() {
             "devpod stop someones-project",
         ]
     );
+    // The event log has the stop, and how it ended.
+    let log = std::fs::read_to_string(world.root.join("home/.local/state/devlaunch/events.jsonl"))
+        .expect("the stop is logged");
+    let lines: Vec<serde_json::Value> = log
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("one JSON object"))
+        .collect();
+    assert_eq!(lines.len(), 1, "{log}");
+    assert_eq!(lines[0]["ev"], "stop");
+    assert_eq!(lines[0]["ws"], "someones-project");
+    assert_eq!(lines[0]["exit"], 0);
+}
+
+#[test]
+fn a_kill_rm_or_rme_logs_one_line_named_for_what_it_did() {
+    for (verb, ev) in [("kill", "kill"), ("rm", "remove"), ("rme", "remove")] {
+        let world = World::base();
+
+        world.dl(&["devlaunch-main-legacy", verb]).exited(0);
+
+        let lines = world.events();
+        assert_eq!(lines.len(), 1, "dl <ws> {verb}: {lines:?}");
+        assert_eq!(lines[0]["ev"], ev, "dl <ws> {verb}: {lines:?}");
+        assert_eq!(lines[0]["ws"], "devlaunch-main-legacy", "{lines:?}");
+        assert_eq!(lines[0]["exit"], 0, "{lines:?}");
+    }
+}
+
+#[test]
+fn a_prune_logs_one_line_that_names_no_workspace() {
+    let world = World::base();
+
+    world.dl(&["--prune", "-y"]).exited(0);
+
+    let lines = world.events();
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!(lines[0]["ev"], "prune", "{lines:?}");
+    assert_eq!(lines[0]["ws"], serde_json::Value::Null, "{lines:?}");
+    assert_eq!(lines[0]["exit"], 0, "{lines:?}");
 }
 
 #[test]
@@ -1589,6 +1637,20 @@ fn a_refused_delete_that_keeps_the_record_leaves_the_containers() {
         world.docker_calls_after_the_mount_reads(),
         Vec::<String>::new()
     );
+}
+
+#[test]
+fn a_refused_rm_logs_its_removal_with_the_status_it_ended_on() {
+    let world = World::with(&["--devcontainer-volumes"]);
+    leave_containers_behind(&world);
+    world.devpod_answers(&["delete"], 3, "devpod: cannot read devcontainer.json\n");
+
+    world.dl(&["devlaunch-main-legacy", "rm"]).exited(3);
+
+    let lines = world.events();
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!(lines[0]["ev"], "remove", "{lines:?}");
+    assert_eq!(lines[0]["exit"], 3, "{lines:?}");
 }
 
 /// A local folder opened as its own workspace can sit inside another

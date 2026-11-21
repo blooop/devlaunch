@@ -134,13 +134,16 @@ pub(crate) fn dispatch(
             yes,
             force,
             force_worktrees,
-        } => render_prune(
-            runner,
-            &mut context,
-            cache,
-            yes,
-            insisted(force, force_worktrees),
-        ),
+        } => {
+            crate::events::workspace(None, "prune", false);
+            render_prune(
+                runner,
+                &mut context,
+                cache,
+                yes,
+                insisted(force, force_worktrees),
+            )
+        }
         Command::Reconcile { yes } => render_reconcile(runner, &mut context, refresh, yes),
         Command::Purge { yes } => render_purge(&mut context, cache, yes),
         Command::RefreshStale => render_refresh_stale(runner, &mut context, cache, refresh),
@@ -853,6 +856,49 @@ fn render_workspace<'r>(
     // before the verb it is holding up gets anywhere.
     let mut opening = render::Saying;
     let mut cold = ColdPath::new(runner, &mut opening);
+    let word = verb.word();
+    // Here rather than in the dispatch, so a named target and a picked one are
+    // logged alike. A picked batch is several calls; the event state keeps the
+    // last verb, and the first ready.
+    let sessionless = verb.ready_without_a_session();
+    crate::events::workspace(Some(target), word, sessionless);
+    let ending = render_verb(
+        runner,
+        context,
+        cache,
+        refresh,
+        &mut cold,
+        target,
+        verb,
+        devcontainer,
+        claude_profile,
+        recognised,
+        resume,
+    );
+    // `up`, `code` and `dotfiles` start no session, so their launch is ready
+    // when they have finished, and only if they worked. `timing::ready` fires
+    // once, so one that reached a ready point of its own is not counted twice.
+    if sessionless && ending.code() == 0 {
+        devlaunch_core::timing::ready(None);
+    }
+    ending
+}
+
+/// [`render_workspace`]'s verb, run against the target.
+#[allow(clippy::too_many_arguments)]
+fn render_verb<'r>(
+    runner: &'r dyn Runner,
+    context: &mut CommandContext<'r>,
+    cache: &Path,
+    refresh: &mut Refresh<'_>,
+    cold: &mut ColdPath<'r, '_>,
+    target: &str,
+    verb: Verb,
+    devcontainer: Option<&DevcontainerPath>,
+    claude_profile: Option<&str>,
+    recognised: Option<WorkspaceId>,
+    resume: Option<AgentResume>,
+) -> Ending {
     // The word the line used, asked of the verb rather than written out per arm.
     // Two of the three arms are one word each and could be spelled here, but
     // `Family::Remove` covers both `rm` and `rme`, and a notice that quotes a word
@@ -862,12 +908,12 @@ fn render_workspace<'r>(
         Family::Stop => {
             devcontainer_ignored(devcontainer.is_some(), word);
             claude_profile_ignored(claude_profile.is_some(), word);
-            render_stop(runner, context, refresh, &mut cold, target)
+            render_stop(runner, context, refresh, cold, target)
         }
         Family::Kill => {
             devcontainer_ignored(devcontainer.is_some(), word);
             claude_profile_ignored(claude_profile.is_some(), word);
-            render_kill(runner, context, cache, refresh, &mut cold, target, word)
+            render_kill(runner, context, cache, refresh, cold, target, word)
         }
         Family::Remove { force } => {
             devcontainer_ignored(devcontainer.is_some(), word);
@@ -877,7 +923,7 @@ fn render_workspace<'r>(
                 context,
                 cache,
                 refresh,
-                &mut cold,
+                cold,
                 target,
                 removal_of(force),
                 word,
@@ -890,7 +936,7 @@ fn render_workspace<'r>(
                 context,
                 cache,
                 refresh,
-                &mut cold,
+                cold,
                 target,
                 &launched,
                 devcontainer,
@@ -898,7 +944,7 @@ fn render_workspace<'r>(
                 recognised,
                 resume,
             );
-            after_the_session(runner, context, cache, refresh, &mut cold, target, rm, ran)
+            after_the_session(runner, context, cache, refresh, cold, target, rm, ran)
         }
     }
 }

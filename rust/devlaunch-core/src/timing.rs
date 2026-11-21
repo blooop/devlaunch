@@ -2,9 +2,11 @@
 //!
 //! Set `DEVLAUNCH_TIMING=1` and every dl process ends with one summary on
 //! stderr: a `dl-timing: <label> <seconds>s` line per recorded subprocess call,
-//! then a `total` for the whole command. Unset (or `0`) records nothing and
-//! reports nothing — the hot path must not pay for its own thermometer, so the
-//! off state is one atomic load. stderr because stdout is parsed by the
+//! then a `total` for the whole command. Unset (or `0`) reports nothing. It
+//! still records when `dl`'s event log is on (the default; `DEVLAUNCH_EVENTS=0`
+//! turns it off), because the log's `launch` line carries the stages. With both
+//! off the hot path must not pay for its own thermometer, so the off state is
+//! one atomic load. stderr because stdout is parsed by the
 //! completion machinery, and one summary at the end rather than a line per
 //! event, so the numbers land after the command's own output.
 //!
@@ -322,11 +324,13 @@ pub(crate) enum Entry {
 
 /// One dl process's records: a start instant and the spans since.
 ///
-/// Constructed only when timing is on, so "recording" is this value existing
+/// Constructed only when [`begin`] starts recording, so "recording" is this value existing
 /// rather than a flag inside it that other fields would have to agree with.
 #[derive(Debug)]
 pub(crate) struct Registry {
-    mode: Mode,
+    /// `None` when nobody asked for the stderr report and the registry exists
+    /// only so the [`Ready`] snapshot has stages to carry.
+    mode: Option<Mode>,
     started: Instant,
     entries: Vec<SpanRecord>,
     /// Insertion-ordered, which is the order the document reports: a reader
@@ -335,6 +339,16 @@ pub(crate) struct Registry {
     open: Vec<Open>,
     seam: Seam,
     attach_shape: Option<AttachShape>,
+    /// Whether this launch ran a `devpod up` that created the workspace.
+    created: bool,
+    /// The workspace that `up` was for, so a [`ready`] whose caller names none
+    /// can still say which one it was.
+    upped: Option<String>,
+    /// Who hears about [`ready`], if anyone does.
+    on_ready: Option<fn(&Ready)>,
+    /// Whether [`ready`] has already been heard this command: a launch is ready
+    /// once, however many arms call it.
+    readied: bool,
 }
 
 impl Registry {
@@ -348,7 +362,10 @@ impl Registry {
     /// A handoff stage needs the keystroke stamp *and* a non-negative gap from
     /// it; a stamp ahead of this clock describes two clocks that disagree, not a
     /// handoff that took negative time.
-    pub(crate) fn start(mode: Mode, seam: Seam, now_epoch: f64) -> Self {
+    ///
+    /// `mode` is `None` for a run that wants no stderr report, only the stages
+    /// a [`Ready`] carries.
+    pub(crate) fn starting(mode: Option<Mode>, seam: Seam, now_epoch: f64) -> Self {
         let mut registry = Self {
             mode,
             started: Instant::now(),
@@ -357,6 +374,10 @@ impl Registry {
             open: Vec::new(),
             seam,
             attach_shape: None,
+            created: false,
+            upped: None,
+            on_ready: None,
+            readied: false,
         };
         if let Some(gap) = seam
             .keystroke
@@ -456,10 +477,59 @@ impl Registry {
         self.attach_shape = Some(shape);
     }
 
-    /// The run's report. Consuming, because nothing records after it.
-    pub(crate) fn finish(self) -> Report {
+    /// [`Registry::starting`] with a report asked for: what the tests drive.
+    #[cfg(test)]
+    pub(crate) fn start(mode: Mode, seam: Seam, now_epoch: f64) -> Self {
+        Self::starting(Some(mode), seam, now_epoch)
+    }
+
+    /// Record the workspace this launch's `devpod up` is for, and whether that
+    /// `up` creates it.
+    pub(crate) fn observe_up(&mut self, workspace_id: Option<&str>, created: bool) {
+        self.upped = workspace_id.map(str::to_owned);
+        self.created = created;
+    }
+
+    /// The launch as it stands now, the first time it is asked; `None` after.
+    ///
+    /// A stage still on the clock is charged up to this instant, so a snapshot
+    /// taken inside an arm reports what that arm has cost so far.
+    pub(crate) fn ready(&mut self, workspace_id: Option<&str>) -> Option<Ready> {
+        if self.readied {
+            return None;
+        }
+        self.readied = true;
+        let now = Instant::now();
+        let running = self.open.last().map(|open| (open.stage, open.since));
+        let stages = self
+            .stages
+            .iter()
+            .enumerate()
+            .map(|(index, record)| {
+                let mut seconds = record.seconds;
+                if let Some((stage, since)) = running
+                    && stage == index
+                {
+                    seconds += now.saturating_duration_since(since);
+                }
+                (record.stage.name(), round6(seconds))
+            })
+            .collect();
+        Some(Ready {
+            workspace_id: workspace_id
+                .map(str::to_owned)
+                .or_else(|| self.upped.clone()),
+            seconds: round6(now.saturating_duration_since(self.started)),
+            cold: self.created,
+            stages,
+        })
+    }
+
+    /// The run's report, or `None` when nobody asked for one. Consuming,
+    /// because nothing records after it.
+    pub(crate) fn finish(self) -> Option<Report> {
         let total = self.started.elapsed();
-        match self.mode {
+        Some(match self.mode? {
             Mode::Prose => Report::Prose(Prose {
                 spans: self.entries,
                 total,
@@ -486,7 +556,7 @@ impl Registry {
                     .collect(),
                 prewarm: self.prewarm().as_ref().map(PrewarmReport::from),
             }),
-        }
+        })
     }
 
     /// What this launch can say about the prewarm that preceded it.
@@ -546,6 +616,24 @@ enum Prewarm {
         seconds: f64,
         shape: AttachShape,
     },
+}
+
+/// The moment a launch hands its workspace over, as [`ready`] sees it.
+///
+/// Data for the binary's event log, and nothing here writes it: core renders no
+/// output (#251), so the binary installs a hook at [`begin`] and decides what to
+/// do with this.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Ready {
+    /// The workspace handed over, when the caller of [`ready`] knew it.
+    pub workspace_id: Option<String>,
+    /// Seconds from [`begin`] to this moment.
+    pub seconds: f64,
+    /// Whether this launch's `devpod up` created the workspace, rather than
+    /// finding it or starting one devpod already knew.
+    pub cold: bool,
+    /// Each [`Stage`] this launch met, by name, with its seconds so far.
+    pub stages: Vec<(&'static str, f64)>,
 }
 
 /// A run's report: the bytes the binary writes, and the data behind them.
@@ -718,8 +806,9 @@ fn round(seconds: f64) -> f64 {
 
 /// Whether a registry is installed, readable without taking the lock.
 ///
-/// The off state has to stay free — this is the check a launch nobody is
-/// measuring pays for every span — so it is one relaxed load rather than a mutex
+/// Off only when neither `DEVLAUNCH_TIMING` nor the event log's hook asked for
+/// a registry, and the off state has to stay free — this is the check such a
+/// launch pays for every span — so it is one relaxed load rather than a mutex
 /// acquisition. Relaxed is enough: install and emit both happen on the main
 /// thread before and after everything they gate.
 static RECORDING: AtomicBool = AtomicBool::new(false);
@@ -736,7 +825,7 @@ fn registry() -> MutexGuard<'static, Option<Registry>> {
         .unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Run `with` against the installed registry, or do nothing if timing is off.
+/// Run `with` against the installed registry, or do nothing if none is installed.
 fn with_registry<T>(with: impl FnOnce(&mut Registry) -> T) -> Option<T> {
     if !RECORDING.load(Ordering::Relaxed) {
         return None;
@@ -744,13 +833,26 @@ fn with_registry<T>(with: impl FnOnce(&mut Registry) -> T) -> Option<T> {
     registry().as_mut().map(with)
 }
 
-/// Start recording iff `DEVLAUNCH_TIMING` asks for it.
+/// Start recording if `DEVLAUNCH_TIMING` asks for it, or if `on_ready` is
+/// given.
 ///
 /// Called once at the top of the command, replacing any registry left from an
 /// earlier one in the same process, so one command's spans never leak into the
 /// next command's summary.
-pub fn begin() {
-    install(Mode::from_env().map(|mode| Registry::start(mode, Seam::from_env(), now_epoch())));
+///
+/// `on_ready` is the binary's event log. With it, the stages are recorded even
+/// when no stderr report was asked for, so [`Ready`] can carry them; [`emit`]
+/// still answers `None` then. That costs a mutex and a push per span, beside a
+/// subprocess spawn. Without it and without the variable, nothing records.
+pub fn begin(on_ready: Option<fn(&Ready)>) {
+    let mode = Mode::from_env();
+    if mode.is_none() && on_ready.is_none() {
+        install(None);
+        return;
+    }
+    let mut registry = Registry::starting(mode, Seam::from_env(), now_epoch());
+    registry.on_ready = on_ready;
+    install(Some(registry));
 }
 
 /// Install `registry` as the process's, replacing whatever was there.
@@ -766,7 +868,30 @@ pub(crate) fn install(registry_to_install: Option<Registry>) {
 /// The report for this run, and stop recording; `None` if recording never began.
 pub fn emit() -> Option<Report> {
     RECORDING.store(false, Ordering::Relaxed);
-    registry().take().map(Registry::finish)
+    registry().take().and_then(Registry::finish)
+}
+
+/// Say the workspace is ready, and tell the hook [`begin`] was given.
+///
+/// The first call in a command is heard; later ones are not, so an arm that
+/// calls it and a caller that calls it again after the arm do not count one
+/// launch twice. The hook runs after the registry is released, so it may read
+/// the clock but must not wait on anything.
+pub fn ready(workspace_id: Option<&str>) {
+    let heard = with_registry(|registry| {
+        let hook = registry.on_ready?;
+        registry.ready(workspace_id).map(|ready| (hook, ready))
+    })
+    .flatten();
+    if let Some((hook, ready)) = heard {
+        hook(&ready);
+    }
+}
+
+/// Record the workspace this launch's `devpod up` is for, and whether it
+/// creates it, for [`Ready`].
+pub(crate) fn observe_up(workspace_id: Option<&str>, created: bool) {
+    with_registry(|registry| registry.observe_up(workspace_id, created));
 }
 
 /// Record a measurement somebody else took, under `label`.
@@ -783,7 +908,8 @@ pub(crate) fn record(label: impl Into<String>, took: Duration) {
 /// let _span = timing::span("devpod up");
 /// ```
 ///
-/// When timing is off this reads the clock, allocates, and records nothing.
+/// When nothing is recording (see [`begin`]) this reads no clock, allocates
+/// nothing, and records nothing.
 #[must_use = "the round trip is timed until this guard drops, so bind it"]
 pub(crate) fn span(label: impl Into<String>) -> SpanGuard {
     if !RECORDING.load(Ordering::Relaxed) {
@@ -972,7 +1098,7 @@ mod tests {
     const TICK: Duration = Duration::from_millis(30);
 
     fn document_of(registry: Registry) -> Document {
-        match registry.finish() {
+        match registry.finish().expect("a mode was asked for") {
             Report::Document(document) => document,
             Report::Prose(prose) => panic!("asked for a document, got {prose:?}"),
         }
@@ -1035,7 +1161,7 @@ mod tests {
         registry.record("devpod status", Duration::from_millis(454));
         registry.record("devpod ssh", Duration::from_millis(1952));
 
-        let lines = registry.finish().lines();
+        let lines = registry.finish().expect("a mode was asked for").lines();
 
         assert_eq!(lines[0], "dl-timing: devpod status 0.454s");
         assert_eq!(lines[1], "dl-timing: devpod ssh 1.952s");
@@ -1052,6 +1178,7 @@ mod tests {
     fn a_run_that_recorded_nothing_still_reports_its_total() {
         let lines = Registry::start(Mode::Prose, Seam::default(), now_epoch())
             .finish()
+            .expect("a mode was asked for")
             .lines();
 
         assert_eq!(lines.len(), 1);
@@ -1060,13 +1187,15 @@ mod tests {
 
     #[test]
     fn the_prose_summary_carries_no_document_and_the_document_no_prose() {
-        let prose = Registry::start(Mode::Prose, Seam::default(), now_epoch()).finish();
+        let prose = Registry::start(Mode::Prose, Seam::default(), now_epoch())
+            .finish()
+            .expect("a mode was asked for");
         assert!(prose.document().is_none());
         for line in prose.lines() {
             assert!(!line.contains(JSON_PREFIX), "{line:?}");
         }
 
-        let document = recording().finish();
+        let document = recording().finish().expect("a mode was asked for");
         assert_eq!(document.lines().len(), 1);
         assert!(document.lines()[0].starts_with(JSON_PREFIX));
         assert!(!document.lines()[0].contains("dl-timing: "));
@@ -1081,7 +1210,7 @@ mod tests {
         registry.record("devpod ssh", Duration::from_millis(500));
         registry.leave(Stage::Tools, Outcome::Ok);
 
-        let lines = registry.finish().lines();
+        let lines = registry.finish().expect("a mode was asked for").lines();
 
         assert_eq!(lines.len(), 2);
         assert_eq!(lines[0], "dl-timing: devpod ssh 0.500s");
@@ -1092,7 +1221,11 @@ mod tests {
 
     #[test]
     fn the_document_is_one_marked_line_of_parseable_json() {
-        let line = recording().finish().lines().remove(0);
+        let line = recording()
+            .finish()
+            .expect("a mode was asked for")
+            .lines()
+            .remove(0);
 
         let json = line
             .strip_prefix(&format!("{JSON_PREFIX} "))
@@ -1113,7 +1246,11 @@ mod tests {
         registry.enter(Stage::Tools);
         registry.record("devpod ssh", Duration::from_millis(500));
         registry.leave(Stage::Tools, Outcome::Ok);
-        let line = registry.finish().lines().remove(0);
+        let line = registry
+            .finish()
+            .expect("a mode was asked for")
+            .lines()
+            .remove(0);
 
         let json = line
             .strip_prefix(&format!("{JSON_PREFIX} "))
@@ -1145,7 +1282,11 @@ mod tests {
 
     #[test]
     fn a_document_with_no_prewarm_omits_the_key_rather_than_emptying_it() {
-        let line = recording().finish().lines().remove(0);
+        let line = recording()
+            .finish()
+            .expect("a mode was asked for")
+            .lines()
+            .remove(0);
         assert!(!line.contains("prewarm"), "{line:?}");
     }
 
@@ -1568,7 +1709,10 @@ mod tests {
             prewarm_fired: Some(now - 35.0),
         };
 
-        let lines = Registry::start(Mode::Prose, seam, now).finish().lines();
+        let lines = Registry::start(Mode::Prose, seam, now)
+            .finish()
+            .expect("a mode was asked for")
+            .lines();
 
         assert_eq!(lines.len(), 1);
         assert!(lines[0].starts_with("dl-timing: total "), "{:?}", lines[0]);
@@ -1687,7 +1831,11 @@ mod tests {
         let mut registry = prewarmed(Some(now - 5.0), Some(now - 35.0), now);
         registry.observe_attach(AttachShape::Hit);
 
-        let line = registry.finish().lines().remove(0);
+        let line = registry
+            .finish()
+            .expect("a mode was asked for")
+            .lines()
+            .remove(0);
 
         let json = line
             .strip_prefix(&format!("{JSON_PREFIX} "))
@@ -1919,7 +2067,7 @@ mod tests {
         // with each other about it. The rules themselves are pinned above, on
         // `Mode::requested` and `Seam::parse`.
         global(|| {
-            begin();
+            begin(None);
             let asked = Mode::from_env();
 
             let report = emit();
@@ -1931,6 +2079,94 @@ mod tests {
                     assert_eq!(report.document().is_some(), mode == Mode::Document);
                 }
             }
+        });
+    }
+
+    // --- the ready snapshot: what the event log is handed ------------------
+
+    #[test]
+    fn ready_carries_the_stages_so_far_the_workspace_and_whether_it_was_created() {
+        let mut registry = Registry::starting(None, Seam::default(), now_epoch());
+        registry.enter(Stage::HostPrep);
+        std::thread::sleep(TICK);
+        registry.leave(Stage::HostPrep, Outcome::Ok);
+        registry.enter(Stage::DevpodUp);
+        registry.observe_up(Some("repo-main"), true);
+        std::thread::sleep(TICK);
+
+        let ready = registry.ready(None).expect("the first ask");
+
+        assert_eq!(
+            ready.workspace_id.as_deref(),
+            Some("repo-main"),
+            "named by the `up` when the caller names nothing"
+        );
+        assert!(ready.cold, "the `up` created it");
+        let names: Vec<&str> = ready.stages.iter().map(|(name, _)| *name).collect();
+        assert_eq!(names, ["host-prep", "devpod-up"]);
+        // The stage still on the clock is charged up to the snapshot, not
+        // reported as the zero it was when it opened.
+        for (name, seconds) in &ready.stages {
+            assert!(*seconds >= TICK.as_secs_f64(), "{name}: {seconds}");
+        }
+        assert!(ready.seconds >= 2.0 * TICK.as_secs_f64(), "{ready:?}");
+    }
+
+    #[test]
+    fn a_launch_is_ready_once_and_warm_unless_an_up_created_it() {
+        let mut registry = Registry::starting(None, Seam::default(), now_epoch());
+
+        let first = registry.ready(None).expect("the first ask");
+        assert!(!first.cold);
+        assert!(first.stages.is_empty());
+        assert_eq!(registry.ready(Some("again")), None);
+    }
+
+    #[test]
+    fn a_registry_nobody_asked_a_report_of_reports_nothing() {
+        let registry = Registry::starting(None, Seam::default(), now_epoch());
+
+        assert_eq!(registry.finish(), None);
+    }
+
+    static HEARD: Mutex<Vec<Ready>> = Mutex::new(Vec::new());
+
+    fn hear(ready: &Ready) {
+        HEARD
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(ready.clone());
+    }
+
+    #[test]
+    fn the_hook_hears_ready_once_and_emit_still_reports_only_what_was_asked() {
+        global(|| {
+            HEARD.lock().unwrap_or_else(PoisonError::into_inner).clear();
+            let mut registry = Registry::starting(None, Seam::default(), now_epoch());
+            registry.on_ready = Some(hear);
+            install(Some(registry));
+
+            {
+                let _stage = stage(Stage::Tools);
+                let _span = span("tools tar");
+            }
+            ready(Some("ws"));
+            ready(Some("ws"));
+
+            assert_eq!(emit(), None, "no DEVLAUNCH_TIMING, so no report");
+            let heard = std::mem::take(&mut *HEARD.lock().unwrap_or_else(PoisonError::into_inner));
+            assert_eq!(heard.len(), 1, "{heard:?}");
+            assert_eq!(heard[0].workspace_id.as_deref(), Some("ws"));
+            assert_eq!(heard[0].stages.len(), 1);
+            assert_eq!(heard[0].stages[0].0, "tools");
+        });
+    }
+
+    #[test]
+    fn ready_with_nothing_installed_is_silent() {
+        global(|| {
+            ready(Some("ws"));
+            assert_eq!(emit(), None);
         });
     }
 }

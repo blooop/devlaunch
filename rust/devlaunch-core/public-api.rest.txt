@@ -3560,5 +3560,18 @@ pub fn devlaunch_core::timing::Report::eq(&self, &devlaunch_core::timing::Report
 impl core::fmt::Debug for devlaunch_core::timing::Report
 pub fn devlaunch_core::timing::Report::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for devlaunch_core::timing::Report
-pub fn devlaunch_core::timing::begin()
+pub struct devlaunch_core::timing::Ready
+pub devlaunch_core::timing::Ready::cold: bool
+pub devlaunch_core::timing::Ready::seconds: f64
+pub devlaunch_core::timing::Ready::stages: alloc::vec::Vec<(&'static str, f64)>
+pub devlaunch_core::timing::Ready::workspace_id: core::option::Option<alloc::string::String>
+impl core::clone::Clone for devlaunch_core::timing::Ready
+pub fn devlaunch_core::timing::Ready::clone(&self) -> devlaunch_core::timing::Ready
+impl core::cmp::PartialEq for devlaunch_core::timing::Ready
+pub fn devlaunch_core::timing::Ready::eq(&self, &devlaunch_core::timing::Ready) -> bool
+impl core::fmt::Debug for devlaunch_core::timing::Ready
+pub fn devlaunch_core::timing::Ready::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for devlaunch_core::timing::Ready
+pub fn devlaunch_core::timing::begin(core::option::Option<fn(&devlaunch_core::timing::Ready)>)
 pub fn devlaunch_core::timing::emit() -> core::option::Option<devlaunch_core::timing::Report>
+pub fn devlaunch_core::timing::ready(core::option::Option<&str>)

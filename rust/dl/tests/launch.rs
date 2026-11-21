@@ -2778,3 +2778,192 @@ fn a_removal_names_a_damaged_record_once_and_drops_devpods_warning_from_the_dele
         run.err
     );
 }
+
+// ===========================================================================
+// The event log: one JSON line per launch, under XDG_STATE_HOME
+// ===========================================================================
+
+/// The lines of the event log under `state`, the world's XDG state directory.
+fn events_under(state: &Path) -> Vec<serde_json::Value> {
+    let path = state.join("devlaunch/events.jsonl");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return Vec::new();
+    };
+    text.lines()
+        .map(|line| serde_json::from_str(line).expect("each line is one JSON object"))
+        .collect()
+}
+
+/// The event log at the XDG default, `~/.local/state`, with `HOME` the world's.
+fn events(world: &World) -> Vec<serde_json::Value> {
+    events_under(&world.path("home/.local/state"))
+}
+
+#[test]
+fn a_warm_attach_logs_a_warm_launch_and_then_the_end_of_its_session() {
+    let world = World::with(&["--warm"]);
+    world.dl(&["blooop/devlaunch@main"]).exited(0);
+
+    let lines = events(&world);
+    let names: Vec<&str> = lines
+        .iter()
+        .map(|line| line["ev"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["launch", "session_end"]);
+    let launch = &lines[0];
+    assert_eq!(launch["ws"], MAIN);
+    assert_eq!(launch["repo"], "blooop/devlaunch");
+    assert_eq!(launch["branch"], "main");
+    assert_eq!(launch["cold"], false);
+    assert!(
+        launch["seconds"].as_f64().is_some_and(|s| s >= 0.0),
+        "{launch}"
+    );
+    assert!(launch["stages"].is_object(), "{launch}");
+    let ts = launch["ts"].as_str().expect("a timestamp");
+    assert!(
+        ts.ends_with('Z') && ts.len() == "2026-11-21T09:30:05.250Z".len(),
+        "{ts}"
+    );
+    assert_eq!(lines[1]["ws"], MAIN);
+    assert_eq!(lines[1]["exit"], 0);
+}
+
+#[test]
+fn a_cold_launch_is_logged_as_cold() {
+    let world = World::with(&[]);
+    world.dl(&["blooop/devlaunch@cold"]).exited(0);
+
+    let lines = events(&world);
+    let launch = lines
+        .iter()
+        .find(|line| line["ev"] == "launch")
+        .expect("a launch line");
+    assert_eq!(launch["ws"], COLD);
+    assert_eq!(launch["cold"], true);
+    assert!(
+        launch["stages"]
+            .as_object()
+            .is_some_and(|stages| !stages.is_empty()),
+        "a cold launch has stages: {launch}"
+    );
+}
+
+#[test]
+fn an_up_logs_one_launch_and_no_session() {
+    let world = World::with(&["--stopped"]);
+    world.dl(&[MAIN, "up"]).exited(0);
+
+    let lines = events(&world);
+    let names: Vec<&str> = lines
+        .iter()
+        .map(|line| line["ev"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["launch"]);
+    assert_eq!(lines[0]["verb"], "up");
+}
+
+#[test]
+fn a_code_or_dotfiles_logs_one_launch_and_no_session() {
+    for verb in ["code", "dotfiles"] {
+        let world = World::with(&["--stopped"]);
+        world.dl(&[MAIN, verb]).exited(0);
+
+        let lines = events(&world);
+        let names: Vec<&str> = lines
+            .iter()
+            .map(|line| line["ev"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["launch"], "dl <ws> {verb}: {lines:?}");
+        assert_eq!(lines[0]["verb"], verb);
+    }
+}
+
+#[test]
+fn the_event_log_follows_xdg_state_home() {
+    let world = World::with(&["--warm"]);
+    let state = world.path("state");
+    world
+        .dl_with(&[MAIN], &[("XDG_STATE_HOME", &state.display().to_string())])
+        .exited(0);
+
+    assert_eq!(events_under(&state).len(), 2);
+    assert!(events(&world).is_empty(), "nothing under ~/.local/state");
+}
+
+#[test]
+fn devlaunch_events_off_writes_no_log() {
+    let world = World::with(&["--warm"]);
+    world
+        .dl_with(&[MAIN], &[("DEVLAUNCH_EVENTS", "0")])
+        .exited(0);
+
+    assert!(!world.path("home/.local/state/devlaunch").exists());
+}
+
+#[test]
+fn an_event_log_that_cannot_be_written_costs_the_launch_nothing() {
+    let plain = World::with(&["--warm"]);
+    let said = plain.dl(&[MAIN]);
+    said.exited(0);
+
+    let world = World::with(&["--warm"]);
+    let state = world.path("state-is-a-file");
+    std::fs::write(&state, "not a directory\n").expect("a regular file");
+    let run = world.dl_with(&[MAIN], &[("XDG_STATE_HOME", &state.display().to_string())]);
+
+    run.exited(0);
+    assert_eq!(run.stderr_lines(), said.stderr_lines());
+    assert_eq!(
+        std::fs::read_to_string(&state).expect("the file is still there"),
+        "not a directory\n"
+    );
+}
+
+#[test]
+fn a_relative_xdg_state_home_is_ignored_for_the_default() {
+    let world = World::with(&["--warm"]);
+    world
+        .dl_with(&[MAIN], &[("XDG_STATE_HOME", "rel/state")])
+        .exited(0);
+
+    let names: Vec<String> = events(&world)
+        .iter()
+        .map(|line| line["ev"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(names, ["launch", "session_end"]);
+}
+
+#[test]
+fn a_stopped_workspace_started_by_its_up_is_not_a_cold_launch() {
+    let world = World::with(&["--stopped"]);
+    world.dl(&[MAIN]).exited(0);
+
+    let lines = events(&world);
+    let launch = lines
+        .iter()
+        .find(|line| line["ev"] == "launch")
+        .expect("a launch line");
+    assert_eq!(launch["ws"], MAIN, "{launch}");
+    assert_eq!(launch["cold"], false, "{launch}");
+    assert!(
+        launch["stages"]
+            .as_object()
+            .is_some_and(|stages| stages.contains_key("devpod-up")),
+        "{launch}"
+    );
+}
+
+#[test]
+fn an_up_devpod_refuses_logs_no_launch() {
+    for args in [&[MAIN][..], &[MAIN, "up"][..]] {
+        let world = World::with(&["--stopped", "--fail-up"]);
+        world.dl(args).exited(7);
+
+        let lines = events(&world);
+        assert!(
+            lines.iter().all(|line| line["ev"] != "launch"),
+            "dl {args:?}: {lines:?}"
+        );
+    }
+}

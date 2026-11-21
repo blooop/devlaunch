@@ -361,6 +361,83 @@ fn a_fresh_claude_session_is_named() {
 }
 
 #[test]
+fn a_start_logs_dls_launch_then_dlas_own_start_and_end() {
+    // The event log, as the usage review reads it: dl's `launch`, then dla's
+    // `aid_start` with dla's own steps and dl's launch as stages, then the end of
+    // dl's session and of dla's.
+    let world = World::with(&["--warm"]);
+    world.dla(&[MAIN, "hi"]).exited(0);
+
+    let log = std::fs::read_to_string(world.root.join("home/.local/state/devlaunch/events.jsonl"))
+        .expect("the start is logged");
+    let lines: Vec<serde_json::Value> = log
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("one JSON object"))
+        .collect();
+    let names: Vec<&str> = lines
+        .iter()
+        .map(|line| line["ev"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        names,
+        ["launch", "aid_start", "session_end", "aid_end"],
+        "{log}"
+    );
+    let start = &lines[1];
+    assert_eq!(start["ws"], MAIN);
+    assert_eq!(start["agent"], "claude");
+    assert_eq!(start["resume"], false);
+    assert_eq!(start["cold"], false);
+    let stages = start["stages"].as_object().expect("stages");
+    for stage in ["pick", "pr_lookup", "prompt", "dl"] {
+        assert!(stages.contains_key(stage), "{stage} in {log}");
+    }
+    let seconds = start["seconds"].as_f64().expect("dla's seconds");
+    let dl = stages["dl"].as_f64().expect("dl's seconds");
+    assert!(seconds >= dl, "dla's start includes dl's launch: {log}");
+    assert_eq!(lines[3]["ws"], MAIN, "{log}");
+    assert_eq!(lines[3]["agent"], "claude");
+    assert_eq!(lines[3]["exit"], 0);
+}
+
+#[test]
+fn a_resume_logs_its_start_as_a_resume() {
+    let world = World::with(&["--warm"]);
+    world.dla(&["resume", MAIN]).exited(0);
+
+    let log = std::fs::read_to_string(world.root.join("home/.local/state/devlaunch/events.jsonl"))
+        .expect("the resume is logged");
+    let lines: Vec<serde_json::Value> = log
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("one JSON object"))
+        .collect();
+    let starts: Vec<&serde_json::Value> = lines
+        .iter()
+        .filter(|line| line["ev"] == "aid_start")
+        .collect();
+    assert_eq!(starts.len(), 1, "{log}");
+    assert_eq!(starts[0]["ws"], MAIN, "{log}");
+    assert_eq!(starts[0]["resume"], true, "{log}");
+}
+
+#[test]
+fn a_start_that_fails_before_ready_ends_naming_the_workspace_it_was_given() {
+    let world = World::with(&["--warm"]);
+    world.dla(&["no-such-workspace-zz", "hi"]).exited(1);
+
+    let log = std::fs::read_to_string(world.root.join("home/.local/state/devlaunch/events.jsonl"))
+        .expect("the end is logged");
+    let lines: Vec<serde_json::Value> = log
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("one JSON object"))
+        .collect();
+    assert_eq!(lines.len(), 1, "{log}");
+    assert_eq!(lines[0]["ev"], "aid_end", "{log}");
+    assert_eq!(lines[0]["ws"], "no-such-workspace-zz", "{log}");
+    assert_eq!(lines[0]["exit"], 1, "{log}");
+}
+
+#[test]
 fn a_prompt_reaches_the_agent_as_one_argument_through_dls_own_launch() {
     // The whole of dla, observed from outside: the rewritten command line on stderr,
     // dl's own launch of the workspace, and one `devpod ssh --command` carrying the

@@ -142,8 +142,9 @@ be the cost of starting a bash per stage, which is small. A warm launch makes no
 ## Measuring launch time
 
 Set `DEVLAUNCH_TIMING=1` and a `dl` command ends with one summary on stderr,
-naming each subprocess round trip and the total. Unset (or `0`) records nothing
-and prints nothing.
+naming each subprocess round trip and the total. Unset (or `0`) prints nothing.
+The stages are still recorded for [the event log](#the-event-log) unless
+`DEVLAUNCH_EVENTS=0`.
 
 **Every second quoted in this section came off one host on 2026-08-14, over
 three sessions that day (`d3b8ffb`, `5510b1e`, `461f740`), and that host was
@@ -175,6 +176,62 @@ dl-timing: gh auth token 0.036s
 dl-timing: devpod ssh 1.952s
 dl-timing: total 2.444s (in-process, excluding interpreter startup)
 ```
+
+### The event log
+
+`DEVLAUNCH_TIMING` answers a question asked before the launch. The event log
+answers one asked afterwards: how long did starts take this week, and how many
+were cold. Every `dl` and `dla` appends one JSON object per line to
+`$XDG_STATE_HOME/devlaunch/events.jsonl`, or `~/.local/state/devlaunch/events.jsonl`
+when `XDG_STATE_HOME` is unset. Nobody has to set anything first.
+`DEVLAUNCH_EVENTS=0` turns it off.
+
+A line that cannot be written is dropped and the command goes on. A full disk or
+a read-only state directory costs the log and nothing else. Each line is one
+append, so two commands at once do not mix their lines.
+
+| `ev` | Written when | Fields beyond `ts`, `ev`, `ws`, `repo`, `branch` |
+|---|---|---|
+| `launch` | The workspace is ready and the session is about to start, or an `up`, `code` or `dotfiles` has finished | `cold`, `seconds`, `stages`, `verb` |
+| `session_end` | The session a `launch` started has ended | `seconds` (of the session), `exit` |
+| `stop`, `kill`, `remove`, `prune` | The verb has finished | `seconds`, `exit` |
+| `aid_start` | `dla` has handed its start to `dl` and the workspace is ready | `cold`, `seconds`, `stages`, `agent`, `resume` |
+| `aid_end` | `dla` has ended | `seconds`, `exit`, `agent` |
+
+`ts` is UTC ISO 8601 to the millisecond. `ws` is the workspace id when the launch
+knew it, else the target as typed. `repo` and `branch` are set when the target
+is `owner/repo@branch`. `cold` is true when the launch's `devpod up` created the
+workspace. `seconds` on a `launch` is the wall time from the top of the command,
+and `stages` holds the same named stages as the timing document, in seconds. On
+an `aid_start`, `stages` holds `dla`'s own steps (`pick`, `pr_lookup`, `prompt`,
+`boot_wait`) and `dl`, the launch inside it. The `aid` names are what `dla` was
+called before, and what readers of older logs already look for.
+
+```json
+{"ts":"2026-11-21T09:13:05.340Z","ev":"aid_start","ws":"devlaunch-main-3j1t","repo":"blooop/devlaunch","branch":"main","cold":false,"seconds":0.043923,"stages":{"pick":0.00007,"pr_lookup":0.00005,"prompt":1e-6,"dl":0.023009},"agent":"claude","resume":false}
+```
+
+A picked workspace logs the same lines as a named one. A picked batch (several
+rows marked for one verb) writes one line, not one per workspace: the `launch` of
+the first workspace that came up, or the `stop`, `kill` or `remove` of the last
+one, timed from that workspace's start.
+
+Three gaps a reader of the log has to allow for:
+
+- **A closed terminal loses the end line.** When the terminal or pane closes,
+  `dl` gets SIGHUP (SIGTERM does the same) and its signal handler exits at once
+  with `_exit(129)`. The handler writes nothing, so the `launch` has no
+  `session_end` after it, and a `dla` start has no `aid_end`.
+- **An interactive `dla` start that creates the workspace logs two `launch`
+  lines.** The background boot (`dla --boot-up <spec> up`) is a process of its
+  own. It does the create and writes a `launch` with `verb` `up` and `cold`
+  true. The attach in the foreground then finds the workspace up and writes a
+  `launch` with `cold` false, and the `aid_start` copies that `false`. Count cold
+  starts on the interactive path from the boot's `up` line, not from
+  `aid_start`.
+- **`stop`, `kill` and `remove` log the target as typed.** Their `ws` is not
+  resolved to a workspace id, and `repo` and `branch` are null when the target
+  is a workspace id rather than `owner/repo`.
 
 ### The same launch, machine-readable
 
