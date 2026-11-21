@@ -2900,3 +2900,37 @@ fn devlaunch_events_off_writes_no_log() {
 
     assert!(!world.path("home/.local/state/devlaunch").exists());
 }
+
+#[test]
+fn an_event_log_that_cannot_be_written_costs_the_launch_nothing() {
+    let plain = World::with(&["--warm"]);
+    let said = plain.dl(&[MAIN]);
+    said.exited(0);
+
+    let world = World::with(&["--warm"]);
+    let state = world.path("state-is-a-file");
+    std::fs::write(&state, "not a directory\n").expect("a regular file");
+    let run = world.dl_with(&[MAIN], &[("XDG_STATE_HOME", &state.display().to_string())]);
+
+    run.exited(0);
+    assert_eq!(run.stderr_lines(), said.stderr_lines());
+    assert_eq!(
+        std::fs::read_to_string(&state).expect("the file is still there"),
+        "not a directory\n"
+    );
+}
+
+#[test]
+fn a_relative_xdg_state_home_is_ignored_for_the_default() {
+    let world = World::with(&["--warm"]);
+    world
+        .dl_with(&[MAIN], &[("XDG_STATE_HOME", "rel/state")])
+        .exited(0);
+
+    let names: Vec<String> = events(&world)
+        .iter()
+        .map(|line| line["ev"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(names, ["launch", "session_end"]);
+}
+
