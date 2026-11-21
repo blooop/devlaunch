@@ -142,8 +142,9 @@ be the cost of starting a bash per stage, which is small. A warm launch makes no
 ## Measuring launch time
 
 Set `DEVLAUNCH_TIMING=1` and a `dl` command ends with one summary on stderr,
-naming each subprocess round trip and the total. Unset (or `0`) records nothing
-and prints nothing.
+naming each subprocess round trip and the total. Unset (or `0`) prints nothing.
+The stages are still recorded for [the event log](#the-event-log) unless
+`DEVLAUNCH_EVENTS=0`.
 
 **Every second quoted in this section came off one host on 2026-08-14, over
 three sessions that day (`d3b8ffb`, `5510b1e`, `461f740`), and that host was

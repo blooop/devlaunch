@@ -2,9 +2,11 @@
 //!
 //! Set `DEVLAUNCH_TIMING=1` and every dl process ends with one summary on
 //! stderr: a `dl-timing: <label> <seconds>s` line per recorded subprocess call,
-//! then a `total` for the whole command. Unset (or `0`) records nothing and
-//! reports nothing — the hot path must not pay for its own thermometer, so the
-//! off state is one atomic load. stderr because stdout is parsed by the
+//! then a `total` for the whole command. Unset (or `0`) reports nothing. It
+//! still records when `dl`'s event log is on (the default; `DEVLAUNCH_EVENTS=0`
+//! turns it off), because the log's `launch` line carries the stages. With both
+//! off the hot path must not pay for its own thermometer, so the off state is
+//! one atomic load. stderr because stdout is parsed by the
 //! completion machinery, and one summary at the end rather than a line per
 //! event, so the numbers land after the command's own output.
 //!
@@ -322,7 +324,7 @@ pub(crate) enum Entry {
 
 /// One dl process's records: a start instant and the spans since.
 ///
-/// Constructed only when timing is on, so "recording" is this value existing
+/// Constructed only when [`begin`] starts recording, so "recording" is this value existing
 /// rather than a flag inside it that other fields would have to agree with.
 #[derive(Debug)]
 pub(crate) struct Registry {
@@ -804,8 +806,9 @@ fn round(seconds: f64) -> f64 {
 
 /// Whether a registry is installed, readable without taking the lock.
 ///
-/// The off state has to stay free — this is the check a launch nobody is
-/// measuring pays for every span — so it is one relaxed load rather than a mutex
+/// Off only when neither `DEVLAUNCH_TIMING` nor the event log's hook asked for
+/// a registry, and the off state has to stay free — this is the check such a
+/// launch pays for every span — so it is one relaxed load rather than a mutex
 /// acquisition. Relaxed is enough: install and emit both happen on the main
 /// thread before and after everything they gate.
 static RECORDING: AtomicBool = AtomicBool::new(false);
@@ -822,7 +825,7 @@ fn registry() -> MutexGuard<'static, Option<Registry>> {
         .unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Run `with` against the installed registry, or do nothing if timing is off.
+/// Run `with` against the installed registry, or do nothing if none is installed.
 fn with_registry<T>(with: impl FnOnce(&mut Registry) -> T) -> Option<T> {
     if !RECORDING.load(Ordering::Relaxed) {
         return None;
@@ -905,7 +908,8 @@ pub(crate) fn record(label: impl Into<String>, took: Duration) {
 /// let _span = timing::span("devpod up");
 /// ```
 ///
-/// When timing is off this reads the clock, allocates, and records nothing.
+/// When nothing is recording (see [`begin`]) this reads no clock, allocates
+/// nothing, and records nothing.
 #[must_use = "the round trip is timed until this guard drops, so bind it"]
 pub(crate) fn span(label: impl Into<String>) -> SpanGuard {
     if !RECORDING.load(Ordering::Relaxed) {
