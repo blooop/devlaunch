@@ -134,13 +134,16 @@ pub(crate) fn dispatch(
             yes,
             force,
             force_worktrees,
-        } => render_prune(
-            runner,
-            &mut context,
-            cache,
-            yes,
-            insisted(force, force_worktrees),
-        ),
+        } => {
+            crate::events::workspace(None, "prune");
+            render_prune(
+                runner,
+                &mut context,
+                cache,
+                yes,
+                insisted(force, force_worktrees),
+            )
+        }
         Command::Reconcile { yes } => render_reconcile(runner, &mut context, refresh, yes),
         Command::Purge { yes } => render_purge(&mut context, cache, yes),
         Command::RefreshStale => render_refresh_stale(runner, &mut context, cache, refresh),
@@ -240,6 +243,7 @@ pub(crate) fn dispatch(
             }
             let after = verb.after_removal();
             let word = verb.word();
+            crate::events::workspace(Some(&target), word);
             let ending = render_workspace(
                 runner,
                 &mut context,
@@ -254,6 +258,12 @@ pub(crate) fn dispatch(
                 None,
                 resume,
             );
+            // An `up` starts no session, so its launch is ready when it has
+            // finished, and only if it worked. `timing::ready` fires once, so an
+            // `up` that reached a ready point of its own is not counted twice.
+            if word == "up" && ending.code() == 0 {
+                devlaunch_core::timing::ready(None);
+            }
             hangup::after_the_command(after, word, ending)
         }
     }

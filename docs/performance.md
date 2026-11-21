@@ -176,6 +176,43 @@ dl-timing: devpod ssh 1.952s
 dl-timing: total 2.444s (in-process, excluding interpreter startup)
 ```
 
+### The event log
+
+`DEVLAUNCH_TIMING` answers a question asked before the launch. The event log
+answers one asked afterwards: how long did starts take this week, and how many
+were cold. Every `dl` and `dla` appends one JSON object per line to
+`$XDG_STATE_HOME/devlaunch/events.jsonl`, or `~/.local/state/devlaunch/events.jsonl`
+when `XDG_STATE_HOME` is unset. Nobody has to set anything first.
+`DEVLAUNCH_EVENTS=0` turns it off.
+
+A line that cannot be written is dropped and the command goes on. A full disk or
+a read-only state directory costs the log and nothing else. Each line is one
+append, so two commands at once do not mix their lines.
+
+| `ev` | Written when | Fields beyond `ts`, `ev`, `ws`, `repo`, `branch` |
+|---|---|---|
+| `launch` | The workspace is ready and the session is about to start, or an `up` has finished | `cold`, `seconds`, `stages`, `verb` |
+| `session_end` | The session a `launch` started has ended | `seconds` (of the session), `exit` |
+| `stop`, `kill`, `remove`, `prune` | The verb has finished | `seconds`, `exit` |
+| `aid_start` | `dla` has handed its start to `dl` and the workspace is ready | `cold`, `seconds`, `stages`, `agent`, `resume` |
+| `aid_end` | `dla` has ended | `seconds`, `exit`, `agent` |
+
+`ts` is UTC ISO 8601 to the millisecond. `ws` is the workspace id when the launch
+knew it, else the target as typed. `repo` and `branch` are set when the target
+is `owner/repo@branch`. `cold` is true when the launch's `devpod up` created the
+workspace. `seconds` on a `launch` is the wall time from the top of the command,
+and `stages` holds the same named stages as the timing document, in seconds. On
+an `aid_start`, `stages` holds `dla`'s own steps (`pick`, `pr_lookup`, `prompt`,
+`boot_wait`) and `dl`, the launch inside it. The `aid` names are what `dla` was
+called before, and what readers of older logs already look for.
+
+```json
+{"ts":"2026-11-21T09:13:05.340Z","ev":"aid_start","ws":"devlaunch-main-3j1t","repo":"blooop/devlaunch","branch":"main","cold":false,"seconds":0.043923,"stages":{"pick":0.00007,"pr_lookup":0.00005,"prompt":1e-6,"dl":0.023009},"agent":"claude","resume":false}
+```
+
+A picked batch (`dl` with no target, then a verb) logs its launch but not its
+`stop`, `kill` or `remove`.
+
 ### The same launch, machine-readable
 
 `DEVLAUNCH_TIMING=json` swaps that prose for one document on a single

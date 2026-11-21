@@ -834,6 +834,17 @@ fn a_stop_addresses_the_workspace_and_says_nothing() {
             "devpod stop someones-project",
         ]
     );
+    // The event log has the stop, and how it ended.
+    let log = std::fs::read_to_string(world.root.join("home/.local/state/devlaunch/events.jsonl"))
+        .expect("the stop is logged");
+    let lines: Vec<serde_json::Value> = log
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("one JSON object"))
+        .collect();
+    assert_eq!(lines.len(), 1, "{log}");
+    assert_eq!(lines[0]["ev"], "stop");
+    assert_eq!(lines[0]["ws"], "someones-project");
+    assert_eq!(lines[0]["exit"], 0);
 }
 
 #[test]

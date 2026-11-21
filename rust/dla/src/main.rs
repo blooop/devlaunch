@@ -129,6 +129,9 @@ fn run(argv: &[String]) -> i32 {
         println!("dla {}{}", dl::VERSION, dl::BUILD_MARKER);
         return 0;
     }
+    // The event log's clock for this start: dla's own steps are charged as stages
+    // below, and dl writes the `aid_start` line when its launch is ready.
+    let mut start = dl::events::DlaStart::begin();
 
     // `dl::env_str`, not `std::env::var(..).ok()`: that call reports a value which
     // is not valid UTF-8 as *unset*, so `DEVLAUNCH_AID_AGENT=$'\xff'` used to name
@@ -196,6 +199,7 @@ fn run(argv: &[String]) -> i32 {
             return 1;
         }
     };
+    start.stage("pick");
     // The interactive default: an agent line with no prompt, on a terminal, boots
     // the workspace in the background while the prompt is typed here instead of in
     // a shell. Anything else — an inline prompt, a verb line, a pipe — comes back
@@ -209,6 +213,7 @@ fn run(argv: &[String]) -> i32 {
         Ok(spec) => parsed.with_spec(spec),
         Err(code) => return code,
     };
+    start.stage("pr_lookup");
     let (parsed, boot) = match interactive::collect_prompt(parsed, argv, environment, pickers) {
         interactive::Collected::Launch(parsed, boot) => (*parsed, boot),
         // 130, the code a Ctrl-C at the prompt editor ends with, because a cancel
@@ -218,6 +223,7 @@ fn run(argv: &[String]) -> i32 {
             return 130;
         }
     };
+    start.stage("prompt");
     let session = new_session_id();
     let Some(launch) = rewrite::build_launch(&parsed, &dl::workspace_id_of, session.as_deref())
     else {
@@ -245,12 +251,16 @@ fn run(argv: &[String]) -> i32 {
     // dl runs, the workspace is up and the launch is the fast attach.
     if let Some(boot) = boot {
         boot.finish();
+        start.stage("boot_wait");
     }
     name_agent_for_session_manager(parsed.agent());
-    match launch.resume {
+    start.hand_over(parsed.agent(), parsed.resumes());
+    let code = match launch.resume {
         Some(resume) => dl::run_resumable(&launch.dl_args, resume),
         None => dl::run(&launch.dl_args),
-    }
+    };
+    dl::events::dla_end(code);
+    code
 }
 
 /// A fresh UUID v4, for the session dla names before it starts it.

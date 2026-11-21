@@ -361,6 +361,46 @@ fn a_fresh_claude_session_is_named() {
 }
 
 #[test]
+fn a_start_logs_dls_launch_then_dlas_own_start_and_end() {
+    // The event log, as the usage review reads it: dl's `launch`, then dla's
+    // `aid_start` with dla's own steps and dl's launch as stages, then the end of
+    // dl's session and of dla's.
+    let world = World::with(&["--warm"]);
+    world.dla(&[MAIN, "hi"]).exited(0);
+
+    let log = std::fs::read_to_string(world.root.join("home/.local/state/devlaunch/events.jsonl"))
+        .expect("the start is logged");
+    let lines: Vec<serde_json::Value> = log
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("one JSON object"))
+        .collect();
+    let names: Vec<&str> = lines
+        .iter()
+        .map(|line| line["ev"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        names,
+        ["launch", "aid_start", "session_end", "aid_end"],
+        "{log}"
+    );
+    let start = &lines[1];
+    assert_eq!(start["ws"], MAIN);
+    assert_eq!(start["agent"], "claude");
+    assert_eq!(start["resume"], false);
+    assert_eq!(start["cold"], false);
+    let stages = start["stages"].as_object().expect("stages");
+    for stage in ["pick", "pr_lookup", "prompt", "dl"] {
+        assert!(stages.contains_key(stage), "{stage} in {log}");
+    }
+    assert!(
+        start["seconds"].as_f64() >= stages["dl"].as_f64(),
+        "dla's start includes dl's launch: {log}"
+    );
+    assert_eq!(lines[3]["agent"], "claude");
+    assert_eq!(lines[3]["exit"], 0);
+}
+
+#[test]
 fn a_prompt_reaches_the_agent_as_one_argument_through_dls_own_launch() {
     // The whole of dla, observed from outside: the rewritten command line on stderr,
     // dl's own launch of the workspace, and one `devpod ssh --command` carrying the
