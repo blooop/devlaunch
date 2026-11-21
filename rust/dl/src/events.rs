@@ -87,7 +87,6 @@ struct Dla {
     agent: Option<String>,
     resume: bool,
     workspace_id: Option<String>,
-    target: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -176,7 +175,6 @@ fn on_ready(ready: &timing::Ready) {
         });
         if let Some(dla) = seen.dla.as_mut() {
             dla.workspace_id = ready.workspace_id.clone();
-            dla.target.clone_from(&target);
         }
         (target, seen.dla.clone())
     };
@@ -238,12 +236,7 @@ fn aid_start_event(
     now: Instant,
     at: SystemTime,
 ) -> Value {
-    let mut event = base(
-        "aid_start",
-        at,
-        target.or(dla.target.as_deref()),
-        ready.workspace_id.as_deref(),
-    );
+    let mut event = base("aid_start", at, target, ready.workspace_id.as_deref());
     let mut steps = dla.stages.clone();
     steps.push(("dl", ready.seconds));
     event.insert("cold".into(), ready.cold.into());
@@ -298,14 +291,18 @@ impl DlaStart {
             agent: agent.map(str::to_owned),
             resume,
             workspace_id: None,
-            target: None,
         });
     }
 }
 
 /// dla ended with `exit`: write `aid_end`, if dla handed a start over.
 pub fn dla_end(exit: i32) {
-    let Some(dla) = seen().dla.take() else {
+    let (dla, target) = {
+        let mut seen = seen();
+        let target = seen.verb.as_ref().and_then(|verb| verb.target.clone());
+        (seen.dla.take(), target)
+    };
+    let Some(dla) = dla else {
         return;
     };
     if !wanted(devlaunch_core::osext::env_str(ENV_VAR).as_deref()) {
@@ -314,7 +311,7 @@ pub fn dla_end(exit: i32) {
     let mut event = base(
         "aid_end",
         SystemTime::now(),
-        dla.target.as_deref(),
+        target.as_deref(),
         dla.workspace_id.as_deref(),
     );
     event.insert("seconds".into(), seconds(dla.started.elapsed()));
@@ -485,7 +482,6 @@ mod tests {
             agent: Some("claude".to_owned()),
             resume: false,
             workspace_id: None,
-            target: None,
         };
         let at = UNIX_EPOCH + Duration::from_millis(1_795_253_405_999);
 

@@ -401,6 +401,23 @@ fn a_start_logs_dls_launch_then_dlas_own_start_and_end() {
 }
 
 #[test]
+fn a_start_that_fails_before_ready_ends_naming_the_workspace_it_was_given() {
+    let world = World::with(&["--warm"]);
+    world.dla(&["no-such-workspace-zz", "hi"]).exited(1);
+
+    let log = std::fs::read_to_string(world.root.join("home/.local/state/devlaunch/events.jsonl"))
+        .expect("the end is logged");
+    let lines: Vec<serde_json::Value> = log
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("one JSON object"))
+        .collect();
+    assert_eq!(lines.len(), 1, "{log}");
+    assert_eq!(lines[0]["ev"], "aid_end", "{log}");
+    assert_eq!(lines[0]["ws"], "no-such-workspace-zz", "{log}");
+    assert_eq!(lines[0]["exit"], 1, "{log}");
+}
+
+#[test]
 fn a_prompt_reaches_the_agent_as_one_argument_through_dls_own_launch() {
     // The whole of dla, observed from outside: the rewritten command line on stderr,
     // dl's own launch of the workspace, and one `devpod ssh --command` carrying the
