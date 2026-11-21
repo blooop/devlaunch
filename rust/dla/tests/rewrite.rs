@@ -392,10 +392,10 @@ fn a_start_logs_dls_launch_then_dlas_own_start_and_end() {
     for stage in ["pick", "pr_lookup", "prompt", "dl"] {
         assert!(stages.contains_key(stage), "{stage} in {log}");
     }
-    assert!(
-        start["seconds"].as_f64() >= stages["dl"].as_f64(),
-        "dla's start includes dl's launch: {log}"
-    );
+    let seconds = start["seconds"].as_f64().expect("dla's seconds");
+    let dl = stages["dl"].as_f64().expect("dl's seconds");
+    assert!(seconds >= dl, "dla's start includes dl's launch: {log}");
+    assert_eq!(lines[3]["ws"], MAIN, "{log}");
     assert_eq!(lines[3]["agent"], "claude");
     assert_eq!(lines[3]["exit"], 0);
 }
