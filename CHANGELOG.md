@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.65.0] - 2026-11-21
+
 ### Added
 
 - **`dl` and `dla` keep an event log.** Each launch, session end, `stop`, `kill`, `rm`
@@ -14,7 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`~/.local/state/devlaunch/events.jsonl` by default), with the start's seconds,
   whether it was cold, and its stages. `dla` adds `aid_start` and `aid_end` lines.
   `DEVLAUNCH_EVENTS=0` turns it off. A line that cannot be written never fails the
-  command. See [The event log](docs/performance.md#the-event-log).
+  command. See [The event log](docs/performance.md#the-event-log)
+  ([#723](https://github.com/blooop/devlaunch/pull/723)).
 
 ## [0.64.3] - 2026-11-18
 
