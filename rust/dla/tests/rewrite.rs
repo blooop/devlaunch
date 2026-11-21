@@ -401,6 +401,26 @@ fn a_start_logs_dls_launch_then_dlas_own_start_and_end() {
 }
 
 #[test]
+fn a_resume_logs_its_start_as_a_resume() {
+    let world = World::with(&["--warm"]);
+    world.dla(&["resume", MAIN]).exited(0);
+
+    let log = std::fs::read_to_string(world.root.join("home/.local/state/devlaunch/events.jsonl"))
+        .expect("the resume is logged");
+    let lines: Vec<serde_json::Value> = log
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("one JSON object"))
+        .collect();
+    let starts: Vec<&serde_json::Value> = lines
+        .iter()
+        .filter(|line| line["ev"] == "aid_start")
+        .collect();
+    assert_eq!(starts.len(), 1, "{log}");
+    assert_eq!(starts[0]["ws"], MAIN, "{log}");
+    assert_eq!(starts[0]["resume"], true, "{log}");
+}
+
+#[test]
 fn a_start_that_fails_before_ready_ends_naming_the_workspace_it_was_given() {
     let world = World::with(&["--warm"]);
     world.dla(&["no-such-workspace-zz", "hi"]).exited(1);
