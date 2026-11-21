@@ -25,6 +25,7 @@
 
 mod cli;
 mod commands;
+pub mod events;
 mod hangup;
 mod herdr_editor;
 mod herdr_environment;
@@ -587,9 +588,13 @@ pub fn run_resumable(argv: &[String], resume: AgentResume) -> i32 {
 fn run_with(argv: &[String], resume: Option<AgentResume>) -> i32 {
     // Timing is per-command: begin() here so a second run in the same process
     // starts a fresh summary, and the report is written however the command ended.
-    timing::begin();
+    // The event log rides the same clock: its hook writes the `launch` line when
+    // the workspace is ready, and `events::end` writes what the command ended.
+    timing::begin(events::hook());
+    events::begin();
     let ending = one_command(argv, resume);
     report_timing();
+    events::end(ending);
     ending
 }
 

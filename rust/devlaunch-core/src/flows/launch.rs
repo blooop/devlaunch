@@ -2203,6 +2203,12 @@ fn up_under_stage(
     // This launch is the one paying for the `up`, so no prewarm saved it from
     // anything — whether or not one was fired.
     timing::observe_attach(timing::AttachShape::Miss);
+    // A create is what the event log calls a cold launch: devpod did not list
+    // this workspace, so this `up` builds it rather than starting it.
+    timing::observe_up(
+        request.naming.identity(),
+        matches!(request.naming, Naming::Create { .. }),
+    );
     // The build runs for minutes in the foreground; it leads a process group of
     // its own so a Ctrl-C (or `kill -INT <pid>`) tears the whole build down with
     // `dl` rather than orphaning it holding the launch lock.
@@ -4189,6 +4195,9 @@ pub(crate) fn attach_workspace(
     forward: &mut dyn FnMut(&str),
     notices: &mut dyn Notices<LaunchNotice>,
 ) -> Result<Session, SessionRefused> {
+    // Ready before the attach stage opens: what follows is the session, which
+    // lasts as long as somebody works in it and is no part of the start.
+    timing::ready(Some(workspace_id));
     timing::stage_result(timing::Stage::Attach, || {
         // First, and unconditionally on the way to every session: the terminal is
         // about to belong to something else, and after that this process may not

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`dl` and `dla` keep an event log.** Each launch, session end, `stop`, `kill`, `rm`
+  and `prune` appends one JSON line to `$XDG_STATE_HOME/devlaunch/events.jsonl`
+  (`~/.local/state/devlaunch/events.jsonl` by default), with the start's seconds,
+  whether it was cold, and its stages. `dla` adds `aid_start` and `aid_end` lines.
+  `DEVLAUNCH_EVENTS=0` turns it off. A line that cannot be written never fails the
+  command. See [The event log](docs/performance.md#the-event-log).
+
 ## [0.64.3] - 2026-11-18
 
 ### Fixed

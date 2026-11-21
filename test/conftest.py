@@ -76,10 +76,16 @@ def isolated_devlaunch_cache(tmp_path_factory, monkeypatch):
     assertions. The scratch-run recipe in AGENTS.md still declines to scope it,
     because scoping it hides the host's gh login, which the suite has already given
     up in no_gh_token_forwarding below and a real `dl-next` run has not.
+
+    XDG_STATE_HOME goes with them too: every `dl` appends to the event log under
+    it, and a suite run would otherwise add its launches and removals to the
+    developer's own `~/.local/state/devlaunch/events.jsonl`, which a usage review
+    reads as real starts.
     """
     root = tmp_path_factory.mktemp("xdg")
     monkeypatch.setenv("XDG_CACHE_HOME", str(root / "cache"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(root / "config"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(root / "state"))
 
 
 @pytest.fixture(autouse=True)

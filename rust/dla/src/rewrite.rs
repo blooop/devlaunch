@@ -757,6 +757,11 @@ impl DlaArgs {
         }
     }
 
+    /// Whether this line resumes an agent session rather than starting one.
+    pub(crate) fn resumes(&self) -> bool {
+        matches!(self.task, Task::Resume { .. })
+    }
+
     /// The same line with the prompt the interactive editor collected.
     ///
     /// A retired-spelling line is returned unchanged — it has no prompt to replace,
