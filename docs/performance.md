@@ -216,6 +216,23 @@ rows marked for one verb) writes one line, not one per workspace: the `launch` o
 the first workspace that came up, or the `stop`, `kill` or `remove` of the last
 one, timed from that workspace's start.
 
+Three gaps a reader of the log has to allow for:
+
+- **A closed terminal loses the end line.** When the terminal or pane closes,
+  `dl` gets SIGHUP (SIGTERM does the same) and its signal handler exits at once
+  with `_exit(129)`. The handler writes nothing, so the `launch` has no
+  `session_end` after it, and a `dla` start has no `aid_end`.
+- **An interactive `dla` start that creates the workspace logs two `launch`
+  lines.** The background boot (`dla --boot-up <spec> up`) is a process of its
+  own. It does the create and writes a `launch` with `verb` `up` and `cold`
+  true. The attach in the foreground then finds the workspace up and writes a
+  `launch` with `cold` false, and the `aid_start` copies that `false`. Count cold
+  starts on the interactive path from the boot's `up` line, not from
+  `aid_start`.
+- **`stop`, `kill` and `remove` log the target as typed.** Their `ws` is not
+  resolved to a workspace id, and `repo` and `branch` are null when the target
+  is a workspace id rather than `owner/repo`.
+
 ### The same launch, machine-readable
 
 `DEVLAUNCH_TIMING=json` swaps that prose for one document on a single
