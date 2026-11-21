@@ -2934,3 +2934,36 @@ fn a_relative_xdg_state_home_is_ignored_for_the_default() {
     assert_eq!(names, ["launch", "session_end"]);
 }
 
+#[test]
+fn a_stopped_workspace_started_by_its_up_is_not_a_cold_launch() {
+    let world = World::with(&["--stopped"]);
+    world.dl(&[MAIN]).exited(0);
+
+    let lines = events(&world);
+    let launch = lines
+        .iter()
+        .find(|line| line["ev"] == "launch")
+        .expect("a launch line");
+    assert_eq!(launch["ws"], MAIN, "{launch}");
+    assert_eq!(launch["cold"], false, "{launch}");
+    assert!(
+        launch["stages"]
+            .as_object()
+            .is_some_and(|stages| stages.contains_key("devpod-up")),
+        "{launch}"
+    );
+}
+
+#[test]
+fn an_up_devpod_refuses_logs_no_launch() {
+    for args in [&[MAIN][..], &[MAIN, "up"][..]] {
+        let world = World::with(&["--stopped", "--fail-up"]);
+        world.dl(args).exited(7);
+
+        let lines = events(&world);
+        assert!(
+            lines.iter().all(|line| line["ev"] != "launch"),
+            "dl {args:?}: {lines:?}"
+        );
+    }
+}
